@@ -5,19 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type WorkflowStore struct {
-	tenant  common.TenantID
+	tenant  spi.TenantID
 	factory *StoreFactory
 }
 
-func (s *WorkflowStore) Save(ctx context.Context, modelRef common.ModelRef, workflows []common.WorkflowDefinition) error {
+func (s *WorkflowStore) Save(ctx context.Context, modelRef spi.ModelRef, workflows []spi.WorkflowDefinition) error {
 	s.factory.wfMu.Lock()
 	defer s.factory.wfMu.Unlock()
 	if s.factory.wfData[s.tenant] == nil {
-		s.factory.wfData[s.tenant] = make(map[common.ModelRef][]common.WorkflowDefinition)
+		s.factory.wfData[s.tenant] = make(map[spi.ModelRef][]spi.WorkflowDefinition)
 	}
 	cp, err := copyWorkflows(workflows)
 	if err != nil {
@@ -27,17 +27,16 @@ func (s *WorkflowStore) Save(ctx context.Context, modelRef common.ModelRef, work
 	return nil
 }
 
-
-func (s *WorkflowStore) Get(ctx context.Context, modelRef common.ModelRef) ([]common.WorkflowDefinition, error) {
+func (s *WorkflowStore) Get(ctx context.Context, modelRef spi.ModelRef) ([]spi.WorkflowDefinition, error) {
 	s.factory.wfMu.RLock()
 	defer s.factory.wfMu.RUnlock()
 	tenantData, ok := s.factory.wfData[s.tenant]
 	if !ok {
-		return nil, fmt.Errorf("no workflows found for model %s: %w", modelRef, common.ErrNotFound)
+		return nil, fmt.Errorf("no workflows found for model %s: %w", modelRef, spi.ErrNotFound)
 	}
 	wfs, ok := tenantData[modelRef]
 	if !ok {
-		return nil, fmt.Errorf("no workflows found for model %s: %w", modelRef, common.ErrNotFound)
+		return nil, fmt.Errorf("no workflows found for model %s: %w", modelRef, spi.ErrNotFound)
 	}
 	cp, err := copyWorkflows(wfs)
 	if err != nil {
@@ -46,7 +45,7 @@ func (s *WorkflowStore) Get(ctx context.Context, modelRef common.ModelRef) ([]co
 	return cp, nil
 }
 
-func (s *WorkflowStore) Delete(ctx context.Context, modelRef common.ModelRef) error {
+func (s *WorkflowStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	s.factory.wfMu.Lock()
 	defer s.factory.wfMu.Unlock()
 	if tenantData, ok := s.factory.wfData[s.tenant]; ok {
@@ -56,12 +55,12 @@ func (s *WorkflowStore) Delete(ctx context.Context, modelRef common.ModelRef) er
 }
 
 // copyWorkflows performs a deep copy of workflow definitions via JSON round-trip.
-func copyWorkflows(wfs []common.WorkflowDefinition) ([]common.WorkflowDefinition, error) {
+func copyWorkflows(wfs []spi.WorkflowDefinition) ([]spi.WorkflowDefinition, error) {
 	data, err := json.Marshal(wfs)
 	if err != nil {
 		return nil, err
 	}
-	var out []common.WorkflowDefinition
+	var out []spi.WorkflowDefinition
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}

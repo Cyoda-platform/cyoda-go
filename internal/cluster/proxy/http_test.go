@@ -10,17 +10,17 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
-// fakeRegistry is a test double for spi.NodeRegistry that supports multiple
+// fakeRegistry is a test double for contract.NodeRegistry that supports multiple
 // nodes with configurable alive status.
 type fakeRegistry struct {
-	nodes map[string]spi.NodeInfo
+	nodes map[string]contract.NodeInfo
 }
 
-func newFakeRegistry(nodes ...spi.NodeInfo) *fakeRegistry {
-	m := make(map[string]spi.NodeInfo, len(nodes))
+func newFakeRegistry(nodes ...contract.NodeInfo) *fakeRegistry {
+	m := make(map[string]contract.NodeInfo, len(nodes))
 	for _, n := range nodes {
 		m[n.NodeID] = n
 	}
@@ -28,7 +28,7 @@ func newFakeRegistry(nodes ...spi.NodeInfo) *fakeRegistry {
 }
 
 func (r *fakeRegistry) Register(_ context.Context, nodeID, addr string) error {
-	r.nodes[nodeID] = spi.NodeInfo{NodeID: nodeID, Addr: addr, Alive: true}
+	r.nodes[nodeID] = contract.NodeInfo{NodeID: nodeID, Addr: addr, Alive: true}
 	return nil
 }
 
@@ -40,8 +40,8 @@ func (r *fakeRegistry) Lookup(_ context.Context, nodeID string) (string, bool, e
 	return info.Addr, info.Alive, nil
 }
 
-func (r *fakeRegistry) List(_ context.Context) ([]spi.NodeInfo, error) {
-	out := make([]spi.NodeInfo, 0, len(r.nodes))
+func (r *fakeRegistry) List(_ context.Context) ([]contract.NodeInfo, error) {
+	out := make([]contract.NodeInfo, 0, len(r.nodes))
 	for _, n := range r.nodes {
 		out = append(out, n)
 	}
@@ -72,7 +72,7 @@ func localHandler() http.Handler {
 
 func TestHTTPProxy_NoToken_ServesLocally(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
-	reg := newFakeRegistry(spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
+	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
 	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second)
 	handler := mw(localHandler())
@@ -91,7 +91,7 @@ func TestHTTPProxy_NoToken_ServesLocally(t *testing.T) {
 
 func TestHTTPProxy_TokenForSelf_ServesLocally(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
-	reg := newFakeRegistry(spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
+	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
 	tok, err := signer.Issue("node-1", "tx-123", time.Now().Add(5*time.Minute))
 	if err != nil {
@@ -124,8 +124,8 @@ func TestHTTPProxy_TokenForOtherNode_Proxies(t *testing.T) {
 
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(
-		spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
-		spi.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
 	)
 
 	tok, err := signer.Issue("node-2", "tx-456", time.Now().Add(5*time.Minute))
@@ -152,8 +152,8 @@ func TestHTTPProxy_TokenForOtherNode_Proxies(t *testing.T) {
 func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(
-		spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
-		spi.NodeInfo{NodeID: "node-2", Addr: "http://localhost:9998", Alive: false},
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:9998", Alive: false},
 	)
 
 	tok, err := signer.Issue("node-2", "tx-789", time.Now().Add(5*time.Minute))
@@ -176,7 +176,7 @@ func TestHTTPProxy_TokenForDeadNode_Returns503(t *testing.T) {
 
 func TestHTTPProxy_ExpiredToken_Returns400(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
-	reg := newFakeRegistry(spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
+	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
 	// Issue a token that expired in the past.
 	tok, err := signer.Issue("node-2", "tx-expired", time.Now().Add(-1*time.Minute))

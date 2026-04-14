@@ -8,10 +8,12 @@ package cyoda
 
 import (
 	context "context"
-	cloudevents "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+
+	cloudevents "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
 // This is a compile-time assertion to ensure that this generated file

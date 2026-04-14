@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // --- Helpers ---
@@ -66,7 +66,7 @@ func TestWorkflowProc_Loopback(t *testing.T) {
 	const model = "e2e-wfproc-6"
 
 	// Criteria that checks if amount > 100.
-	procSvc.RegisterCriteria("high-value", func(ctx context.Context, entity *common.Entity, criterion json.RawMessage) (bool, error) {
+	procSvc.RegisterCriteria("high-value", func(ctx context.Context, entity *spi.Entity, criterion json.RawMessage) (bool, error) {
 		var data map[string]any
 		json.Unmarshal(entity.Data, &data)
 		amount, _ := data["amount"].(float64)
@@ -135,7 +135,7 @@ func TestWorkflowProc_CascadeDepthLimit(t *testing.T) {
 
 	// Use criteria-gated transitions that always match — this bypasses the
 	// static loop detection at import time but still loops at runtime.
-	procSvc.RegisterCriteria("loop-gate", func(ctx context.Context, entity *common.Entity, criterion json.RawMessage) (bool, error) {
+	procSvc.RegisterCriteria("loop-gate", func(ctx context.Context, entity *spi.Entity, criterion json.RawMessage) (bool, error) {
 		return true, nil
 	})
 	defer procSvc.Reset()
@@ -178,13 +178,13 @@ func TestWorkflowProc_CascadeDepthLimit(t *testing.T) {
 func TestWorkflowProc_ProcessorModifiesData(t *testing.T) {
 	const model = "e2e-wfproc-10"
 
-	procSvc.RegisterProcessor("compute-total", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("compute-total", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		var data map[string]any
 		json.Unmarshal(entity.Data, &data)
 		amount, _ := data["amount"].(float64)
 		data["total"] = amount * 1.1 // add 10% tax
 		updated, _ := json.Marshal(data)
-		return &common.Entity{Meta: entity.Meta, Data: updated}, nil
+		return &spi.Entity{Meta: entity.Meta, Data: updated}, nil
 	})
 	defer procSvc.Reset()
 
@@ -217,14 +217,14 @@ func TestWorkflowProc_ProcessorModifiesData(t *testing.T) {
 func TestWorkflowProc_MultipleProcessorsSameTransition(t *testing.T) {
 	const model = "e2e-wfproc-11"
 
-	procSvc.RegisterProcessor("step-1", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("step-1", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		var data map[string]any
 		json.Unmarshal(entity.Data, &data)
 		data["step1"] = true
 		updated, _ := json.Marshal(data)
-		return &common.Entity{Meta: entity.Meta, Data: updated}, nil
+		return &spi.Entity{Meta: entity.Meta, Data: updated}, nil
 	})
-	procSvc.RegisterProcessor("step-2", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("step-2", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		var data map[string]any
 		json.Unmarshal(entity.Data, &data)
 		// step-2 should see step-1's output.
@@ -233,7 +233,7 @@ func TestWorkflowProc_MultipleProcessorsSameTransition(t *testing.T) {
 		}
 		data["step2"] = true
 		updated, _ := json.Marshal(data)
-		return &common.Entity{Meta: entity.Meta, Data: updated}, nil
+		return &spi.Entity{Meta: entity.Meta, Data: updated}, nil
 	})
 	defer procSvc.Reset()
 
@@ -272,7 +272,7 @@ func TestWorkflowProc_MultipleProcessorsSameTransition(t *testing.T) {
 func TestWorkflowProc_FullAuditTrail(t *testing.T) {
 	const model = "e2e-wfproc-12"
 
-	procSvc.RegisterProcessor("audit-proc", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("audit-proc", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		return entity, nil // no-op processor
 	})
 	defer procSvc.Reset()

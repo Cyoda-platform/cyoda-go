@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
 
@@ -43,7 +43,7 @@ func TestMessageStoreSaveAndGet(t *testing.T) {
 		t.Fatalf("failed to get message store: %v", err)
 	}
 
-	header := common.MessageHeader{
+	header := spi.MessageHeader{
 		Subject:         "order.created",
 		ContentType:     "application/json",
 		ContentLength:   14,
@@ -54,7 +54,7 @@ func TestMessageStoreSaveAndGet(t *testing.T) {
 		ReplyTo:         "reply-queue",
 		CorrelationID:   "corr-123",
 	}
-	meta := common.MessageMetaData{
+	meta := spi.MessageMetaData{
 		Values:        map[string]any{"env": "test"},
 		IndexedValues: map[string]any{"orderId": 42},
 	}
@@ -105,8 +105,8 @@ func TestMessageStoreDelete(t *testing.T) {
 		t.Fatalf("failed to get message store: %v", err)
 	}
 
-	header := common.MessageHeader{Subject: "test"}
-	meta := common.MessageMetaData{}
+	header := spi.MessageHeader{Subject: "test"}
+	meta := spi.MessageMetaData{}
 	payload := bytes.NewBufferString("data")
 
 	if err := store.Save(ctx, "msg-del", header, meta, payload); err != nil {
@@ -118,7 +118,7 @@ func TestMessageStoreDelete(t *testing.T) {
 	}
 
 	_, _, _, err = store.Get(ctx, "msg-del")
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
 }
@@ -134,8 +134,8 @@ func TestMessageStoreDeleteBatch(t *testing.T) {
 	}
 
 	for _, id := range []string{"m1", "m2", "m3"} {
-		header := common.MessageHeader{Subject: id}
-		meta := common.MessageMetaData{}
+		header := spi.MessageHeader{Subject: id}
+		meta := spi.MessageMetaData{}
 		if err := store.Save(ctx, id, header, meta, bytes.NewBufferString("payload-"+id)); err != nil {
 			t.Fatalf("save %s failed: %v", id, err)
 		}
@@ -155,7 +155,7 @@ func TestMessageStoreDeleteBatch(t *testing.T) {
 	// m1 and m3 should be gone
 	for _, id := range []string{"m1", "m3"} {
 		_, _, _, err := store.Get(ctx, id)
-		if !errors.Is(err, common.ErrNotFound) {
+		if !errors.Is(err, spi.ErrNotFound) {
 			t.Errorf("expected ErrNotFound for %s, got %v", id, err)
 		}
 	}
@@ -171,14 +171,14 @@ func TestMessageStoreTenantIsolation(t *testing.T) {
 	storeA, _ := factory.MessageStore(ctxA)
 	storeB, _ := factory.MessageStore(ctxB)
 
-	header := common.MessageHeader{Subject: "secret"}
-	meta := common.MessageMetaData{}
+	header := spi.MessageHeader{Subject: "secret"}
+	meta := spi.MessageMetaData{}
 	if err := storeA.Save(ctxA, "msg-iso", header, meta, bytes.NewBufferString("tenant-A-data")); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
 
 	_, _, _, err := storeB.Get(ctxB, "msg-iso")
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("tenant-B should not see tenant-A message, got %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestMessageStoreNotFound(t *testing.T) {
 	}
 
 	_, _, _, err = store.Get(ctx, "nonexistent")
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -214,8 +214,8 @@ func TestStoreFactoryClose(t *testing.T) {
 		t.Fatalf("failed to get message store: %v", err)
 	}
 
-	header := common.MessageHeader{Subject: "test"}
-	meta := common.MessageMetaData{}
+	header := spi.MessageHeader{Subject: "test"}
+	meta := spi.MessageMetaData{}
 	if err := store.Save(ctx, "msg-close", header, meta, bytes.NewBufferString("data")); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
@@ -243,8 +243,8 @@ func TestMessageSave_FailureDoesNotLeaveMetadata(t *testing.T) {
 
 	// Use a failingReader that returns an error after a few bytes.
 	fr := &failingReader{n: 5, errFail: fmt.Errorf("simulated I/O failure")}
-	header := common.MessageHeader{Subject: "fail-test"}
-	meta := common.MessageMetaData{}
+	header := spi.MessageHeader{Subject: "fail-test"}
+	meta := spi.MessageMetaData{}
 
 	err = store.Save(ctx, "msg-fail", header, meta, fr)
 	if err == nil {
@@ -256,7 +256,7 @@ func TestMessageSave_FailureDoesNotLeaveMetadata(t *testing.T) {
 	if err == nil {
 		t.Error("expected Get to return error after failed Save, got nil")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }

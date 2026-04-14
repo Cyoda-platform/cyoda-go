@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -15,7 +16,7 @@ import (
 func TestWorkflowFailure_ProcessorError(t *testing.T) {
 	const model = "e2e-wffail-1"
 
-	procSvc.RegisterProcessor("boom", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("boom", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		return nil, fmt.Errorf("processor exploded")
 	})
 	defer procSvc.Reset()
@@ -58,7 +59,7 @@ func TestWorkflowFailure_ProcessorWarnings(t *testing.T) {
 	const model = "e2e-wffail-2"
 
 	// Processor succeeds but we add warnings via context.
-	procSvc.RegisterProcessor("warn-proc", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("warn-proc", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		common.AddWarning(ctx, "data quality issue: missing field X")
 		return entity, nil
 	})
@@ -117,7 +118,7 @@ func TestWorkflowFailure_ProcessorWarnings(t *testing.T) {
 func TestWorkflowFailure_CriteriaError(t *testing.T) {
 	const model = "e2e-wffail-3"
 
-	procSvc.RegisterCriteria("broken-check", func(ctx context.Context, entity *common.Entity, criterion json.RawMessage) (bool, error) {
+	procSvc.RegisterCriteria("broken-check", func(ctx context.Context, entity *spi.Entity, criterion json.RawMessage) (bool, error) {
 		return false, fmt.Errorf("criteria evaluation failed")
 	})
 	defer procSvc.Reset()
@@ -160,7 +161,7 @@ func TestWorkflowFailure_ProcessorContextCancelled(t *testing.T) {
 	const model = "e2e-wffail-4"
 
 	// Processor that immediately returns a context cancellation error.
-	procSvc.RegisterProcessor("ctx-cancel", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("ctx-cancel", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		return nil, context.DeadlineExceeded
 	})
 	defer procSvc.Reset()
@@ -195,7 +196,7 @@ func TestWorkflowFailure_ProcessorContextCancelled(t *testing.T) {
 func TestWorkflowFailure_ProcessorPanic(t *testing.T) {
 	const model = "e2e-wffail-5"
 
-	procSvc.RegisterProcessor("panic-proc", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("panic-proc", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		panic("processor panic!")
 	})
 	defer procSvc.Reset()
@@ -238,7 +239,7 @@ func TestWorkflowFailure_ProcessorPanic(t *testing.T) {
 func TestWorkflowFailure_AsyncNewTxProcessorFailure(t *testing.T) {
 	const model = "e2e-wffail-6"
 
-	procSvc.RegisterProcessor("async-fail", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("async-fail", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		return nil, fmt.Errorf("async processor failed")
 	})
 	defer procSvc.Reset()
@@ -275,15 +276,15 @@ func TestWorkflowFailure_AsyncNewTxSuccessThenCascadeFails(t *testing.T) {
 	const model = "e2e-wffail-7"
 
 	// First processor succeeds (ASYNC_NEW_TX).
-	procSvc.RegisterProcessor("async-ok", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("async-ok", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		var data map[string]any
 		json.Unmarshal(entity.Data, &data)
 		data["async_processed"] = true
 		updated, _ := json.Marshal(data)
-		return &common.Entity{Meta: entity.Meta, Data: updated}, nil
+		return &spi.Entity{Meta: entity.Meta, Data: updated}, nil
 	})
 	// Second processor on next transition fails.
-	procSvc.RegisterProcessor("sync-fail", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("sync-fail", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		return nil, fmt.Errorf("sync processor failed after async success")
 	})
 	defer procSvc.Reset()

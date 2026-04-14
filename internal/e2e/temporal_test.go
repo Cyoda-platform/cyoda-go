@@ -52,4 +52,3 @@ func getEntityData(t *testing.T, entityID, pointInTime string) map[string]any {
 		return nil
 	}
 }
-

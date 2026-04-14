@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type KeyValueStore struct {
-	tenant  common.TenantID
+	tenant  spi.TenantID
 	factory *StoreFactory
 }
 

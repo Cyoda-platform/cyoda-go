@@ -4,26 +4,26 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type StateMachineAuditStore struct {
-	tenant  common.TenantID
+	tenant  spi.TenantID
 	factory *StoreFactory
 }
 
-func (s *StateMachineAuditStore) Record(ctx context.Context, entityID string, event common.StateMachineEvent) error {
+func (s *StateMachineAuditStore) Record(ctx context.Context, entityID string, event spi.StateMachineEvent) error {
 	s.factory.smAuditMu.Lock()
 	defer s.factory.smAuditMu.Unlock()
 	if s.factory.smAudit[s.tenant] == nil {
-		s.factory.smAudit[s.tenant] = make(map[string][]common.StateMachineEvent)
+		s.factory.smAudit[s.tenant] = make(map[string][]spi.StateMachineEvent)
 	}
 	cp := copyEvent(event)
 	s.factory.smAudit[s.tenant][entityID] = append(s.factory.smAudit[s.tenant][entityID], cp)
 	return nil
 }
 
-func (s *StateMachineAuditStore) GetEvents(ctx context.Context, entityID string) ([]common.StateMachineEvent, error) {
+func (s *StateMachineAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.StateMachineEvent, error) {
 	s.factory.smAuditMu.RLock()
 	defer s.factory.smAuditMu.RUnlock()
 	tenantData, ok := s.factory.smAudit[s.tenant]
@@ -37,7 +37,7 @@ func (s *StateMachineAuditStore) GetEvents(ctx context.Context, entityID string)
 	return copyEvents(events), nil
 }
 
-func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, entityID string, transactionID string) ([]common.StateMachineEvent, error) {
+func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, entityID string, transactionID string) ([]spi.StateMachineEvent, error) {
 	s.factory.smAuditMu.RLock()
 	defer s.factory.smAuditMu.RUnlock()
 	tenantData, ok := s.factory.smAudit[s.tenant]
@@ -48,7 +48,7 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 	if !ok {
 		return nil, fmt.Errorf("no events found for entity %s", entityID)
 	}
-	var filtered []common.StateMachineEvent
+	var filtered []spi.StateMachineEvent
 	for _, e := range events {
 		if e.TransactionID == transactionID {
 			filtered = append(filtered, copyEvent(e))
@@ -57,7 +57,7 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 	return filtered, nil
 }
 
-func copyEvent(e common.StateMachineEvent) common.StateMachineEvent {
+func copyEvent(e spi.StateMachineEvent) spi.StateMachineEvent {
 	cp := e
 	if e.Data != nil {
 		cp.Data = make(map[string]any, len(e.Data))
@@ -68,8 +68,8 @@ func copyEvent(e common.StateMachineEvent) common.StateMachineEvent {
 	return cp
 }
 
-func copyEvents(events []common.StateMachineEvent) []common.StateMachineEvent {
-	out := make([]common.StateMachineEvent, len(events))
+func copyEvents(events []spi.StateMachineEvent) []spi.StateMachineEvent {
+	out := make([]spi.StateMachineEvent, len(events))
 	for i, e := range events {
 		out[i] = copyEvent(e)
 	}

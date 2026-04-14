@@ -14,7 +14,7 @@ import (
 
 	"github.com/hashicorp/memberlist"
 
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // GossipConfig holds the configuration for a gossip-based NodeRegistry.
@@ -44,7 +44,7 @@ type Gossip struct {
 	meta     nodeMeta
 }
 
-var _ spi.NodeRegistry = (*Gossip)(nil)
+var _ contract.NodeRegistry = (*Gossip)(nil)
 
 // NewGossip creates a new gossip-based registry. It starts the memberlist
 // listener but does not join any cluster — call Register to join seeds.
@@ -167,9 +167,9 @@ func (g *Gossip) Lookup(_ context.Context, nodeID string) (string, bool, error) 
 }
 
 // List returns all members with their decoded metadata.
-func (g *Gossip) List(_ context.Context) ([]spi.NodeInfo, error) {
+func (g *Gossip) List(_ context.Context) ([]contract.NodeInfo, error) {
 	members := g.list.Members()
-	nodes := make([]spi.NodeInfo, 0, len(members))
+	nodes := make([]contract.NodeInfo, 0, len(members))
 	for _, m := range members {
 		var nm nodeMeta
 		if err := json.Unmarshal(m.Meta, &nm); err != nil {
@@ -180,7 +180,7 @@ func (g *Gossip) List(_ context.Context) ([]spi.NodeInfo, error) {
 			)
 			continue
 		}
-		nodes = append(nodes, spi.NodeInfo{
+		nodes = append(nodes, contract.NodeInfo{
 			NodeID: nm.ID,
 			Addr:   nm.Addr,
 			Alive:  true,
@@ -265,7 +265,7 @@ func (d *gossipDelegate) NotifyMsg(msg []byte) {}
 func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 	return nil
 }
-func (d *gossipDelegate) LocalState(bool) []byte       { return nil }
+func (d *gossipDelegate) LocalState(bool) []byte        { return nil }
 func (d *gossipDelegate) MergeRemoteState([]byte, bool) {}
 
 // slogWriter routes memberlist log output to slog at DEBUG level.

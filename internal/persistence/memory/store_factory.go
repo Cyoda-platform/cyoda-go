@@ -6,8 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type StoreFactory struct {
@@ -17,12 +16,12 @@ type StoreFactory struct {
 	msgMu       sync.RWMutex
 	wfMu        sync.RWMutex
 	smAuditMu   sync.RWMutex
-	entityData  map[common.TenantID]map[string][]entityVersion
-	modelData   map[common.TenantID]map[common.ModelRef]*common.ModelDescriptor
-	kvData      map[common.TenantID]map[string]map[string][]byte
-	msgData     map[common.TenantID]map[string]*messageEntry
-	wfData      map[common.TenantID]map[common.ModelRef][]common.WorkflowDefinition
-	smAudit     map[common.TenantID]map[string][]common.StateMachineEvent // tenantID -> entityID -> events
+	entityData  map[spi.TenantID]map[string][]entityVersion
+	modelData   map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor
+	kvData      map[spi.TenantID]map[string]map[string][]byte
+	msgData     map[spi.TenantID]map[string]*messageEntry
+	wfData      map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition
+	smAudit     map[spi.TenantID]map[string][]spi.StateMachineEvent // tenantID -> entityID -> events
 	blobDir     string
 	txManager   *TransactionManager
 	searchStore *AsyncSearchStore
@@ -34,19 +33,19 @@ func NewStoreFactory() *StoreFactory {
 		panic(fmt.Sprintf("failed to create blob temp dir: %v", err))
 	}
 	return &StoreFactory{
-		entityData:  make(map[common.TenantID]map[string][]entityVersion),
-		modelData:   make(map[common.TenantID]map[common.ModelRef]*common.ModelDescriptor),
-		kvData:      make(map[common.TenantID]map[string]map[string][]byte),
-		msgData:     make(map[common.TenantID]map[string]*messageEntry),
-		wfData:      make(map[common.TenantID]map[common.ModelRef][]common.WorkflowDefinition),
-		smAudit:     make(map[common.TenantID]map[string][]common.StateMachineEvent),
+		entityData:  make(map[spi.TenantID]map[string][]entityVersion),
+		modelData:   make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
+		kvData:      make(map[spi.TenantID]map[string]map[string][]byte),
+		msgData:     make(map[spi.TenantID]map[string]*messageEntry),
+		wfData:      make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
+		smAudit:     make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
 		blobDir:     blobDir,
 		searchStore: NewAsyncSearchStore(),
 	}
 }
 
-func resolveTenant(ctx context.Context) (common.TenantID, error) {
-	uc := common.GetUserContext(ctx)
+func resolveTenant(ctx context.Context) (spi.TenantID, error) {
+	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context in request — tenant cannot be resolved")
 	}

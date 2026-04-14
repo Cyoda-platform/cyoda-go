@@ -9,19 +9,22 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 // Handler implements the edge messaging endpoints.
 type Handler struct {
 	factory spi.StoreFactory
-	uuids   common.UUIDGenerator
+	uuids   spi.UUIDGenerator
 }
 
 // New creates a Handler with the given StoreFactory and UUIDGenerator.
-func New(factory spi.StoreFactory, uuids common.UUIDGenerator) *Handler {
+func New(factory spi.StoreFactory, uuids spi.UUIDGenerator) *Handler {
 	return &Handler{factory: factory, uuids: uuids}
 }
 
@@ -62,7 +65,7 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 	}
 	payloadString := compacted.String()
 
-	header := common.MessageHeader{
+	header := spi.MessageHeader{
 		Subject:         subject,
 		ContentType:     params.ContentType,
 		ContentLength:   params.ContentLength,
@@ -77,7 +80,7 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 		header.ContentEncoding = *params.ContentEncoding
 	}
 
-	metaData := common.MessageMetaData{
+	metaData := spi.MessageMetaData{
 		Values:        make(map[string]any),
 		IndexedValues: make(map[string]any),
 	}
@@ -85,8 +88,8 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 		metaData.IndexedValues[k] = v
 	}
 
-	id := h.uuids.NewTimeUUID()
-	txID := h.uuids.NewTimeUUID()
+	id := uuid.UUID(h.uuids.NewTimeUUID())
+	txID := uuid.UUID(h.uuids.NewTimeUUID())
 
 	store, err := h.factory.MessageStore(r.Context())
 	if err != nil {
@@ -118,7 +121,7 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId s
 
 	header, metaData, payloadReader, err := store.Get(r.Context(), messageId)
 	if err != nil {
-		if errors.Is(err, common.ErrNotFound) {
+		if errors.Is(err, spi.ErrNotFound) {
 			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", messageId))
 			appErr.Props = map[string]any{"messageId": messageId}
 			common.WriteError(w, r, appErr)
@@ -175,7 +178,7 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId s
 		"header": respHeader,
 		"metaData": map[string]any{
 			"values":        valuesMap,
-			"indexedValues":  indexedMap,
+			"indexedValues": indexedMap,
 		},
 		"content": string(payloadBytes),
 	}
@@ -194,7 +197,7 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request, messageI
 	// Check existence by trying to get first
 	_, _, rc, err := store.Get(r.Context(), messageId)
 	if err != nil {
-		if errors.Is(err, common.ErrNotFound) {
+		if errors.Is(err, spi.ErrNotFound) {
 			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("message id=%s not found", messageId))
 			appErr.Props = map[string]any{"messageId": messageId}
 			common.WriteError(w, r, appErr)

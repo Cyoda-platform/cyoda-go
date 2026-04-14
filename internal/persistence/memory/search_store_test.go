@@ -6,19 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
-func tenantCtx(tid common.TenantID) context.Context {
-	uc := &common.UserContext{
+func tenantCtx(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "Test User",
-		Tenant:   common.Tenant{ID: tid, Name: string(tid)},
+		Tenant:   spi.Tenant{ID: tid, Name: string(tid)},
 		Roles:    []string{"USER"},
 	}
-	return common.WithUserContext(context.Background(), uc)
+	return spi.WithUserContext(context.Background(), uc)
 }
 
 func newSearchStore(t *testing.T) spi.AsyncSearchStore {
@@ -45,7 +44,7 @@ func TestMemorySearchStore_CreateAndGetJob(t *testing.T) {
 		ID:          "job-001",
 		TenantID:    "test-tenant",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "Person", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "Person", ModelVersion: "1"},
 		Condition:   []byte(`{"field":"name","op":"eq","value":"Alice"}`),
 		PointInTime: now,
 		SearchOpts:  []byte(`{"sort":"asc"}`),
@@ -122,7 +121,7 @@ func TestMemorySearchStore_TenantIsolation(t *testing.T) {
 		ID:         "job-iso",
 		TenantID:   "tenant-a",
 		Status:     "RUNNING",
-		ModelRef:   common.ModelRef{EntityName: "X", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "X", ModelVersion: "1"},
 		CreateTime: now,
 	}
 	if err := storeA.CreateJob(ctxA, job); err != nil {
@@ -154,7 +153,7 @@ func TestMemorySearchStore_UpdateJobStatus(t *testing.T) {
 		ID:         "job-upd",
 		TenantID:   "test-tenant",
 		Status:     "RUNNING",
-		ModelRef:   common.ModelRef{EntityName: "Y", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
 		CreateTime: now,
 	}
 	if err := store.CreateJob(ctx, job); err != nil {
@@ -210,7 +209,7 @@ func TestMemorySearchStore_SaveAndGetResults(t *testing.T) {
 		ID:         "job-res",
 		TenantID:   "test-tenant",
 		Status:     "RUNNING",
-		ModelRef:   common.ModelRef{EntityName: "Z", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "Z", ModelVersion: "1"},
 		CreateTime: now,
 	}
 	if err := store.CreateJob(ctx, job); err != nil {
@@ -271,7 +270,7 @@ func TestMemorySearchStore_DeleteJob(t *testing.T) {
 		ID:         "job-del",
 		TenantID:   "test-tenant",
 		Status:     "SUCCESSFUL",
-		ModelRef:   common.ModelRef{EntityName: "W", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "W", ModelVersion: "1"},
 		CreateTime: now,
 	}
 	if err := store.CreateJob(ctx, job); err != nil {
@@ -310,7 +309,7 @@ func TestMemorySearchStore_ReapExpired(t *testing.T) {
 		ID:         "job-old",
 		TenantID:   "test-tenant",
 		Status:     "SUCCESSFUL",
-		ModelRef:   common.ModelRef{EntityName: "A", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "A", ModelVersion: "1"},
 		CreateTime: oldTime,
 	}
 	ft := oldTime.Add(time.Second)
@@ -324,7 +323,7 @@ func TestMemorySearchStore_ReapExpired(t *testing.T) {
 		ID:         "job-new",
 		TenantID:   "test-tenant",
 		Status:     "SUCCESSFUL",
-		ModelRef:   common.ModelRef{EntityName: "B", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "B", ModelVersion: "1"},
 		CreateTime: newTime,
 	}
 	ft2 := newTime
@@ -363,7 +362,7 @@ func TestMemorySearchStore_Cancel_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("Cancel() expected error for missing job, got nil")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("Cancel() expected ErrNotFound, got %v", err)
 	}
 }
@@ -377,7 +376,7 @@ func TestMemorySearchStore_Cancel_Idempotent(t *testing.T) {
 		ID:         "job-cancel",
 		TenantID:   "test-tenant",
 		Status:     "RUNNING",
-		ModelRef:   common.ModelRef{EntityName: "V", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "V", ModelVersion: "1"},
 		CreateTime: now,
 	}
 	if err := store.CreateJob(ctx, job); err != nil {
@@ -414,7 +413,7 @@ func TestMemorySearchStore_Cancel_AlreadyTerminal(t *testing.T) {
 			ID:         "job-terminal-" + terminalStatus,
 			TenantID:   "test-tenant",
 			Status:     terminalStatus,
-			ModelRef:   common.ModelRef{EntityName: "U", ModelVersion: "1"},
+			ModelRef:   spi.ModelRef{EntityName: "U", ModelVersion: "1"},
 			CreateTime: now,
 		}
 		if err := store.CreateJob(ctx, job); err != nil {
@@ -448,7 +447,7 @@ func TestMemorySearchStore_ReapDoesNotReapRunning(t *testing.T) {
 		ID:         "job-running",
 		TenantID:   "test-tenant",
 		Status:     "RUNNING",
-		ModelRef:   common.ModelRef{EntityName: "C", ModelVersion: "1"},
+		ModelRef:   spi.ModelRef{EntityName: "C", ModelVersion: "1"},
 		CreateTime: oldTime,
 	}
 	if err := store.CreateJob(ctx, runningJob); err != nil {

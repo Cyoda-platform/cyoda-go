@@ -1,4 +1,4 @@
-package predicate
+package match
 
 import (
 	"fmt"
@@ -7,22 +7,23 @@ import (
 
 	"github.com/tidwall/gjson"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
-// Match evaluates a Condition against entity data and metadata, returning
+// Match evaluates a predicate.Condition against entity data and metadata, returning
 // true if the entity satisfies the condition.
-func Match(condition Condition, entityData []byte, entityMeta common.EntityMeta) (bool, error) {
+func Match(condition predicate.Condition, entityData []byte, entityMeta spi.EntityMeta) (bool, error) {
 	switch c := condition.(type) {
-	case *SimpleCondition:
+	case *predicate.SimpleCondition:
 		return matchSimple(c, entityData)
-	case *LifecycleCondition:
+	case *predicate.LifecycleCondition:
 		return matchLifecycle(c, entityMeta)
-	case *GroupCondition:
+	case *predicate.GroupCondition:
 		return matchGroup(c, entityData, entityMeta)
-	case *ArrayCondition:
+	case *predicate.ArrayCondition:
 		return matchArray(c, entityData)
-	case *FunctionCondition:
+	case *predicate.FunctionCondition:
 		return false, fmt.Errorf("function conditions not implemented")
 	default:
 		return false, fmt.Errorf("unknown condition type: %T", condition)
@@ -57,7 +58,7 @@ func convertJSONPath(jsonPath string) string {
 	return path
 }
 
-func matchSimple(c *SimpleCondition, data []byte) (bool, error) {
+func matchSimple(c *predicate.SimpleCondition, data []byte) (bool, error) {
 	path := convertJSONPath(c.JsonPath)
 	result := gjson.GetBytes(data, path)
 
@@ -94,7 +95,7 @@ func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected 
 	return matched, nil
 }
 
-func matchLifecycle(c *LifecycleCondition, meta common.EntityMeta) (bool, error) {
+func matchLifecycle(c *predicate.LifecycleCondition, meta spi.EntityMeta) (bool, error) {
 	var fieldValue string
 
 	switch c.Field {
@@ -115,7 +116,7 @@ func matchLifecycle(c *LifecycleCondition, meta common.EntityMeta) (bool, error)
 	return applyOperator(c.OperatorType, result, c.Value)
 }
 
-func matchGroup(c *GroupCondition, data []byte, meta common.EntityMeta) (bool, error) {
+func matchGroup(c *predicate.GroupCondition, data []byte, meta spi.EntityMeta) (bool, error) {
 	switch c.Operator {
 	case "AND":
 		for _, child := range c.Conditions {
@@ -146,7 +147,7 @@ func matchGroup(c *GroupCondition, data []byte, meta common.EntityMeta) (bool, e
 	}
 }
 
-func matchArray(c *ArrayCondition, data []byte) (bool, error) {
+func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
 	basePath := convertJSONPath(c.JsonPath)
 
 	for i, expected := range c.Values {

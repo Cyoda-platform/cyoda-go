@@ -3,7 +3,7 @@ package postgres_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 )
 
@@ -18,15 +18,15 @@ func setupWorkflowTest(t *testing.T) *postgres.StoreFactory {
 	return postgres.NewStoreFactory(pool)
 }
 
-func sampleWorkflows() []common.WorkflowDefinition {
-	return []common.WorkflowDefinition{
+func sampleWorkflows() []spi.WorkflowDefinition {
+	return []spi.WorkflowDefinition{
 		{
 			Version:      "1",
 			Name:         "default",
 			InitialState: "NONE",
 			Active:       true,
-			States: map[string]common.StateDefinition{
-				"NONE":    {Transitions: []common.TransitionDefinition{{Name: "create", Next: "CREATED"}}},
+			States: map[string]spi.StateDefinition{
+				"NONE":    {Transitions: []spi.TransitionDefinition{{Name: "create", Next: "CREATED"}}},
 				"CREATED": {},
 			},
 		},
@@ -42,7 +42,7 @@ func TestWorkflowStore_SaveAndGet(t *testing.T) {
 		t.Fatalf("WorkflowStore: %v", err)
 	}
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	wfs := sampleWorkflows()
 
 	if err := store.Save(ctx, ref, wfs); err != nil {
@@ -72,13 +72,13 @@ func TestWorkflowStore_SaveOverwrites(t *testing.T) {
 	ctx := ctxWithTenant("wf-tenant")
 	store, _ := factory.WorkflowStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	store.Save(ctx, ref, sampleWorkflows())
 
-	updated := []common.WorkflowDefinition{{
+	updated := []spi.WorkflowDefinition{{
 		Version: "2", Name: "updated", InitialState: "START", Active: true,
-		States: map[string]common.StateDefinition{"START": {}},
+		States: map[string]spi.StateDefinition{"START": {}},
 	}}
 	store.Save(ctx, ref, updated)
 
@@ -93,7 +93,7 @@ func TestWorkflowStore_GetNotFound(t *testing.T) {
 	ctx := ctxWithTenant("wf-tenant")
 	store, _ := factory.WorkflowStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Nonexistent", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Nonexistent", ModelVersion: "1"}
 	_, err := store.Get(ctx, ref)
 	if err == nil {
 		t.Fatal("expected error for nonexistent workflows")
@@ -105,7 +105,7 @@ func TestWorkflowStore_Delete(t *testing.T) {
 	ctx := ctxWithTenant("wf-tenant")
 	store, _ := factory.WorkflowStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	store.Save(ctx, ref, sampleWorkflows())
 
 	if err := store.Delete(ctx, ref); err != nil {
@@ -123,7 +123,7 @@ func TestWorkflowStore_DeleteNonexistent(t *testing.T) {
 	ctx := ctxWithTenant("wf-tenant")
 	store, _ := factory.WorkflowStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Nonexistent", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Nonexistent", ModelVersion: "1"}
 	if err := store.Delete(ctx, ref); err != nil {
 		t.Fatalf("Delete nonexistent should not error: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestWorkflowStore_TenantIsolation(t *testing.T) {
 	storeA, _ := factory.WorkflowStore(ctxA)
 	storeB, _ := factory.WorkflowStore(ctxB)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	storeA.Save(ctxA, ref, sampleWorkflows())
 
 	_, err := storeB.Get(ctxB, ref)

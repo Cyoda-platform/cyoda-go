@@ -11,7 +11,7 @@ import (
 func newTestRunReport() RunReport {
 	return RunReport{
 		Date:       time.Date(2026, 3, 22, 14, 30, 0, 0, time.UTC),
-		CyodaGo:  "in-process",
+		CyodaGo:    "in-process",
 		CyodaCloud: "https://api.cyoda.example.com",
 		Scenarios: []ScenarioReport{
 			{
@@ -109,7 +109,7 @@ func TestReportShowsDiffBlock(t *testing.T) {
 func TestReportBodyMatchNone(t *testing.T) {
 	run := RunReport{
 		Date:       time.Now(),
-		CyodaGo:  "in-process",
+		CyodaGo:    "in-process",
 		CyodaCloud: "https://example.com",
 		Scenarios: []ScenarioReport{
 			{

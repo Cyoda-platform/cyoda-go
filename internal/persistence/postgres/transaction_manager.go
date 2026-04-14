@@ -7,10 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 const submitTimeTTL = 1 * time.Hour
@@ -21,7 +23,7 @@ const submitTimeTTL = 1 * time.Hour
 type TransactionManager struct {
 	pool     *pgxpool.Pool
 	registry *txRegistry
-	uuids    common.UUIDGenerator
+	uuids    spi.UUIDGenerator
 	mu       sync.Mutex
 	// submitTimes records the database timestamp captured at commit time.
 	// Evicted after submitTimeTTL.
@@ -29,17 +31,17 @@ type TransactionManager struct {
 	// tenants records the tenant for each active transaction so Join can
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
-	tenants map[string]common.TenantID
+	tenants map[string]spi.TenantID
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
-func NewTransactionManager(pool *pgxpool.Pool, uuids common.UUIDGenerator) *TransactionManager {
+func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *TransactionManager {
 	return &TransactionManager{
 		pool:        pool,
 		registry:    newTxRegistry(),
 		uuids:       uuids,
 		submitTimes: make(map[string]time.Time),
-		tenants:     make(map[string]common.TenantID),
+		tenants:     make(map[string]spi.TenantID),
 	}
 }
 
@@ -51,7 +53,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 		return "", nil, fmt.Errorf("Begin: %w", err)
 	}
 
-	txID := tm.uuids.NewTimeUUID().String()
+	txID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 
 	pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
@@ -70,16 +72,16 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	tm.tenants[txID] = tenantID
 	tm.mu.Unlock()
 
-	txState := &common.TransactionState{
+	txState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
 	}
 
-	return txID, common.WithTransaction(ctx, txState), nil
+	return txID, spi.WithTransaction(ctx, txState), nil
 }
 
 // Commit commits the transaction and records its submit time.
-// Returns common.ErrConflict on serialization failure (PostgreSQL error 40001).
+// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001).
 func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -148,11 +150,11 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 	tenantID := tm.tenants[txID]
 	tm.mu.Unlock()
 
-	txState := &common.TransactionState{
+	txState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
 	}
-	return common.WithTransaction(ctx, txState), nil
+	return spi.WithTransaction(ctx, txState), nil
 }
 
 // GetSubmitTime returns the database timestamp recorded when the transaction
@@ -187,7 +189,7 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 	if !ok {
 		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
 	}
-	spID := tm.uuids.NewTimeUUID().String()
+	spID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 	spName := "sp_" + spID
 	if _, err := pgxTx.Exec(ctx, "SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return "", fmt.Errorf("Savepoint: %w", err)
@@ -222,14 +224,14 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 }
 
 // classifyError checks whether an error is a PostgreSQL serialization failure
-// (error code 40001) and returns common.ErrConflict if so.
+// (error code 40001) and returns spi.ErrConflict if so.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "40001" {
-		return common.ErrConflict
+		return spi.ErrConflict
 	}
 	return err
 }

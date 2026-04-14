@@ -14,12 +14,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// fakeLocalDispatcher implements spi.ExternalProcessingService for testing.
+// fakeLocalDispatcher implements contract.ExternalProcessingService for testing.
 type fakeLocalDispatcher struct {
-	processorResult *common.Entity
+	processorResult *spi.Entity
 	processorErr    error
 	criteriaResult  bool
 	criteriaErr     error
@@ -27,16 +27,16 @@ type fakeLocalDispatcher struct {
 
 func (f *fakeLocalDispatcher) DispatchProcessor(
 	_ context.Context,
-	_ *common.Entity,
-	_ common.ProcessorDefinition,
+	_ *spi.Entity,
+	_ spi.ProcessorDefinition,
 	_, _, _ string,
-) (*common.Entity, error) {
+) (*spi.Entity, error) {
 	return f.processorResult, f.processorErr
 }
 
 func (f *fakeLocalDispatcher) DispatchCriteria(
 	_ context.Context,
-	_ *common.Entity,
+	_ *spi.Entity,
 	_ json.RawMessage,
 	_, _, _, _, _ string,
 ) (bool, error) {
@@ -60,8 +60,8 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 	secret := []byte("test-secret")
 	resultData := json.RawMessage(`{"output":42}`)
 	fake := &fakeLocalDispatcher{
-		processorResult: &common.Entity{
-			Meta: common.EntityMeta{ID: "ent-1"},
+		processorResult: &spi.Entity{
+			Meta: spi.EntityMeta{ID: "ent-1"},
 			Data: []byte(`{"output":42}`),
 		},
 	}
@@ -72,8 +72,8 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 
 	req := DispatchProcessorRequest{
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     common.EntityMeta{ID: "ent-1"},
-		Processor:      common.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-1"},
+		Processor:      spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"},
 		WorkflowName:   "wf",
 		TransitionName: "t1",
 		TxID:           "tx-1",
@@ -116,7 +116,7 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 
 	req := DispatchCriteriaRequest{
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     common.EntityMeta{ID: "ent-2"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
 		Criterion:      json.RawMessage(`{"type":"eq","field":"x","value":1}`),
 		Target:         "target",
 		WorkflowName:   "wf",
@@ -223,8 +223,8 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 
 	req := DispatchProcessorRequest{
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     common.EntityMeta{ID: "ent-1"},
-		Processor:      common.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-1"},
+		Processor:      spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"},
 		WorkflowName:   "wf",
 		TransitionName: "t1",
 		TxID:           "tx-1",
@@ -265,7 +265,7 @@ func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
 
 	req := DispatchCriteriaRequest{
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
-		EntityMeta:     common.EntityMeta{ID: "ent-2"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
 		Criterion:      json.RawMessage(`{"type":"eq"}`),
 		Target:         "target",
 		WorkflowName:   "wf",

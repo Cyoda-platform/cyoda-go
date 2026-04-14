@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-const testTenantID = common.TenantID("tenant-1")
+const testTenantID = spi.TenantID("tenant-1")
 
 func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, string, chan *cepb.CloudEvent) {
 	t.Helper()
@@ -28,16 +29,16 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 }
 
 func testContext() context.Context {
-	return common.WithUserContext(context.Background(), &common.UserContext{
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID:   "user-1",
 		UserName: "test-user",
-		Tenant:   common.Tenant{ID: testTenantID, Name: "Test Tenant"},
+		Tenant:   spi.Tenant{ID: testTenantID, Name: "Test Tenant"},
 	})
 }
 
-func testEntity() *common.Entity {
-	return &common.Entity{
-		Meta: common.EntityMeta{
+func testEntity() *spi.Entity {
+	return &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       "entity-123",
 			TenantID: testTenantID,
 		},
@@ -68,9 +69,9 @@ func TestDispatchProcessor_HappyPath(t *testing.T) {
 	ctx := testContext()
 	entity := testEntity()
 
-	processor := common.ProcessorDefinition{
+	processor := spi.ProcessorDefinition{
 		Name: "my-proc",
-		Config: common.ProcessorConfig{
+		Config: spi.ProcessorConfig{
 			AttachEntity:         true,
 			CalculationNodesTags: "python",
 			ResponseTimeoutMs:    5000,
@@ -178,9 +179,9 @@ func TestDispatchProcessor_NoMember(t *testing.T) {
 	ctx := testContext()
 	entity := testEntity()
 
-	processor := common.ProcessorDefinition{
+	processor := spi.ProcessorDefinition{
 		Name: "my-proc",
-		Config: common.ProcessorConfig{
+		Config: spi.ProcessorConfig{
 			CalculationNodesTags: "java",
 		},
 	}
@@ -199,9 +200,9 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 	ctx := testContext()
 	entity := testEntity()
 
-	processor := common.ProcessorDefinition{
+	processor := spi.ProcessorDefinition{
 		Name: "my-proc",
-		Config: common.ProcessorConfig{
+		Config: spi.ProcessorConfig{
 			CalculationNodesTags: "python",
 			ResponseTimeoutMs:    1, // 1ms timeout
 		},
@@ -221,9 +222,9 @@ func TestDispatchProcessor_NoAttachEntity(t *testing.T) {
 	ctx := testContext()
 	entity := testEntity()
 
-	processor := common.ProcessorDefinition{
+	processor := spi.ProcessorDefinition{
 		Name: "my-proc",
-		Config: common.ProcessorConfig{
+		Config: spi.ProcessorConfig{
 			AttachEntity:         false,
 			CalculationNodesTags: "python",
 			ResponseTimeoutMs:    5000,

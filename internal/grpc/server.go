@@ -7,24 +7,25 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	googlegrpc "google.golang.org/grpc"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 // CloudEventsServiceImpl implements the Cyoda CloudEventsService gRPC service.
 type CloudEventsServiceImpl struct {
 	cyodapb.UnimplementedCloudEventsServiceServer
-	registry           *MemberRegistry
-	authSvc            spi.AuthenticationService
-	txMgr              spi.TransactionManager
-	entityHandler      *entity.Handler
-	modelHandler       *model.Handler
-	searchService      *search.SearchService
-	keepAliveInterval  time.Duration
-	keepAliveTimeout   time.Duration
+	registry          *MemberRegistry
+	authSvc           contract.AuthenticationService
+	txMgr             spi.TransactionManager
+	entityHandler     *entity.Handler
+	modelHandler      *model.Handler
+	searchService     *search.SearchService
+	keepAliveInterval time.Duration
+	keepAliveTimeout  time.Duration
 }
 
 // Server wraps the gRPC server.
@@ -37,7 +38,7 @@ type Server struct {
 // CloudEventsService registered. When otelEnabled is true, OTel tracing
 // is added via a stats handler before the auth interceptors.
 func NewServer(
-	authSvc spi.AuthenticationService,
+	authSvc contract.AuthenticationService,
 	registry *MemberRegistry,
 	txMgr spi.TransactionManager,
 	entityHandler *entity.Handler,
@@ -80,4 +81,3 @@ func (s *Server) GracefulStop() {
 func (s *Server) GRPCServer() *googlegrpc.Server {
 	return s.grpcServer
 }
-

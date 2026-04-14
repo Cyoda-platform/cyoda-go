@@ -3,21 +3,21 @@ package dispatch
 import (
 	"encoding/json"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // DispatchProcessorRequest is the cross-node payload for processor execution.
 type DispatchProcessorRequest struct {
-	Entity         json.RawMessage            `json:"entity"`
-	EntityMeta     common.EntityMeta          `json:"entityMeta"`
-	Processor      common.ProcessorDefinition `json:"processor"`
-	WorkflowName   string                     `json:"workflowName"`
-	TransitionName string                     `json:"transitionName"`
-	TxID           string                     `json:"txID"`
-	TenantID       string                     `json:"tenantID"`
-	Tags           string                     `json:"tags"`
-	UserID         string                     `json:"userID"`
-	Roles          []string                   `json:"roles"`
+	Entity         json.RawMessage         `json:"entity"`
+	EntityMeta     spi.EntityMeta          `json:"entityMeta"`
+	Processor      spi.ProcessorDefinition `json:"processor"`
+	WorkflowName   string                  `json:"workflowName"`
+	TransitionName string                  `json:"transitionName"`
+	TxID           string                  `json:"txID"`
+	TenantID       string                  `json:"tenantID"`
+	Tags           string                  `json:"tags"`
+	UserID         string                  `json:"userID"`
+	Roles          []string                `json:"roles"`
 }
 
 // DispatchProcessorResponse is the cross-node result for processor execution.
@@ -30,18 +30,18 @@ type DispatchProcessorResponse struct {
 
 // DispatchCriteriaRequest is the cross-node payload for criteria evaluation.
 type DispatchCriteriaRequest struct {
-	Entity         json.RawMessage   `json:"entity"`
-	EntityMeta     common.EntityMeta `json:"entityMeta"`
-	Criterion      json.RawMessage   `json:"criterion"`
-	Target         string            `json:"target"`
-	WorkflowName   string            `json:"workflowName"`
-	TransitionName string            `json:"transitionName"`
-	ProcessorName  string            `json:"processorName"`
-	TxID           string            `json:"txID"`
-	TenantID       string            `json:"tenantID"`
-	Tags           string            `json:"tags"`
-	UserID         string            `json:"userID"`
-	Roles          []string          `json:"roles"`
+	Entity         json.RawMessage `json:"entity"`
+	EntityMeta     spi.EntityMeta  `json:"entityMeta"`
+	Criterion      json.RawMessage `json:"criterion"`
+	Target         string          `json:"target"`
+	WorkflowName   string          `json:"workflowName"`
+	TransitionName string          `json:"transitionName"`
+	ProcessorName  string          `json:"processorName"`
+	TxID           string          `json:"txID"`
+	TenantID       string          `json:"tenantID"`
+	Tags           string          `json:"tags"`
+	UserID         string          `json:"userID"`
+	Roles          []string        `json:"roles"`
 }
 
 // DispatchCriteriaResponse is the cross-node result for criteria evaluation.

@@ -12,15 +12,12 @@ import (
 )
 
 // ErrNotFound is a sentinel error for entity/resource not-found conditions.
-var ErrNotFound = errors.New("not found")
 
 // ErrEpochMismatch is a sentinel error returned when a node attempts to write
 // to a shard it no longer owns (or never owned). Mapped to a retryable HTTP
 // error so clients re-route to the new owner.
-var ErrEpochMismatch = errors.New("shard epoch mismatch")
 
 // ErrConflict is a sentinel error for MVCC conflicts (entity modified concurrently).
-var ErrConflict = errors.New("conflict: entity has been modified")
 
 // ErrorLevel classifies errors into three tiers for response handling.
 type ErrorLevel int

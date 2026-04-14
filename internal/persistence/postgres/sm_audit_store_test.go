@@ -4,9 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 func setupSMAuditTest(t *testing.T) *postgres.StoreFactory {
@@ -20,7 +19,7 @@ func setupSMAuditTest(t *testing.T) *postgres.StoreFactory {
 	return postgres.NewStoreFactory(pool)
 }
 
-func getSMAuditStore(t *testing.T, factory *postgres.StoreFactory, tid common.TenantID) spi.StateMachineAuditStore {
+func getSMAuditStore(t *testing.T, factory *postgres.StoreFactory, tid spi.TenantID) spi.StateMachineAuditStore {
 	t.Helper()
 	ctx := ctxWithTenant(tid)
 	store, err := factory.StateMachineAuditStore(ctx)
@@ -30,8 +29,8 @@ func getSMAuditStore(t *testing.T, factory *postgres.StoreFactory, tid common.Te
 	return store
 }
 
-func makeEvent(eventType common.StateMachineEventType, entityID, timeUUID, state, txID, details string, ts time.Time) common.StateMachineEvent {
-	return common.StateMachineEvent{
+func makeEvent(eventType spi.StateMachineEventType, entityID, timeUUID, state, txID, details string, ts time.Time) spi.StateMachineEvent {
+	return spi.StateMachineEvent{
 		EventType:     eventType,
 		EntityID:      entityID,
 		TimeUUID:      timeUUID,
@@ -48,8 +47,8 @@ func TestSMAuditStore_RecordAndGetEvents(t *testing.T) {
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e1 := makeEvent(common.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-1", "started", now)
-	e2 := makeEvent(common.SMEventTransitionMade, "entity-1", "uuid-2", "ACTIVE", "tx-1", "transitioned", now.Add(time.Second))
+	e1 := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-1", "started", now)
+	e2 := makeEvent(spi.SMEventTransitionMade, "entity-1", "uuid-2", "ACTIVE", "tx-1", "transitioned", now.Add(time.Second))
 
 	if err := store.Record(ctx, "entity-1", e1); err != nil {
 		t.Fatalf("Record e1: %v", err)
@@ -75,7 +74,7 @@ func TestSMAuditStore_RecordAndGetEvents(t *testing.T) {
 	}
 
 	// Verify field preservation
-	if events[0].EventType != common.SMEventStarted {
+	if events[0].EventType != spi.SMEventStarted {
 		t.Errorf("expected SMEventStarted, got %s", events[0].EventType)
 	}
 	if events[0].State != "NEW" {
@@ -106,11 +105,11 @@ func TestSMAuditStore_GetEventsByTransaction(t *testing.T) {
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e1 := makeEvent(common.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-A", "e1", now)
-	e2 := makeEvent(common.SMEventTransitionMade, "entity-1", "uuid-2", "ACTIVE", "tx-A", "e2", now.Add(time.Second))
-	e3 := makeEvent(common.SMEventFinished, "entity-1", "uuid-3", "DONE", "tx-B", "e3", now.Add(2*time.Second))
+	e1 := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-A", "e1", now)
+	e2 := makeEvent(spi.SMEventTransitionMade, "entity-1", "uuid-2", "ACTIVE", "tx-A", "e2", now.Add(time.Second))
+	e3 := makeEvent(spi.SMEventFinished, "entity-1", "uuid-3", "DONE", "tx-B", "e3", now.Add(2*time.Second))
 
-	for _, e := range []common.StateMachineEvent{e1, e2, e3} {
+	for _, e := range []spi.StateMachineEvent{e1, e2, e3} {
 		if err := store.Record(ctx, "entity-1", e); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
@@ -134,7 +133,7 @@ func TestSMAuditStore_GetEventsByTransaction_NoMatch(t *testing.T) {
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e1 := makeEvent(common.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-A", "started", now)
+	e1 := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-A", "started", now)
 
 	if err := store.Record(ctx, "entity-1", e1); err != nil {
 		t.Fatalf("Record: %v", err)
@@ -164,7 +163,7 @@ func TestSMAuditStore_TenantIsolation(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e := makeEvent(common.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-1", "tenant-A event", now)
+	e := makeEvent(spi.SMEventStarted, "entity-1", "uuid-1", "NEW", "tx-1", "tenant-A event", now)
 
 	if err := storeA.Record(ctxA, "entity-1", e); err != nil {
 		t.Fatalf("Record for tenant-A: %v", err)
@@ -183,8 +182,8 @@ func TestSMAuditStore_EventDataPreservation(t *testing.T) {
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	e := common.StateMachineEvent{
-		EventType:     common.SMEventStateProcessResult,
+	e := spi.StateMachineEvent{
+		EventType:     spi.SMEventStateProcessResult,
 		EntityID:      "entity-1",
 		TimeUUID:      "uuid-data",
 		State:         "PROCESSING",

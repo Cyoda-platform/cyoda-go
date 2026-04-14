@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 func TestGRPCExtractToken_Present(t *testing.T) {
@@ -30,7 +31,7 @@ func TestGRPCExtractToken_Absent(t *testing.T) {
 
 func TestGRPCResolveTarget_Self(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
-	reg := newFakeRegistry(spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
+	reg := newFakeRegistry(contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true})
 
 	tok, err := signer.Issue("node-1", "tx-123", time.Now().Add(5*time.Minute))
 	if err != nil {
@@ -68,8 +69,8 @@ func TestGRPCResolveTarget_EmptyToken(t *testing.T) {
 func TestGRPCResolveTarget_OtherNode(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(
-		spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
-		spi.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: true},
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: true},
 	)
 
 	tok, err := signer.Issue("node-2", "tx-456", time.Now().Add(5*time.Minute))
@@ -92,8 +93,8 @@ func TestGRPCResolveTarget_OtherNode(t *testing.T) {
 func TestGRPCResolveTarget_DeadNode(t *testing.T) {
 	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
 	reg := newFakeRegistry(
-		spi.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
-		spi.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: false},
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: "http://localhost:8888", Alive: false},
 	)
 
 	tok, err := signer.Issue("node-2", "tx-789", time.Now().Add(5*time.Minute))

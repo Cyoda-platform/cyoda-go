@@ -3,20 +3,20 @@ package schema
 import (
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // changeLevelRank maps each ChangeLevel to its position in the permission hierarchy.
 // Higher rank means more permissive. Empty string maps to -1 (nothing allowed).
-func changeLevelRank(level common.ChangeLevel) int {
+func changeLevelRank(level spi.ChangeLevel) int {
 	switch level {
-	case common.ChangeLevelArrayLength:
+	case spi.ChangeLevelArrayLength:
 		return 0
-	case common.ChangeLevelArrayElements:
+	case spi.ChangeLevelArrayElements:
 		return 1
-	case common.ChangeLevelType:
+	case spi.ChangeLevelType:
 		return 2
-	case common.ChangeLevelStructural:
+	case spi.ChangeLevelStructural:
 		return 3
 	default:
 		return -1
@@ -24,14 +24,14 @@ func changeLevelRank(level common.ChangeLevel) int {
 }
 
 // levelPermits returns true if the configured level permits the required level.
-func levelPermits(configured, required common.ChangeLevel) bool {
+func levelPermits(configured, required spi.ChangeLevel) bool {
 	return changeLevelRank(configured) >= changeLevelRank(required)
 }
 
 // Extend merges incoming into existing, constrained by the given change level.
 // If no changes are needed (incoming conforms to existing), the existing model is returned.
 // If the incoming data requires a change that exceeds the permitted level, an error is returned.
-func Extend(existing, incoming *ModelNode, level common.ChangeLevel) (*ModelNode, error) {
+func Extend(existing, incoming *ModelNode, level spi.ChangeLevel) (*ModelNode, error) {
 	changed, err := checkAndExtend(existing, incoming, level, "")
 	if err != nil {
 		return nil, err
@@ -45,7 +45,7 @@ func Extend(existing, incoming *ModelNode, level common.ChangeLevel) (*ModelNode
 // checkAndExtend walks both trees recursively comparing nodes.
 // It returns (true, nil) if changes are needed and permitted,
 // (false, nil) if no changes are needed, or (false, error) if a change is forbidden.
-func checkAndExtend(existing, incoming *ModelNode, level common.ChangeLevel, path string) (bool, error) {
+func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path string) (bool, error) {
 	if existing == nil || incoming == nil {
 		return false, nil
 	}
@@ -58,7 +58,7 @@ func checkAndExtend(existing, incoming *ModelNode, level common.ChangeLevel, pat
 		exChild := existing.Child(name)
 		if exChild == nil {
 			// New field — requires STRUCTURAL
-			if !levelPermits(level, common.ChangeLevelStructural) {
+			if !levelPermits(level, spi.ChangeLevelStructural) {
 				return false, fmt.Errorf("new field %q at %s requires STRUCTURAL level, but level is %q", name, childPath, level)
 			}
 			changed = true
@@ -78,7 +78,7 @@ func checkAndExtend(existing, incoming *ModelNode, level common.ChangeLevel, pat
 	// Check leaf type widening: both are leaves with different types
 	if existing.Kind() == KindLeaf && incoming.Kind() == KindLeaf {
 		if !existing.Types().Equal(incoming.Types()) {
-			if !levelPermits(level, common.ChangeLevelType) {
+			if !levelPermits(level, spi.ChangeLevelType) {
 				return false, fmt.Errorf("type change at %s requires TYPE level, but level is %q", path, level)
 			}
 			changed = true
@@ -101,7 +101,7 @@ func checkAndExtend(existing, incoming *ModelNode, level common.ChangeLevel, pat
 		// Array width change
 		if existing.Info() != nil && incoming.Info() != nil {
 			if incoming.Info().MaxWidth() > existing.Info().MaxWidth() {
-				if !levelPermits(level, common.ChangeLevelArrayLength) {
+				if !levelPermits(level, spi.ChangeLevelArrayLength) {
 					return false, fmt.Errorf("array width change at %s requires ARRAY_LENGTH level, but level is %q", path, level)
 				}
 				changed = true
@@ -113,11 +113,11 @@ func checkAndExtend(existing, incoming *ModelNode, level common.ChangeLevel, pat
 }
 
 // checkElementWidening checks if array element types differ and whether the change is permitted.
-func checkElementWidening(existingElem, incomingElem *ModelNode, level common.ChangeLevel, path string) (bool, error) {
+func checkElementWidening(existingElem, incomingElem *ModelNode, level spi.ChangeLevel, path string) (bool, error) {
 	// For leaf elements, check type widening at the ARRAY_ELEMENTS level
 	if existingElem.Kind() == KindLeaf && incomingElem.Kind() == KindLeaf {
 		if !existingElem.Types().Equal(incomingElem.Types()) {
-			if !levelPermits(level, common.ChangeLevelArrayElements) {
+			if !levelPermits(level, spi.ChangeLevelArrayElements) {
 				return false, fmt.Errorf("array element type change at %s requires ARRAY_ELEMENTS level, but level is %q", path, level)
 			}
 			return true, nil

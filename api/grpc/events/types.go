@@ -2,10 +2,12 @@
 
 package events
 
-import "encoding/json"
-import "fmt"
-import "reflect"
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"time"
+)
 
 type BaseEventJson struct {
 	// Error details (if present).

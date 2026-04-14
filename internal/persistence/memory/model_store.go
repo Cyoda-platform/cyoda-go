@@ -4,16 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // ModelStore is a tenant-scoped, in-memory implementation of spi.ModelStore.
 type ModelStore struct {
-	tenant  common.TenantID
+	tenant  spi.TenantID
 	factory *StoreFactory
 }
 
-func cloneDescriptor(src *common.ModelDescriptor) *common.ModelDescriptor {
+func cloneDescriptor(src *spi.ModelDescriptor) *spi.ModelDescriptor {
 	cp := *src
 	if src.Schema != nil {
 		cp.Schema = make([]byte, len(src.Schema))
@@ -22,17 +22,17 @@ func cloneDescriptor(src *common.ModelDescriptor) *common.ModelDescriptor {
 	return &cp
 }
 
-func (s *ModelStore) Save(ctx context.Context, desc *common.ModelDescriptor) error {
+func (s *ModelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	if s.factory.modelData[s.tenant] == nil {
-		s.factory.modelData[s.tenant] = make(map[common.ModelRef]*common.ModelDescriptor)
+		s.factory.modelData[s.tenant] = make(map[spi.ModelRef]*spi.ModelDescriptor)
 	}
 	s.factory.modelData[s.tenant][desc.Ref] = cloneDescriptor(desc)
 	return nil
 }
 
-func (s *ModelStore) Get(ctx context.Context, modelRef common.ModelRef) (*common.ModelDescriptor, error) {
+func (s *ModelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.ModelDescriptor, error) {
 	s.factory.modelMu.RLock()
 	defer s.factory.modelMu.RUnlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
@@ -42,56 +42,56 @@ func (s *ModelStore) Get(ctx context.Context, modelRef common.ModelRef) (*common
 	return cloneDescriptor(entry), nil
 }
 
-func (s *ModelStore) GetAll(ctx context.Context) ([]common.ModelRef, error) {
+func (s *ModelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	s.factory.modelMu.RLock()
 	defer s.factory.modelMu.RUnlock()
-	var refs []common.ModelRef
+	var refs []spi.ModelRef
 	for ref := range s.factory.modelData[s.tenant] {
 		refs = append(refs, ref)
 	}
 	return refs, nil
 }
 
-func (s *ModelStore) Delete(ctx context.Context, modelRef common.ModelRef) error {
+func (s *ModelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	delete(s.factory.modelData[s.tenant], modelRef)
 	return nil
 }
 
-func (s *ModelStore) Lock(ctx context.Context, modelRef common.ModelRef) error {
+func (s *ModelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
 		return fmt.Errorf("model %s not found", modelRef)
 	}
-	entry.State = common.ModelLocked
+	entry.State = spi.ModelLocked
 	return nil
 }
 
-func (s *ModelStore) Unlock(ctx context.Context, modelRef common.ModelRef) error {
+func (s *ModelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
 		return fmt.Errorf("model %s not found", modelRef)
 	}
-	entry.State = common.ModelUnlocked
+	entry.State = spi.ModelUnlocked
 	return nil
 }
 
-func (s *ModelStore) IsLocked(ctx context.Context, modelRef common.ModelRef) (bool, error) {
+func (s *ModelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool, error) {
 	s.factory.modelMu.RLock()
 	defer s.factory.modelMu.RUnlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
 		return false, fmt.Errorf("model %s not found", modelRef)
 	}
-	return entry.State == common.ModelLocked, nil
+	return entry.State == spi.ModelLocked, nil
 }
 
-func (s *ModelStore) SetChangeLevel(ctx context.Context, modelRef common.ModelRef, level common.ChangeLevel) error {
+func (s *ModelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, level spi.ChangeLevel) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]

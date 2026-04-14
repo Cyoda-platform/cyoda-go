@@ -22,8 +22,8 @@ const (
 	AttrProcessorMode = attribute.Key("processor.execution_mode")
 	AttrProcessorTags = attribute.Key("processor.tags")
 
-	AttrCriterionTarget  = attribute.Key("criterion.target")
-	AttrCriteriaMatches  = attribute.Key("criteria.matches")
+	AttrCriterionTarget = attribute.Key("criterion.target")
+	AttrCriteriaMatches = attribute.Key("criteria.matches")
 
 	AttrDispatchType = attribute.Key("type")
 

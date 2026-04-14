@@ -6,12 +6,11 @@ import (
 	"iter"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type entityVersion struct {
-	entity        *common.Entity
+	entity        *spi.Entity
 	transactionID string
 	submitTime    time.Time // set at save time (or at transaction commit time later)
 	deleted       bool
@@ -20,12 +19,12 @@ type entityVersion struct {
 }
 
 type EntityStore struct {
-	tenant  common.TenantID
+	tenant  spi.TenantID
 	factory *StoreFactory
 }
 
-func copyEntity(e *common.Entity) *common.Entity {
-	cp := &common.Entity{Meta: e.Meta, Data: make([]byte, len(e.Data))}
+func copyEntity(e *spi.Entity) *spi.Entity {
+	cp := &spi.Entity{Meta: e.Meta, Data: make([]byte, len(e.Data))}
 	copy(cp.Data, e.Data)
 	return cp
 }
@@ -33,13 +32,13 @@ func copyEntity(e *common.Entity) *common.Entity {
 // getSnapshotVersion walks the version history for entityID and returns the
 // latest version whose submitTime <= snapshotTime. Caller must hold at least
 // s.factory.entityMu.RLock().
-func (s *EntityStore) getSnapshotVersion(entityID string, snapshotTime time.Time) (*common.Entity, error) {
+func (s *EntityStore) getSnapshotVersion(entityID string, snapshotTime time.Time) (*spi.Entity, error) {
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {
-		return nil, fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 
-	var result *common.Entity
+	var result *spi.Entity
 	var wasDeleted bool
 	for _, v := range versions {
 		if !v.submitTime.After(snapshotTime) {
@@ -56,22 +55,22 @@ func (s *EntityStore) getSnapshotVersion(entityID string, snapshotTime time.Time
 	}
 	if result == nil {
 		if wasDeleted {
-			return nil, fmt.Errorf("entity %s was deleted at requested time: %w", entityID, common.ErrNotFound)
+			return nil, fmt.Errorf("entity %s was deleted at requested time: %w", entityID, spi.ErrNotFound)
 		}
-		return nil, fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 	return copyEntity(result), nil
 }
 
 // getAllSnapshotUnlocked returns all entities matching modelRef that were visible
 // at snapshotTime. Caller must hold at least s.factory.entityMu.RLock().
-func (s *EntityStore) getAllSnapshotUnlocked(modelRef common.ModelRef, snapshotTime time.Time) []*common.Entity {
-	var result []*common.Entity
+func (s *EntityStore) getAllSnapshotUnlocked(modelRef spi.ModelRef, snapshotTime time.Time) []*spi.Entity {
+	var result []*spi.Entity
 	for _, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
 			continue
 		}
-		var found *common.Entity
+		var found *spi.Entity
 		for _, v := range versions {
 			if !v.submitTime.After(snapshotTime) {
 				if v.deleted {
@@ -90,12 +89,12 @@ func (s *EntityStore) getAllSnapshotUnlocked(modelRef common.ModelRef, snapshotT
 	return result
 }
 
-func (s *EntityStore) SaveAll(ctx context.Context, entities iter.Seq[*common.Entity]) ([]int64, error) {
+func (s *EntityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
 
-func (s *EntityStore) Save(ctx context.Context, entity *common.Entity) (int64, error) {
-	tx := common.GetTransaction(ctx)
+func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		if tx.RolledBack {
 			return 0, fmt.Errorf("transaction has been rolled back")
@@ -113,8 +112,8 @@ func (s *EntityStore) Save(ctx context.Context, entity *common.Entity) (int64, e
 	return s.saveUnlocked(entity)
 }
 
-func (s *EntityStore) CompareAndSave(ctx context.Context, entity *common.Entity, expectedTxID string) (int64, error) {
-	tx := common.GetTransaction(ctx)
+func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		if tx.RolledBack {
 			return 0, fmt.Errorf("transaction has been rolled back")
@@ -128,7 +127,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *common.Entity,
 				if !versions[i].deleted && versions[i].entity != nil {
 					if versions[i].entity.Meta.TransactionID != expectedTxID {
 						s.factory.entityMu.RUnlock()
-						return 0, common.ErrConflict
+						return 0, spi.ErrConflict
 					}
 					break
 				}
@@ -153,7 +152,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *common.Entity,
 		for i := len(versions) - 1; i >= 0; i-- {
 			if !versions[i].deleted && versions[i].entity != nil {
 				if versions[i].entity.Meta.TransactionID != expectedTxID {
-					return 0, common.ErrConflict
+					return 0, spi.ErrConflict
 				}
 				break
 			}
@@ -164,7 +163,7 @@ func (s *EntityStore) CompareAndSave(ctx context.Context, entity *common.Entity,
 }
 
 // saveUnlocked performs the save logic without acquiring the lock. The caller must hold s.factory.entityMu.
-func (s *EntityStore) saveUnlocked(entity *common.Entity) (int64, error) {
+func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 	tid := s.tenant
 	eid := entity.Meta.ID
 
@@ -192,8 +191,8 @@ func (s *EntityStore) saveUnlocked(entity *common.Entity) (int64, error) {
 		creationDate = now
 	}
 
-	saved := &common.Entity{
-		Meta: common.EntityMeta{
+	saved := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:                      eid,
 			TenantID:                tid,
 			ModelRef:                entity.Meta.ModelRef,
@@ -221,15 +220,15 @@ func (s *EntityStore) saveUnlocked(entity *common.Entity) (int64, error) {
 	return nextVersion, nil
 }
 
-func (s *EntityStore) Get(ctx context.Context, entityID string) (*common.Entity, error) {
-	tx := common.GetTransaction(ctx)
+func (s *EntityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
 		// Check if deleted in this transaction.
 		if tx.Deletes[entityID] {
-			return nil, fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 		}
 		// Check buffer first (read-your-own-writes).
 		if buffered, ok := tx.Buffer[entityID]; ok {
@@ -249,21 +248,21 @@ func (s *EntityStore) Get(ctx context.Context, entityID string) (*common.Entity,
 
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {
-		return nil, fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 	latest := versions[len(versions)-1]
 	if latest.deleted {
-		return nil, fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 	return copyEntity(latest.entity), nil
 }
 
-func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*common.Entity, error) {
+func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
 	// Historical query: always reads committed data. Track in read set if in tx.
-	if tx := common.GetTransaction(ctx); tx != nil {
+	if tx := spi.GetTransaction(ctx); tx != nil {
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
@@ -272,7 +271,7 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {
-		return nil, fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 
 	// Round asAt up to the next millisecond boundary. Clients work at
@@ -280,7 +279,7 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 	// precision. A query for "302ms" should include "302.306ms".
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
-	var result *common.Entity
+	var result *spi.Entity
 	var wasDeleted bool
 	for _, v := range versions {
 		if !v.submitTime.After(asAt) {
@@ -297,15 +296,15 @@ func (s *EntityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 	}
 	if result == nil {
 		if wasDeleted {
-			return nil, fmt.Errorf("entity %s was deleted at requested time: %w", entityID, common.ErrNotFound)
+			return nil, fmt.Errorf("entity %s was deleted at requested time: %w", entityID, spi.ErrNotFound)
 		}
-		return nil, fmt.Errorf("no version of entity %s exists at %v: %w", entityID, asAt, common.ErrNotFound)
+		return nil, fmt.Errorf("no version of entity %s exists at %v: %w", entityID, asAt, spi.ErrNotFound)
 	}
 	return copyEntity(result), nil
 }
 
-func (s *EntityStore) GetAll(ctx context.Context, modelRef common.ModelRef) ([]*common.Entity, error) {
-	tx := common.GetTransaction(ctx)
+func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
@@ -315,7 +314,7 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef common.ModelRef) ([]*
 		mainEntities := s.getAllSnapshotUnlocked(modelRef, tx.SnapshotTime)
 		s.factory.entityMu.RUnlock()
 
-		result := make(map[string]*common.Entity)
+		result := make(map[string]*spi.Entity)
 		for _, e := range mainEntities {
 			if !tx.Deletes[e.Meta.ID] {
 				result[e.Meta.ID] = e
@@ -330,7 +329,7 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef common.ModelRef) ([]*
 			}
 		}
 
-		entities := make([]*common.Entity, 0, len(result))
+		entities := make([]*spi.Entity, 0, len(result))
 		for _, e := range result {
 			entities = append(entities, e)
 		}
@@ -341,7 +340,7 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef common.ModelRef) ([]*
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
-	var result []*common.Entity
+	var result []*spi.Entity
 	for _, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
 			continue
@@ -357,7 +356,7 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef common.ModelRef) ([]*
 	return result, nil
 }
 
-func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef common.ModelRef, asAt time.Time) ([]*common.Entity, error) {
+func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
@@ -365,13 +364,13 @@ func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef common.ModelRef, 
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
 	// Historical query: always reads committed data.
-	var result []*common.Entity
+	var result []*spi.Entity
 	for _, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
 			continue
 		}
 
-		var found *common.Entity
+		var found *spi.Entity
 		var wasDeleted bool
 		for _, v := range versions {
 			if !v.submitTime.After(asAt) {
@@ -395,7 +394,7 @@ func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef common.ModelRef, 
 }
 
 func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
-	tx := common.GetTransaction(ctx)
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
@@ -406,11 +405,11 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 			versions := s.factory.entityData[s.tenant][entityID]
 			s.factory.entityMu.RUnlock()
 			if len(versions) == 0 {
-				return fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 			}
 			latest := versions[len(versions)-1]
 			if latest.deleted {
-				return fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+				return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 			}
 		}
 		tx.Deletes[entityID] = true
@@ -425,13 +424,13 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {
-		return fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 	latest := versions[len(versions)-1]
 	if latest.deleted {
-		return fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	userName := ""
 	if uc != nil {
 		userName = uc.UserID
@@ -447,8 +446,8 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	return nil
 }
 
-func (s *EntityStore) DeleteAll(ctx context.Context, modelRef common.ModelRef) error {
-	tx := common.GetTransaction(ctx)
+func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) error {
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
@@ -485,7 +484,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef common.ModelRef) e
 	defer s.factory.entityMu.Unlock()
 
 	now := time.Now()
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	userName := ""
 	if uc != nil {
 		userName = uc.UserID
@@ -513,7 +512,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef common.ModelRef) e
 }
 
 func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error) {
-	tx := common.GetTransaction(ctx)
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		if tx.RolledBack {
 			return false, fmt.Errorf("transaction has been rolled back")
@@ -543,8 +542,8 @@ func (s *EntityStore) Exists(ctx context.Context, entityID string) (bool, error)
 	return !versions[len(versions)-1].deleted, nil
 }
 
-func (s *EntityStore) Count(ctx context.Context, modelRef common.ModelRef) (int64, error) {
-	tx := common.GetTransaction(ctx)
+func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
+	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		// Use the same logic as GetAll to get the merged view, then count.
 		all, err := s.GetAll(ctx, modelRef)
@@ -574,22 +573,22 @@ func (s *EntityStore) Count(ctx context.Context, modelRef common.ModelRef) (int6
 	return count, nil
 }
 
-func (s *EntityStore) GetVersionHistory(ctx context.Context, entityID string) ([]common.EntityVersion, error) {
+func (s *EntityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
 	// Historical query: always reads committed data.
 	versions, ok := s.factory.entityData[s.tenant][entityID]
 	if !ok || len(versions) == 0 {
-		return nil, fmt.Errorf("entity %s: %w", entityID, common.ErrNotFound)
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 
 	// NOTE: optimization opportunity — both current consumers (audit handler and
 	// entity changes metadata) only use metadata, never Entity.Data. When performance
 	// matters, consider a metadata-only variant that skips copying Data bytes.
-	result := make([]common.EntityVersion, 0, len(versions))
+	result := make([]spi.EntityVersion, 0, len(versions))
 	for _, v := range versions {
-		ev := common.EntityVersion{
+		ev := spi.EntityVersion{
 			ChangeType: v.changeType,
 			User:       v.user,
 			Timestamp:  v.submitTime,

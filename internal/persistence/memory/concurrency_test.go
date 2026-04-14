@@ -7,17 +7,17 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
 
-func ctxForConcurrency(tid common.TenantID) context.Context {
-	uc := &common.UserContext{
+func ctxForConcurrency(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{
 		UserID: "test-user",
-		Tenant: common.Tenant{ID: tid, Name: string(tid)},
+		Tenant: spi.Tenant{ID: tid, Name: string(tid)},
 		Roles:  []string{"USER"},
 	}
-	return common.WithUserContext(context.Background(), uc)
+	return spi.WithUserContext(context.Background(), uc)
 }
 
 func TestConcurrentCrossStoreAccess(t *testing.T) {
@@ -41,11 +41,11 @@ func TestConcurrentCrossStoreAccess(t *testing.T) {
 			}
 			for i := 0; i < opsPerGoroutine; i++ {
 				id := fmt.Sprintf("entity-g%d-i%d", gIdx, i)
-				entity := &common.Entity{
-					Meta: common.EntityMeta{
+				entity := &spi.Entity{
+					Meta: spi.EntityMeta{
 						ID:         id,
 						TenantID:   "tenant-A",
-						ModelRef:   common.ModelRef{EntityName: "ConcTest", ModelVersion: "1"},
+						ModelRef:   spi.ModelRef{EntityName: "ConcTest", ModelVersion: "1"},
 						ChangeType: "CREATED",
 						ChangeUser: "test-user",
 					},
@@ -69,8 +69,8 @@ func TestConcurrentCrossStoreAccess(t *testing.T) {
 				return
 			}
 			for i := 0; i < opsPerGoroutine; i++ {
-				desc := &common.ModelDescriptor{
-					Ref: common.ModelRef{
+				desc := &spi.ModelDescriptor{
+					Ref: spi.ModelRef{
 						EntityName:   fmt.Sprintf("Model-g%d-i%d", gIdx, i),
 						ModelVersion: "1",
 					},
@@ -95,8 +95,8 @@ func TestConcurrentCrossStoreAccess(t *testing.T) {
 			}
 			for i := 0; i < opsPerGoroutine; i++ {
 				id := fmt.Sprintf("msg-g%d-i%d", gIdx, i)
-				header := common.MessageHeader{Subject: "test"}
-				meta := common.MessageMetaData{}
+				header := spi.MessageHeader{Subject: "test"}
+				meta := spi.MessageMetaData{}
 				payload := bytes.NewReader([]byte("hello"))
 				if err := store.Save(ctx, id, header, meta, payload); err != nil {
 					t.Errorf("message Save failed: %v", err)
@@ -131,7 +131,7 @@ func TestConcurrentCrossStoreAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EntityStore failed: %v", err)
 	}
-	entities, err := entityStore.GetAll(ctx, common.ModelRef{EntityName: "ConcTest", ModelVersion: "1"})
+	entities, err := entityStore.GetAll(ctx, spi.ModelRef{EntityName: "ConcTest", ModelVersion: "1"})
 	if err != nil {
 		t.Fatalf("GetAll failed: %v", err)
 	}
@@ -161,8 +161,8 @@ func TestConcurrentMessageSaves(t *testing.T) {
 			}
 			for i := 0; i < opsPerGoroutine; i++ {
 				id := fmt.Sprintf("cmsg-g%d-i%d", gIdx, i)
-				header := common.MessageHeader{Subject: "concurrent-test"}
-				meta := common.MessageMetaData{}
+				header := spi.MessageHeader{Subject: "concurrent-test"}
+				meta := spi.MessageMetaData{}
 				payload := bytes.NewReader([]byte("hello"))
 				if err := store.Save(ctx, id, header, meta, payload); err != nil {
 					t.Errorf("message Save failed: %v", err)

@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
@@ -11,7 +13,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // Server composes domain handlers with an Unimplemented fallback for any

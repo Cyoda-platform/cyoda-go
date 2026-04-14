@@ -5,8 +5,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // failingStoreFactory is a mock that returns a failingEntityStore from EntityStore().
@@ -42,39 +41,39 @@ type failingEntityStore struct {
 	err error
 }
 
-func (s *failingEntityStore) Save(_ context.Context, _ *common.Entity) (int64, error) {
+func (s *failingEntityStore) Save(_ context.Context, _ *spi.Entity) (int64, error) {
 	return 0, s.err
 }
-func (s *failingEntityStore) SaveAll(_ context.Context, _ iter.Seq[*common.Entity]) ([]int64, error) {
+func (s *failingEntityStore) SaveAll(_ context.Context, _ iter.Seq[*spi.Entity]) ([]int64, error) {
 	return nil, s.err
 }
-func (s *failingEntityStore) CompareAndSave(_ context.Context, _ *common.Entity, _ string) (int64, error) {
+func (s *failingEntityStore) CompareAndSave(_ context.Context, _ *spi.Entity, _ string) (int64, error) {
 	return 0, s.err
 }
-func (s *failingEntityStore) Get(_ context.Context, _ string) (*common.Entity, error) {
+func (s *failingEntityStore) Get(_ context.Context, _ string) (*spi.Entity, error) {
 	return nil, s.err
 }
-func (s *failingEntityStore) GetAsAt(_ context.Context, _ string, _ time.Time) (*common.Entity, error) {
+func (s *failingEntityStore) GetAsAt(_ context.Context, _ string, _ time.Time) (*spi.Entity, error) {
 	return nil, s.err
 }
-func (s *failingEntityStore) GetAll(_ context.Context, _ common.ModelRef) ([]*common.Entity, error) {
+func (s *failingEntityStore) GetAll(_ context.Context, _ spi.ModelRef) ([]*spi.Entity, error) {
 	return nil, s.err
 }
-func (s *failingEntityStore) GetAllAsAt(_ context.Context, _ common.ModelRef, _ time.Time) ([]*common.Entity, error) {
+func (s *failingEntityStore) GetAllAsAt(_ context.Context, _ spi.ModelRef, _ time.Time) ([]*spi.Entity, error) {
 	return nil, s.err
 }
 func (s *failingEntityStore) Delete(_ context.Context, _ string) error {
 	return s.err
 }
-func (s *failingEntityStore) DeleteAll(_ context.Context, _ common.ModelRef) error {
+func (s *failingEntityStore) DeleteAll(_ context.Context, _ spi.ModelRef) error {
 	return s.err
 }
 func (s *failingEntityStore) Exists(_ context.Context, _ string) (bool, error) {
 	return false, s.err
 }
-func (s *failingEntityStore) Count(_ context.Context, _ common.ModelRef) (int64, error) {
+func (s *failingEntityStore) Count(_ context.Context, _ spi.ModelRef) (int64, error) {
 	return 0, s.err
 }
-func (s *failingEntityStore) GetVersionHistory(_ context.Context, _ string) ([]common.EntityVersion, error) {
+func (s *failingEntityStore) GetVersionHistory(_ context.Context, _ string) ([]spi.EntityVersion, error) {
 	return nil, s.err
 }

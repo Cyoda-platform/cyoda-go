@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
 
@@ -249,13 +249,13 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 }
 
-func ctxWithTenant(tid common.TenantID) context.Context {
-	uc := &common.UserContext{
+func ctxWithTenant(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{
 		UserID: "test-user",
-		Tenant: common.Tenant{ID: tid, Name: string(tid)},
+		Tenant: spi.Tenant{ID: tid, Name: string(tid)},
 		Roles:  []string{"USER"},
 	}
-	return common.WithUserContext(context.Background(), uc)
+	return spi.WithUserContext(context.Background(), uc)
 }
 
 func TestMultiTenantAPIIsolation(t *testing.T) {
@@ -273,11 +273,11 @@ func TestMultiTenantAPIIsolation(t *testing.T) {
 		t.Fatalf("failed to get store for tenant-B: %v", err)
 	}
 
-	entityA := &common.Entity{
-		Meta: common.EntityMeta{
+	entityA := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       "e-001",
 			TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 		},
 		Data: []byte(`{"tenant": "A"}`),
 	}

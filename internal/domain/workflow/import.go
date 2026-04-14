@@ -1,9 +1,11 @@
 package workflow
 
-import "github.com/cyoda-platform/cyoda-go/internal/common"
+import (
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
 
 // applyImportMode merges incoming workflows with existing ones based on the import mode.
-func applyImportMode(existing, incoming []common.WorkflowDefinition, mode string) []common.WorkflowDefinition {
+func applyImportMode(existing, incoming []spi.WorkflowDefinition, mode string) []spi.WorkflowDefinition {
 	switch mode {
 	case "REPLACE":
 		return incoming
@@ -16,7 +18,7 @@ func applyImportMode(existing, incoming []common.WorkflowDefinition, mode string
 		}
 
 		// Deactivate existing workflows not in the import.
-		var result []common.WorkflowDefinition
+		var result []spi.WorkflowDefinition
 		for _, wf := range existing {
 			if !incomingNames[wf.Name] {
 				wf.Active = false
@@ -28,7 +30,7 @@ func applyImportMode(existing, incoming []common.WorkflowDefinition, mode string
 
 	default: // MERGE (default)
 		// Build name→workflow map from existing.
-		merged := make(map[string]common.WorkflowDefinition, len(existing)+len(incoming))
+		merged := make(map[string]spi.WorkflowDefinition, len(existing)+len(incoming))
 		order := make([]string, 0, len(existing)+len(incoming))
 		for _, wf := range existing {
 			merged[wf.Name] = wf
@@ -41,7 +43,7 @@ func applyImportMode(existing, incoming []common.WorkflowDefinition, mode string
 			}
 			merged[wf.Name] = wf
 		}
-		result := make([]common.WorkflowDefinition, 0, len(order))
+		result := make([]spi.WorkflowDefinition, 0, len(order))
 		for _, name := range order {
 			result = append(result, merged[name])
 		}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 )
 
@@ -31,7 +31,7 @@ func TestMessageStore_SaveAndGet(t *testing.T) {
 		t.Fatalf("MessageStore: %v", err)
 	}
 
-	header := common.MessageHeader{
+	header := spi.MessageHeader{
 		Subject:         "test-subject",
 		ContentType:     "application/json",
 		ContentLength:   13,
@@ -42,7 +42,7 @@ func TestMessageStore_SaveAndGet(t *testing.T) {
 		ReplyTo:         "reply-queue",
 		CorrelationID:   "corr-789",
 	}
-	meta := common.MessageMetaData{
+	meta := spi.MessageMetaData{
 		Values:        map[string]any{"key1": "value1", "key2": "value2"},
 		IndexedValues: map[string]any{"idx1": "idxval1"},
 	}
@@ -107,9 +107,9 @@ func TestMessageStore_SaveOverwrite(t *testing.T) {
 	ctx := ctxWithTenant("msg-tenant")
 	store, _ := factory.MessageStore(ctx)
 
-	header1 := common.MessageHeader{Subject: "first"}
-	header2 := common.MessageHeader{Subject: "second"}
-	meta := common.MessageMetaData{}
+	header1 := spi.MessageHeader{Subject: "first"}
+	header2 := spi.MessageHeader{Subject: "second"}
+	meta := spi.MessageMetaData{}
 
 	store.Save(ctx, "dup-id", header1, meta, strings.NewReader("v1"))
 	store.Save(ctx, "dup-id", header2, meta, strings.NewReader("v2"))
@@ -138,8 +138,8 @@ func TestMessageStore_GetNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent message")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
-		t.Errorf("expected error wrapping common.ErrNotFound, got: %v", err)
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Errorf("expected error wrapping spi.ErrNotFound, got: %v", err)
 	}
 }
 
@@ -148,8 +148,8 @@ func TestMessageStore_Delete(t *testing.T) {
 	ctx := ctxWithTenant("msg-tenant")
 	store, _ := factory.MessageStore(ctx)
 
-	meta := common.MessageMetaData{}
-	store.Save(ctx, "del-id", common.MessageHeader{Subject: "to-delete"}, meta, strings.NewReader("payload"))
+	meta := spi.MessageMetaData{}
+	store.Save(ctx, "del-id", spi.MessageHeader{Subject: "to-delete"}, meta, strings.NewReader("payload"))
 
 	if err := store.Delete(ctx, "del-id"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -159,7 +159,7 @@ func TestMessageStore_Delete(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected not found after delete")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got: %v", err)
 	}
 }
@@ -179,10 +179,10 @@ func TestMessageStore_DeleteBatch(t *testing.T) {
 	ctx := ctxWithTenant("msg-tenant")
 	store, _ := factory.MessageStore(ctx)
 
-	meta := common.MessageMetaData{}
-	store.Save(ctx, "batch-1", common.MessageHeader{Subject: "one"}, meta, strings.NewReader("p1"))
-	store.Save(ctx, "batch-2", common.MessageHeader{Subject: "two"}, meta, strings.NewReader("p2"))
-	store.Save(ctx, "batch-3", common.MessageHeader{Subject: "three"}, meta, strings.NewReader("p3"))
+	meta := spi.MessageMetaData{}
+	store.Save(ctx, "batch-1", spi.MessageHeader{Subject: "one"}, meta, strings.NewReader("p1"))
+	store.Save(ctx, "batch-2", spi.MessageHeader{Subject: "two"}, meta, strings.NewReader("p2"))
+	store.Save(ctx, "batch-3", spi.MessageHeader{Subject: "three"}, meta, strings.NewReader("p3"))
 
 	if err := store.DeleteBatch(ctx, []string{"batch-1", "batch-2"}); err != nil {
 		t.Fatalf("DeleteBatch: %v", err)
@@ -213,9 +213,9 @@ func TestMessageStore_BinaryPayload(t *testing.T) {
 
 	// Non-UTF-8 binary bytes
 	binaryData := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD, 0x80, 0x9A, 0xAB}
-	meta := common.MessageMetaData{}
+	meta := spi.MessageMetaData{}
 
-	if err := store.Save(ctx, "binary-id", common.MessageHeader{ContentType: "application/octet-stream"}, meta, bytes.NewReader(binaryData)); err != nil {
+	if err := store.Save(ctx, "binary-id", spi.MessageHeader{ContentType: "application/octet-stream"}, meta, bytes.NewReader(binaryData)); err != nil {
 		t.Fatalf("Save binary: %v", err)
 	}
 
@@ -239,7 +239,7 @@ func TestMessageStore_MetadataTypePreservation(t *testing.T) {
 	ctx := ctxWithTenant("msg-tenant")
 	store, _ := factory.MessageStore(ctx)
 
-	meta := common.MessageMetaData{
+	meta := spi.MessageMetaData{
 		Values: map[string]any{
 			"str":   "hello",
 			"num":   float64(42),
@@ -252,7 +252,7 @@ func TestMessageStore_MetadataTypePreservation(t *testing.T) {
 		},
 	}
 
-	if err := store.Save(ctx, "type-test", common.MessageHeader{}, meta, strings.NewReader("x")); err != nil {
+	if err := store.Save(ctx, "type-test", spi.MessageHeader{}, meta, strings.NewReader("x")); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -290,14 +290,14 @@ func TestMessageStore_TenantIsolation(t *testing.T) {
 	storeA, _ := factory.MessageStore(ctxA)
 	storeB, _ := factory.MessageStore(ctxB)
 
-	meta := common.MessageMetaData{}
-	storeA.Save(ctxA, "shared-id", common.MessageHeader{Subject: "secret"}, meta, strings.NewReader("tenant-A-data"))
+	meta := spi.MessageMetaData{}
+	storeA.Save(ctxA, "shared-id", spi.MessageHeader{Subject: "secret"}, meta, strings.NewReader("tenant-A-data"))
 
 	_, _, _, err := storeB.Get(ctxB, "shared-id")
 	if err == nil {
 		t.Fatal("tenant-B should not see tenant-A's message")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for cross-tenant access, got: %v", err)
 	}
 }

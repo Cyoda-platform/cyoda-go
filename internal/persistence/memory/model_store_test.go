@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
 
@@ -17,10 +17,10 @@ func TestModelStoreSaveAndGetDescriptor(t *testing.T) {
 	}
 
 	now := time.Now()
-	desc := &common.ModelDescriptor{
-		Ref:         common.ModelRef{EntityName: "Order", ModelVersion: "1"},
-		State:       common.ModelUnlocked,
-		ChangeLevel: common.ChangeLevelStructural,
+	desc := &spi.ModelDescriptor{
+		Ref:         spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+		State:       spi.ModelUnlocked,
+		ChangeLevel: spi.ChangeLevelStructural,
 		UpdateDate:  now,
 		Schema:      []byte(`{"type":"object"}`),
 	}
@@ -37,11 +37,11 @@ func TestModelStoreSaveAndGetDescriptor(t *testing.T) {
 	if got.Ref != desc.Ref {
 		t.Errorf("ref mismatch: got %v, want %v", got.Ref, desc.Ref)
 	}
-	if got.State != common.ModelUnlocked {
-		t.Errorf("state mismatch: got %v, want %v", got.State, common.ModelUnlocked)
+	if got.State != spi.ModelUnlocked {
+		t.Errorf("state mismatch: got %v, want %v", got.State, spi.ModelUnlocked)
 	}
-	if got.ChangeLevel != common.ChangeLevelStructural {
-		t.Errorf("change level mismatch: got %v, want %v", got.ChangeLevel, common.ChangeLevelStructural)
+	if got.ChangeLevel != spi.ChangeLevelStructural {
+		t.Errorf("change level mismatch: got %v, want %v", got.ChangeLevel, spi.ChangeLevelStructural)
 	}
 	if !got.UpdateDate.Equal(now) {
 		t.Errorf("update date mismatch: got %v, want %v", got.UpdateDate, now)
@@ -63,10 +63,10 @@ func TestModelStoreLockUnlock(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.ModelStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	desc := &common.ModelDescriptor{
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{
 		Ref:    ref,
-		State:  common.ModelUnlocked,
+		State:  spi.ModelUnlocked,
 		Schema: []byte(`{}`),
 	}
 	store.Save(ctx, desc)
@@ -84,7 +84,7 @@ func TestModelStoreLockUnlock(t *testing.T) {
 
 	// Verify Get reflects locked state
 	got, _ := store.Get(ctx, ref)
-	if got.State != common.ModelLocked {
+	if got.State != spi.ModelLocked {
 		t.Errorf("expected LOCKED state via Get, got %v", got.State)
 	}
 
@@ -102,21 +102,21 @@ func TestModelStoreSetChangeLevel(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.ModelStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	desc := &common.ModelDescriptor{
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{
 		Ref:         ref,
-		State:       common.ModelUnlocked,
-		ChangeLevel: common.ChangeLevelStructural,
+		State:       spi.ModelUnlocked,
+		ChangeLevel: spi.ChangeLevelStructural,
 		Schema:      []byte(`{}`),
 	}
 	store.Save(ctx, desc)
 
-	if err := store.SetChangeLevel(ctx, ref, common.ChangeLevelType); err != nil {
+	if err := store.SetChangeLevel(ctx, ref, spi.ChangeLevelType); err != nil {
 		t.Fatalf("setChangeLevel failed: %v", err)
 	}
 
 	got, _ := store.Get(ctx, ref)
-	if got.ChangeLevel != common.ChangeLevelType {
+	if got.ChangeLevel != spi.ChangeLevelType {
 		t.Errorf("expected TYPE, got %v", got.ChangeLevel)
 	}
 }
@@ -128,10 +128,10 @@ func TestModelStoreTenantIsolation(t *testing.T) {
 	storeA, _ := factory.ModelStore(ctxA)
 	storeB, _ := factory.ModelStore(ctxB)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	desc := &common.ModelDescriptor{
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{
 		Ref:    ref,
-		State:  common.ModelUnlocked,
+		State:  spi.ModelUnlocked,
 		Schema: []byte(`{"tenant":"A"}`),
 	}
 	storeA.Save(ctxA, desc)
@@ -147,10 +147,10 @@ func TestModelStoreDeleteDescriptor(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.ModelStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	desc := &common.ModelDescriptor{
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{
 		Ref:    ref,
-		State:  common.ModelUnlocked,
+		State:  spi.ModelUnlocked,
 		Schema: []byte(`{}`),
 	}
 	store.Save(ctx, desc)
@@ -170,11 +170,11 @@ func TestModelStoreGetAllDescriptors(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.ModelStore(ctx)
 
-	ref1 := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	ref2 := common.ModelRef{EntityName: "Product", ModelVersion: "1"}
+	ref1 := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref2 := spi.ModelRef{EntityName: "Product", ModelVersion: "1"}
 
-	store.Save(ctx, &common.ModelDescriptor{Ref: ref1, Schema: []byte(`{}`)})
-	store.Save(ctx, &common.ModelDescriptor{Ref: ref2, Schema: []byte(`{}`)})
+	store.Save(ctx, &spi.ModelDescriptor{Ref: ref1, Schema: []byte(`{}`)})
+	store.Save(ctx, &spi.ModelDescriptor{Ref: ref2, Schema: []byte(`{}`)})
 
 	refs, err := store.GetAll(ctx)
 	if err != nil {

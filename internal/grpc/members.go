@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
@@ -31,7 +32,7 @@ type ProcessingResponse struct {
 // Member represents a connected calculation member.
 type Member struct {
 	ID          string
-	TenantID    common.TenantID
+	TenantID    spi.TenantID
 	Tags        []string
 	ConnectedAt time.Time
 
@@ -131,7 +132,7 @@ func (r *MemberRegistry) SetOnChange(fn TagChangeFunc) {
 
 // Register creates a new Member with a generated UUID, stores it, and returns
 // the member ID.
-func (r *MemberRegistry) Register(tenantID common.TenantID, tags []string, send SendFunc) string {
+func (r *MemberRegistry) Register(tenantID spi.TenantID, tags []string, send SendFunc) string {
 	id := uuid.NewString()
 	now := time.Now()
 	m := &Member{
@@ -186,7 +187,7 @@ func (r *MemberRegistry) List() []*Member {
 // FindByTags returns the first member matching the given tenant whose tags
 // overlap with tagsCSV. If tagsCSV is empty, any member for that tenant
 // matches.
-func (r *MemberRegistry) FindByTags(tenantID common.TenantID, tagsCSV string) *Member {
+func (r *MemberRegistry) FindByTags(tenantID spi.TenantID, tagsCSV string) *Member {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, m := range r.members {
@@ -248,4 +249,3 @@ func (r *MemberRegistry) computeTags() map[string][]string {
 	}
 	return result
 }
-

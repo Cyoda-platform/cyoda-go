@@ -4,19 +4,19 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 func TestWorkflowWithoutActiveField_DefaultsToActive(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "OboSigningKey", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "OboSigningKey", ModelVersion: "1"}
 
 	// Import a workflow without "active" field.
 	// The import handler defaults Active to true before saving.
 	// Simulate the handler's behavior:
 	wfJSON := `[{"version":"1.0","name":"obo-signing-key-lifecycle","initialState":"ACTIVE","states":{"ACTIVE":{"transitions":[]}}}]`
-	var workflows []common.WorkflowDefinition
+	var workflows []spi.WorkflowDefinition
 	if err := json.Unmarshal([]byte(wfJSON), &workflows); err != nil {
 		t.Fatalf("failed to parse workflow: %v", err)
 	}

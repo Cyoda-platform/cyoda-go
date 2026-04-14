@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -216,8 +217,8 @@ func TestAppErrorImplementsError(t *testing.T) {
 }
 
 func TestErrEpochMismatch_IsSentinel(t *testing.T) {
-	wrapped := fmt.Errorf("Begin failed: %w", common.ErrEpochMismatch)
-	if !errors.Is(wrapped, common.ErrEpochMismatch) {
+	wrapped := fmt.Errorf("Begin failed: %w", spi.ErrEpochMismatch)
+	if !errors.Is(wrapped, spi.ErrEpochMismatch) {
 		t.Fatalf("expected wrapped error to match sentinel, got %v", wrapped)
 	}
 }

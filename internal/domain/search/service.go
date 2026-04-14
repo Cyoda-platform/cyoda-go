@@ -7,9 +7,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/match"
+
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
 // SearchOptions controls search behavior.
@@ -48,12 +51,12 @@ type SnapshotStatus struct {
 // the in-memory entity store, evaluating predicate conditions.
 type SearchService struct {
 	factory     spi.StoreFactory
-	uuids       common.UUIDGenerator
+	uuids       spi.UUIDGenerator
 	searchStore spi.AsyncSearchStore
 }
 
 // NewSearchService creates a SearchService backed by the given store factory.
-func NewSearchService(factory spi.StoreFactory, uuids common.UUIDGenerator, searchStore spi.AsyncSearchStore) *SearchService {
+func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore) *SearchService {
 	return &SearchService{
 		factory:     factory,
 		uuids:       uuids,
@@ -62,13 +65,13 @@ func NewSearchService(factory spi.StoreFactory, uuids common.UUIDGenerator, sear
 }
 
 // Search performs a synchronous entity search, returning matching entities.
-func (s *SearchService) Search(ctx context.Context, modelRef common.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*common.Entity, error) {
+func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
 	store, err := s.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	var entities []*common.Entity
+	var entities []*spi.Entity
 	if opts.PointInTime != nil {
 		entities, err = store.GetAllAsAt(ctx, modelRef, *opts.PointInTime)
 	} else {
@@ -78,9 +81,9 @@ func (s *SearchService) Search(ctx context.Context, modelRef common.ModelRef, co
 		return nil, fmt.Errorf("failed to retrieve entities: %w", err)
 	}
 
-	var matches []*common.Entity
+	var matches []*spi.Entity
 	for _, e := range entities {
-		ok, matchErr := predicate.Match(cond, e.Data, e.Meta)
+		ok, matchErr := match.Match(cond, e.Data, e.Meta)
 		if matchErr != nil {
 			return nil, fmt.Errorf("predicate match failed: %w", matchErr)
 		}
@@ -110,8 +113,8 @@ func (s *SearchService) Search(ctx context.Context, modelRef common.ModelRef, co
 }
 
 // SubmitAsync starts an asynchronous search job and returns the job ID.
-func (s *SearchService) SubmitAsync(ctx context.Context, modelRef common.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
-	uc := common.GetUserContext(ctx)
+func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
+	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
 	}
@@ -121,7 +124,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef common.ModelRe
 		opts.PointInTime = &now
 	}
 
-	jobID := s.uuids.NewTimeUUID().String()
+	jobID := uuid.UUID(s.uuids.NewTimeUUID()).String()
 	now := time.Now()
 
 	condJSON, err := json.Marshal(cond)
@@ -167,7 +170,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef common.ModelRe
 
 	// Create a background context with the same UserContext so the search
 	// can proceed after the HTTP request completes.
-	bgCtx := common.WithUserContext(context.Background(), uc)
+	bgCtx := spi.WithUserContext(context.Background(), uc)
 
 	go func() {
 		start := time.Now()
@@ -243,7 +246,7 @@ func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (Searc
 
 // AsyncResultsPage holds a page of async search results along with the total count.
 type AsyncResultsPage struct {
-	Results []*common.Entity
+	Results []*spi.Entity
 	Total   int
 }
 
@@ -273,7 +276,7 @@ func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts 
 		return AsyncResultsPage{}, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	var results []*common.Entity
+	var results []*spi.Entity
 	for _, id := range ids {
 		e, err := entityStore.GetAsAt(ctx, id, job.PointInTime)
 		if err != nil {
@@ -318,13 +321,13 @@ func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelRe
 
 // SubmitAsyncSearch starts an asynchronous search job and returns the job ID.
 // This is an alias for SubmitAsync, provided for transport-independent callers.
-func (s *SearchService) SubmitAsyncSearch(ctx context.Context, modelRef common.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
+func (s *SearchService) SubmitAsyncSearch(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
 	return s.SubmitAsync(ctx, modelRef, cond, opts)
 }
 
 // DirectSearch performs a synchronous entity search, returning matching entities.
 // This is an alias for Search, provided for transport-independent callers.
-func (s *SearchService) DirectSearch(ctx context.Context, modelRef common.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*common.Entity, error) {
+func (s *SearchService) DirectSearch(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
 	return s.Search(ctx, modelRef, cond, opts)
 }
 
@@ -342,7 +345,7 @@ func (s *SearchService) GetAsyncSearchStatus(ctx context.Context, snapshotID str
 }
 
 // GetAsyncSearchResults returns a page of results for a completed async search job.
-func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID string, page, size int) ([]*common.Entity, error) {
+func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID string, page, size int) ([]*spi.Entity, error) {
 	if size <= 0 {
 		size = 1000
 	}

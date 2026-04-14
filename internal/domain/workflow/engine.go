@@ -12,10 +12,14 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/match"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
@@ -32,25 +36,25 @@ const defaultMaxStateVisits = 10
 // Engine orchestrates workflow execution for entities.
 type Engine struct {
 	factory          spi.StoreFactory
-	uuids            common.UUIDGenerator
+	uuids            spi.UUIDGenerator
 	txMgr            spi.TransactionManager
-	extProc          spi.ExternalProcessingService
+	extProc          contract.ExternalProcessingService
 	maxStateVisits   int
-	defaultWorkflows []common.WorkflowDefinition
+	defaultWorkflows []spi.WorkflowDefinition
 }
 
 // NewEngine creates a new workflow engine.
-func NewEngine(factory spi.StoreFactory, uuids common.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
+func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
 	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits}
 	for _, opt := range opts {
 		opt(e)
 	}
 
-	var defaultWF common.WorkflowDefinition
+	var defaultWF spi.WorkflowDefinition
 	if err := json.Unmarshal(defaultWorkflowJSON, &defaultWF); err != nil {
 		panic(fmt.Sprintf("failed to parse default workflow: %v", err))
 	}
-	e.defaultWorkflows = []common.WorkflowDefinition{defaultWF}
+	e.defaultWorkflows = []spi.WorkflowDefinition{defaultWF}
 
 	return e
 }
@@ -60,7 +64,7 @@ type EngineOption func(*Engine)
 
 // WithExternalProcessing configures the engine with an external processing
 // service for dispatching processors and function criteria to calculation nodes.
-func WithExternalProcessing(extProc spi.ExternalProcessingService) EngineOption {
+func WithExternalProcessing(extProc contract.ExternalProcessingService) EngineOption {
 	return func(e *Engine) {
 		e.extProc = extProc
 	}
@@ -78,7 +82,7 @@ func WithMaxStateVisits(n int) EngineOption {
 // Execute runs the workflow engine for entity creation. It selects the matching
 // workflow, sets the initial state, optionally fires a named transition, and
 // cascades automated transitions.
-func (e *Engine) Execute(ctx context.Context, entity *common.Entity, transitionName string) (*common.ExecutionResult, error) {
+func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName string) (*spi.ExecutionResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.execute", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -95,15 +99,15 @@ func (e *Engine) Execute(ctx context.Context, entity *common.Entity, transitionN
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
 	}
 
-	txID := e.uuids.NewTimeUUID().String()
+	txID := uuid.UUID(e.uuids.NewTimeUUID()).String()
 
 	// Record STARTED.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventStarted, "State machine started", nil)
+		spi.SMEventStarted, "State machine started", nil)
 
 	// Load workflows for model. A "not found" error is treated as empty.
 	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, common.ErrNotFound) {
+	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		workflows = nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
@@ -138,9 +142,9 @@ func (e *Engine) Execute(ctx context.Context, entity *common.Entity, transitionN
 
 	// Record FINISHED.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventFinished, "State machine finished", map[string]any{"success": true})
+		spi.SMEventFinished, "State machine finished", map[string]any{"success": true})
 
-	return &common.ExecutionResult{
+	return &spi.ExecutionResult{
 		State:   entity.Meta.State,
 		Success: true,
 	}, nil
@@ -148,7 +152,7 @@ func (e *Engine) Execute(ctx context.Context, entity *common.Entity, transitionN
 
 // ManualTransition fires a named transition on an existing entity and cascades
 // any automated transitions from the resulting state.
-func (e *Engine) ManualTransition(ctx context.Context, entity *common.Entity, transitionName string) (*common.ExecutionResult, error) {
+func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, transitionName string) (*spi.ExecutionResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.manual_transition", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -166,14 +170,14 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *common.Entity, tr
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
 	}
 
-	txID := e.uuids.NewTimeUUID().String()
+	txID := uuid.UUID(e.uuids.NewTimeUUID()).String()
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventStarted, "Manual transition started", nil)
+		spi.SMEventStarted, "Manual transition started", nil)
 
 	// Load workflows, find the one whose states contain the entity's current state.
 	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, common.ErrNotFound) {
+	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		workflows = nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
@@ -199,9 +203,9 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *common.Entity, tr
 	}
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventFinished, "Manual transition finished", map[string]any{"success": true})
+		spi.SMEventFinished, "Manual transition finished", map[string]any{"success": true})
 
-	return &common.ExecutionResult{
+	return &spi.ExecutionResult{
 		State:   entity.Meta.State,
 		Success: true,
 	}, nil
@@ -210,7 +214,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *common.Entity, tr
 // Loopback re-evaluates automated transitions from the entity's current state
 // without firing a specific named transition. This is used when entity data is
 // updated and the workflow should re-check conditions from the current state.
-func (e *Engine) Loopback(ctx context.Context, entity *common.Entity) (*common.ExecutionResult, error) {
+func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*spi.ExecutionResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.loopback", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
 		observability.AttrEntityModel.String(entity.Meta.ModelRef.String()),
@@ -227,14 +231,14 @@ func (e *Engine) Loopback(ctx context.Context, entity *common.Entity) (*common.E
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
 	}
 
-	txID := e.uuids.NewTimeUUID().String()
+	txID := uuid.UUID(e.uuids.NewTimeUUID()).String()
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventStarted, "Loopback started", nil)
+		spi.SMEventStarted, "Loopback started", nil)
 
 	// Load workflows, find the one whose states contain the entity's current state.
 	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, common.ErrNotFound) {
+	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		workflows = nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
@@ -250,10 +254,10 @@ func (e *Engine) Loopback(ctx context.Context, entity *common.Entity) (*common.E
 	if wf == nil {
 		// Current state not in any workflow — stable, nothing to do.
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventForcedSuccess, "No workflow contains current state for loopback", nil)
+			spi.SMEventForcedSuccess, "No workflow contains current state for loopback", nil)
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventFinished, "Loopback finished (state not in workflow)", map[string]any{"success": true})
-		return &common.ExecutionResult{
+			spi.SMEventFinished, "Loopback finished (state not in workflow)", map[string]any{"success": true})
+		return &spi.ExecutionResult{
 			State:      entity.Meta.State,
 			Success:    true,
 			StopReason: "STATE_NOT_IN_WORKFLOW",
@@ -265,9 +269,9 @@ func (e *Engine) Loopback(ctx context.Context, entity *common.Entity) (*common.E
 	}
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventFinished, "Loopback finished", map[string]any{"success": true})
+		spi.SMEventFinished, "Loopback finished", map[string]any{"success": true})
 
-	return &common.ExecutionResult{
+	return &spi.ExecutionResult{
 		State:   entity.Meta.State,
 		Success: true,
 	}, nil
@@ -275,7 +279,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *common.Entity) (*common.E
 
 // selectWorkflow iterates active workflows and returns the first whose criterion
 // matches the entity. Workflows without a criterion match unconditionally.
-func (e *Engine) selectWorkflow(ctx context.Context, workflows []common.WorkflowDefinition, entity *common.Entity, auditStore spi.StateMachineAuditStore, txID string) (*common.WorkflowDefinition, error) {
+func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, txID string) (*spi.WorkflowDefinition, error) {
 	for i := range workflows {
 		wf := &workflows[i]
 		if !wf.Active {
@@ -285,7 +289,7 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []common.Workflow
 		if len(wf.Criterion) == 0 || string(wf.Criterion) == "null" {
 			// No criterion — matches unconditionally.
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-				common.SMEventWorkflowFound, fmt.Sprintf("Workflow %q selected (no criterion)", wf.Name), nil)
+				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q selected (no criterion)", wf.Name), nil)
 			return wf, nil
 		}
 
@@ -297,12 +301,12 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []common.Workflow
 		}
 		if matched {
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-				common.SMEventWorkflowFound, fmt.Sprintf("Workflow %q matched criterion", wf.Name), nil)
+				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q matched criterion", wf.Name), nil)
 			return wf, nil
 		}
 
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name), nil)
+			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name), nil)
 	}
 
 	// No imported workflow matched — fall back to the default workflow.
@@ -310,18 +314,18 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []common.Workflow
 		common.AddWarning(ctx, "no imported workflow matched — using default workflow")
 		defaultWF := &e.defaultWorkflows[0]
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name), nil)
+			spi.SMEventWorkflowFound, fmt.Sprintf("No imported workflow matched; using default workflow %q", defaultWF.Name), nil)
 		return defaultWF, nil
 	}
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventWorkflowNotFound, "No workflow matched entity", nil)
+		spi.SMEventWorkflowNotFound, "No workflow matched entity", nil)
 	return nil, fmt.Errorf("no matching workflow for model %s", entity.Meta.ModelRef)
 }
 
 // findWorkflowForState returns the first active workflow whose state map contains
 // the given state name.
-func (e *Engine) findWorkflowForState(workflows []common.WorkflowDefinition, state string) *common.WorkflowDefinition {
+func (e *Engine) findWorkflowForState(workflows []spi.WorkflowDefinition, state string) *spi.WorkflowDefinition {
 	for i := range workflows {
 		wf := &workflows[i]
 		if !wf.Active {
@@ -335,13 +339,13 @@ func (e *Engine) findWorkflowForState(workflows []common.WorkflowDefinition, sta
 }
 
 // attemptTransition finds and fires a named transition from the entity's current state.
-func (e *Engine) attemptTransition(ctx context.Context, entity *common.Entity, wf *common.WorkflowDefinition, transitionName string, auditStore spi.StateMachineAuditStore, txID string) error {
+func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, transitionName string, auditStore spi.StateMachineAuditStore, txID string) error {
 	stateDef, ok := wf.States[entity.Meta.State]
 	if !ok {
 		return fmt.Errorf("state %q not found in workflow %q", entity.Meta.State, wf.Name)
 	}
 
-	var transition *common.TransitionDefinition
+	var transition *spi.TransitionDefinition
 	for i := range stateDef.Transitions {
 		if stateDef.Transitions[i].Name == transitionName {
 			transition = &stateDef.Transitions[i]
@@ -351,13 +355,13 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *common.Entity, w
 
 	if transition == nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventTransitionNotFound, fmt.Sprintf("Transition %q not found in state %q", transitionName, entity.Meta.State), nil)
+			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q not found in state %q", transitionName, entity.Meta.State), nil)
 		return fmt.Errorf("transition %q not found in state %q", transitionName, entity.Meta.State)
 	}
 
 	if transition.Disabled {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventTransitionNotFound, fmt.Sprintf("Transition %q is disabled", transitionName), nil)
+			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q is disabled", transitionName), nil)
 		return fmt.Errorf("transition %q is disabled in state %q", transitionName, entity.Meta.State)
 	}
 
@@ -371,7 +375,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *common.Entity, w
 		}
 		if !matched {
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-				common.SMEventTransitionCriterionNoMatch,
+				spi.SMEventTransitionCriterionNoMatch,
 				fmt.Sprintf("Transition %q criterion not matched", transitionName), nil)
 			return fmt.Errorf("transition %q criterion not matched", transitionName)
 		}
@@ -380,14 +384,14 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *common.Entity, w
 	// Execute processors.
 	if err := e.executeProcessors(ctx, transition.Processors, entity, auditStore, wf.Name, transitionName, txID); err != nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
+			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
 			map[string]any{"success": false})
 		return err
 	}
 
 	// Record transition and move state.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventTransitionMade,
+		spi.SMEventTransitionMade,
 		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), nil)
 	entity.Meta.State = transition.Next
 
@@ -396,7 +400,7 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *common.Entity, w
 
 // cascadeAutomated loops through automated transitions until a stable state is reached.
 // It enforces both a per-state visit limit and a total cascade depth safety net.
-func (e *Engine) cascadeAutomated(ctx context.Context, entity *common.Entity, wf *common.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) error {
+func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *spi.WorkflowDefinition, auditStore spi.StateMachineAuditStore, txID string) error {
 	ctx, cascadeSpan := tracer.Start(ctx, "workflow.cascade", trace.WithAttributes(
 		observability.AttrWorkflowName.String(wf.Name),
 		observability.AttrEntityID.String(entity.Meta.ID),
@@ -411,7 +415,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *common.Entity, wf
 		if stateVisits[state] > e.maxStateVisits {
 			reason := fmt.Sprintf("state %q visited %d times (limit: %d)", state, stateVisits[state], e.maxStateVisits)
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
-				common.SMEventCancelled, "State machine aborted: "+reason, nil)
+				spi.SMEventCancelled, "State machine aborted: "+reason, nil)
 			return fmt.Errorf("state machine aborted: %s", reason)
 		}
 
@@ -437,7 +441,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *common.Entity, wf
 				}
 				if !matched {
 					e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-						common.SMEventTransitionCriterionNoMatch,
+						spi.SMEventTransitionCriterionNoMatch,
 						fmt.Sprintf("Automated transition %q criterion not matched", tr.Name), nil)
 					continue
 				}
@@ -454,7 +458,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *common.Entity, wf
 				trSpan.RecordError(err)
 				trSpan.End()
 				e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-					common.SMEventStateProcessResult,
+					spi.SMEventStateProcessResult,
 					fmt.Sprintf("Processor failed for transition %q: %v", tr.Name, err),
 					map[string]any{"success": false})
 				return err
@@ -462,7 +466,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *common.Entity, wf
 
 			// Record transition and move state.
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-				common.SMEventTransitionMade,
+				spi.SMEventTransitionMade,
 				fmt.Sprintf("Transition %q: %s → %s", tr.Name, entity.Meta.State, tr.Next), nil)
 			entity.Meta.State = tr.Next
 			trSpan.End()
@@ -478,7 +482,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *common.Entity, wf
 
 	reason := fmt.Sprintf("cascade depth exceeded (%d) at state %q", maxCascadeDepth, entity.Meta.State)
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventCancelled, "State machine aborted: "+reason, nil)
+		spi.SMEventCancelled, "State machine aborted: "+reason, nil)
 	return fmt.Errorf("state machine aborted: %s", reason)
 }
 
@@ -495,7 +499,7 @@ type criterionContext struct {
 // evaluateCriterion parses and matches a JSON criterion against the entity.
 // If the criterion is a FUNCTION type, it delegates to the external processing
 // service using the provided criterionContext.
-func (e *Engine) evaluateCriterion(criterion []byte, entity *common.Entity, cc *criterionContext) (bool, error) {
+func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *criterionContext) (bool, error) {
 	cond, err := predicate.ParseCondition(criterion)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse criterion: %w", err)
@@ -508,14 +512,14 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *common.Entity, cc *
 		return e.extProc.DispatchCriteria(cc.ctx, entity, criterion, cc.target, cc.workflowName, cc.transitionName, "", cc.txID)
 	}
 
-	return predicate.Match(cond, entity.Data, entity.Meta)
+	return match.Match(cond, entity.Data, entity.Meta)
 }
 
 // executeProcessors runs each processor in the transition's processor pipeline
 // sequentially. Processors are dispatched according to their ExecutionMode:
 // ASYNC_NEW_TX runs within a savepoint (failures are non-fatal), while SYNC
 // and ASYNC_SAME_TX run inline in the caller's transaction context.
-func (e *Engine) executeProcessors(ctx context.Context, processors []common.ProcessorDefinition, entity *common.Entity, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) error {
+func (e *Engine) executeProcessors(ctx context.Context, processors []spi.ProcessorDefinition, entity *spi.Entity, auditStore spi.StateMachineAuditStore, workflow string, transition string, txID string) error {
 	if len(processors) == 0 {
 		return nil
 	}
@@ -526,7 +530,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []common.Proc
 		names[i] = p.Name
 	}
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		common.SMEventProcessingPaused,
+		spi.SMEventProcessingPaused,
 		fmt.Sprintf("Paused for processors: %v", names), nil)
 
 	for _, proc := range processors {
@@ -557,7 +561,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []common.Proc
 			auditData["error"] = procErr.Error()
 		}
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			common.SMEventStateProcessResult,
+			spi.SMEventStateProcessResult,
 			fmt.Sprintf("Processor %q completed", proc.Name), auditData)
 
 		// For SYNC/ASYNC_SAME_TX, failure kills the pipeline.
@@ -571,7 +575,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []common.Proc
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
 // caller's transaction. On success the entity's Data is updated with the
 // processor's returned modifications.
-func (e *Engine) executeSyncProcessor(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition, workflow, transition, txID string) error {
+func (e *Engine) executeSyncProcessor(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
 	if e.extProc == nil {
 		return nil
 	}
@@ -590,7 +594,7 @@ func (e *Engine) executeSyncProcessor(ctx context.Context, entity *common.Entity
 // ASYNC_NEW_TX processors perform side-effects only. On dispatch failure the
 // savepoint is rolled back and the error is returned; on success the savepoint
 // is released.
-func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition, workflow, transition, txID string) error {
+func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, workflow, transition, txID string) error {
 	if e.extProc == nil {
 		return nil
 	}
@@ -623,11 +627,11 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *common.Entity, p
 }
 
 // recordEvent records a single audit event.
-func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType common.StateMachineEventType, details string, data map[string]any) {
-	event := common.StateMachineEvent{
+func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) {
+	event := spi.StateMachineEvent{
 		EventType:     eventType,
 		EntityID:      entityID,
-		TimeUUID:      e.uuids.NewTimeUUID().String(),
+		TimeUUID:      uuid.UUID(e.uuids.NewTimeUUID()).String(),
 		State:         state,
 		TransactionID: txID,
 		Details:       details,

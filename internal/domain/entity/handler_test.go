@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/internal/app"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/google/uuid"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {

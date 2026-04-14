@@ -3,13 +3,13 @@ package workflow
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "OboSigningKey", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "OboSigningKey", ModelVersion: "1"}
 
 	// Import a workflow with a criterion that will NOT match the entity.
 	wfStore, err := factory.WorkflowStore(ctx)
@@ -17,7 +17,7 @@ func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *te
 		t.Fatalf("failed to get workflow store: %v", err)
 	}
 
-	importedWF := []common.WorkflowDefinition{
+	importedWF := []spi.WorkflowDefinition{
 		{
 			Version:      "1",
 			Name:         "obo-workflow",
@@ -25,9 +25,9 @@ func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *te
 			Active:       true,
 			// Criterion that requires a field value the entity won't have.
 			Criterion: simpleCriterion("$.nonExistentField", "EQUALS", "match-me"),
-			States: map[string]common.StateDefinition{
+			States: map[string]spi.StateDefinition{
 				"INIT": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{Name: "PROCESS", Next: "DONE", Manual: false},
 					},
 				},

@@ -6,8 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type searchJobEntry struct {
@@ -18,18 +17,18 @@ type searchJobEntry struct {
 // AsyncSearchStore is a tenant-scoped, in-memory implementation of spi.AsyncSearchStore.
 type AsyncSearchStore struct {
 	mu   sync.RWMutex
-	data map[common.TenantID]map[string]*searchJobEntry
+	data map[spi.TenantID]map[string]*searchJobEntry
 }
 
 // NewAsyncSearchStore creates a new in-memory AsyncSearchStore.
 func NewAsyncSearchStore() *AsyncSearchStore {
 	return &AsyncSearchStore{
-		data: make(map[common.TenantID]map[string]*searchJobEntry),
+		data: make(map[spi.TenantID]map[string]*searchJobEntry),
 	}
 }
 
-func (s *AsyncSearchStore) resolveTenant(ctx context.Context) (common.TenantID, error) {
-	uc := common.GetUserContext(ctx)
+func (s *AsyncSearchStore) resolveTenant(ctx context.Context) (spi.TenantID, error) {
+	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context in request — tenant cannot be resolved")
 	}
@@ -194,7 +193,7 @@ var terminalStatuses = map[string]bool{
 
 // Cancel marks the job as CANCELLED. Idempotent: cancelling a job already in
 // a terminal state returns nil. Cancelling a non-existent job returns
-// common.ErrNotFound.
+// spi.ErrNotFound.
 func (s *AsyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 	tid, err := s.resolveTenant(ctx)
 	if err != nil {
@@ -206,11 +205,11 @@ func (s *AsyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 
 	tenantJobs := s.data[tid]
 	if tenantJobs == nil {
-		return fmt.Errorf("search job %q not found: %w", jobID, common.ErrNotFound)
+		return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 	entry, ok := tenantJobs[jobID]
 	if !ok {
-		return fmt.Errorf("search job %q not found: %w", jobID, common.ErrNotFound)
+		return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 
 	// Idempotent: already terminal — do nothing.

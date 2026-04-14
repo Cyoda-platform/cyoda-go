@@ -227,9 +227,9 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeTokenResponse(w, http.StatusOK, map[string]any{
-		"access_token":     token,
-		"token_type":       "Bearer",
-		"expires_in":       h.expirySeconds,
+		"access_token":      token,
+		"token_type":        "Bearer",
+		"expires_in":        h.expirySeconds,
 		"issued_token_type": "urn:ietf:params:oauth:token-type:jwt",
 	})
 }

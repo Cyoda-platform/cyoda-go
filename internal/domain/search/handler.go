@@ -9,10 +9,12 @@ import (
 	"strconv"
 	"time"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search/predicate"
-	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 const maxSearchBodySize = 10 * 1024 * 1024 // 10 MiB
@@ -62,7 +64,7 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		opts.Limit = lim
 	}
 
-	modelRef := common.ModelRef{
+	modelRef := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
@@ -112,7 +114,7 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 		PointInTime: params.PointInTime,
 	}
 
-	modelRef := common.ModelRef{
+	modelRef := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
@@ -258,7 +260,7 @@ func buildStatusResponse(status SearchJobStatus) map[string]any {
 	return resp
 }
 
-func entityEnvelope(e *common.Entity) map[string]any {
+func entityEnvelope(e *spi.Entity) map[string]any {
 	meta := map[string]any{
 		"id":             e.Meta.ID,
 		"state":          e.Meta.State,

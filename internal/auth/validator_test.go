@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func setupTestJWKS(t *testing.T) (*rsa.PrivateKey, string, *httptest.Server) {
@@ -74,7 +74,7 @@ func TestJWKSValidator_ValidToken(t *testing.T) {
 	if uc.UserName != "user-42" {
 		t.Errorf("expected UserName user-42, got %s", uc.UserName)
 	}
-	if uc.Tenant.ID != common.TenantID("org-7") {
+	if uc.Tenant.ID != spi.TenantID("org-7") {
 		t.Errorf("expected Tenant.ID org-7, got %s", uc.Tenant.ID)
 	}
 	if uc.Tenant.Name != "org-7" {

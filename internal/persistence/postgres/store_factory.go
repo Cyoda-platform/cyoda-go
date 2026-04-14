@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,8 +31,8 @@ func (f *StoreFactory) Pool() *pgxpool.Pool {
 	return f.pool
 }
 
-func resolveTenant(ctx context.Context) (common.TenantID, error) {
-	uc := common.GetUserContext(ctx)
+func resolveTenant(ctx context.Context) (spi.TenantID, error) {
+	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context in request — tenant cannot be resolved")
 	}
@@ -46,7 +46,7 @@ func resolveTenant(ctx context.Context) (common.TenantID, error) {
 // progress, otherwise the pool.
 func (f *StoreFactory) resolveQuerier(ctx context.Context) Querier {
 	if f.tm != nil {
-		if tx := common.GetTransaction(ctx); tx != nil {
+		if tx := spi.GetTransaction(ctx); tx != nil {
 			if pgxTx, ok := f.tm.LookupTx(tx.ID); ok {
 				return pgxTx
 			}

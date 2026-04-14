@@ -8,22 +8,23 @@ import (
 	"log/slog"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 const (
 	gossipPollInterval = 200 * time.Millisecond
 )
 
-// ClusterDispatcher implements spi.ExternalProcessingService with cluster-aware
+// ClusterDispatcher implements contract.ExternalProcessingService with cluster-aware
 // dispatch. It tries the local node first, and if no local calculation member
 // matches the required tags, it looks up peers via gossip and forwards the
 // request to a peer that advertises the tag.
 type ClusterDispatcher struct {
-	local       spi.ExternalProcessingService
-	registry    spi.NodeRegistry
+	local       contract.ExternalProcessingService
+	registry    contract.NodeRegistry
 	selfNodeID  string
 	selector    PeerSelector
 	forwarder   DispatchForwarder
@@ -32,8 +33,8 @@ type ClusterDispatcher struct {
 
 // NewClusterDispatcher constructs a ClusterDispatcher.
 func NewClusterDispatcher(
-	local spi.ExternalProcessingService,
-	registry spi.NodeRegistry,
+	local contract.ExternalProcessingService,
+	registry contract.NodeRegistry,
 	selfNodeID string,
 	selector PeerSelector,
 	forwarder DispatchForwarder,
@@ -51,7 +52,7 @@ func NewClusterDispatcher(
 
 // DispatchProcessor tries the local node first. If the local node has no matching
 // calculation member, it looks up peers via gossip and forwards the request.
-func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *common.Entity, processor common.ProcessorDefinition, workflowName string, transitionName string, txID string) (*common.Entity, error) {
+func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
 	// Try local first.
 	result, err := d.local.DispatchProcessor(ctx, entity, processor, workflowName, transitionName, txID)
 	if err == nil {
@@ -62,7 +63,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *commo
 	}
 
 	tags := processor.Config.CalculationNodesTags
-	uc := common.MustGetUserContext(ctx)
+	uc := spi.MustGetUserContext(ctx)
 	tenantID := string(uc.Tenant.ID)
 
 	slog.Debug("local dispatch found no member, looking up cluster peers",
@@ -89,7 +90,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *commo
 		common.AddWarning(ctx, w)
 	}
 
-	updated := &common.Entity{
+	updated := &spi.Entity{
 		Meta: entity.Meta,
 		Data: resp.EntityData,
 	}
@@ -98,7 +99,7 @@ func (d *ClusterDispatcher) DispatchProcessor(ctx context.Context, entity *commo
 
 // DispatchCriteria tries the local node first. If the local node has no matching
 // calculation member, it looks up peers via gossip and forwards the request.
-func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *common.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
+func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
 	// Try local first.
 	matches, err := d.local.DispatchCriteria(ctx, entity, criterion, target, workflowName, transitionName, processorName, txID)
 	if err == nil {
@@ -109,7 +110,7 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *common
 	}
 
 	tags := extractCriteriaTags(criterion)
-	uc := common.MustGetUserContext(ctx)
+	uc := spi.MustGetUserContext(ctx)
 	tenantID := string(uc.Tenant.ID)
 
 	slog.Debug("local criteria dispatch found no member, looking up cluster peers",
@@ -141,7 +142,7 @@ func (d *ClusterDispatcher) DispatchCriteria(ctx context.Context, entity *common
 
 // findPeerWithPolling polls the gossip registry for a peer with matching tags,
 // retrying every gossipPollInterval up to waitTimeout.
-func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID string, tags string) (spi.NodeInfo, error) {
+func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID string, tags string) (contract.NodeInfo, error) {
 	deadline := time.After(d.waitTimeout)
 	ticker := time.NewTicker(gossipPollInterval)
 	defer ticker.Stop()
@@ -155,10 +156,10 @@ func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID st
 
 		select {
 		case <-deadline:
-			return spi.NodeInfo{}, fmt.Errorf("%s: no peer with tags %q for tenant %s after %v",
+			return contract.NodeInfo{}, fmt.Errorf("%s: no peer with tags %q for tenant %s after %v",
 				common.ErrCodeNoComputeMemberForTag, tags, tenantID, d.waitTimeout)
 		case <-ctx.Done():
-			return spi.NodeInfo{}, ctx.Err()
+			return contract.NodeInfo{}, ctx.Err()
 		case <-ticker.C:
 			// Continue polling.
 		}
@@ -167,14 +168,14 @@ func (d *ClusterDispatcher) findPeerWithPolling(ctx context.Context, tenantID st
 
 // findPeer queries the registry and returns a peer (not self, alive) whose tags
 // for the given tenant overlap with the required tags.
-func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags string) (spi.NodeInfo, bool) {
+func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags string) (contract.NodeInfo, bool) {
 	nodes, err := d.registry.List(ctx)
 	if err != nil {
 		slog.Debug("failed to list cluster nodes", "pkg", "dispatch", "err", err)
-		return spi.NodeInfo{}, false
+		return contract.NodeInfo{}, false
 	}
 
-	var candidates []spi.NodeInfo
+	var candidates []contract.NodeInfo
 	for _, n := range nodes {
 		if n.NodeID == d.selfNodeID {
 			continue
@@ -188,19 +189,19 @@ func (d *ClusterDispatcher) findPeer(ctx context.Context, tenantID string, tags 
 	}
 
 	if len(candidates) == 0 {
-		return spi.NodeInfo{}, false
+		return contract.NodeInfo{}, false
 	}
 
 	peer, err := d.selector.Select(candidates)
 	if err != nil {
 		slog.Debug("peer selection failed", "pkg", "dispatch", "err", err)
-		return spi.NodeInfo{}, false
+		return contract.NodeInfo{}, false
 	}
 	return peer, true
 }
 
 // buildProcessorRequest constructs the cross-node dispatch request for a processor.
-func (d *ClusterDispatcher) buildProcessorRequest(entity *common.Entity, processor common.ProcessorDefinition, workflowName, transitionName, txID string, uc *common.UserContext, tags string) *DispatchProcessorRequest {
+func (d *ClusterDispatcher) buildProcessorRequest(entity *spi.Entity, processor spi.ProcessorDefinition, workflowName, transitionName, txID string, uc *spi.UserContext, tags string) *DispatchProcessorRequest {
 	return &DispatchProcessorRequest{
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,
@@ -216,7 +217,7 @@ func (d *ClusterDispatcher) buildProcessorRequest(entity *common.Entity, process
 }
 
 // buildCriteriaRequest constructs the cross-node dispatch request for criteria.
-func (d *ClusterDispatcher) buildCriteriaRequest(entity *common.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *common.UserContext, tags string) *DispatchCriteriaRequest {
+func (d *ClusterDispatcher) buildCriteriaRequest(entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string, uc *spi.UserContext, tags string) *DispatchCriteriaRequest {
 	return &DispatchCriteriaRequest{
 		Entity:         json.RawMessage(entity.Data),
 		EntityMeta:     entity.Meta,

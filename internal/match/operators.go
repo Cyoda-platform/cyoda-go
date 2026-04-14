@@ -1,4 +1,4 @@
-package predicate
+package match
 
 import (
 	"fmt"

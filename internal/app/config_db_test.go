@@ -42,4 +42,3 @@ func TestConfig_StorageBackendFromEnv(t *testing.T) {
 		t.Errorf("expected StorageBackend=postgres, got %q", cfg.StorageBackend)
 	}
 }
-

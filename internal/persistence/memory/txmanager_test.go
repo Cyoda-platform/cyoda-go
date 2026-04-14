@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
@@ -72,9 +73,9 @@ func TestCommitFlushesBufferToStore(t *testing.T) {
 	}
 
 	// Manually populate the transaction buffer.
-	tx := common.GetTransaction(txCtx)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	tx := spi.GetTransaction(txCtx)
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:         "e-1",
 			TenantID:   "tenant-A",
 			ChangeType: "CREATED",
@@ -115,8 +116,8 @@ func TestCommitFlushesDeletes(t *testing.T) {
 
 	// Pre-populate an entity directly in the store.
 	store, _ := factory.EntityStore(ctx)
-	store.Save(ctx, &common.Entity{
-		Meta: common.EntityMeta{
+	store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:         "e-del",
 			TenantID:   "tenant-A",
 			ChangeType: "CREATED",
@@ -129,7 +130,7 @@ func TestCommitFlushesDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin failed: %v", err)
 	}
-	tx := common.GetTransaction(txCtx)
+	tx := spi.GetTransaction(txCtx)
 	tx.Deletes["e-del"] = true
 	tx.WriteSet["e-del"] = true
 
@@ -153,7 +154,7 @@ func TestReadWriteConflictDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin tx1 failed: %v", err)
 	}
-	tx1 := common.GetTransaction(txCtx1)
+	tx1 := spi.GetTransaction(txCtx1)
 	tx1.ReadSet["entity-E"] = true
 
 	// tx2 begins, writes entity E.
@@ -161,10 +162,10 @@ func TestReadWriteConflictDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin tx2 failed: %v", err)
 	}
-	tx2 := common.GetTransaction(txCtx2)
+	tx2 := spi.GetTransaction(txCtx2)
 	tx2.WriteSet["entity-E"] = true
-	tx2.Buffer["entity-E"] = &common.Entity{
-		Meta: common.EntityMeta{
+	tx2.Buffer["entity-E"] = &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:         "entity-E",
 			TenantID:   "tenant-A",
 			ChangeType: "CREATED",
@@ -184,7 +185,7 @@ func TestReadWriteConflictDetection(t *testing.T) {
 	// and tx2 wrote it after tx1's snapshot.
 	txID1 := tx1.ID
 	err = tm.Commit(ctx, txID1)
-	if !errors.Is(err, common.ErrConflict) {
+	if !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("expected ErrConflict, got: %v", err)
 	}
 }
@@ -198,10 +199,10 @@ func TestWriteWriteConflictDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin tx1 failed: %v", err)
 	}
-	tx1 := common.GetTransaction(txCtx1)
+	tx1 := spi.GetTransaction(txCtx1)
 	tx1.WriteSet["entity-E"] = true
-	tx1.Buffer["entity-E"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx1.Buffer["entity-E"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{"v":1}`),
 	}
 
@@ -210,10 +211,10 @@ func TestWriteWriteConflictDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin tx2 failed: %v", err)
 	}
-	tx2 := common.GetTransaction(txCtx2)
+	tx2 := spi.GetTransaction(txCtx2)
 	tx2.WriteSet["entity-E"] = true
-	tx2.Buffer["entity-E"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx2.Buffer["entity-E"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "entity-E", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{"v":2}`),
 	}
 
@@ -227,7 +228,7 @@ func TestWriteWriteConflictDetection(t *testing.T) {
 	// tx1 commits — should fail (write-write conflict).
 	txID1 := tx1.ID
 	err = tm.Commit(ctx, txID1)
-	if !errors.Is(err, common.ErrConflict) {
+	if !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("expected ErrConflict for write-write conflict, got: %v", err)
 	}
 }
@@ -241,10 +242,10 @@ func TestNoConflictDisjointEntities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin tx1 failed: %v", err)
 	}
-	tx1 := common.GetTransaction(txCtx1)
+	tx1 := spi.GetTransaction(txCtx1)
 	tx1.WriteSet["entity-A"] = true
-	tx1.Buffer["entity-A"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "entity-A", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx1.Buffer["entity-A"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "entity-A", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{}`),
 	}
 
@@ -253,10 +254,10 @@ func TestNoConflictDisjointEntities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin tx2 failed: %v", err)
 	}
-	tx2 := common.GetTransaction(txCtx2)
+	tx2 := spi.GetTransaction(txCtx2)
 	tx2.WriteSet["entity-B"] = true
-	tx2.Buffer["entity-B"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "entity-B", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx2.Buffer["entity-B"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "entity-B", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{}`),
 	}
 
@@ -355,9 +356,9 @@ func TestCommitPreservesCreationDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin failed: %v", err)
 	}
-	tx1 := common.GetTransaction(txCtx1)
-	tx1.Buffer["e-1"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx1 := spi.GetTransaction(txCtx1)
+	tx1.Buffer["e-1"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{"v":1}`),
 	}
 	tx1.WriteSet["e-1"] = true
@@ -376,9 +377,9 @@ func TestCommitPreservesCreationDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin failed: %v", err)
 	}
-	tx2 := common.GetTransaction(txCtx2)
-	tx2.Buffer["e-1"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "UPDATED"},
+	tx2 := spi.GetTransaction(txCtx2)
+	tx2.Buffer["e-1"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "UPDATED"},
 		Data: []byte(`{"v":2}`),
 	}
 	tx2.WriteSet["e-1"] = true
@@ -417,9 +418,9 @@ func TestSavepoint_RollbackRestoresBuffer(t *testing.T) {
 	}
 
 	// Write a parent entity before the savepoint.
-	tx := common.GetTransaction(txCtx)
-	tx.Buffer["parent-e"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "parent-e", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx := spi.GetTransaction(txCtx)
+	tx.Buffer["parent-e"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "parent-e", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{"role":"parent"}`),
 	}
 	tx.WriteSet["parent-e"] = true
@@ -431,8 +432,8 @@ func TestSavepoint_RollbackRestoresBuffer(t *testing.T) {
 	}
 
 	// Write a child entity after the savepoint.
-	tx.Buffer["child-e"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "child-e", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx.Buffer["child-e"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "child-e", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{"role":"child"}`),
 	}
 	tx.WriteSet["child-e"] = true
@@ -473,9 +474,9 @@ func TestSavepoint_ReleaseKeepsWork(t *testing.T) {
 	}
 
 	// Write entity after the savepoint.
-	tx := common.GetTransaction(txCtx)
-	tx.Buffer["sp-entity"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "sp-entity", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx := spi.GetTransaction(txCtx)
+	tx.Buffer["sp-entity"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "sp-entity", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{"v":1}`),
 	}
 	tx.WriteSet["sp-entity"] = true
@@ -508,9 +509,9 @@ func TestSavepoint_WrongTxIDRejected(t *testing.T) {
 	}
 
 	// Write something into tx1 so the savepoint captures state.
-	tx1 := common.GetTransaction(txCtx1)
-	tx1.Buffer["e-1"] = &common.Entity{
-		Meta: common.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "CREATED"},
+	tx1 := spi.GetTransaction(txCtx1)
+	tx1.Buffer["e-1"] = &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-1", TenantID: "tenant-A", ChangeType: "CREATED"},
 		Data: []byte(`{"v":1}`),
 	}
 	tx1.WriteSet["e-1"] = true

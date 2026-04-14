@@ -7,23 +7,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// UUIDGenerator generates time-based UUIDs.
-type UUIDGenerator interface {
-	NewTimeUUID() uuid.UUID
-}
-
 // DefaultUUIDGenerator generates real UUID v1 values.
+// Implements spi.UUIDGenerator (returns [16]byte; callers that want
+// the uuid.UUID type perform a zero-cost type conversion).
 type DefaultUUIDGenerator struct{}
 
 func NewDefaultUUIDGenerator() *DefaultUUIDGenerator {
 	return &DefaultUUIDGenerator{}
 }
 
-func (g *DefaultUUIDGenerator) NewTimeUUID() uuid.UUID {
+func (g *DefaultUUIDGenerator) NewTimeUUID() [16]byte {
 	// uuid.NewUUID() only fails if the system clock is unavailable, which is
 	// not a recoverable error in this context.
 	id, _ := uuid.NewUUID() // v1
-	return id
+	return [16]byte(id)
 }
 
 // TestUUIDGenerator generates deterministic sequential UUIDs for testing.
@@ -36,9 +33,9 @@ func NewTestUUIDGenerator() *TestUUIDGenerator {
 	return &TestUUIDGenerator{}
 }
 
-func (g *TestUUIDGenerator) NewTimeUUID() uuid.UUID {
+func (g *TestUUIDGenerator) NewTimeUUID() [16]byte {
 	n := g.counter.Add(1)
-	var id uuid.UUID
+	var id [16]byte
 	binary.BigEndian.PutUint64(id[0:8], n)
 	// Set version to 1.
 	id[6] = (id[6] & 0x0f) | 0x10

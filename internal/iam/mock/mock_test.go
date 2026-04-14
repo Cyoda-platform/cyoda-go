@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 )
 
@@ -16,9 +16,9 @@ func TestMockIAMAuthenticatesEveryRequest(t *testing.T) {
 	cfg := app.DefaultConfig()
 	cfg.ContextPath = ""
 	a := app.New(cfg)
-	var captured *common.UserContext
+	var captured *spi.UserContext
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = common.GetUserContext(r.Context())
+		captured = spi.GetUserContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -44,9 +44,9 @@ func TestMockIAMUserContextHasRequiredFields(t *testing.T) {
 	cfg := app.DefaultConfig()
 	cfg.ContextPath = ""
 	a := app.New(cfg)
-	var captured *common.UserContext
+	var captured *spi.UserContext
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = common.GetUserContext(r.Context())
+		captured = spi.GetUserContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -78,19 +78,19 @@ func TestMockIAMDefaultUserHasM2MAndAdminRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
 	}
-	if !common.HasRole(uc.Roles, "ROLE_M2M") {
+	if !spi.HasRole(uc.Roles, "ROLE_M2M") {
 		t.Errorf("default mock user missing ROLE_M2M (roles=%v) — gRPC streaming will be denied", uc.Roles)
 	}
-	if !common.HasRole(uc.Roles, "ROLE_ADMIN") {
+	if !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
 		t.Errorf("default mock user missing ROLE_ADMIN (roles=%v) — admin endpoints will be denied", uc.Roles)
 	}
 }
 
 func TestMockIAMReturnsDefensiveCopy(t *testing.T) {
-	defaultUser := &common.UserContext{
+	defaultUser := &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "Test User",
-		Tenant:   common.Tenant{ID: "test-tenant", Name: "Test Tenant"},
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test Tenant"},
 		Roles:    []string{"ROLE_USER", "ROLE_ADMIN"},
 	}
 	svc := mockiam.NewAuthenticationService(defaultUser)

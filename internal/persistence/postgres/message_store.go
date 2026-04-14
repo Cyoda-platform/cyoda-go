@@ -7,17 +7,18 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/jackc/pgx/v5"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // messageStore implements spi.MessageStore backed by PostgreSQL.
 type messageStore struct {
 	q        Querier
-	tenantID common.TenantID
+	tenantID spi.TenantID
 }
 
-func (s *messageStore) Save(ctx context.Context, id string, header common.MessageHeader, metaData common.MessageMetaData, payload io.Reader) error {
+func (s *messageStore) Save(ctx context.Context, id string, header spi.MessageHeader, metaData spi.MessageMetaData, payload io.Reader) error {
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message header: %w", err)
@@ -54,7 +55,7 @@ func (s *messageStore) Save(ctx context.Context, id string, header common.Messag
 	return nil
 }
 
-func (s *messageStore) Get(ctx context.Context, id string) (common.MessageHeader, common.MessageMetaData, io.ReadCloser, error) {
+func (s *messageStore) Get(ctx context.Context, id string) (spi.MessageHeader, spi.MessageMetaData, io.ReadCloser, error) {
 	var headerJSON, metaJSON []byte
 	var payloadBytes []byte
 
@@ -63,22 +64,22 @@ func (s *messageStore) Get(ctx context.Context, id string) (common.MessageHeader
 		string(s.tenantID), id).Scan(&headerJSON, &metaJSON, &payloadBytes)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return common.MessageHeader{}, common.MessageMetaData{}, nil,
-				fmt.Errorf("message %s not found: %w", id, common.ErrNotFound)
+			return spi.MessageHeader{}, spi.MessageMetaData{}, nil,
+				fmt.Errorf("message %s not found: %w", id, spi.ErrNotFound)
 		}
-		return common.MessageHeader{}, common.MessageMetaData{}, nil,
+		return spi.MessageHeader{}, spi.MessageMetaData{}, nil,
 			fmt.Errorf("failed to get message %s: %w", id, err)
 	}
 
-	var header common.MessageHeader
+	var header spi.MessageHeader
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return common.MessageHeader{}, common.MessageMetaData{}, nil,
+		return spi.MessageHeader{}, spi.MessageMetaData{}, nil,
 			fmt.Errorf("failed to unmarshal message header: %w", err)
 	}
 
-	var metaData common.MessageMetaData
+	var metaData spi.MessageMetaData
 	if err := json.Unmarshal(metaJSON, &metaData); err != nil {
-		return common.MessageHeader{}, common.MessageMetaData{}, nil,
+		return spi.MessageHeader{}, spi.MessageMetaData{}, nil,
 			fmt.Errorf("failed to unmarshal message metadata: %w", err)
 	}
 

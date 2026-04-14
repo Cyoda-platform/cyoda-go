@@ -26,7 +26,6 @@ type NamedTest struct {
 // Run* function in a topical file (e.g. entity.go, workflow_proc.go).
 // Every backend wrapper picks the new entry up automatically — there is
 // no per-backend wiring to forget.
-//
 var allTests = []NamedTest{
 	// Phase 1 — smoke test
 	{"SmokeTest", RunSmokeTest},

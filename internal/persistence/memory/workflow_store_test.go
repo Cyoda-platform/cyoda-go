@@ -5,12 +5,12 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
 
-func sampleWorkflows() []common.WorkflowDefinition {
-	return []common.WorkflowDefinition{
+func sampleWorkflows() []spi.WorkflowDefinition {
+	return []spi.WorkflowDefinition{
 		{
 			Version:      "1.0",
 			Name:         "order-workflow",
@@ -18,17 +18,17 @@ func sampleWorkflows() []common.WorkflowDefinition {
 			InitialState: "NEW",
 			Active:       true,
 			Criterion:    json.RawMessage(`{"type":"all"}`),
-			States: map[string]common.StateDefinition{
+			States: map[string]spi.StateDefinition{
 				"NEW": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{
 							Name: "approve",
 							Next: "APPROVED",
-							Processors: []common.ProcessorDefinition{
+							Processors: []spi.ProcessorDefinition{
 								{
 									Type: "EXTERNAL",
 									Name: "validate-order",
-									Config: common.ProcessorConfig{
+									Config: spi.ProcessorConfig{
 										AttachEntity:      true,
 										ResponseTimeoutMs: 5000,
 									},
@@ -51,7 +51,7 @@ func TestWorkflowStoreSaveAndGet(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	wfs := sampleWorkflows()
 
 	if err := store.Save(ctx, ref, wfs); err != nil {
@@ -104,7 +104,7 @@ func TestWorkflowStoreDelete(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.WorkflowStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	_ = store.Save(ctx, ref, sampleWorkflows())
 
 	if err := store.Delete(ctx, ref); err != nil {
@@ -125,15 +125,15 @@ func TestWorkflowStoreGetNotFound_WrapsErrNotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ref := common.ModelRef{EntityName: "NonExistent", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "NonExistent", ModelVersion: "1"}
 	_, err = store.Get(ctx, ref)
 	if err == nil {
 		t.Fatal("expected error for missing workflows, got nil")
 	}
 
-	// The error must wrap common.ErrNotFound so callers can use errors.Is.
-	if !errors.Is(err, common.ErrNotFound) {
-		t.Fatalf("expected error to wrap common.ErrNotFound, got: %v", err)
+	// The error must wrap spi.ErrNotFound so callers can use errors.Is.
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("expected error to wrap spi.ErrNotFound, got: %v", err)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestWorkflowStoreTenantIsolation(t *testing.T) {
 	storeA, _ := factory.WorkflowStore(ctxA)
 	storeB, _ := factory.WorkflowStore(ctxB)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	_ = storeA.Save(ctxA, ref, sampleWorkflows())
 
 	_, err := storeB.Get(ctxB, ref)

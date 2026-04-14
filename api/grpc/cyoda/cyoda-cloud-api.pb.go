@@ -7,11 +7,13 @@
 package cyoda
 
 import (
-	cloudevents "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+
+	cloudevents "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
 const (

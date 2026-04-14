@@ -4,15 +4,15 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func noopSend(_ *cepb.CloudEvent) error { return nil }
 
 func TestMemberRegistry_RegisterAndList(t *testing.T) {
 	reg := NewMemberRegistry()
-	tenant := common.TenantID("tenant-1")
+	tenant := spi.TenantID("tenant-1")
 	tags := []string{"python", "default"}
 
 	id := reg.Register(tenant, tags, noopSend)

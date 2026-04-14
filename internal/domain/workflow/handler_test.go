@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
@@ -72,14 +73,14 @@ func readJSON(t *testing.T, resp *http.Response) map[string]any {
 	return result
 }
 
-func readWorkflows(t *testing.T, resp *http.Response) []common.WorkflowDefinition {
+func readWorkflows(t *testing.T, resp *http.Response) []spi.WorkflowDefinition {
 	t.Helper()
 	body := readJSON(t, resp)
 	wfRaw, err := json.Marshal(body["workflows"])
 	if err != nil {
 		t.Fatalf("failed to marshal workflows: %v", err)
 	}
-	var wfs []common.WorkflowDefinition
+	var wfs []spi.WorkflowDefinition
 	if err := json.Unmarshal(wfRaw, &wfs); err != nil {
 		t.Fatalf("failed to parse workflows: %v\nraw: %s", err, wfRaw)
 	}
@@ -293,7 +294,7 @@ func TestImportActivate(t *testing.T) {
 		t.Fatalf("expected 2 workflows, got %d", len(wfs))
 	}
 
-	wfMap := map[string]common.WorkflowDefinition{}
+	wfMap := map[string]spi.WorkflowDefinition{}
 	for _, wf := range wfs {
 		wfMap[wf.Name] = wf
 	}

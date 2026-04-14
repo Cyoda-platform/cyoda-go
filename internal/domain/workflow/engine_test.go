@@ -7,12 +7,12 @@ import (
 	"sync"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
-const testTenant = common.TenantID("test-tenant")
+const testTenant = spi.TenantID("test-tenant")
 
 func setupEngine(t *testing.T) (*Engine, spi.StoreFactory) {
 	t.Helper()
@@ -24,12 +24,12 @@ func setupEngine(t *testing.T) (*Engine, spi.StoreFactory) {
 	return engine, factory
 }
 
-func ctxWithTenant(tid common.TenantID) context.Context {
-	uc := &common.UserContext{UserID: "test-user", Tenant: common.Tenant{ID: tid, Name: string(tid)}, Roles: []string{"USER"}}
-	return common.WithUserContext(context.Background(), uc)
+func ctxWithTenant(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{UserID: "test-user", Tenant: spi.Tenant{ID: tid, Name: string(tid)}, Roles: []string{"USER"}}
+	return spi.WithUserContext(context.Background(), uc)
 }
 
-func saveWorkflow(t *testing.T, factory spi.StoreFactory, ctx context.Context, modelRef common.ModelRef, workflows []common.WorkflowDefinition) {
+func saveWorkflow(t *testing.T, factory spi.StoreFactory, ctx context.Context, modelRef spi.ModelRef, workflows []spi.WorkflowDefinition) {
 	t.Helper()
 	ws, err := factory.WorkflowStore(ctx)
 	if err != nil {
@@ -40,10 +40,10 @@ func saveWorkflow(t *testing.T, factory spi.StoreFactory, ctx context.Context, m
 	}
 }
 
-func makeEntity(id string, modelRef common.ModelRef, data map[string]any) *common.Entity {
+func makeEntity(id string, modelRef spi.ModelRef, data map[string]any) *spi.Entity {
 	d, _ := json.Marshal(data)
-	return &common.Entity{
-		Meta: common.EntityMeta{
+	return &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       id,
 			TenantID: testTenant,
 			ModelRef: modelRef,
@@ -63,25 +63,25 @@ func simpleCriterion(jsonPath, op string, value any) json.RawMessage {
 func TestSelectWorkflow(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "order", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
 	// Workflow 1: criterion requires amount > 100
-	wf1 := common.WorkflowDefinition{
+	wf1 := spi.WorkflowDefinition{
 		Version: "1.0", Name: "HighValueWF", InitialState: "HIGH_INITIAL", Active: true,
 		Criterion: simpleCriterion("$.amount", "GREATER_THAN", 100),
-		States: map[string]common.StateDefinition{
-			"HIGH_INITIAL": {Transitions: []common.TransitionDefinition{}},
+		States: map[string]spi.StateDefinition{
+			"HIGH_INITIAL": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
 	// Workflow 2: criterion requires amount < 50
-	wf2 := common.WorkflowDefinition{
+	wf2 := spi.WorkflowDefinition{
 		Version: "1.0", Name: "LowValueWF", InitialState: "LOW_INITIAL", Active: true,
 		Criterion: simpleCriterion("$.amount", "LESS_THAN", 50),
-		States: map[string]common.StateDefinition{
-			"LOW_INITIAL": {Transitions: []common.TransitionDefinition{}},
+		States: map[string]spi.StateDefinition{
+			"LOW_INITIAL": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf1, wf2})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf1, wf2})
 
 	entity := makeEntity("e1", modelRef, map[string]any{"amount": 200})
 	result, err := engine.Execute(ctx, entity, "")
@@ -99,17 +99,17 @@ func TestSelectWorkflow(t *testing.T) {
 func TestNoMatchingWorkflow_FallsBackToDefault(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "order", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
 	// Import a workflow with a criterion that won't match.
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "HighValueWF", InitialState: "HIGH_INITIAL", Active: true,
 		Criterion: simpleCriterion("$.amount", "GREATER_THAN", 1000),
-		States: map[string]common.StateDefinition{
-			"HIGH_INITIAL": {Transitions: []common.TransitionDefinition{}},
+		States: map[string]spi.StateDefinition{
+			"HIGH_INITIAL": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	// Entity with amount=5 won't match the HighValueWF criterion.
 	// Engine should fall back to the default workflow.
@@ -129,7 +129,7 @@ func TestNoMatchingWorkflow_FallsBackToDefault(t *testing.T) {
 func TestNoWorkflowDefined(t *testing.T) {
 	engine, _ := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "orphan", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "orphan", ModelVersion: "1.0"}
 
 	entity := makeEntity("e3", modelRef, map[string]any{"name": "test"})
 	result, err := engine.Execute(ctx, entity, "")
@@ -148,21 +148,21 @@ func TestNoWorkflowDefined(t *testing.T) {
 func TestAutomatedCascade(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "approval", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "approval", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ApprovalWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "VALIDATE", Next: "PENDING", Manual: false},
 			}},
-			"PENDING": {Transitions: []common.TransitionDefinition{
+			"PENDING": {Transitions: []spi.TransitionDefinition{
 				{Name: "APPROVE", Next: "APPROVED", Manual: false},
 			}},
-			"APPROVED": {Transitions: []common.TransitionDefinition{}},
+			"APPROVED": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e4", modelRef, map[string]any{"ok": true})
 	result, err := engine.Execute(ctx, entity, "")
@@ -180,19 +180,19 @@ func TestAutomatedCascade(t *testing.T) {
 func TestCriterionBlocksTransition(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "blocked", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "blocked", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "BlockedWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "ADVANCE", Next: "DONE", Manual: false,
 					Criterion: simpleCriterion("$.approved", "EQUALS", true)},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e5", modelRef, map[string]any{"approved": false})
 	result, err := engine.Execute(ctx, entity, "")
@@ -210,24 +210,24 @@ func TestCriterionBlocksTransition(t *testing.T) {
 func TestMultipleTransitionsFirstEligible(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "multi", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "multi", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "MultiWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PATH_A", Next: "STATE_A", Manual: false,
 					Criterion: simpleCriterion("$.route", "EQUALS", "A")},
 				{Name: "PATH_B", Next: "STATE_B", Manual: false,
 					Criterion: simpleCriterion("$.route", "EQUALS", "B")},
 				{Name: "PATH_C", Next: "STATE_C", Manual: false},
 			}},
-			"STATE_A": {Transitions: []common.TransitionDefinition{}},
-			"STATE_B": {Transitions: []common.TransitionDefinition{}},
-			"STATE_C": {Transitions: []common.TransitionDefinition{}},
+			"STATE_A": {Transitions: []spi.TransitionDefinition{}},
+			"STATE_B": {Transitions: []spi.TransitionDefinition{}},
+			"STATE_C": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e6", modelRef, map[string]any{"route": "B"})
 	result, err := engine.Execute(ctx, entity, "")
@@ -245,18 +245,18 @@ func TestMultipleTransitionsFirstEligible(t *testing.T) {
 func TestNamedTransition(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "named", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "named", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "NamedWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: true},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e7", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "GO")
@@ -274,18 +274,18 @@ func TestNamedTransition(t *testing.T) {
 func TestNamedTransitionNotFound(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "named2", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "named2", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "NamedWF2", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: true},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e8", modelRef, map[string]any{"x": 1})
 	_, err := engine.Execute(ctx, entity, "NONEXISTENT")
@@ -297,21 +297,21 @@ func TestNamedTransitionNotFound(t *testing.T) {
 func TestManualTransition(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "manual", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "manual", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ManualWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "SUBMIT", Next: "SUBMITTED", Manual: true},
 			}},
-			"SUBMITTED": {Transitions: []common.TransitionDefinition{
+			"SUBMITTED": {Transitions: []spi.TransitionDefinition{
 				{Name: "AUTO_APPROVE", Next: "APPROVED", Manual: false},
 			}},
-			"APPROVED": {Transitions: []common.TransitionDefinition{}},
+			"APPROVED": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e9", modelRef, map[string]any{"x": 1})
 	entity.Meta.State = "INITIAL"
@@ -332,21 +332,21 @@ func TestManualTransition(t *testing.T) {
 func TestProcessorStubSuccess(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "proc", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "proc", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ProcWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "external", Name: "myProcessor"},
 					}},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e10", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -364,18 +364,18 @@ func TestProcessorStubSuccess(t *testing.T) {
 func TestAuditEventsRecorded(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "audit", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "audit", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "AuditWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "DONE", Manual: false},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e11", modelRef, map[string]any{"x": 1})
 	_, err := engine.Execute(ctx, entity, "")
@@ -393,15 +393,15 @@ func TestAuditEventsRecorded(t *testing.T) {
 	}
 
 	// Expect at minimum: STARTED, WORKFLOW_FOUND, TRANSITION_MAKE, FINISHED
-	typeSet := make(map[common.StateMachineEventType]bool)
+	typeSet := make(map[spi.StateMachineEventType]bool)
 	for _, ev := range events {
 		typeSet[ev.EventType] = true
 	}
-	required := []common.StateMachineEventType{
-		common.SMEventStarted,
-		common.SMEventWorkflowFound,
-		common.SMEventTransitionMade,
-		common.SMEventFinished,
+	required := []spi.StateMachineEventType{
+		spi.SMEventStarted,
+		spi.SMEventWorkflowFound,
+		spi.SMEventTransitionMade,
+		spi.SMEventFinished,
 	}
 	for _, rt := range required {
 		if !typeSet[rt] {
@@ -413,24 +413,24 @@ func TestAuditEventsRecorded(t *testing.T) {
 func TestLoopback(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "loop", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "loop", ModelVersion: "1.0"}
 
 	// Loopback: INITIAL -> INITIAL (via auto transition with criterion on counter),
 	// then INITIAL -> DONE (fallback without criterion).
 	// Since we can't mutate data in the processor stub, we use a trick:
 	// First transition has a criterion that won't match, second goes to DONE.
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "LoopWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "LOOP", Next: "INITIAL", Manual: false,
 					Criterion: simpleCriterion("$.loop", "EQUALS", true)},
 				{Name: "EXIT", Next: "DONE", Manual: false},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	// Entity with loop=true: should take LOOP (back to INITIAL), then re-evaluate.
 	// On second pass, LOOP matches again → infinite loop risk.
@@ -471,16 +471,16 @@ func TestProcessorAsyncNewTxIndependent(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr)
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "async-new-tx", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "async-new-tx", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "AsyncNewTxWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
+		States: map[string]spi.StateDefinition{
 			"INITIAL": {
-				Transitions: []common.TransitionDefinition{
+				Transitions: []spi.TransitionDefinition{
 					{
 						Name: "auto-process", Next: "PROCESSED", Manual: false,
-						Processors: []common.ProcessorDefinition{
+						Processors: []spi.ProcessorDefinition{
 							{Type: "EXTERNAL", Name: "ext-proc", ExecutionMode: "ASYNC_NEW_TX"},
 						},
 					},
@@ -489,7 +489,7 @@ func TestProcessorAsyncNewTxIndependent(t *testing.T) {
 			"PROCESSED": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("async-new-tx-entity-1", modelRef, map[string]any{"status": "new"})
 
@@ -514,16 +514,16 @@ func TestProcessorSyncInCallerTx(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr)
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "sync-proc", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "sync-proc", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "SyncProcWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
+		States: map[string]spi.StateDefinition{
 			"INITIAL": {
-				Transitions: []common.TransitionDefinition{
+				Transitions: []spi.TransitionDefinition{
 					{
 						Name: "auto-sync", Next: "DONE", Manual: false,
-						Processors: []common.ProcessorDefinition{
+						Processors: []spi.ProcessorDefinition{
 							{Type: "INTERNAL", Name: "sync-proc", ExecutionMode: "SYNC"},
 						},
 					},
@@ -532,7 +532,7 @@ func TestProcessorSyncInCallerTx(t *testing.T) {
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("sync-proc-entity-1", modelRef, map[string]any{"value": 42})
 
@@ -557,16 +557,16 @@ func TestProcessorAsyncSameTxDefault(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr)
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "async-same-tx", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "async-same-tx", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "AsyncSameTxWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
+		States: map[string]spi.StateDefinition{
 			"INITIAL": {
-				Transitions: []common.TransitionDefinition{
+				Transitions: []spi.TransitionDefinition{
 					{
 						Name: "auto-same", Next: "COMPLETE", Manual: false,
-						Processors: []common.ProcessorDefinition{
+						Processors: []spi.ProcessorDefinition{
 							{Type: "INTERNAL", Name: "same-proc", ExecutionMode: "ASYNC_SAME_TX"},
 						},
 					},
@@ -575,7 +575,7 @@ func TestProcessorAsyncSameTxDefault(t *testing.T) {
 			"COMPLETE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("async-same-tx-entity-1", modelRef, map[string]any{"ready": true})
 
@@ -593,25 +593,25 @@ func TestProcessorAsyncSameTxDefault(t *testing.T) {
 
 // --- ExternalProcessingService Integration Tests ---
 
-// mockExtProc is a test double for spi.ExternalProcessingService.
+// mockExtProc is a test double for contract.ExternalProcessingService.
 type mockExtProc struct {
-	mu                    sync.Mutex
+	mu                     sync.Mutex
 	dispatchProcessorCalls int
 	dispatchCriteriaCalls  int
-	returnEntity          *common.Entity
-	returnErr             error
-	criteriaResult        bool
-	criteriaErr           error
+	returnEntity           *spi.Entity
+	returnErr              error
+	criteriaResult         bool
+	criteriaErr            error
 }
 
-func (m *mockExtProc) DispatchProcessor(_ context.Context, _ *common.Entity, _ common.ProcessorDefinition, _, _, _ string) (*common.Entity, error) {
+func (m *mockExtProc) DispatchProcessor(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dispatchProcessorCalls++
 	return m.returnEntity, m.returnErr
 }
 
-func (m *mockExtProc) DispatchCriteria(_ context.Context, _ *common.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
+func (m *mockExtProc) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dispatchCriteriaCalls++
@@ -628,21 +628,21 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "ext-proc", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "ext-proc", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ExtProcWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "ext-proc-1", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("ext-1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -678,21 +678,21 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "ext-async-new", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "ext-async-new", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "AsyncNewTxExtWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "ext-proc-new-tx", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("ext-async-1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -728,21 +728,21 @@ func TestProcessorDispatchError(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "ext-err", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "ext-err", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ErrWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "fail-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("ext-err-1", modelRef, map[string]any{"x": 1})
 	_, err := engine.Execute(ctx, entity, "")
@@ -759,26 +759,26 @@ func TestProcessorDispatchModifiesEntityData(t *testing.T) {
 
 	modifiedData, _ := json.Marshal(map[string]any{"x": 1, "enriched": true})
 	mock := &mockExtProc{
-		returnEntity: &common.Entity{Data: modifiedData},
+		returnEntity: &spi.Entity{Data: modifiedData},
 	}
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "ext-mod", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "ext-mod", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ModWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "ENRICH", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "enrich-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("ext-mod-1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -803,14 +803,14 @@ func TestNilExtProcProcessorNoOp(t *testing.T) {
 	// Ensure that with nil extProc, processors remain no-op (backward compat).
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "nil-ext", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "nil-ext", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "NilExtWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "proc-1", ExecutionMode: "SYNC"},
 						{Type: "EXTERNAL", Name: "proc-2", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
@@ -818,7 +818,7 @@ func TestNilExtProcProcessorNoOp(t *testing.T) {
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("nil-ext-1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -843,21 +843,21 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "func-crit", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "func-crit", ModelVersion: "1.0"}
 
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "checkEligibility"})
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "FuncCritWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "CHECK", Next: "ELIGIBLE", Manual: false,
 					Criterion: funcCriterion},
 			}},
 			"ELIGIBLE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("func-crit-1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -883,21 +883,21 @@ func TestFunctionCriterionNoExtProcError(t *testing.T) {
 	// FUNCTION criterion without extProc should return an error.
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "func-no-ext", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "func-no-ext", ModelVersion: "1.0"}
 
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "check"})
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "FuncNoExtWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "CHECK", Next: "DONE", Manual: false,
 					Criterion: funcCriterion},
 			}},
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("func-no-ext-1", modelRef, map[string]any{"x": 1})
 	_, err := engine.Execute(ctx, entity, "")
@@ -916,21 +916,21 @@ func TestFunctionCriterionReturnsFalse(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "func-false", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "func-false", ModelVersion: "1.0"}
 
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "deny"})
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "FuncFalseWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "CHECK", Next: "DONE", Manual: false,
 					Criterion: funcCriterion},
 			}},
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("func-false-1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -956,18 +956,18 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "wf-func-crit", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "wf-func-crit", ModelVersion: "1.0"}
 
 	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "selectWF"})
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "WFFuncCritWF", InitialState: "SELECTED", Active: true,
 		Criterion: funcCriterion,
-		States: map[string]common.StateDefinition{
+		States: map[string]spi.StateDefinition{
 			"SELECTED": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("wf-func-1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -992,7 +992,7 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 // --- Default Workflow Tests ---
 
 func TestDefaultWorkflowParsesCorrectly(t *testing.T) {
-	var wf common.WorkflowDefinition
+	var wf spi.WorkflowDefinition
 	if err := json.Unmarshal(defaultWorkflowJSON, &wf); err != nil {
 		t.Fatalf("failed to parse default workflow: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestDefaultWorkflowParsesCorrectly(t *testing.T) {
 func TestDefaultWorkflowEntityCreateEndsInCreated(t *testing.T) {
 	engine, _ := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "no-wf-model", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "no-wf-model", ModelVersion: "1.0"}
 
 	entity := makeEntity("dw-1", modelRef, map[string]any{"key": "value"})
 	result, err := engine.Execute(ctx, entity, "")
@@ -1032,7 +1032,7 @@ func TestDefaultWorkflowEntityCreateEndsInCreated(t *testing.T) {
 func TestDefaultWorkflowManualUpdateStaysCreated(t *testing.T) {
 	engine, _ := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "no-wf-update", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "no-wf-update", ModelVersion: "1.0"}
 
 	// Create entity via default workflow.
 	entity := makeEntity("dw-2", modelRef, map[string]any{"key": "value"})
@@ -1060,7 +1060,7 @@ func TestDefaultWorkflowManualUpdateStaysCreated(t *testing.T) {
 func TestDefaultWorkflowManualDeleteEndsInDeleted(t *testing.T) {
 	engine, _ := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "no-wf-delete", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "no-wf-delete", ModelVersion: "1.0"}
 
 	// Create entity via default workflow.
 	entity := makeEntity("dw-3", modelRef, map[string]any{"key": "value"})
@@ -1088,19 +1088,19 @@ func TestDefaultWorkflowManualDeleteEndsInDeleted(t *testing.T) {
 func TestCustomWorkflowTakesPrecedence(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "custom-wf", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "custom-wf", ModelVersion: "1.0"}
 
 	// Import a custom workflow for this model.
-	customWF := common.WorkflowDefinition{
+	customWF := spi.WorkflowDefinition{
 		Version: "1.0", Name: "CustomWF", InitialState: "CUSTOM_INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"CUSTOM_INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"CUSTOM_INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "GO", Next: "CUSTOM_DONE", Manual: false},
 			}},
-			"CUSTOM_DONE": {Transitions: []common.TransitionDefinition{}},
+			"CUSTOM_DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{customWF})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{customWF})
 
 	entity := makeEntity("cw-1", modelRef, map[string]any{"key": "value"})
 	result, err := engine.Execute(ctx, entity, "")
@@ -1119,7 +1119,7 @@ func TestCustomWorkflowTakesPrecedence(t *testing.T) {
 func TestDefaultWorkflowNotPersistedInStore(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "no-persist", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "no-persist", ModelVersion: "1.0"}
 
 	// Create entity using default workflow (no workflow registered).
 	entity := makeEntity("np-1", modelRef, map[string]any{"key": "value"})
@@ -1146,7 +1146,7 @@ func TestDefaultWorkflowNotPersistedInStore(t *testing.T) {
 func TestDefaultWorkflowLoopbackNoOp(t *testing.T) {
 	engine, _ := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "no-wf-loopback", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "no-wf-loopback", ModelVersion: "1.0"}
 
 	// Create entity via default workflow → CREATED.
 	entity := makeEntity("dw-lb-1", modelRef, map[string]any{"key": "value"})
@@ -1174,7 +1174,7 @@ func TestDefaultWorkflowLoopbackNoOp(t *testing.T) {
 func TestDefaultWorkflowDeletedIsTerminal(t *testing.T) {
 	engine, _ := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "no-wf-terminal", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "no-wf-terminal", ModelVersion: "1.0"}
 
 	// Create entity → CREATED, then DELETE → DELETED.
 	entity := makeEntity("dw-term-1", modelRef, map[string]any{"key": "value"})
@@ -1198,7 +1198,7 @@ func TestDefaultWorkflowDeletedIsTerminal(t *testing.T) {
 }
 
 // wrappedNotFoundWFStore wraps a WorkflowStore and returns errors in the
-// format "key workflow/X:1: not found" wrapping common.ErrNotFound — a
+// format "key workflow/X:1: not found" wrapping spi.ErrNotFound — a
 // common shape produced by wire-level stores that don't use the memory
 // store's "no workflows found" prefix. Ensures the engine's not-found
 // detection is based on errors.Is, not substring matching.
@@ -1206,19 +1206,19 @@ type wrappedNotFoundWFStore struct {
 	inner spi.WorkflowStore
 }
 
-func (s *wrappedNotFoundWFStore) Save(ctx context.Context, modelRef common.ModelRef, workflows []common.WorkflowDefinition) error {
+func (s *wrappedNotFoundWFStore) Save(ctx context.Context, modelRef spi.ModelRef, workflows []spi.WorkflowDefinition) error {
 	return s.inner.Save(ctx, modelRef, workflows)
 }
 
-func (s *wrappedNotFoundWFStore) Get(ctx context.Context, modelRef common.ModelRef) ([]common.WorkflowDefinition, error) {
+func (s *wrappedNotFoundWFStore) Get(ctx context.Context, modelRef spi.ModelRef) ([]spi.WorkflowDefinition, error) {
 	wfs, err := s.inner.Get(ctx, modelRef)
 	if err != nil {
-		return nil, fmt.Errorf("key workflow/%s: %w", modelRef, common.ErrNotFound)
+		return nil, fmt.Errorf("key workflow/%s: %w", modelRef, spi.ErrNotFound)
 	}
 	return wfs, nil
 }
 
-func (s *wrappedNotFoundWFStore) Delete(ctx context.Context, modelRef common.ModelRef) error {
+func (s *wrappedNotFoundWFStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	return s.inner.Delete(ctx, modelRef)
 }
 
@@ -1235,7 +1235,7 @@ func (f *wrappedNotFoundFactory) WorkflowStore(ctx context.Context) (spi.Workflo
 }
 
 // TestExecute_WrappedNotFoundFallsBackToDefault verifies that the engine
-// recognises a wrapped common.ErrNotFound via errors.Is rather than string
+// recognises a wrapped spi.ErrNotFound via errors.Is rather than string
 // matching, and falls back to the default workflow.
 func TestExecute_WrappedNotFoundFallsBackToDefault(t *testing.T) {
 	memFactory := memory.NewStoreFactory()
@@ -1247,7 +1247,7 @@ func TestExecute_WrappedNotFoundFallsBackToDefault(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr)
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "WrappedModel", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "WrappedModel", ModelVersion: "1.0"}
 
 	entity := makeEntity("wrapped-1", modelRef, map[string]any{"key": "value"})
 	result, err := engine.Execute(ctx, entity, "")
@@ -1264,20 +1264,20 @@ func TestExecute_WrappedNotFoundFallsBackToDefault(t *testing.T) {
 
 // --- ASYNC_NEW_TX Semantics Tests ---
 
-// mockExternalProcessing is a flexible test double for spi.ExternalProcessingService
+// mockExternalProcessing is a flexible test double for contract.ExternalProcessingService
 // that supports per-call dispatch logic via function fields.
 type mockExternalProcessing struct {
-	dispatchFunc func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition, wf, tr, txID string) (*common.Entity, error)
+	dispatchFunc func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error)
 }
 
-func (m *mockExternalProcessing) DispatchProcessor(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition, wf, tr, txID string) (*common.Entity, error) {
+func (m *mockExternalProcessing) DispatchProcessor(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error) {
 	if m.dispatchFunc != nil {
 		return m.dispatchFunc(ctx, entity, proc, wf, tr, txID)
 	}
 	return entity, nil
 }
 
-func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *common.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
+func (m *mockExternalProcessing) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _, _, _, _, _ string) (bool, error) {
 	return true, nil
 }
 
@@ -1288,11 +1288,11 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExternalProcessing{
-		dispatchFunc: func(_ context.Context, entity *common.Entity, proc common.ProcessorDefinition, _, _, _ string) (*common.Entity, error) {
+		dispatchFunc: func(_ context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
 			switch proc.Name {
 			case "sync-proc":
 				modified, _ := json.Marshal(map[string]any{"modified": "by-sync"})
-				return &common.Entity{Data: modified}, nil
+				return &spi.Entity{Data: modified}, nil
 			case "async-fail-proc":
 				return nil, fmt.Errorf("async processor exploded")
 			default:
@@ -1303,14 +1303,14 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "async-fail-test", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "async-fail-test", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "AsyncFailWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "sync-proc", ExecutionMode: "SYNC"},
 						{Type: "EXTERNAL", Name: "async-fail-proc", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
@@ -1318,7 +1318,7 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("async-fail-1", modelRef, map[string]any{"original": true})
 	result, err := engine.Execute(ctx, entity, "")
@@ -1349,30 +1349,30 @@ func TestAsyncNewTxEntityMutationsDiscarded(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExternalProcessing{
-		dispatchFunc: func(_ context.Context, _ *common.Entity, _ common.ProcessorDefinition, _, _, _ string) (*common.Entity, error) {
+		dispatchFunc: func(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
 			// Return modified entity data — should be discarded for ASYNC_NEW_TX.
 			modified, _ := json.Marshal(map[string]any{"sneaky": "mutation"})
-			return &common.Entity{Data: modified}, nil
+			return &spi.Entity{Data: modified}, nil
 		},
 	}
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "async-discard-test", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "async-discard-test", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "AsyncDiscardWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "async-mutator", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
 			}},
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	originalData := map[string]any{"original": "data"}
 	entity := makeEntity("async-discard-1", modelRef, originalData)
@@ -1410,7 +1410,7 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 	var callMu sync.Mutex
 
 	mock := &mockExternalProcessing{
-		dispatchFunc: func(_ context.Context, entity *common.Entity, proc common.ProcessorDefinition, _, _, _ string) (*common.Entity, error) {
+		dispatchFunc: func(_ context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
 			callMu.Lock()
 			callOrder = append(callOrder, proc.Name)
 			callMu.Unlock()
@@ -1422,20 +1422,20 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 			}
 			data[proc.Name] = true
 			modified, _ := json.Marshal(data)
-			return &common.Entity{Data: modified}, nil
+			return &spi.Entity{Data: modified}, nil
 		},
 	}
 	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "cumulative-test", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "cumulative-test", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "CumulativeWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "first", ExecutionMode: "SYNC"},
 						{Type: "EXTERNAL", Name: "second", ExecutionMode: "SYNC"},
 						{Type: "EXTERNAL", Name: "third", ExecutionMode: "SYNC"},
@@ -1444,7 +1444,7 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("cumulative-1", modelRef, map[string]any{"base": true})
 	result, err := engine.Execute(ctx, entity, "")
@@ -1489,11 +1489,11 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	engine := NewEngine(factory, uuids, nil)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "async-sees-sync", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "async-sees-sync", ModelVersion: "1.0"}
 
 	var asyncReceivedData []byte
 	engine.extProc = &mockExternalProcessing{
-		dispatchFunc: func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition, wf, tr, txID string) (*common.Entity, error) {
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error) {
 			if proc.Name == "sync-modifier" {
 				modified := *entity
 				modified.Data = []byte(`{"sync":"applied"}`)
@@ -1508,12 +1508,12 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 		},
 	}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "AsyncSeesSyncWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "sync-modifier", ExecutionMode: "SYNC"},
 						{Type: "EXTERNAL", Name: "async-reader", ExecutionMode: "ASYNC_NEW_TX"},
 					}},
@@ -1521,7 +1521,7 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 			"DONE": {},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("async-sees-sync-e1", modelRef, map[string]any{"original": true})
 	_, err := engine.Execute(ctx, entity, "")
@@ -1536,20 +1536,20 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 
 func TestSyncProcessor_ContextCancellation(t *testing.T) {
 	engine, factory := setupEngine(t)
-	modelRef := common.ModelRef{EntityName: "ctx-cancel", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "ctx-cancel", ModelVersion: "1.0"}
 
 	engine.extProc = &mockExternalProcessing{
-		dispatchFunc: func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition, wf, tr, txID string) (*common.Entity, error) {
+		dispatchFunc: func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, wf, tr, txID string) (*spi.Entity, error) {
 			return nil, ctx.Err()
 		},
 	}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "CtxCancelWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "RUN", Next: "DONE", Manual: false,
-					Processors: []common.ProcessorDefinition{
+					Processors: []spi.ProcessorDefinition{
 						{Type: "EXTERNAL", Name: "slow-proc", ExecutionMode: "SYNC"},
 					}},
 			}},
@@ -1560,7 +1560,7 @@ func TestSyncProcessor_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(ctxWithTenant(testTenant))
 	cancel() // cancel immediately
 
-	saveWorkflow(t, factory, ctxWithTenant(testTenant), modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctxWithTenant(testTenant), modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("ctx-cancel-e1", modelRef, map[string]any{"status": "new"})
 	_, err := engine.Execute(ctx, entity, "")
@@ -1591,8 +1591,8 @@ func TestAsyncNewTx_ParentRollbackDiscardsWork(t *testing.T) {
 
 	// Write an entity inside the savepoint.
 	es, _ := factory.EntityStore(txCtx)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{ID: "sp-entity", TenantID: testTenant, ModelRef: common.ModelRef{EntityName: "M", ModelVersion: "1"}},
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{ID: "sp-entity", TenantID: testTenant, ModelRef: spi.ModelRef{EntityName: "M", ModelVersion: "1"}},
 		Data: []byte(`{"from":"savepoint"}`),
 	}
 	if _, err := es.Save(txCtx, entity); err != nil {

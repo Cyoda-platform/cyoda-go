@@ -3,9 +3,10 @@ package api
 import (
 	"net/http"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // Unimplemented satisfies genapi.ServerInterface with every method returning

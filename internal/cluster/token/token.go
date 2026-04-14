@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	ErrTokenExpired  = errors.New("token expired")
-	ErrTokenInvalid  = errors.New("token invalid")
-	ErrTokenTampered = errors.New("token signature mismatch")
+	ErrTokenExpired   = errors.New("token expired")
+	ErrTokenInvalid   = errors.New("token invalid")
+	ErrTokenTampered  = errors.New("token signature mismatch")
 	ErrSecretTooShort = errors.New("HMAC secret must be at least 32 bytes")
 )
 

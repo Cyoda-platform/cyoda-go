@@ -33,9 +33,9 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
 	svc, err := auth.NewAuthService(auth.AuthConfig{
-		SigningKeyPEM:  pemKey,
-		Issuer:         "cyoda-go",
-		ExpirySeconds:  3600,
+		SigningKeyPEM: pemKey,
+		Issuer:        "cyoda-go",
+		ExpirySeconds: 3600,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthService: %v", err)
@@ -287,9 +287,9 @@ func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
 	svc, err := auth.NewAuthService(auth.AuthConfig{
-		SigningKeyPEM:  pemKey,
-		Issuer:         "cyoda-go",
-		ExpirySeconds:  3600,
+		SigningKeyPEM: pemKey,
+		Issuer:        "cyoda-go",
+		ExpirySeconds: 3600,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthService: %v", err)
@@ -313,9 +313,9 @@ func TestIntegration_JWTMode_InvalidToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
 	svc, err := auth.NewAuthService(auth.AuthConfig{
-		SigningKeyPEM:  pemKey,
-		Issuer:         "cyoda-go",
-		ExpirySeconds:  3600,
+		SigningKeyPEM: pemKey,
+		Issuer:        "cyoda-go",
+		ExpirySeconds: 3600,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthService: %v", err)

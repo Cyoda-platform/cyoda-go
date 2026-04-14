@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
@@ -22,38 +25,37 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type App struct {
 	config             Config
 	storeFactory       spi.StoreFactory
 	transactionManager spi.TransactionManager
-	authService        spi.AuthenticationService
-	authzService       spi.AuthorizationService
+	authService        contract.AuthenticationService
+	authzService       contract.AuthorizationService
 	workflowEngine     *workflow.Engine
 	searchService      *search.SearchService
-	auditService       spi.AuditService
-	clusterService     spi.ClusterService
+	auditService       contract.AuditService
+	clusterService     contract.ClusterService
 	memberRegistry     *internalgrpc.MemberRegistry
 	grpcServer         *internalgrpc.Server
 	handler            http.Handler
 	tokenSigner        *token.Signer
-	nodeRegistry       spi.NodeRegistry
+	nodeRegistry       contract.NodeRegistry
 	txLifecycle        *lifecycle.Manager
 	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
@@ -103,10 +105,10 @@ func New(cfg Config) *App {
 			panic("CYODA_JWT_SIGNING_KEY is required when IAM mode is jwt")
 		}
 		// Create a KV-backed trusted key store for persistence across restarts.
-		systemCtx := common.WithUserContext(context.Background(), &common.UserContext{
+		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 			UserID:   "system",
 			UserName: "System",
-			Tenant:   common.Tenant{ID: common.SystemTenantID, Name: "System"},
+			Tenant:   spi.Tenant{ID: spi.SystemTenantID, Name: "System"},
 		})
 		kvStore, err := a.storeFactory.KeyValueStore(systemCtx)
 		if err != nil {
@@ -117,10 +119,10 @@ func New(cfg Config) *App {
 			panic(fmt.Sprintf("failed to create KV trusted key store: %v", err))
 		}
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
-			SigningKeyPEM:    cfg.IAM.JWTSigningKey,
-			Issuer:           cfg.IAM.JWTIssuer,
-			ExpirySeconds:    cfg.IAM.JWTExpiry,
-			TrustedKeyStore:  trustedKeyStore,
+			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
+			Issuer:          cfg.IAM.JWTIssuer,
+			ExpirySeconds:   cfg.IAM.JWTExpiry,
+			TrustedKeyStore: trustedKeyStore,
 		})
 		if err != nil {
 			panic(fmt.Sprintf("failed to create auth service: %v", err))
@@ -177,11 +179,11 @@ func New(cfg Config) *App {
 			fmt.Fprintf(os.Stderr, "    -d \"grant_type=client_credentials\"\n\n")
 		}
 	} else {
-		defaultUser := &common.UserContext{
+		defaultUser := &spi.UserContext{
 			UserID:   cfg.IAM.MockUserID,
 			UserName: cfg.IAM.MockUserName,
-			Tenant: common.Tenant{
-				ID:   common.TenantID(cfg.IAM.MockTenantID),
+			Tenant: spi.Tenant{
+				ID:   spi.TenantID(cfg.IAM.MockTenantID),
 				Name: cfg.IAM.MockTenantName,
 			},
 			Roles: cfg.IAM.MockRoles,
@@ -299,7 +301,7 @@ func New(cfg Config) *App {
 	}
 
 	// Wire external processing dispatcher
-	var extProc spi.ExternalProcessingService
+	var extProc contract.ExternalProcessingService
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
 	} else if cfg.Cluster.Enabled {
@@ -436,21 +438,21 @@ func (a *App) Handler() http.Handler { return a.handler }
 
 func (a *App) StoreFactory() spi.StoreFactory             { return a.storeFactory }
 func (a *App) TransactionManager() spi.TransactionManager { return a.transactionManager }
-func (a *App) AuthenticationService() spi.AuthenticationService {
+func (a *App) AuthenticationService() contract.AuthenticationService {
 	return a.authService
 }
-func (a *App) AuthorizationService() spi.AuthorizationService {
+func (a *App) AuthorizationService() contract.AuthorizationService {
 	return a.authzService
 }
-func (a *App) WorkflowEngine() *workflow.Engine           { return a.workflowEngine }
-func (a *App) SearchService() *search.SearchService      { return a.searchService }
-func (a *App) AuditService() spi.AuditService            { return a.auditService }
-func (a *App) ClusterService() spi.ClusterService        { return a.clusterService }
-func (a *App) GRPCServer() *internalgrpc.Server           { return a.grpcServer }
+func (a *App) WorkflowEngine() *workflow.Engine             { return a.workflowEngine }
+func (a *App) SearchService() *search.SearchService         { return a.searchService }
+func (a *App) AuditService() contract.AuditService          { return a.auditService }
+func (a *App) ClusterService() contract.ClusterService      { return a.clusterService }
+func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServer }
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
-func (a *App) TokenSigner() *token.Signer                    { return a.tokenSigner }
-func (a *App) NodeRegistry() spi.NodeRegistry                { return a.nodeRegistry }
-func (a *App) TxLifecycle() *lifecycle.Manager                { return a.txLifecycle }
+func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
+func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
+func (a *App) TxLifecycle() *lifecycle.Manager              { return a.txLifecycle }
 
 // Close performs graceful shutdown of all backend resources.
 func (a *App) Close() error {

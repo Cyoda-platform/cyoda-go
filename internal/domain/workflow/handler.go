@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 // Handler implements the workflow import/export HTTP endpoints.
@@ -25,8 +25,8 @@ func New(factory spi.StoreFactory, engine *Engine) *Handler {
 
 // importRequest is the JSON body shape for workflow import.
 type importRequest struct {
-	ImportMode string                      `json:"importMode"`
-	Workflows  []common.WorkflowDefinition `json:"workflows"`
+	ImportMode string                   `json:"importMode"`
+	Workflows  []spi.WorkflowDefinition `json:"workflows"`
 }
 
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
@@ -54,7 +54,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ref := common.ModelRef{
+	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
@@ -67,7 +67,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 
 	// Load existing workflows (not-found is treated as empty).
 	existing, err := wfStore.Get(r.Context(), ref)
-	if err != nil && errors.Is(err, common.ErrNotFound) {
+	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		existing = nil
 	} else if err != nil {
 		common.WriteError(w, r, common.Internal("failed to load existing workflows", err))
@@ -97,7 +97,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 
 // ExportEntityModelWorkflow handles GET /model/{entityName}/{modelVersion}/workflow/export.
 func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
-	ref := common.ModelRef{
+	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
@@ -109,7 +109,7 @@ func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	}
 
 	workflows, err := wfStore.Get(r.Context(), ref)
-	if err != nil && errors.Is(err, common.ErrNotFound) {
+	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeWorkflowNotFound,
 			fmt.Sprintf("no workflows found for model %s/%d", entityName, modelVersion)))
 		return

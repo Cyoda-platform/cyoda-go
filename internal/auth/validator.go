@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // JWKSValidator validates JWT tokens by fetching public keys from a JWKS endpoint.
@@ -36,7 +36,7 @@ func NewJWKSValidator(jwksURL, issuer string, cacheTTL time.Duration) *JWKSValid
 }
 
 // Validate parses and validates a JWT token string, returning a UserContext on success.
-func (v *JWKSValidator) Validate(tokenString string) (*common.UserContext, error) {
+func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	parsed, err := Parse(tokenString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
@@ -169,7 +169,7 @@ func parseJWKSResponse(body []byte) (map[string]*rsa.PublicKey, error) {
 }
 
 // buildUserContext extracts user information from JWT claims.
-func (v *JWKSValidator) buildUserContext(claims map[string]any) (*common.UserContext, error) {
+func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContext, error) {
 	userID, _ := claims["caas_user_id"].(string)
 	if userID == "" {
 		userID, _ = claims["sub"].(string)
@@ -190,11 +190,11 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*common.UserCon
 		roles = extractStringSlice(claims["scopes"])
 	}
 
-	return &common.UserContext{
+	return &spi.UserContext{
 		UserID:   userID,
 		UserName: userID,
-		Tenant: common.Tenant{
-			ID:   common.TenantID(orgID),
+		Tenant: spi.Tenant{
+			ID:   spi.TenantID(orgID),
 			Name: orgID,
 		},
 		Roles: roles,

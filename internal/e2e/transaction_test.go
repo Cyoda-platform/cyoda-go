@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // --- Test 3.1: Concurrent entity creates (same model) ---
@@ -116,7 +116,7 @@ func TestTransaction_ConcurrentUpdates(t *testing.T) {
 func TestTransaction_RollbackOnProcessorFailure(t *testing.T) {
 	const model = "e2e-tx-3"
 
-	procSvc.RegisterProcessor("tx-fail", func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error) {
+	procSvc.RegisterProcessor("tx-fail", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		return nil, fmt.Errorf("forced failure for rollback test")
 	})
 	defer procSvc.Reset()

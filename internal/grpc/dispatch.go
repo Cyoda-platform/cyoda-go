@@ -8,6 +8,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
@@ -24,11 +27,11 @@ const defaultResponseTimeoutMs = 30000
 // calculation members via the MemberRegistry.
 type ProcessorDispatcher struct {
 	registry *MemberRegistry
-	uuids    common.UUIDGenerator
+	uuids    spi.UUIDGenerator
 }
 
 // NewProcessorDispatcher creates a new ProcessorDispatcher.
-func NewProcessorDispatcher(registry *MemberRegistry, uuids common.UUIDGenerator) *ProcessorDispatcher {
+func NewProcessorDispatcher(registry *MemberRegistry, uuids spi.UUIDGenerator) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
 		registry: registry,
 		uuids:    uuids,
@@ -37,8 +40,8 @@ func NewProcessorDispatcher(registry *MemberRegistry, uuids common.UUIDGenerator
 
 // DispatchProcessor sends an entity processor calculation request to a matching
 // calculation member and waits for the response.
-func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *common.Entity, processor common.ProcessorDefinition, workflowName string, transitionName string, txID string) (*common.Entity, error) {
-	uc := common.MustGetUserContext(ctx)
+func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error) {
+	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
 
 	member := d.registry.FindByTags(tenantID, processor.Config.CalculationNodesTags)
@@ -49,7 +52,7 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *com
 
 	slog.Info("dispatching processor", "pkg", "grpc", "memberId", member.ID, "processor", processor.Name, "entityId", entity.Meta.ID)
 
-	requestID := d.uuids.NewTimeUUID().String()
+	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
 
 	req := events.EntityProcessorCalculationRequestJson{
 		ID:            requestID,
@@ -132,7 +135,7 @@ func (d *ProcessorDispatcher) DispatchProcessor(ctx context.Context, entity *com
 }
 
 // applyProcessorResponse extracts updated entity data from the response payload.
-func (d *ProcessorDispatcher) applyProcessorResponse(entity *common.Entity, resp *ProcessingResponse) (*common.Entity, error) {
+func (d *ProcessorDispatcher) applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.Entity, error) {
 	if resp.Payload == nil {
 		return entity, nil
 	}
@@ -147,7 +150,7 @@ func (d *ProcessorDispatcher) applyProcessorResponse(entity *common.Entity, resp
 		return entity, nil
 	}
 
-	updated := &common.Entity{
+	updated := &spi.Entity{
 		Meta: entity.Meta,
 		Data: []byte(envelope.Data),
 	}
@@ -156,8 +159,8 @@ func (d *ProcessorDispatcher) applyProcessorResponse(entity *common.Entity, resp
 
 // DispatchCriteria sends an entity criteria calculation request to a matching
 // calculation member and waits for the boolean result.
-func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *common.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
-	uc := common.MustGetUserContext(ctx)
+func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
+	uc := spi.MustGetUserContext(ctx)
 	tenantID := uc.Tenant.ID
 
 	// FunctionCondition schema: {"type":"function","function":{"name":"...","config":{...}}}
@@ -189,7 +192,7 @@ func (d *ProcessorDispatcher) DispatchCriteria(ctx context.Context, entity *comm
 
 	slog.Info("dispatching criteria", "pkg", "grpc", "memberId", member.ID, "criteria", parsed.Function.Name, "entityId", entity.Meta.ID)
 
-	requestID := d.uuids.NewTimeUUID().String()
+	requestID := uuid.UUID(d.uuids.NewTimeUUID()).String()
 
 	req := events.EntityCriteriaCalculationRequestJson{
 		ID:            requestID,
