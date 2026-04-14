@@ -4,20 +4,20 @@ import (
 	"errors"
 	"math/rand"
 
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 type PeerSelector interface {
-	Select(candidates []spi.NodeInfo) (spi.NodeInfo, error)
+	Select(candidates []contract.NodeInfo) (contract.NodeInfo, error)
 }
 
 type RandomSelector struct{}
 
 func NewRandomSelector() *RandomSelector { return &RandomSelector{} }
 
-func (s *RandomSelector) Select(candidates []spi.NodeInfo) (spi.NodeInfo, error) {
+func (s *RandomSelector) Select(candidates []contract.NodeInfo) (contract.NodeInfo, error) {
 	if len(candidates) == 0 {
-		return spi.NodeInfo{}, errors.New("no candidates")
+		return contract.NodeInfo{}, errors.New("no candidates")
 	}
 	return candidates[rand.Intn(len(candidates))], nil
 }

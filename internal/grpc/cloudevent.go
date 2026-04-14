@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // NewCloudEvent creates a CloudEvent with JSON-marshalled payload as text data.
@@ -33,7 +33,7 @@ func NewCloudEvent(eventType string, payload any) (*cepb.CloudEvent, error) {
 // based on the UserContext in the request context.
 // See: https://github.com/cloudevents/spec/blob/main/cloudevents/extensions/authcontext.md
 func AttachAuthContext(ctx context.Context, ce *cepb.CloudEvent) {
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	if uc == nil || ce == nil {
 		return
 	}

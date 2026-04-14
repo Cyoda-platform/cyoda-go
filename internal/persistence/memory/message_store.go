@@ -7,17 +7,17 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type messageEntry struct {
-	header   common.MessageHeader
-	metaData common.MessageMetaData
+	header   spi.MessageHeader
+	metaData spi.MessageMetaData
 }
 
 // copyMessageMetaData returns a deep copy of the metadata maps.
-func copyMessageMetaData(m common.MessageMetaData) common.MessageMetaData {
-	out := common.MessageMetaData{}
+func copyMessageMetaData(m spi.MessageMetaData) spi.MessageMetaData {
+	out := spi.MessageMetaData{}
 	if m.Values != nil {
 		out.Values = make(map[string]any, len(m.Values))
 		for k, v := range m.Values {
@@ -34,11 +34,11 @@ func copyMessageMetaData(m common.MessageMetaData) common.MessageMetaData {
 }
 
 type MessageStore struct {
-	tenant  common.TenantID
+	tenant  spi.TenantID
 	factory *StoreFactory
 }
 
-func (s *MessageStore) Save(_ context.Context, id string, header common.MessageHeader, metaData common.MessageMetaData, payload io.Reader) error {
+func (s *MessageStore) Save(_ context.Context, id string, header spi.MessageHeader, metaData spi.MessageMetaData, payload io.Reader) error {
 	f := s.factory
 
 	// Step 1: Write blob to a temp file OUTSIDE the lock.
@@ -87,15 +87,15 @@ func (s *MessageStore) Save(_ context.Context, id string, header common.MessageH
 	return nil
 }
 
-func (s *MessageStore) Get(_ context.Context, id string) (common.MessageHeader, common.MessageMetaData, io.ReadCloser, error) {
+func (s *MessageStore) Get(_ context.Context, id string) (spi.MessageHeader, spi.MessageMetaData, io.ReadCloser, error) {
 	f := s.factory
 
 	// Copy metadata under lock.
 	f.msgMu.RLock()
 	tenantMap := f.msgData[s.tenant]
 	entry, ok := tenantMap[id]
-	var header common.MessageHeader
-	var metaData common.MessageMetaData
+	var header spi.MessageHeader
+	var metaData spi.MessageMetaData
 	if ok {
 		header = entry.header
 		metaData = copyMessageMetaData(entry.metaData)
@@ -103,13 +103,13 @@ func (s *MessageStore) Get(_ context.Context, id string) (common.MessageHeader, 
 	f.msgMu.RUnlock()
 
 	if !ok {
-		return common.MessageHeader{}, common.MessageMetaData{}, nil, common.ErrNotFound
+		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, spi.ErrNotFound
 	}
 
 	blobPath := filepath.Join(f.blobDir, string(s.tenant), id)
 	file, err := os.Open(blobPath)
 	if err != nil {
-		return common.MessageHeader{}, common.MessageMetaData{}, nil, fmt.Errorf("failed to open blob file: %w", err)
+		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, fmt.Errorf("failed to open blob file: %w", err)
 	}
 
 	return header, metaData, file, nil

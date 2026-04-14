@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
@@ -17,9 +17,9 @@ type fakeDispatcher struct {
 }
 
 func (f *fakeDispatcher) DispatchProcessor(
-	ctx context.Context, entity *common.Entity, processor common.ProcessorDefinition,
+	ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition,
 	workflowName, transitionName, txID string,
-) (*common.Entity, error) {
+) (*spi.Entity, error) {
 	f.processorCalled = true
 	if f.returnErr != nil {
 		return nil, f.returnErr
@@ -28,7 +28,7 @@ func (f *fakeDispatcher) DispatchProcessor(
 }
 
 func (f *fakeDispatcher) DispatchCriteria(
-	ctx context.Context, entity *common.Entity, criterion json.RawMessage,
+	ctx context.Context, entity *spi.Entity, criterion json.RawMessage,
 	target, workflowName, transitionName, processorName, txID string,
 ) (bool, error) {
 	f.criteriaCalled = true
@@ -45,11 +45,11 @@ func TestTracingExternalProcessingService_DispatchProcessor_DelegatesToInner(t *
 	inner := &fakeDispatcher{}
 	traced := observability.NewTracingExternalProcessingService(inner)
 
-	entity := &common.Entity{Meta: common.EntityMeta{ID: "ent-1"}}
-	processor := common.ProcessorDefinition{
+	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-1"}}
+	processor := spi.ProcessorDefinition{
 		Name:          "myProcessor",
 		ExecutionMode: "async",
-		Config: common.ProcessorConfig{
+		Config: spi.ProcessorConfig{
 			CalculationNodesTags: "tag1",
 		},
 	}
@@ -73,7 +73,7 @@ func TestTracingExternalProcessingService_DispatchCriteria_DelegatesToInner(t *t
 	inner := &fakeDispatcher{}
 	traced := observability.NewTracingExternalProcessingService(inner)
 
-	entity := &common.Entity{Meta: common.EntityMeta{ID: "ent-2"}}
+	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-2"}}
 	criterion := json.RawMessage(`{"op":"eq","field":"status","value":"active"}`)
 
 	matches, err := traced.DispatchCriteria(context.Background(), entity, criterion, "target1", "wf1", "t1", "proc1", "tx-1")
@@ -96,8 +96,8 @@ func TestTracingExternalProcessingService_DispatchProcessor_PropagatesError(t *t
 	inner := &fakeDispatcher{returnErr: wantErr}
 	traced := observability.NewTracingExternalProcessingService(inner)
 
-	entity := &common.Entity{Meta: common.EntityMeta{ID: "ent-3"}}
-	processor := common.ProcessorDefinition{Name: "failProc"}
+	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-3"}}
+	processor := spi.ProcessorDefinition{Name: "failProc"}
 
 	_, err := traced.DispatchProcessor(context.Background(), entity, processor, "wf1", "t1", "tx-1")
 	if !errors.Is(err, wantErr) {
@@ -113,7 +113,7 @@ func TestTracingExternalProcessingService_DispatchCriteria_PropagatesError(t *te
 	inner := &fakeDispatcher{returnErr: wantErr}
 	traced := observability.NewTracingExternalProcessingService(inner)
 
-	entity := &common.Entity{Meta: common.EntityMeta{ID: "ent-4"}}
+	entity := &spi.Entity{Meta: spi.EntityMeta{ID: "ent-4"}}
 	criterion := json.RawMessage(`{}`)
 
 	_, err := traced.DispatchCriteria(context.Background(), entity, criterion, "target1", "wf1", "t1", "proc1", "tx-1")

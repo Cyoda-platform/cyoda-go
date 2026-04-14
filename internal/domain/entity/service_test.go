@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 )
@@ -29,13 +30,13 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "test",
-		Tenant:   common.Tenant{ID: "test-tenant", Name: "Test"},
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test"},
 		Roles:    []string{"user"},
 	}
-	ctx = common.WithUserContext(ctx, uc)
+	ctx = spi.WithUserContext(ctx, uc)
 
 	_, err := handler.GetEntity(ctx, entity.GetOneEntityInput{
 		EntityID: "some-id",
@@ -59,20 +60,20 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 // results in a 404.
 func TestGetEntity_NotFoundReturns404(t *testing.T) {
 	handler := entity.New(
-		&failingStoreFactory{err: common.ErrNotFound},
+		&failingStoreFactory{err: spi.ErrNotFound},
 		nil,
 		common.NewDefaultUUIDGenerator(),
 		nil,
 	)
 
 	ctx := context.Background()
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "test",
-		Tenant:   common.Tenant{ID: "test-tenant", Name: "Test"},
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test"},
 		Roles:    []string{"user"},
 	}
-	ctx = common.WithUserContext(ctx, uc)
+	ctx = spi.WithUserContext(ctx, uc)
 
 	_, err := handler.GetEntity(ctx, entity.GetOneEntityInput{
 		EntityID: "nonexistent-id",

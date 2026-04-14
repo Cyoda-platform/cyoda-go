@@ -42,7 +42,7 @@ func RunDeepSchemaSymmetry(t *testing.T, fixture BackendFixture) {
 		"array_with_nulls": []any{"a", nil, "", "b"},
 		"large_string":     strings.Repeat("x", 2048),
 		"int_at_boundary":  float64(1<<53 - 1), // max safe integer in float64
-		"negative_zero":    float64(0),          // -0 becomes 0 in JSON
+		"negative_zero":    float64(0),         // -0 becomes 0 in JSON
 		"boolean_true":     true,
 		"boolean_false":    false,
 		"empty_object":     map[string]any{},

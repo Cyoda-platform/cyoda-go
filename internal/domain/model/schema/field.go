@@ -4,7 +4,7 @@ import "sort"
 
 // FieldDescriptor is a flat representation of a single leaf field in the model tree.
 type FieldDescriptor struct {
-	Path     string     // JSONPath-like: "$.name", "$.items[*].price"
+	Path     string // JSONPath-like: "$.name", "$.items[*].price"
 	Types    []DataType
 	IsArray  bool
 	MaxWidth int
@@ -12,8 +12,8 @@ type FieldDescriptor struct {
 
 // cachedFields holds the lazily-computed flat field view.
 type cachedFields struct {
-	list    []FieldDescriptor
-	byPath  map[string]FieldDescriptor
+	list   []FieldDescriptor
+	byPath map[string]FieldDescriptor
 }
 
 // Fields returns a flat list of all leaf fields, cached after first call.

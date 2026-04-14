@@ -11,8 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 var ErrHMACSecretTooShort = errors.New("HMAC secret must be at least 32 bytes")
@@ -22,13 +22,13 @@ const maxDispatchBodySize = 10 * 1024 * 1024 // 10MB
 // DispatchHandler serves the internal dispatch endpoints for processor and criteria
 // execution. Requests are authenticated with HMAC-SHA256.
 type DispatchHandler struct {
-	local      spi.ExternalProcessingService
+	local      contract.ExternalProcessingService
 	hmacSecret []byte
 }
 
 // NewDispatchHandler constructs a DispatchHandler backed by the given local
 // ExternalProcessingService and HMAC secret. The secret must be at least 32 bytes.
-func NewDispatchHandler(local spi.ExternalProcessingService, hmacSecret []byte) (*DispatchHandler, error) {
+func NewDispatchHandler(local contract.ExternalProcessingService, hmacSecret []byte) (*DispatchHandler, error) {
 	if len(hmacSecret) < 32 {
 		return nil, ErrHMACSecretTooShort
 	}
@@ -59,7 +59,7 @@ func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request
 
 	ctx := h.buildContext(r, req.TenantID, req.UserID, req.Roles)
 
-	entity := &common.Entity{
+	entity := &spi.Entity{
 		Meta: req.EntityMeta,
 		Data: []byte(req.Entity),
 	}
@@ -95,7 +95,7 @@ func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request)
 
 	ctx := h.buildContext(r, req.TenantID, req.UserID, req.Roles)
 
-	entity := &common.Entity{
+	entity := &spi.Entity{
 		Meta: req.EntityMeta,
 		Data: []byte(req.Entity),
 	}
@@ -154,14 +154,14 @@ func (h *DispatchHandler) sign(body []byte) string {
 // buildContext constructs a context.Context carrying the UserContext from the
 // dispatch request fields.
 func (h *DispatchHandler) buildContext(r *http.Request, tenantID, userID string, roles []string) context.Context {
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID: userID,
-		Tenant: common.Tenant{
-			ID: common.TenantID(tenantID),
+		Tenant: spi.Tenant{
+			ID: spi.TenantID(tenantID),
 		},
 		Roles: roles,
 	}
-	return common.WithUserContext(r.Context(), uc)
+	return spi.WithUserContext(r.Context(), uc)
 }
 
 // writeJSON encodes v as JSON and writes it with the given status code.

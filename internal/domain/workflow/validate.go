@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // validateWorkflows checks workflow definitions for definite infinite loops.
@@ -12,7 +12,7 @@ import (
 // (manual=false) with NO criteria guards (nil/empty criterion = always fires).
 // Transitions WITH criteria are not flagged because the criterion might return
 // false and break the cycle.
-func validateWorkflows(workflows []common.WorkflowDefinition) error {
+func validateWorkflows(workflows []spi.WorkflowDefinition) error {
 	for _, wf := range workflows {
 		if err := validateWorkflowLoops(wf); err != nil {
 			return fmt.Errorf("workflow %q: %w", wf.Name, err)
@@ -23,7 +23,7 @@ func validateWorkflows(workflows []common.WorkflowDefinition) error {
 
 // validateWorkflowLoops performs DFS cycle detection on unguarded automated
 // transitions within a single workflow definition.
-func validateWorkflowLoops(wf common.WorkflowDefinition) error {
+func validateWorkflowLoops(wf spi.WorkflowDefinition) error {
 	// Build adjacency list: state -> list of target states reachable via
 	// unguarded automated transitions.
 	adj := make(map[string][]string)

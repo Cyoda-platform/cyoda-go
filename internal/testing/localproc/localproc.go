@@ -10,23 +10,23 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // ProcessorFunc is a callback invoked when a processor is dispatched.
-type ProcessorFunc func(ctx context.Context, entity *common.Entity, proc common.ProcessorDefinition) (*common.Entity, error)
+type ProcessorFunc func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error)
 
 // CriteriaFunc is a callback invoked when a function criterion is evaluated.
-type CriteriaFunc func(ctx context.Context, entity *common.Entity, criterion json.RawMessage) (bool, error)
+type CriteriaFunc func(ctx context.Context, entity *spi.Entity, criterion json.RawMessage) (bool, error)
 
 // LocalProcessingService dispatches processors and criteria to registered
-// Go function callbacks. It implements spi.ExternalProcessingService.
+// Go function callbacks. It implements contract.ExternalProcessingService.
 type LocalProcessingService struct {
-	mu              sync.RWMutex
-	processors      map[string]ProcessorFunc
-	criteria        map[string]CriteriaFunc
-	processorCalls  map[string]*atomic.Int64
-	criteriaCalls   map[string]*atomic.Int64
+	mu             sync.RWMutex
+	processors     map[string]ProcessorFunc
+	criteria       map[string]CriteriaFunc
+	processorCalls map[string]*atomic.Int64
+	criteriaCalls  map[string]*atomic.Int64
 }
 
 // New creates a new LocalProcessingService.
@@ -61,7 +61,7 @@ func (s *LocalProcessingService) RegisterCriteria(name string, fn CriteriaFunc) 
 
 // DispatchProcessor dispatches to the registered processor callback.
 // Panics in callbacks are recovered and returned as errors.
-func (s *LocalProcessingService) DispatchProcessor(ctx context.Context, entity *common.Entity, processor common.ProcessorDefinition, workflowName string, transitionName string, txID string) (result *common.Entity, err error) {
+func (s *LocalProcessingService) DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (result *spi.Entity, err error) {
 	s.mu.RLock()
 	fn, ok := s.processors[processor.Name]
 	counter := s.processorCalls[processor.Name]
@@ -82,7 +82,7 @@ func (s *LocalProcessingService) DispatchProcessor(ctx context.Context, entity *
 
 // DispatchCriteria dispatches to the registered criteria callback.
 // It parses the function name from the criterion JSON envelope.
-func (s *LocalProcessingService) DispatchCriteria(ctx context.Context, entity *common.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
+func (s *LocalProcessingService) DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (bool, error) {
 	var parsed struct {
 		Function struct {
 			Name string `json:"name"`

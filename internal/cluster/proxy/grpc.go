@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/grpc/metadata"
+
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
-	"google.golang.org/grpc/metadata"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // GRPCTxTokenKey is the gRPC metadata key carrying the transaction routing token.
@@ -35,7 +36,7 @@ func ExtractGRPCToken(ctx context.Context) string {
 //   - Token for alive peer: shouldProxy=true, addr set.
 //   - Token for dead/unknown peer: error with TRANSACTION_NODE_UNAVAILABLE.
 //   - Invalid/expired token: error.
-func ResolveTarget(ctx context.Context, signer *token.Signer, registry spi.NodeRegistry, selfNodeID string, tok string) (addr string, shouldProxy bool, err error) {
+func ResolveTarget(ctx context.Context, signer *token.Signer, registry contract.NodeRegistry, selfNodeID string, tok string) (addr string, shouldProxy bool, err error) {
 	if tok == "" {
 		return "", false, nil
 	}

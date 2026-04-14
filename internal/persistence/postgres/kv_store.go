@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/jackc/pgx/v5"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // kvStore implements spi.KeyValueStore backed by PostgreSQL.
 type kvStore struct {
 	q        Querier
-	tenantID common.TenantID
+	tenantID spi.TenantID
 }
 
 func (s *kvStore) Put(ctx context.Context, namespace string, key string, value []byte) error {
@@ -33,7 +34,7 @@ func (s *kvStore) Get(ctx context.Context, namespace string, key string) ([]byte
 		string(s.tenantID), namespace, key).Scan(&value)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("key %s not found in namespace %s: %w", key, namespace, common.ErrNotFound)
+			return nil, fmt.Errorf("key %s not found in namespace %s: %w", key, namespace, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get key %s/%s: %w", namespace, key, err)
 	}

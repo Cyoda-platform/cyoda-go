@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 )
 
@@ -20,11 +20,11 @@ func setupModelTest(t *testing.T) *postgres.StoreFactory {
 	return postgres.NewStoreFactory(pool)
 }
 
-func makeDescriptor(name, version string) *common.ModelDescriptor {
-	return &common.ModelDescriptor{
-		Ref:         common.ModelRef{EntityName: name, ModelVersion: version},
-		State:       common.ModelUnlocked,
-		ChangeLevel: common.ChangeLevelArrayElements,
+func makeDescriptor(name, version string) *spi.ModelDescriptor {
+	return &spi.ModelDescriptor{
+		Ref:         spi.ModelRef{EntityName: name, ModelVersion: version},
+		State:       spi.ModelUnlocked,
+		ChangeLevel: spi.ChangeLevelArrayElements,
 		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
 		Schema:      []byte(`{"type":"object","properties":{"id":{"type":"string"}}}`),
 	}
@@ -72,8 +72,8 @@ func TestModelStore_SaveOverwrite(t *testing.T) {
 	store.Save(ctx, desc)
 
 	desc2 := *desc
-	desc2.State = common.ModelLocked
-	desc2.ChangeLevel = common.ChangeLevelStructural
+	desc2.State = spi.ModelLocked
+	desc2.ChangeLevel = spi.ChangeLevelStructural
 	if err := store.Save(ctx, &desc2); err != nil {
 		t.Fatalf("Save overwrite: %v", err)
 	}
@@ -82,11 +82,11 @@ func TestModelStore_SaveOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after overwrite: %v", err)
 	}
-	if got.State != common.ModelLocked {
-		t.Errorf("State after overwrite: got %v, want %v", got.State, common.ModelLocked)
+	if got.State != spi.ModelLocked {
+		t.Errorf("State after overwrite: got %v, want %v", got.State, spi.ModelLocked)
 	}
-	if got.ChangeLevel != common.ChangeLevelStructural {
-		t.Errorf("ChangeLevel after overwrite: got %v, want %v", got.ChangeLevel, common.ChangeLevelStructural)
+	if got.ChangeLevel != spi.ChangeLevelStructural {
+		t.Errorf("ChangeLevel after overwrite: got %v, want %v", got.ChangeLevel, spi.ChangeLevelStructural)
 	}
 }
 
@@ -95,11 +95,11 @@ func TestModelStore_GetNotFound(t *testing.T) {
 	ctx := ctxWithTenant("model-tenant")
 	store, _ := factory.ModelStore(ctx)
 
-	_, err := store.Get(ctx, common.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
+	_, err := store.Get(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent model")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
@@ -172,7 +172,7 @@ func TestModelStore_DeleteNonexistent(t *testing.T) {
 	ctx := ctxWithTenant("model-tenant")
 	store, _ := factory.ModelStore(ctx)
 
-	if err := store.Delete(ctx, common.ModelRef{EntityName: "NoSuch", ModelVersion: "1"}); err != nil {
+	if err := store.Delete(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"}); err != nil {
 		t.Fatalf("Delete nonexistent should not error, got: %v", err)
 	}
 }
@@ -224,11 +224,11 @@ func TestModelStore_LockNotFound(t *testing.T) {
 	ctx := ctxWithTenant("model-tenant")
 	store, _ := factory.ModelStore(ctx)
 
-	err := store.Lock(ctx, common.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
+	err := store.Lock(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
 	if err == nil {
 		t.Fatal("expected error locking nonexistent model")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
@@ -238,11 +238,11 @@ func TestModelStore_UnlockNotFound(t *testing.T) {
 	ctx := ctxWithTenant("model-tenant")
 	store, _ := factory.ModelStore(ctx)
 
-	err := store.Unlock(ctx, common.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
+	err := store.Unlock(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
 	if err == nil {
 		t.Fatal("expected error unlocking nonexistent model")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
@@ -252,11 +252,11 @@ func TestModelStore_IsLockedNotFound(t *testing.T) {
 	ctx := ctxWithTenant("model-tenant")
 	store, _ := factory.ModelStore(ctx)
 
-	_, err := store.IsLocked(ctx, common.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
+	_, err := store.IsLocked(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
 	if err == nil {
 		t.Fatal("expected error for IsLocked on nonexistent model")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
@@ -269,7 +269,7 @@ func TestModelStore_SetChangeLevel(t *testing.T) {
 	desc := makeDescriptor("Widget", "1")
 	store.Save(ctx, desc)
 
-	if err := store.SetChangeLevel(ctx, desc.Ref, common.ChangeLevelStructural); err != nil {
+	if err := store.SetChangeLevel(ctx, desc.Ref, spi.ChangeLevelStructural); err != nil {
 		t.Fatalf("SetChangeLevel: %v", err)
 	}
 
@@ -277,8 +277,8 @@ func TestModelStore_SetChangeLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after SetChangeLevel: %v", err)
 	}
-	if got.ChangeLevel != common.ChangeLevelStructural {
-		t.Errorf("ChangeLevel: got %v, want %v", got.ChangeLevel, common.ChangeLevelStructural)
+	if got.ChangeLevel != spi.ChangeLevelStructural {
+		t.Errorf("ChangeLevel: got %v, want %v", got.ChangeLevel, spi.ChangeLevelStructural)
 	}
 }
 
@@ -287,11 +287,11 @@ func TestModelStore_SetChangeLevelNotFound(t *testing.T) {
 	ctx := ctxWithTenant("model-tenant")
 	store, _ := factory.ModelStore(ctx)
 
-	err := store.SetChangeLevel(ctx, common.ModelRef{EntityName: "NoSuch", ModelVersion: "1"}, common.ChangeLevelStructural)
+	err := store.SetChangeLevel(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"}, spi.ChangeLevelStructural)
 	if err == nil {
 		t.Fatal("expected error for SetChangeLevel on nonexistent model")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }

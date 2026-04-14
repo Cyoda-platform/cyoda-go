@@ -3,7 +3,7 @@ package schema_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -14,7 +14,7 @@ func TestExtendStructuralNewField(t *testing.T) {
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("name", schema.NewLeafNode(schema.String))
 	incoming.SetChild("age", schema.NewLeafNode(schema.Integer))
-	result, err := schema.Extend(existing, incoming, common.ChangeLevelStructural)
+	result, err := schema.Extend(existing, incoming, spi.ChangeLevelStructural)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestExtendTypeRejectsNewField(t *testing.T) {
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("name", schema.NewLeafNode(schema.String))
 	incoming.SetChild("age", schema.NewLeafNode(schema.Integer))
-	_, err := schema.Extend(existing, incoming, common.ChangeLevelType)
+	_, err := schema.Extend(existing, incoming, spi.ChangeLevelType)
 	if err == nil {
 		t.Error("expected error: TYPE should reject new fields")
 	}
@@ -41,7 +41,7 @@ func TestExtendTypeAllowsTypeWidening(t *testing.T) {
 	existing.SetChild("value", schema.NewLeafNode(schema.Integer))
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("value", schema.NewLeafNode(schema.String))
-	result, err := schema.Extend(existing, incoming, common.ChangeLevelType)
+	result, err := schema.Extend(existing, incoming, spi.ChangeLevelType)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestExtendArrayElementsAllowsElementWidening(t *testing.T) {
 	incomingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("scores", incomingArr)
-	result, err := schema.Extend(existing, incoming, common.ChangeLevelArrayElements)
+	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayElements)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestExtendArrayElementsRejectsLeafTypeWidening(t *testing.T) {
 	existing.SetChild("value", schema.NewLeafNode(schema.Integer))
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("value", schema.NewLeafNode(schema.String))
-	_, err := schema.Extend(existing, incoming, common.ChangeLevelArrayElements)
+	_, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayElements)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -88,7 +88,7 @@ func TestExtendArrayLengthAllowsWidthChange(t *testing.T) {
 	incomingArr.Info().Observe(5)
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("tags", incomingArr)
-	result, err := schema.Extend(existing, incoming, common.ChangeLevelArrayLength)
+	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestExtendArrayLengthRejectsElementTypeChange(t *testing.T) {
 	incomingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("scores", incomingArr)
-	_, err := schema.Extend(existing, incoming, common.ChangeLevelArrayLength)
+	_, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -127,7 +127,7 @@ func TestExtendConformingDataNoChange(t *testing.T) {
 	existing.SetChild("name", schema.NewLeafNode(schema.String))
 	incoming := schema.NewObjectNode()
 	incoming.SetChild("name", schema.NewLeafNode(schema.String))
-	result, err := schema.Extend(existing, incoming, common.ChangeLevelArrayLength)
+	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -24,11 +24,11 @@ func generateReport(run RunReport) string {
 	totalDiffs := 0
 
 	type scenarioSummary struct {
-		name         string
-		steps        int
-		statusMatch  int
-		bodyMatch    int
-		diffCount    int
+		name        string
+		steps       int
+		statusMatch int
+		bodyMatch   int
+		diffCount   int
 	}
 	var summaries []scenarioSummary
 

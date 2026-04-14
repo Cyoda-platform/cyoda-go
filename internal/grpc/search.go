@@ -8,16 +8,18 @@ import (
 	"strconv"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // EntitySearch handles unary search CloudEvents by calling service methods directly.
@@ -137,7 +139,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
 	}
 
-	modelRef := common.ModelRef{
+	modelRef := spi.ModelRef{
 		EntityName:   req.Model.Name,
 		ModelVersion: fmt.Sprintf("%d", req.Model.Version),
 	}
@@ -300,7 +302,7 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
 	}
 
-	modelRef := common.ModelRef{
+	modelRef := spi.ModelRef{
 		EntityName:   req.Model.Name,
 		ModelVersion: fmt.Sprintf("%d", req.Model.Version),
 	}
@@ -540,7 +542,7 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 // ---------------------------------------------------------------------------
 
 // buildEntityMeta builds the meta map for an entity response.
-func buildEntityMeta(e *common.Entity) map[string]any {
+func buildEntityMeta(e *spi.Entity) map[string]any {
 	meta := map[string]any{
 		"id":             e.Meta.ID,
 		"state":          e.Meta.State,

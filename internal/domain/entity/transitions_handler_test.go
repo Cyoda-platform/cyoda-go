@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // newTestAppAndServer creates an App and an httptest.Server for transition tests.
@@ -26,10 +26,10 @@ func newTestAppAndServer(t *testing.T) (*app.App, *httptest.Server) {
 
 // testCtx returns a context with the mock user context for direct store access.
 func testCtx() context.Context {
-	return common.WithUserContext(context.Background(), &common.UserContext{
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID:   "mock-user",
 		UserName: "Mock User",
-		Tenant: common.Tenant{
+		Tenant: spi.Tenant{
 			ID:   "mock-tenant",
 			Name: "Mock Tenant",
 		},
@@ -91,34 +91,34 @@ func TestGetTransitions_WithCustomWorkflow(t *testing.T) {
 	entityID := createEntityViaAPI(t, srv.URL, "TransCustom", 1, `{"status":"pending"}`)
 
 	// Save a custom workflow with transitions from CREATED state.
-	modelRef := common.ModelRef{EntityName: "TransCustom", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "TransCustom", ModelVersion: "1"}
 	ctx := testCtx()
 	wfStore, err := a.StoreFactory().WorkflowStore(ctx)
 	if err != nil {
 		t.Fatalf("failed to get workflow store: %v", err)
 	}
-	err = wfStore.Save(ctx, modelRef, []common.WorkflowDefinition{
+	err = wfStore.Save(ctx, modelRef, []spi.WorkflowDefinition{
 		{
 			Version:      "1",
 			Name:         "custom-wf",
 			InitialState: "NONE",
 			Active:       true,
-			States: map[string]common.StateDefinition{
+			States: map[string]spi.StateDefinition{
 				"NONE": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{Name: "NEW", Next: "CREATED"},
 					},
 				},
 				"CREATED": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{Name: "nda_signed", Next: "NDA_SIGNED", Manual: true},
 						{Name: "nda_expired", Next: "NDA_EXPIRED", Manual: true},
 						{Name: "decline_nda", Next: "DECLINED", Manual: true},
 					},
 				},
-				"NDA_SIGNED":  {Transitions: []common.TransitionDefinition{}},
-				"NDA_EXPIRED": {Transitions: []common.TransitionDefinition{}},
-				"DECLINED":    {Transitions: []common.TransitionDefinition{}},
+				"NDA_SIGNED":  {Transitions: []spi.TransitionDefinition{}},
+				"NDA_EXPIRED": {Transitions: []spi.TransitionDefinition{}},
+				"DECLINED":    {Transitions: []spi.TransitionDefinition{}},
 			},
 		},
 	})
@@ -158,31 +158,31 @@ func TestGetTransitions_TerminalState(t *testing.T) {
 
 	// Save a custom workflow where CREATED transitions to DECLINED via a non-manual transition,
 	// and DECLINED is terminal.
-	modelRef := common.ModelRef{EntityName: "TransTerminal", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "TransTerminal", ModelVersion: "1"}
 	ctx := testCtx()
 	wfStore, err := a.StoreFactory().WorkflowStore(ctx)
 	if err != nil {
 		t.Fatalf("failed to get workflow store: %v", err)
 	}
-	err = wfStore.Save(ctx, modelRef, []common.WorkflowDefinition{
+	err = wfStore.Save(ctx, modelRef, []spi.WorkflowDefinition{
 		{
 			Version:      "1",
 			Name:         "terminal-wf",
 			InitialState: "NONE",
 			Active:       true,
-			States: map[string]common.StateDefinition{
+			States: map[string]spi.StateDefinition{
 				"NONE": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{Name: "NEW", Next: "CREATED"},
 					},
 				},
 				"CREATED": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{Name: "DECLINE", Next: "DECLINED", Manual: true},
 					},
 				},
 				"DECLINED": {
-					Transitions: []common.TransitionDefinition{},
+					Transitions: []spi.TransitionDefinition{},
 				},
 			},
 		},
@@ -264,32 +264,32 @@ func TestFetchTransitions_PlatformLibrary(t *testing.T) {
 	entityID := createEntityViaAPI(t, srv.URL, "FetchModel", 1, `{"value":42}`)
 
 	// Save a custom workflow for the model.
-	modelRef := common.ModelRef{EntityName: "FetchModel", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "FetchModel", ModelVersion: "1"}
 	ctx := testCtx()
 	wfStore, err := a.StoreFactory().WorkflowStore(ctx)
 	if err != nil {
 		t.Fatalf("failed to get workflow store: %v", err)
 	}
-	err = wfStore.Save(ctx, modelRef, []common.WorkflowDefinition{
+	err = wfStore.Save(ctx, modelRef, []spi.WorkflowDefinition{
 		{
 			Version:      "1",
 			Name:         "fetch-wf",
 			InitialState: "NONE",
 			Active:       true,
-			States: map[string]common.StateDefinition{
+			States: map[string]spi.StateDefinition{
 				"NONE": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{Name: "NEW", Next: "CREATED"},
 					},
 				},
 				"CREATED": {
-					Transitions: []common.TransitionDefinition{
+					Transitions: []spi.TransitionDefinition{
 						{Name: "approve", Next: "APPROVED", Manual: true},
 						{Name: "reject", Next: "REJECTED", Manual: true},
 					},
 				},
-				"APPROVED": {Transitions: []common.TransitionDefinition{}},
-				"REJECTED": {Transitions: []common.TransitionDefinition{}},
+				"APPROVED": {Transitions: []spi.TransitionDefinition{}},
+				"REJECTED": {Transitions: []spi.TransitionDefinition{}},
 			},
 		},
 	})

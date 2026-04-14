@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool) {
@@ -41,7 +43,7 @@ func TestTxManager_BeginAndCommit(t *testing.T) {
 	}
 
 	// Verify transaction state is in context
-	txState := common.GetTransaction(txCtx)
+	txState := spi.GetTransaction(txCtx)
 	if txState == nil {
 		t.Fatal("expected TransactionState in context")
 	}
@@ -87,7 +89,7 @@ func TestTxManager_JoinExisting(t *testing.T) {
 		t.Fatalf("Join: %v", err)
 	}
 
-	txState := common.GetTransaction(joinedCtx)
+	txState := spi.GetTransaction(joinedCtx)
 	if txState == nil {
 		t.Fatal("expected TransactionState in joined context")
 	}
@@ -302,7 +304,7 @@ func TestTxManager_SerializationConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected serialization conflict error on tx1 commit")
 	}
-	if !errors.Is(err, common.ErrConflict) {
+	if !errors.Is(err, spi.ErrConflict) {
 		t.Errorf("expected ErrConflict, got: %v", err)
 	}
 }

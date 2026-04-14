@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 )
 
@@ -20,11 +20,11 @@ func setupEntityTest(t *testing.T) *postgres.StoreFactory {
 	return postgres.NewStoreFactory(pool)
 }
 
-func makeEntity(id string) *common.Entity {
-	return &common.Entity{
-		Meta: common.EntityMeta{
+func makeEntity(id string) *spi.Entity {
+	return &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:            id,
-			ModelRef:      common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef:      spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 			State:         "NEW",
 			TransactionID: "tx-100",
 			ChangeUser:    "user-1",
@@ -169,7 +169,7 @@ func TestEntityStore_CompareAndSave_Mismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrConflict for mismatched txID")
 	}
-	if !errors.Is(err, common.ErrConflict) {
+	if !errors.Is(err, spi.ErrConflict) {
 		t.Errorf("expected ErrConflict, got: %v", err)
 	}
 }
@@ -198,7 +198,7 @@ func TestEntityStore_GetNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent entity")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
@@ -245,7 +245,7 @@ func TestEntityStore_GetAll(t *testing.T) {
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	store.Save(ctx, makeEntity("ent-a"))
 	store.Save(ctx, makeEntity("ent-b"))
@@ -253,7 +253,7 @@ func TestEntityStore_GetAll(t *testing.T) {
 
 	// Also save one with a different model
 	diff := makeEntity("ent-d")
-	diff.Meta.ModelRef = common.ModelRef{EntityName: "Invoice", ModelVersion: "1"}
+	diff.Meta.ModelRef = spi.ModelRef{EntityName: "Invoice", ModelVersion: "1"}
 	store.Save(ctx, diff)
 
 	all, err := store.GetAll(ctx, ref)
@@ -270,7 +270,7 @@ func TestEntityStore_GetAllAsAt(t *testing.T) {
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	store.Save(ctx, makeEntity("ent-aa-1"))
 	store.Save(ctx, makeEntity("ent-aa-2"))
@@ -316,7 +316,7 @@ func TestEntityStore_Delete(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected not found after delete")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 
@@ -339,7 +339,7 @@ func TestEntityStore_DeleteNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error deleting nonexistent entity")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
@@ -349,7 +349,7 @@ func TestEntityStore_DeleteAll(t *testing.T) {
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	store.Save(ctx, makeEntity("ent-da-1"))
 	store.Save(ctx, makeEntity("ent-da-2"))
@@ -395,7 +395,7 @@ func TestEntityStore_Count(t *testing.T) {
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	count, err := store.Count(ctx, ref)
 	if err != nil {
@@ -483,12 +483,12 @@ func TestEntityStore_TenantIsolation(t *testing.T) {
 	if err == nil {
 		t.Fatal("tenant-B should not see tenant-A's entity")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 
 	// Tenant B GetAll should be empty
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	all, err := storeB.GetAll(ctxB, ref)
 	if err != nil {
 		t.Fatalf("GetAll: %v", err)

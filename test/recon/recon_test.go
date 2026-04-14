@@ -56,7 +56,7 @@ func TestReconcile(t *testing.T) {
 	// Generate and write report.
 	run := RunReport{
 		Date:       time.Now(),
-		CyodaGo:  "in-process",
+		CyodaGo:    "in-process",
 		CyodaCloud: cfg.BaseURL,
 		Scenarios:  scenarioReports,
 	}

@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"strconv"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"github.com/google/uuid"
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 // Handler implements the model management HTTP endpoints.
@@ -25,8 +26,8 @@ func New(factory spi.StoreFactory) *Handler {
 }
 
 // modelRef builds a ModelRef from the path parameters.
-func modelRef(entityName string, modelVersion int32) common.ModelRef {
-	return common.ModelRef{
+func modelRef(entityName string, modelVersion int32) spi.ModelRef {
+	return spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
@@ -34,7 +35,7 @@ func modelRef(entityName string, modelVersion int32) common.ModelRef {
 
 // deterministicID derives a stable UUID v5 from a ModelRef so the same model
 // always returns the same identifier.
-func deterministicID(ref common.ModelRef) uuid.UUID {
+func deterministicID(ref spi.ModelRef) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(ref.String()))
 }
 

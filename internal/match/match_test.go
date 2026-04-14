@@ -1,14 +1,15 @@
-package predicate
+package match
 
 import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
-func meta() common.EntityMeta {
-	return common.EntityMeta{
+func meta() spi.EntityMeta {
+	return spi.EntityMeta{
 		State:                   "CREATED",
 		CreationDate:            time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
 		TransitionForLatestSave: "workflow.step1",
@@ -32,7 +33,7 @@ var sampleData = []byte(`{
 // --- 1. Simple EQUALS ---
 
 func TestMatchSimpleEqualsString(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +44,7 @@ func TestMatchSimpleEqualsString(t *testing.T) {
 }
 
 func TestMatchSimpleEqualsStringFalse(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +55,7 @@ func TestMatchSimpleEqualsStringFalse(t *testing.T) {
 }
 
 func TestMatchSimpleEqualsNumber(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(30)}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(30)}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +66,7 @@ func TestMatchSimpleEqualsNumber(t *testing.T) {
 }
 
 func TestMatchSimpleEqualsNumberAsString(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: "30"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: "30"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +77,7 @@ func TestMatchSimpleEqualsNumberAsString(t *testing.T) {
 }
 
 func TestMatchSimpleEqualsBool(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.active", OperatorType: "EQUALS", Value: "true"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.active", OperatorType: "EQUALS", Value: "true"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +90,7 @@ func TestMatchSimpleEqualsBool(t *testing.T) {
 // --- 2. Simple NOT_EQUAL ---
 
 func TestMatchSimpleNotEqual(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_EQUAL", Value: "Bob"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_EQUAL", Value: "Bob"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +101,7 @@ func TestMatchSimpleNotEqual(t *testing.T) {
 }
 
 func TestMatchSimpleNotEqualFalse(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_EQUAL", Value: "Alice"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_EQUAL", Value: "Alice"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +114,7 @@ func TestMatchSimpleNotEqualFalse(t *testing.T) {
 // --- 3. IS_NULL / NOT_NULL ---
 
 func TestMatchSimpleIsNull(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.city", OperatorType: "IS_NULL"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.city", OperatorType: "IS_NULL"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +125,7 @@ func TestMatchSimpleIsNull(t *testing.T) {
 }
 
 func TestMatchSimpleIsNullMissing(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.nonexistent", OperatorType: "IS_NULL"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.nonexistent", OperatorType: "IS_NULL"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +136,7 @@ func TestMatchSimpleIsNullMissing(t *testing.T) {
 }
 
 func TestMatchSimpleNotNull(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_NULL"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_NULL"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +147,7 @@ func TestMatchSimpleNotNull(t *testing.T) {
 }
 
 func TestMatchSimpleNotNullOnNull(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.city", OperatorType: "NOT_NULL"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.city", OperatorType: "NOT_NULL"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +160,7 @@ func TestMatchSimpleNotNullOnNull(t *testing.T) {
 // --- 4. GREATER_THAN / LESS_THAN ---
 
 func TestMatchSimpleGreaterThan(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(25)}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(25)}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +171,7 @@ func TestMatchSimpleGreaterThan(t *testing.T) {
 }
 
 func TestMatchSimpleGreaterThanFalse(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(30)}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_THAN", Value: float64(30)}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +182,7 @@ func TestMatchSimpleGreaterThanFalse(t *testing.T) {
 }
 
 func TestMatchSimpleLessThan(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_THAN", Value: float64(35)}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_THAN", Value: float64(35)}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +193,7 @@ func TestMatchSimpleLessThan(t *testing.T) {
 }
 
 func TestMatchSimpleLessThanFalse(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_THAN", Value: float64(30)}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_THAN", Value: float64(30)}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +206,7 @@ func TestMatchSimpleLessThanFalse(t *testing.T) {
 // --- 5. GREATER_OR_EQUAL / LESS_OR_EQUAL ---
 
 func TestMatchSimpleGreaterOrEqual(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_OR_EQUAL", Value: float64(30)}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "GREATER_OR_EQUAL", Value: float64(30)}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +217,7 @@ func TestMatchSimpleGreaterOrEqual(t *testing.T) {
 }
 
 func TestMatchSimpleLessOrEqual(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_OR_EQUAL", Value: float64(30)}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "LESS_OR_EQUAL", Value: float64(30)}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +230,7 @@ func TestMatchSimpleLessOrEqual(t *testing.T) {
 // --- 6. CONTAINS / NOT_CONTAINS ---
 
 func TestMatchSimpleContains(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "CONTAINS", Value: "lic"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "CONTAINS", Value: "lic"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +241,7 @@ func TestMatchSimpleContains(t *testing.T) {
 }
 
 func TestMatchSimpleNotContains(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_CONTAINS", Value: "xyz"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_CONTAINS", Value: "xyz"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +254,7 @@ func TestMatchSimpleNotContains(t *testing.T) {
 // --- 7. STARTS_WITH / ENDS_WITH ---
 
 func TestMatchSimpleStartsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "STARTS_WITH", Value: "Ali"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "STARTS_WITH", Value: "Ali"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +265,7 @@ func TestMatchSimpleStartsWith(t *testing.T) {
 }
 
 func TestMatchSimpleNotStartsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_STARTS_WITH", Value: "Bob"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_STARTS_WITH", Value: "Bob"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +276,7 @@ func TestMatchSimpleNotStartsWith(t *testing.T) {
 }
 
 func TestMatchSimpleEndsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "ENDS_WITH", Value: "ice"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "ENDS_WITH", Value: "ice"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +287,7 @@ func TestMatchSimpleEndsWith(t *testing.T) {
 }
 
 func TestMatchSimpleNotEndsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_ENDS_WITH", Value: "xyz"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "NOT_ENDS_WITH", Value: "xyz"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +300,7 @@ func TestMatchSimpleNotEndsWith(t *testing.T) {
 // --- 8. IEQUALS / ICONTAINS ---
 
 func TestMatchSimpleIEquals(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "IEQUALS", Value: "alice"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IEQUALS", Value: "alice"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +311,7 @@ func TestMatchSimpleIEquals(t *testing.T) {
 }
 
 func TestMatchSimpleINotEqual(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_EQUAL", Value: "alice"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_EQUAL", Value: "alice"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -321,7 +322,7 @@ func TestMatchSimpleINotEqual(t *testing.T) {
 }
 
 func TestMatchSimpleIContains(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "ICONTAINS", Value: "LIC"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "ICONTAINS", Value: "LIC"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +333,7 @@ func TestMatchSimpleIContains(t *testing.T) {
 }
 
 func TestMatchSimpleINotContains(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_CONTAINS", Value: "XYZ"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_CONTAINS", Value: "XYZ"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -343,7 +344,7 @@ func TestMatchSimpleINotContains(t *testing.T) {
 }
 
 func TestMatchSimpleIStartsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "ISTARTS_WITH", Value: "ALI"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "ISTARTS_WITH", Value: "ALI"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -354,7 +355,7 @@ func TestMatchSimpleIStartsWith(t *testing.T) {
 }
 
 func TestMatchSimpleINotStartsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_STARTS_WITH", Value: "BOB"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_STARTS_WITH", Value: "BOB"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -365,7 +366,7 @@ func TestMatchSimpleINotStartsWith(t *testing.T) {
 }
 
 func TestMatchSimpleIEndsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "IENDS_WITH", Value: "ICE"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IENDS_WITH", Value: "ICE"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +377,7 @@ func TestMatchSimpleIEndsWith(t *testing.T) {
 }
 
 func TestMatchSimpleINotEndsWith(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_ENDS_WITH", Value: "XYZ"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "INOT_ENDS_WITH", Value: "XYZ"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +390,7 @@ func TestMatchSimpleINotEndsWith(t *testing.T) {
 // --- 9. MATCHES_PATTERN ---
 
 func TestMatchSimpleMatchesPattern(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "MATCHES_PATTERN", Value: "^A.*e$"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "MATCHES_PATTERN", Value: "^A.*e$"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +401,7 @@ func TestMatchSimpleMatchesPattern(t *testing.T) {
 }
 
 func TestMatchSimpleMatchesPatternFalse(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "MATCHES_PATTERN", Value: "^B.*"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "MATCHES_PATTERN", Value: "^B.*"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -413,7 +414,7 @@ func TestMatchSimpleMatchesPatternFalse(t *testing.T) {
 // --- 10. LIKE ---
 
 func TestMatchSimpleLike(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "A%"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "A%"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +425,7 @@ func TestMatchSimpleLike(t *testing.T) {
 }
 
 func TestMatchSimpleLikeUnderscore(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "Alic_"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "Alic_"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +436,7 @@ func TestMatchSimpleLikeUnderscore(t *testing.T) {
 }
 
 func TestMatchSimpleLikeFalse(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "B%"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "LIKE", Value: "B%"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -448,7 +449,7 @@ func TestMatchSimpleLikeFalse(t *testing.T) {
 // --- 11. BETWEEN ---
 
 func TestMatchSimpleBetweenString(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: "25,35"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: "25,35"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -459,7 +460,7 @@ func TestMatchSimpleBetweenString(t *testing.T) {
 }
 
 func TestMatchSimpleBetweenSlice(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: []any{float64(25), float64(35)}}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: []any{float64(25), float64(35)}}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -470,7 +471,7 @@ func TestMatchSimpleBetweenSlice(t *testing.T) {
 }
 
 func TestMatchSimpleBetweenInclusiveEdge(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN_INCLUSIVE", Value: "30,30"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN_INCLUSIVE", Value: "30,30"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -483,7 +484,7 @@ func TestMatchSimpleBetweenInclusiveEdge(t *testing.T) {
 // --- 11. Lifecycle condition ---
 
 func TestMatchLifecycleStateMatch(t *testing.T) {
-	cond := &LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "CREATED"}
+	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "CREATED"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -494,7 +495,7 @@ func TestMatchLifecycleStateMatch(t *testing.T) {
 }
 
 func TestMatchLifecycleStateNoMatch(t *testing.T) {
-	cond := &LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "DELETED"}
+	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "DELETED"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -505,7 +506,7 @@ func TestMatchLifecycleStateNoMatch(t *testing.T) {
 }
 
 func TestMatchLifecycleCreationDate(t *testing.T) {
-	cond := &LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026-01-15"}
+	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026-01-15"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -516,7 +517,7 @@ func TestMatchLifecycleCreationDate(t *testing.T) {
 }
 
 func TestMatchLifecycleTransition(t *testing.T) {
-	cond := &LifecycleCondition{Field: "transitionForLatestSave", OperatorType: "EQUALS", Value: "workflow.step1"}
+	cond := &predicate.LifecycleCondition{Field: "transitionForLatestSave", OperatorType: "EQUALS", Value: "workflow.step1"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -527,7 +528,7 @@ func TestMatchLifecycleTransition(t *testing.T) {
 }
 
 func TestMatchLifecyclePreviousTransition(t *testing.T) {
-	cond := &LifecycleCondition{Field: "previousTransition", OperatorType: "EQUALS", Value: "workflow.step1"}
+	cond := &predicate.LifecycleCondition{Field: "previousTransition", OperatorType: "EQUALS", Value: "workflow.step1"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -540,11 +541,11 @@ func TestMatchLifecyclePreviousTransition(t *testing.T) {
 // --- 12. Group AND ---
 
 func TestMatchGroupAndAllMatch(t *testing.T) {
-	cond := &GroupCondition{
+	cond := &predicate.GroupCondition{
 		Operator: "AND",
-		Conditions: []Condition{
-			&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
-			&SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(30)},
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+			&predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(30)},
 		},
 	}
 	got, err := Match(cond, sampleData, meta())
@@ -557,11 +558,11 @@ func TestMatchGroupAndAllMatch(t *testing.T) {
 }
 
 func TestMatchGroupAndOneFails(t *testing.T) {
-	cond := &GroupCondition{
+	cond := &predicate.GroupCondition{
 		Operator: "AND",
-		Conditions: []Condition{
-			&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
-			&SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(99)},
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+			&predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "EQUALS", Value: float64(99)},
 		},
 	}
 	got, err := Match(cond, sampleData, meta())
@@ -576,11 +577,11 @@ func TestMatchGroupAndOneFails(t *testing.T) {
 // --- 13. Group OR ---
 
 func TestMatchGroupOrOneMatches(t *testing.T) {
-	cond := &GroupCondition{
+	cond := &predicate.GroupCondition{
 		Operator: "OR",
-		Conditions: []Condition{
-			&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"},
-			&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"},
+			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
 		},
 	}
 	got, err := Match(cond, sampleData, meta())
@@ -593,11 +594,11 @@ func TestMatchGroupOrOneMatches(t *testing.T) {
 }
 
 func TestMatchGroupOrNoneMatch(t *testing.T) {
-	cond := &GroupCondition{
+	cond := &predicate.GroupCondition{
 		Operator: "OR",
-		Conditions: []Condition{
-			&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"},
-			&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Carol"},
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"},
+			&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Carol"},
 		},
 	}
 	got, err := Match(cond, sampleData, meta())
@@ -612,15 +613,15 @@ func TestMatchGroupOrNoneMatch(t *testing.T) {
 // --- 14. Nested group ---
 
 func TestMatchNestedGroupAndContainingOr(t *testing.T) {
-	cond := &GroupCondition{
+	cond := &predicate.GroupCondition{
 		Operator: "AND",
-		Conditions: []Condition{
-			&SimpleCondition{JsonPath: "$.active", OperatorType: "EQUALS", Value: "true"},
-			&GroupCondition{
+		Conditions: []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.active", OperatorType: "EQUALS", Value: "true"},
+			&predicate.GroupCondition{
 				Operator: "OR",
-				Conditions: []Condition{
-					&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"},
-					&SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
+				Conditions: []predicate.Condition{
+					&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Bob"},
+					&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
 				},
 			},
 		},
@@ -637,7 +638,7 @@ func TestMatchNestedGroupAndContainingOr(t *testing.T) {
 // --- 15. Array condition ---
 
 func TestMatchArrayCondition(t *testing.T) {
-	cond := &ArrayCondition{
+	cond := &predicate.ArrayCondition{
 		JsonPath: "$.tags",
 		Values:   []any{"go", nil, "python"},
 	}
@@ -651,7 +652,7 @@ func TestMatchArrayCondition(t *testing.T) {
 }
 
 func TestMatchArrayConditionMismatch(t *testing.T) {
-	cond := &ArrayCondition{
+	cond := &predicate.ArrayCondition{
 		JsonPath: "$.tags",
 		Values:   []any{"go", nil, "java"},
 	}
@@ -667,7 +668,7 @@ func TestMatchArrayConditionMismatch(t *testing.T) {
 // --- 16. Function condition → error ---
 
 func TestMatchFunctionConditionError(t *testing.T) {
-	cond := &FunctionCondition{}
+	cond := &predicate.FunctionCondition{}
 	_, err := Match(cond, sampleData, meta())
 	if err == nil {
 		t.Error("expected error for function condition")
@@ -677,7 +678,7 @@ func TestMatchFunctionConditionError(t *testing.T) {
 // --- 17. IS_CHANGED → error ---
 
 func TestMatchIsChangedError(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "IS_CHANGED"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IS_CHANGED"}
 	_, err := Match(cond, sampleData, meta())
 	if err == nil {
 		t.Error("expected error for IS_CHANGED")
@@ -685,7 +686,7 @@ func TestMatchIsChangedError(t *testing.T) {
 }
 
 func TestMatchIsUnchangedError(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.name", OperatorType: "IS_UNCHANGED"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "IS_UNCHANGED"}
 	_, err := Match(cond, sampleData, meta())
 	if err == nil {
 		t.Error("expected error for IS_UNCHANGED")
@@ -695,7 +696,7 @@ func TestMatchIsUnchangedError(t *testing.T) {
 // --- 18. No match: field doesn't exist ---
 
 func TestMatchMissingFieldReturnsFalse(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.nonexistent", OperatorType: "EQUALS", Value: "anything"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.nonexistent", OperatorType: "EQUALS", Value: "anything"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -708,7 +709,7 @@ func TestMatchMissingFieldReturnsFalse(t *testing.T) {
 // --- Array wildcard with CONTAINS ---
 
 func TestMatchArrayWildcardContains(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "peace"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "peace"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -719,7 +720,7 @@ func TestMatchArrayWildcardContains(t *testing.T) {
 }
 
 func TestMatchArrayWildcardContainsNoMatch(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "physics"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.laureates[*].motivation", OperatorType: "CONTAINS", Value: "physics"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)
@@ -732,7 +733,7 @@ func TestMatchArrayWildcardContainsNoMatch(t *testing.T) {
 // --- Nested field access ---
 
 func TestMatchNestedField(t *testing.T) {
-	cond := &SimpleCondition{JsonPath: "$.address.street", OperatorType: "EQUALS", Value: "Main St"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.address.street", OperatorType: "EQUALS", Value: "Main St"}
 	got, err := Match(cond, sampleData, meta())
 	if err != nil {
 		t.Fatal(err)

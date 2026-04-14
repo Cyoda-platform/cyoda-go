@@ -4,18 +4,18 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 )
 
-func ctxWithTenant(tid common.TenantID) context.Context {
-	uc := &common.UserContext{
+func ctxWithTenant(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "Test User",
-		Tenant:   common.Tenant{ID: tid, Name: string(tid)},
+		Tenant:   spi.Tenant{ID: tid, Name: string(tid)},
 		Roles:    []string{"USER"},
 	}
-	return common.WithUserContext(context.Background(), uc)
+	return spi.WithUserContext(context.Background(), uc)
 }
 
 func TestPostgresStoreFactory_SkeletonReturnsErrors(t *testing.T) {

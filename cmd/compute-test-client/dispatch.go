@@ -7,12 +7,13 @@ import (
 	"log/slog"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 )
 
 // CloudEvent type constants — duplicated here so the compute-test-client

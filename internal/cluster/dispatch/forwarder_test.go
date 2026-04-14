@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 const testHMACSecret = "test-secret-key"
@@ -21,8 +21,8 @@ const testHMACSecret = "test-secret-key"
 func makeProcessorReq() *dispatch.DispatchProcessorRequest {
 	return &dispatch.DispatchProcessorRequest{
 		Entity:     json.RawMessage(`{"amount":100}`),
-		EntityMeta: common.EntityMeta{ID: "ent-1", TenantID: "t1"},
-		Processor: common.ProcessorDefinition{
+		EntityMeta: spi.EntityMeta{ID: "ent-1", TenantID: "t1"},
+		Processor: spi.ProcessorDefinition{
 			Type: "HTTP",
 			Name: "calc",
 		},
@@ -36,7 +36,7 @@ func makeProcessorReq() *dispatch.DispatchProcessorRequest {
 func makeCriteriaReq() *dispatch.DispatchCriteriaRequest {
 	return &dispatch.DispatchCriteriaRequest{
 		Entity:         json.RawMessage(`{"status":"pending"}`),
-		EntityMeta:     common.EntityMeta{ID: "ent-2", TenantID: "t2"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-2", TenantID: "t2"},
 		Criterion:      json.RawMessage(`{"type":"ALWAYS_TRUE"}`),
 		Target:         "TRANSITION",
 		WorkflowName:   "wf",

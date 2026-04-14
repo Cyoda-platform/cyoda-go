@@ -35,7 +35,7 @@ func TestAuthService_FullFlow(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
 	svc, err := NewAuthService(AuthConfig{
-		SigningKeyPEM:  pemKey,
+		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda-go",
 		ExpirySeconds: 3600,
 	})
@@ -111,7 +111,7 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
 	svc, err := NewAuthService(AuthConfig{
-		SigningKeyPEM:  pemKey,
+		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda-go",
 		ExpirySeconds: 3600,
 	})
@@ -194,7 +194,7 @@ func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
 	svc, err := NewAuthService(AuthConfig{
-		SigningKeyPEM:  pemKey,
+		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda-go",
 		ExpirySeconds: 3600,
 	})

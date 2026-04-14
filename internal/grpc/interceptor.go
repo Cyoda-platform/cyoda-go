@@ -5,19 +5,20 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // UnaryAuthInterceptor creates a unary server interceptor for authentication.
 // It extracts the authorization header from gRPC metadata, delegates to the
 // AuthenticationService, and injects the resulting UserContext into the request
 // context.
-func UnaryAuthInterceptor(authSvc spi.AuthenticationService) googlegrpc.UnaryServerInterceptor {
+func UnaryAuthInterceptor(authSvc contract.AuthenticationService) googlegrpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req any,
@@ -36,7 +37,7 @@ func UnaryAuthInterceptor(authSvc spi.AuthenticationService) googlegrpc.UnarySer
 // StreamAuthInterceptor creates a stream server interceptor for authentication.
 // It extracts the authorization header from gRPC metadata, delegates to the
 // AuthenticationService, and wraps the stream with an authenticated context.
-func StreamAuthInterceptor(authSvc spi.AuthenticationService) googlegrpc.StreamServerInterceptor {
+func StreamAuthInterceptor(authSvc contract.AuthenticationService) googlegrpc.StreamServerInterceptor {
 	return func(
 		srv any,
 		ss googlegrpc.ServerStream,
@@ -66,7 +67,7 @@ func (w *wrappedStream) Context() context.Context { return w.ctx }
 // metadata, builds a minimal http.Request, and delegates to the
 // AuthenticationService. On success it returns a context enriched with the
 // authenticated UserContext.
-func authenticateFromMetadata(ctx context.Context, authSvc spi.AuthenticationService) (context.Context, error) {
+func authenticateFromMetadata(ctx context.Context, authSvc contract.AuthenticationService) (context.Context, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		md = metadata.MD{}
@@ -85,5 +86,5 @@ func authenticateFromMetadata(ctx context.Context, authSvc spi.AuthenticationSer
 	}
 
 	slog.Debug("gRPC auth succeeded", "pkg", "grpc", "userId", uc.UserID, "tenantId", string(uc.Tenant.ID))
-	return common.WithUserContext(ctx, uc), nil
+	return spi.WithUserContext(ctx, uc), nil
 }

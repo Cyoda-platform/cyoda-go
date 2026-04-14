@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
@@ -134,13 +134,13 @@ func expectStatus(t *testing.T, resp *http.Response, want int) {
 	}
 }
 
-func ctxWithTenant(tid common.TenantID) context.Context {
-	uc := &common.UserContext{
+func ctxWithTenant(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{
 		UserID: "test-user",
-		Tenant: common.Tenant{ID: tid, Name: string(tid)},
+		Tenant: spi.Tenant{ID: tid, Name: string(tid)},
 		Roles:  []string{"USER"},
 	}
-	return common.WithUserContext(context.Background(), uc)
+	return spi.WithUserContext(context.Background(), uc)
 }
 
 func TestNewHandler(t *testing.T) {
@@ -552,10 +552,10 @@ func TestUnlockBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to get entity store: %v", err)
 	}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			TenantID: "mock-tenant",
-			ModelRef: common.ModelRef{EntityName: "UnlockGuard", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "UnlockGuard", ModelVersion: "1"},
 			State:    "NEW",
 		},
 		Data: []byte(`{"x":1}`),
@@ -585,10 +585,10 @@ func TestDeleteBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to get entity store: %v", err)
 	}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			TenantID: "mock-tenant",
-			ModelRef: common.ModelRef{EntityName: "DeleteGuard", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "DeleteGuard", ModelVersion: "1"},
 			State:    "NEW",
 		},
 		Data: []byte(`{"x":1}`),
@@ -622,11 +622,11 @@ func TestDeleteSucceedsAfterEntitiesDeleted(t *testing.T) {
 		t.Fatalf("failed to get entity store: %v", err)
 	}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       "delete-purge-entity-1",
 			TenantID: "mock-tenant",
-			ModelRef: common.ModelRef{EntityName: "DeleteAfterPurge", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "DeleteAfterPurge", ModelVersion: "1"},
 			State:    "CREATED",
 		},
 		Data: []byte(`{"x":1}`),
@@ -680,10 +680,10 @@ func TestTenantIsolation(t *testing.T) {
 		t.Fatalf("failed to get model store for tenant-B: %v", err)
 	}
 
-	ref := common.ModelRef{EntityName: "Shared", ModelVersion: "1"}
-	desc := &common.ModelDescriptor{
+	ref := spi.ModelRef{EntityName: "Shared", ModelVersion: "1"}
+	desc := &spi.ModelDescriptor{
 		Ref:    ref,
-		State:  common.ModelUnlocked,
+		State:  spi.ModelUnlocked,
 		Schema: []byte(`{"kind":"OBJECT"}`),
 	}
 

@@ -10,28 +10,28 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 type Config struct {
-	HTTPPort          int
-	ContextPath       string
-	ErrorResponseMode string
-	MaxStateVisits    int
-	LogLevel          string
-	IAM               IAMConfig
-	GRPC              GRPCConfig
-	Bootstrap         BootstrapConfig
-	StorageBackend    string
-	DB                postgres.DBConfig
-	Cluster           cluster.Config
+	HTTPPort           int
+	ContextPath        string
+	ErrorResponseMode  string
+	MaxStateVisits     int
+	LogLevel           string
+	IAM                IAMConfig
+	GRPC               GRPCConfig
+	Bootstrap          BootstrapConfig
+	StorageBackend     string
+	DB                 postgres.DBConfig
+	Cluster            cluster.Config
 	SearchSnapshotTTL  time.Duration
 	SearchReapInterval time.Duration
 	OTelEnabled        bool
 	// ExternalProcessing overrides the default gRPC processor dispatcher.
 	// Used in tests to inject a LocalProcessingService.
-	ExternalProcessing spi.ExternalProcessingService
+	ExternalProcessing contract.ExternalProcessingService
 }
 
 // DBConfig is an alias kept for backward compatibility.
@@ -106,14 +106,14 @@ func DefaultConfig() Config {
 			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
 		},
 		Cluster: cluster.Config{
-			Enabled:         envBool("CYODA_CLUSTER_ENABLED", false),
-			NodeID:          envString("CYODA_NODE_ID", ""),
-			NodeAddr:        envString("CYODA_NODE_ADDR", "http://localhost:8080"),
-			GossipAddr:      envString("CYODA_GOSSIP_ADDR", ":7946"),
-			SeedNodes:       splitCSV(envString("CYODA_SEED_NODES", "")),
-			StabilityWindow: envDuration("CYODA_GOSSIP_STABILITY_WINDOW", 2*time.Second),
-			TxTTL:           envDuration("CYODA_TX_TTL", 60*time.Second),
-			TxReapInterval:  envDuration("CYODA_TX_REAP_INTERVAL", 10*time.Second),
+			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
+			NodeID:                 envString("CYODA_NODE_ID", ""),
+			NodeAddr:               envString("CYODA_NODE_ADDR", "http://localhost:8080"),
+			GossipAddr:             envString("CYODA_GOSSIP_ADDR", ":7946"),
+			SeedNodes:              splitCSV(envString("CYODA_SEED_NODES", "")),
+			StabilityWindow:        envDuration("CYODA_GOSSIP_STABILITY_WINDOW", 2*time.Second),
+			TxTTL:                  envDuration("CYODA_TX_TTL", 60*time.Second),
+			TxReapInterval:         envDuration("CYODA_TX_REAP_INTERVAL", 10*time.Second),
 			ProxyTimeout:           envDuration("CYODA_PROXY_TIMEOUT", 30*time.Second),
 			OutcomeTTL:             envDuration("CYODA_TX_OUTCOME_TTL", 5*time.Minute),
 			HMACSecret:             envHex("CYODA_HMAC_SECRET"),

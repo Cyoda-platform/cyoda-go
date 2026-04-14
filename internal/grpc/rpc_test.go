@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/metadata"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -15,7 +18,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
-	"google.golang.org/grpc/metadata"
 )
 
 // newTestEnv creates a CloudEventsServiceImpl wired to real in-memory stores
@@ -27,10 +29,10 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := factory.GetTransactionManager()
 
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "Test User",
-		Tenant:   common.Tenant{ID: "test-tenant", Name: "Test Tenant"},
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test Tenant"},
 		Roles:    []string{"ADMIN"},
 	}
 
@@ -48,7 +50,7 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 		searchService: searchService,
 	}
 
-	ctx := common.WithUserContext(context.Background(), uc)
+	ctx := spi.WithUserContext(context.Background(), uc)
 	return svc, ctx
 }
 
@@ -1080,9 +1082,9 @@ func (m *mockManageStream) Send(ce *cepb.CloudEvent) error {
 func (m *mockManageStream) SetHeader(metadata.MD) error  { return nil }
 func (m *mockManageStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockManageStream) SetTrailer(metadata.MD)       {}
-func (m *mockManageStream) Context() context.Context      { return m.ctx }
-func (m *mockManageStream) SendMsg(any) error             { return nil }
-func (m *mockManageStream) RecvMsg(any) error             { return nil }
+func (m *mockManageStream) Context() context.Context     { return m.ctx }
+func (m *mockManageStream) SendMsg(any) error            { return nil }
+func (m *mockManageStream) RecvMsg(any) error            { return nil }
 
 // mockEntityStream implements CloudEventsService_EntitySearchCollectionServer.
 type mockEntityStream struct {
@@ -1098,6 +1100,6 @@ func (m *mockEntityStream) Send(ce *cepb.CloudEvent) error {
 func (m *mockEntityStream) SetHeader(metadata.MD) error  { return nil }
 func (m *mockEntityStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockEntityStream) SetTrailer(metadata.MD)       {}
-func (m *mockEntityStream) Context() context.Context      { return m.ctx }
-func (m *mockEntityStream) SendMsg(any) error             { return nil }
-func (m *mockEntityStream) RecvMsg(any) error             { return nil }
+func (m *mockEntityStream) Context() context.Context     { return m.ctx }
+func (m *mockEntityStream) SendMsg(any) error            { return nil }
+func (m *mockEntityStream) RecvMsg(any) error            { return nil }

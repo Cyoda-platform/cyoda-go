@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {

@@ -9,14 +9,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
-	"github.com/google/uuid"
-	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
@@ -24,18 +25,18 @@ const maxEntityBodySize = 10 * 1024 * 1024
 
 // deterministicModelID derives a stable UUID v5 from a ModelRef, matching the
 // model handler's deterministic ID generation.
-func deterministicModelID(ref common.ModelRef) uuid.UUID {
+func deterministicModelID(ref spi.ModelRef) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(ref.String()))
 }
 
 type Handler struct {
 	factory spi.StoreFactory
 	txMgr   spi.TransactionManager
-	uuids   common.UUIDGenerator
+	uuids   spi.UUIDGenerator
 	engine  *wfengine.Engine
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids common.UUIDGenerator, engine *wfengine.Engine) *Handler {
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine) *Handler {
 	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine}
 }
 
@@ -46,7 +47,7 @@ func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
 // validateOrExtend validates parsedData against the model schema. When changeLevel
 // is set, it extends the model instead of strict validation and saves the updated
 // model back. Returns an error on validation or extension failure.
-func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *common.ModelDescriptor, parsedData any) error {
+func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal model schema: %w", err)

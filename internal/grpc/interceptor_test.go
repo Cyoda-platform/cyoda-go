@@ -7,20 +7,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// mockAuthService is a test double for spi.AuthenticationService.
+// mockAuthService is a test double for contract.AuthenticationService.
 type mockAuthService struct {
-	user *common.UserContext
+	user *spi.UserContext
 	err  error
 }
 
-func (m *mockAuthService) Authenticate(_ context.Context, _ *http.Request) (*common.UserContext, error) {
+func (m *mockAuthService) Authenticate(_ context.Context, _ *http.Request) (*spi.UserContext, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -36,10 +37,10 @@ type mockServerStream struct {
 func (m *mockServerStream) Context() context.Context { return m.ctx }
 
 func TestInterceptor_UnarySuccess(t *testing.T) {
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID:   "user-1",
 		UserName: "alice",
-		Tenant:   common.Tenant{ID: "tenant-1", Name: "Tenant One"},
+		Tenant:   spi.Tenant{ID: "tenant-1", Name: "Tenant One"},
 		Roles:    []string{"admin"},
 	}
 	authSvc := &mockAuthService{user: uc}
@@ -62,7 +63,7 @@ func TestInterceptor_UnarySuccess(t *testing.T) {
 		t.Fatalf("expected resp 'ok', got %v", resp)
 	}
 
-	got := common.GetUserContext(handlerCtx)
+	got := spi.GetUserContext(handlerCtx)
 	if got == nil {
 		t.Fatal("expected UserContext in handler context, got nil")
 	}
@@ -109,10 +110,10 @@ func TestInterceptor_UnaryAuthFailure(t *testing.T) {
 }
 
 func TestInterceptor_StreamSuccess(t *testing.T) {
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID:   "user-2",
 		UserName: "bob",
-		Tenant:   common.Tenant{ID: "tenant-2", Name: "Tenant Two"},
+		Tenant:   spi.Tenant{ID: "tenant-2", Name: "Tenant Two"},
 		Roles:    []string{"reader"},
 	}
 	authSvc := &mockAuthService{user: uc}
@@ -133,7 +134,7 @@ func TestInterceptor_StreamSuccess(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	got := common.GetUserContext(handlerStream.Context())
+	got := spi.GetUserContext(handlerStream.Context())
 	if got == nil {
 		t.Fatal("expected UserContext in stream context, got nil")
 	}

@@ -4,12 +4,12 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 func TestRandomSelector_SingleCandidate(t *testing.T) {
 	s := dispatch.NewRandomSelector()
-	candidates := []spi.NodeInfo{{NodeID: "node-1", Addr: "localhost:8123", Alive: true}}
+	candidates := []contract.NodeInfo{{NodeID: "node-1", Addr: "localhost:8123", Alive: true}}
 	selected, err := s.Select(candidates)
 	if err != nil {
 		t.Fatalf("Select: %v", err)
@@ -21,7 +21,7 @@ func TestRandomSelector_SingleCandidate(t *testing.T) {
 
 func TestRandomSelector_MultipleCandidates(t *testing.T) {
 	s := dispatch.NewRandomSelector()
-	candidates := []spi.NodeInfo{
+	candidates := []contract.NodeInfo{
 		{NodeID: "node-1", Addr: "localhost:8123", Alive: true},
 		{NodeID: "node-2", Addr: "localhost:8124", Alive: true},
 		{NodeID: "node-3", Addr: "localhost:8125", Alive: true},

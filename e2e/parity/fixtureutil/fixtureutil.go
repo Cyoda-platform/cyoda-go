@@ -26,9 +26,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/google/uuid"
 )
 
 // --- Binary building (sync.Once cached) ---

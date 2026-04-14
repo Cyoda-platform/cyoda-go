@@ -39,7 +39,7 @@ type ScenarioReport struct {
 
 type RunReport struct {
 	Date       time.Time
-	CyodaGo  string
+	CyodaGo    string
 	CyodaCloud string
 	Scenarios  []ScenarioReport
 }

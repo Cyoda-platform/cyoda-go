@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 func TestJoinActiveTransaction(t *testing.T) {
@@ -25,15 +25,15 @@ func TestJoinActiveTransaction(t *testing.T) {
 	}
 
 	// Both contexts should carry the same TransactionState.
-	txOrig := common.GetTransaction(txCtx)
-	txJoined := common.GetTransaction(joinCtx)
+	txOrig := spi.GetTransaction(txCtx)
+	txJoined := spi.GetTransaction(joinCtx)
 	if txOrig != txJoined {
 		t.Fatal("expected Join to return the same TransactionState pointer")
 	}
 
 	// Entity saved via joined context should be visible in the transaction buffer.
-	txJoined.Buffer["e-join"] = &common.Entity{
-		Meta: common.EntityMeta{
+	txJoined.Buffer["e-join"] = &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:         "e-join",
 			TenantID:   "tenant-A",
 			ChangeType: "CREATED",
@@ -145,7 +145,7 @@ func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Join failed: %v", err)
 	}
-	tx := common.GetTransaction(joinCtx)
+	tx := spi.GetTransaction(joinCtx)
 
 	var wg sync.WaitGroup
 	operationStarted := make(chan struct{})
@@ -160,8 +160,8 @@ func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 		// Hold the lock for 100ms to simulate work.
 		time.Sleep(100 * time.Millisecond)
 		// Write entity while holding the lock.
-		tx.Buffer["e-concurrent"] = &common.Entity{
-			Meta: common.EntityMeta{
+		tx.Buffer["e-concurrent"] = &spi.Entity{
+			Meta: spi.EntityMeta{
 				ID:         "e-concurrent",
 				TenantID:   "tenant-A",
 				ChangeType: "CREATED",

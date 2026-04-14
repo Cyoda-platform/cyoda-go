@@ -4,26 +4,27 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func TestGetAvailableTransitions_WithTransitions(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "order", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "OrderWF", InitialState: "OPEN", Active: true,
-		States: map[string]common.StateDefinition{
-			"OPEN": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
 				{Name: "approve", Next: "APPROVED"},
 				{Name: "reject", Next: "REJECTED"},
 			}},
-			"APPROVED": {Transitions: []common.TransitionDefinition{}},
-			"REJECTED": {Transitions: []common.TransitionDefinition{}},
+			"APPROVED": {Transitions: []spi.TransitionDefinition{}},
+			"REJECTED": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	// Save entity directly to store in state OPEN.
 	entity := makeEntity("e-trans-1", modelRef, map[string]any{"amount": 42})
@@ -54,16 +55,16 @@ func TestGetAvailableTransitions_WithTransitions(t *testing.T) {
 func TestGetAvailableTransitions_TerminalState(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "order", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "OrderWF", InitialState: "OPEN", Active: true,
-		States: map[string]common.StateDefinition{
-			"OPEN":     {Transitions: []common.TransitionDefinition{{Name: "close", Next: "CLOSED"}}},
-			"CLOSED":   {Transitions: []common.TransitionDefinition{}},
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "close", Next: "CLOSED"}}},
+			"CLOSED": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e-trans-2", modelRef, map[string]any{})
 	entity.Meta.State = "CLOSED"
@@ -90,7 +91,7 @@ func TestGetAvailableTransitions_TerminalState(t *testing.T) {
 func TestGetAvailableTransitions_EntityNotFound(t *testing.T) {
 	engine, _ := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "order", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "order", ModelVersion: "1.0"}
 
 	_, err := engine.GetAvailableTransitions(ctx, "nonexistent-entity", modelRef, time.Now())
 	if err == nil {
@@ -109,7 +110,7 @@ func TestGetAvailableTransitions_EntityNotFound(t *testing.T) {
 func TestGetAvailableTransitions_NoWorkflow_UsesDefault(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "widget", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "widget", ModelVersion: "1.0"}
 
 	// No workflow registered for this model. Entity in CREATED state.
 	// Default workflow has CREATED state with transitions: UPDATE, DELETE.
@@ -142,20 +143,20 @@ func TestGetAvailableTransitions_NoWorkflow_UsesDefault(t *testing.T) {
 func TestGetAvailableTransitions_CustomWorkflowTakesPrecedence(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "invoice", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "invoice", ModelVersion: "1.0"}
 
-	customWF := common.WorkflowDefinition{
+	customWF := spi.WorkflowDefinition{
 		Version: "1.0", Name: "InvoiceWF", InitialState: "DRAFT", Active: true,
-		States: map[string]common.StateDefinition{
-			"DRAFT": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"DRAFT": {Transitions: []spi.TransitionDefinition{
 				{Name: "submit", Next: "SUBMITTED"},
 				{Name: "cancel", Next: "CANCELLED"},
 			}},
-			"SUBMITTED": {Transitions: []common.TransitionDefinition{}},
-			"CANCELLED": {Transitions: []common.TransitionDefinition{}},
+			"SUBMITTED": {Transitions: []spi.TransitionDefinition{}},
+			"CANCELLED": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{customWF})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{customWF})
 
 	entity := makeEntity("e-trans-5", modelRef, map[string]any{})
 	entity.Meta.State = "DRAFT"

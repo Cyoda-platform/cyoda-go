@@ -7,23 +7,23 @@ import (
 	"iter"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 	"github.com/jackc/pgx/v5"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // entityStore implements spi.EntityStore backed by PostgreSQL with
 // dual-table writes: entities (current state) + entity_versions (history).
 type entityStore struct {
 	q        Querier
-	tenantID common.TenantID
+	tenantID spi.TenantID
 }
 
-func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*common.Entity]) ([]int64, error) {
+func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
 
-func (s *entityStore) Save(ctx context.Context, entity *common.Entity) (int64, error) {
+func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
 	// Defensive copy — stores own their copies (Ownership Rule 4).
 	e := *entity
 	if entity.Data != nil {
@@ -103,7 +103,7 @@ func (s *entityStore) Save(ctx context.Context, entity *common.Entity) (int64, e
 	return nextVersion, nil
 }
 
-func (s *entityStore) CompareAndSave(ctx context.Context, entity *common.Entity, expectedTxID string) (int64, error) {
+func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	tid := string(s.tenantID)
 	eid := entity.Meta.ID
 
@@ -119,27 +119,27 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *common.Entity,
 	// If entity exists and txID doesn't match, conflict.
 	if err == nil && currentTxID != nil && *currentTxID != expectedTxID {
 		return 0, fmt.Errorf("entity %s transaction ID mismatch (current=%q, expected=%q): %w",
-			eid, *currentTxID, expectedTxID, common.ErrConflict)
+			eid, *currentTxID, expectedTxID, spi.ErrConflict)
 	}
 
 	return s.Save(ctx, entity)
 }
 
-func (s *entityStore) Get(ctx context.Context, entityID string) (*common.Entity, error) {
+func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
 	var doc []byte
 	err := s.q.QueryRow(ctx,
 		`SELECT doc FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
 		string(s.tenantID), entityID).Scan(&doc)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, common.ErrNotFound)
+			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get entity %s: %w", entityID, err)
 	}
 	return unmarshalEntityDoc(doc)
 }
 
-func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*common.Entity, error) {
+func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	// Round up to the next millisecond boundary (matching memory implementation).
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
@@ -154,7 +154,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		string(s.tenantID), entityID, asAt).Scan(&doc)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found at %v: %w", entityID, asAt, common.ErrNotFound)
+			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found at %v: %w", entityID, asAt, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get entity %s as-at %v: %w", entityID, asAt, err)
 	}
@@ -170,14 +170,14 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 			return nil, fmt.Errorf("failed to parse _meta: %w", err)
 		}
 		if meta.Deleted {
-			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s deleted at %v: %w", entityID, asAt, common.ErrNotFound)
+			return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s deleted at %v: %w", entityID, asAt, spi.ErrNotFound)
 		}
 	}
 
 	return unmarshalEntityDoc(doc)
 }
 
-func (s *entityStore) GetAll(ctx context.Context, modelRef common.ModelRef) ([]*common.Entity, error) {
+func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT doc FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
@@ -189,7 +189,7 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef common.ModelRef) ([]*
 	return scanEntities(rows)
 }
 
-func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef common.ModelRef, asAt time.Time) ([]*common.Entity, error) {
+func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
 	rows, err := s.q.Query(ctx,
@@ -223,7 +223,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		tid, entityID).Scan(&doc)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, common.ErrNotFound)
+			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to get entity %s for delete: %w", entityID, err)
 	}
@@ -281,7 +281,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	return nil
 }
 
-func (s *entityStore) DeleteAll(ctx context.Context, modelRef common.ModelRef) error {
+func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) error {
 	tid := string(s.tenantID)
 
 	// Get all entity IDs for this model.
@@ -325,7 +325,7 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 	return exists, nil
 }
 
-func (s *entityStore) Count(ctx context.Context, modelRef common.ModelRef) (int64, error) {
+func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
 	var count int64
 	err := s.q.QueryRow(ctx,
 		`SELECT count(*) FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
@@ -336,7 +336,7 @@ func (s *entityStore) Count(ctx context.Context, modelRef common.ModelRef) (int6
 	return count, nil
 }
 
-func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([]common.EntityVersion, error) {
+func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT doc, version, valid_time FROM entity_versions
 		 WHERE tenant_id = $1 AND entity_id = $2
@@ -347,7 +347,7 @@ func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([
 	}
 	defer rows.Close()
 
-	var history []common.EntityVersion
+	var history []spi.EntityVersion
 	for rows.Next() {
 		var doc []byte
 		var version int64
@@ -369,8 +369,8 @@ func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([
 }
 
 // scanEntities reads all Entity rows from a result set.
-func scanEntities(rows pgx.Rows) ([]*common.Entity, error) {
-	var result []*common.Entity
+func scanEntities(rows pgx.Rows) ([]*spi.Entity, error) {
+	var result []*spi.Entity
 	for rows.Next() {
 		var doc []byte
 		if err := rows.Scan(&doc); err != nil {
@@ -386,14 +386,14 @@ func scanEntities(rows pgx.Rows) ([]*common.Entity, error) {
 		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 	if result == nil {
-		result = []*common.Entity{}
+		result = []*spi.Entity{}
 	}
 	return result, nil
 }
 
 // scanEntitiesFilterDeleted reads Entity rows and filters out deleted ones.
-func scanEntitiesFilterDeleted(rows pgx.Rows) ([]*common.Entity, error) {
-	var result []*common.Entity
+func scanEntitiesFilterDeleted(rows pgx.Rows) ([]*spi.Entity, error) {
+	var result []*spi.Entity
 	for rows.Next() {
 		var doc []byte
 		if err := rows.Scan(&doc); err != nil {
@@ -425,7 +425,7 @@ func scanEntitiesFilterDeleted(rows pgx.Rows) ([]*common.Entity, error) {
 		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 	if result == nil {
-		result = []*common.Entity{}
+		result = []*spi.Entity{}
 	}
 	return result, nil
 }

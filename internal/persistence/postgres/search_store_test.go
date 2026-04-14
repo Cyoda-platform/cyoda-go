@@ -7,9 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 func setupSearchTest(t *testing.T) *postgres.StoreFactory {
@@ -23,7 +22,7 @@ func setupSearchTest(t *testing.T) *postgres.StoreFactory {
 	return postgres.NewStoreFactory(pool)
 }
 
-func getSearchStore(t *testing.T, factory *postgres.StoreFactory, tid common.TenantID) spi.AsyncSearchStore {
+func getSearchStore(t *testing.T, factory *postgres.StoreFactory, tid spi.TenantID) spi.AsyncSearchStore {
 	t.Helper()
 	ctx := ctxWithTenant(tid)
 	store, err := factory.AsyncSearchStore(ctx)
@@ -43,7 +42,7 @@ func TestPGSearchStore_CreateAndGetJob(t *testing.T) {
 		ID:          "job-001",
 		TenantID:    "search-tenant",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "Person", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "Person", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{"field":"name","op":"eq","value":"Alice"}`),
 		PointInTime: now,
 		SearchOpts:  json.RawMessage(`{"sort":"asc"}`),
@@ -103,7 +102,7 @@ func TestPGSearchStore_TenantIsolation(t *testing.T) {
 		ID:          "job-iso",
 		TenantID:    "tenant-a",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "X", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "X", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -138,7 +137,7 @@ func TestPGSearchStore_UpdateJobStatus(t *testing.T) {
 		ID:          "job-upd",
 		TenantID:    "search-tenant",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "Y", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -197,7 +196,7 @@ func TestPGSearchStore_SaveAndGetResults(t *testing.T) {
 		ID:          "job-res",
 		TenantID:    "search-tenant",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "Z", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "Z", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -261,7 +260,7 @@ func TestPGSearchStore_DeleteJob(t *testing.T) {
 		ID:          "job-del",
 		TenantID:    "search-tenant",
 		Status:      "SUCCESSFUL",
-		ModelRef:    common.ModelRef{EntityName: "W", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "W", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -310,7 +309,7 @@ func TestPGSearchStore_ReapExpired(t *testing.T) {
 		ID:          "job-old",
 		TenantID:    "search-tenant",
 		Status:      "SUCCESSFUL",
-		ModelRef:    common.ModelRef{EntityName: "A", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "A", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: oldTime,
 		CreateTime:  oldTime,
@@ -326,7 +325,7 @@ func TestPGSearchStore_ReapExpired(t *testing.T) {
 		ID:          "job-new",
 		TenantID:    "search-tenant",
 		Status:      "SUCCESSFUL",
-		ModelRef:    common.ModelRef{EntityName: "B", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "B", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -371,7 +370,7 @@ func TestPGSearchStore_SaveResults_TenantVerification(t *testing.T) {
 		ID:          "job-sv-tenant",
 		TenantID:    "tenant-a",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "X", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "X", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -419,7 +418,7 @@ func TestPGSearchStore_ResultIDs_TenantIsolation(t *testing.T) {
 		ID:          "job-iso-a",
 		TenantID:    "tenant-a",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "X", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "X", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -436,7 +435,7 @@ func TestPGSearchStore_ResultIDs_TenantIsolation(t *testing.T) {
 		ID:          "job-iso-b",
 		TenantID:    "tenant-b",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "Y", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "Y", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -488,7 +487,7 @@ func TestPGSearchStore_Cancel_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("Cancel() expected error for missing job, got nil")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("Cancel() expected ErrNotFound, got %v", err)
 	}
 }
@@ -503,7 +502,7 @@ func TestPGSearchStore_Cancel_Idempotent(t *testing.T) {
 		ID:          "job-cancel",
 		TenantID:    "search-tenant",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "V", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "V", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: now,
 		CreateTime:  now,
@@ -544,7 +543,7 @@ func TestPGSearchStore_Cancel_AlreadyTerminal(t *testing.T) {
 			ID:          jobID,
 			TenantID:    "search-tenant",
 			Status:      terminalStatus,
-			ModelRef:    common.ModelRef{EntityName: "U", ModelVersion: "1"},
+			ModelRef:    spi.ModelRef{EntityName: "U", ModelVersion: "1"},
 			Condition:   json.RawMessage(`{}`),
 			PointInTime: now,
 			CreateTime:  now,
@@ -581,7 +580,7 @@ func TestPGSearchStore_ReapDoesNotReapRunning(t *testing.T) {
 		ID:          "job-running",
 		TenantID:    "search-tenant",
 		Status:      "RUNNING",
-		ModelRef:    common.ModelRef{EntityName: "C", ModelVersion: "1"},
+		ModelRef:    spi.ModelRef{EntityName: "C", ModelVersion: "1"},
 		Condition:   json.RawMessage(`{}`),
 		PointInTime: oldTime,
 		CreateTime:  oldTime,

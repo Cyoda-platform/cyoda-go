@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
@@ -25,25 +26,25 @@ func lifecycleCriterion(field, op string, value any) json.RawMessage {
 func TestScenarioAutoCascadeChain(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "cascade-chain", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "cascade-chain", ModelVersion: "1.0"}
 
 	// INITIAL ->(auto)-> STEP1 ->(auto)-> STEP2 ->(auto)-> FINAL
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "CascadeChainWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_STEP1", Next: "STEP1", Manual: false},
 			}},
-			"STEP1": {Transitions: []common.TransitionDefinition{
+			"STEP1": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_STEP2", Next: "STEP2", Manual: false},
 			}},
-			"STEP2": {Transitions: []common.TransitionDefinition{
+			"STEP2": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_FINAL", Next: "FINAL", Manual: false},
 			}},
-			"FINAL": {Transitions: []common.TransitionDefinition{}},
+			"FINAL": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("chain1", modelRef, map[string]any{"ok": true})
 	result, err := engine.Execute(ctx, entity, "")
@@ -68,7 +69,7 @@ func TestScenarioAutoCascadeChain(t *testing.T) {
 	}
 	transitionCount := 0
 	for _, ev := range events {
-		if ev.EventType == common.SMEventTransitionMade {
+		if ev.EventType == spi.SMEventTransitionMade {
 			transitionCount++
 		}
 	}
@@ -82,23 +83,23 @@ func TestScenarioAutoCascadeChain(t *testing.T) {
 func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "loopback-exit", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "loopback-exit", ModelVersion: "1.0"}
 
 	// PROCESSING:
 	//   - RETRY -> PROCESSING (manual, loopback)
 	//   - COMPLETE ->(auto, criterion: $.status == "done")-> COMPLETED
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "LoopbackExitWF", InitialState: "PROCESSING", Active: true,
-		States: map[string]common.StateDefinition{
-			"PROCESSING": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"PROCESSING": {Transitions: []spi.TransitionDefinition{
 				{Name: "COMPLETE", Next: "COMPLETED", Manual: false,
 					Criterion: simpleCriterion("$.status", "EQUALS", "done")},
 				{Name: "RETRY", Next: "PROCESSING", Manual: true},
 			}},
-			"COMPLETED": {Transitions: []common.TransitionDefinition{}},
+			"COMPLETED": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	// Entity with status=done → auto-completes to COMPLETED.
 	entity1 := makeEntity("lb1", modelRef, map[string]any{"status": "done"})
@@ -145,18 +146,18 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 func TestScenarioStuckState(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "stuck", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "stuck", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "StuckWF", InitialState: "STUCK", Active: true,
-		States: map[string]common.StateDefinition{
-			"STUCK": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"STUCK": {Transitions: []spi.TransitionDefinition{
 				{Name: "UNSTICK", Next: "FREE", Manual: true},
 			}},
-			"FREE": {Transitions: []common.TransitionDefinition{}},
+			"FREE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("stuck1", modelRef, map[string]any{"x": 1})
 	result, err := engine.Execute(ctx, entity, "")
@@ -176,30 +177,30 @@ func TestScenarioStuckState(t *testing.T) {
 func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "priority-route", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "priority-route", ModelVersion: "1.0"}
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "PriorityWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "FAST", Next: "FAST_TRACK", Manual: false,
 					Criterion: simpleCriterion("$.priority", "EQUALS", "high")},
 				{Name: "SLOW", Next: "SLOW_TRACK", Manual: false,
 					Criterion: simpleCriterion("$.priority", "EQUALS", "low")},
 			}},
-			"FAST_TRACK": {Transitions: []common.TransitionDefinition{
+			"FAST_TRACK": {Transitions: []spi.TransitionDefinition{
 				{Name: "FAST_DONE", Next: "DONE", Manual: false},
 			}},
-			"SLOW_TRACK": {Transitions: []common.TransitionDefinition{
+			"SLOW_TRACK": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_REVIEW", Next: "REVIEW", Manual: false},
 			}},
-			"REVIEW": {Transitions: []common.TransitionDefinition{
+			"REVIEW": {Transitions: []spi.TransitionDefinition{
 				{Name: "REVIEW_DONE", Next: "DONE", Manual: false},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	// High priority: INITIAL -> FAST_TRACK -> DONE
 	entityHigh := makeEntity("prio-h", modelRef, map[string]any{"priority": "high"})
@@ -236,8 +237,8 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 	highEvents, _ := auditStore.GetEvents(ctx, "prio-h")
 	lowEvents, _ := auditStore.GetEvents(ctx, "prio-l")
 
-	highTransitions := countEventType(highEvents, common.SMEventTransitionMade)
-	lowTransitions := countEventType(lowEvents, common.SMEventTransitionMade)
+	highTransitions := countEventType(highEvents, spi.SMEventTransitionMade)
+	lowTransitions := countEventType(lowEvents, spi.SMEventTransitionMade)
 
 	if highTransitions != 2 {
 		t.Errorf("expected 2 transitions for high priority, got %d", highTransitions)
@@ -251,19 +252,19 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 
 func TestScenarioStaticLoopDetection(t *testing.T) {
 	// A -> (auto, no criterion) -> B -> (auto, no criterion) -> A
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "LoopWF", InitialState: "A", Active: true,
-		States: map[string]common.StateDefinition{
-			"A": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: false},
 			}},
-			"B": {Transitions: []common.TransitionDefinition{
+			"B": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_A", Next: "A", Manual: false},
 			}},
 		},
 	}
 
-	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatal("expected error for infinite loop")
 	}
@@ -274,16 +275,16 @@ func TestScenarioStaticLoopDetection(t *testing.T) {
 
 func TestScenarioStaticLoopDetectionSelfLoop(t *testing.T) {
 	// A -> (auto, no criterion) -> A (self-loop)
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "SelfLoopWF", InitialState: "A", Active: true,
-		States: map[string]common.StateDefinition{
-			"A": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_A", Next: "A", Manual: false},
 			}},
 		},
 	}
 
-	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf})
 	if err == nil {
 		t.Fatal("expected error for self-loop")
 	}
@@ -295,21 +296,21 @@ func TestScenarioStaticLoopDetectionSelfLoop(t *testing.T) {
 func TestScenarioStaticValidationPassesGuardedCycle(t *testing.T) {
 	// A -> (auto, WITH criterion) -> B -> (auto, WITH criterion) -> A
 	// This should pass static validation because the criteria may break the cycle.
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "GuardedCycleWF", InitialState: "A", Active: true,
-		States: map[string]common.StateDefinition{
-			"A": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: false,
 					Criterion: simpleCriterion("$.x", "EQUALS", 1)},
 			}},
-			"B": {Transitions: []common.TransitionDefinition{
+			"B": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_A", Next: "A", Manual: false,
 					Criterion: simpleCriterion("$.x", "EQUALS", 2)},
 			}},
 		},
 	}
 
-	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf})
 	if err != nil {
 		t.Fatalf("expected no error for guarded cycle, got: %v", err)
 	}
@@ -318,19 +319,19 @@ func TestScenarioStaticValidationPassesGuardedCycle(t *testing.T) {
 func TestScenarioStaticValidationPassesManualCycle(t *testing.T) {
 	// A -> (manual) -> B -> (manual) -> A
 	// Manual transitions never form infinite automated loops.
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ManualCycleWF", InitialState: "A", Active: true,
-		States: map[string]common.StateDefinition{
-			"A": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: true},
 			}},
-			"B": {Transitions: []common.TransitionDefinition{
+			"B": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_A", Next: "A", Manual: true},
 			}},
 		},
 	}
 
-	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	err := validateWorkflows([]spi.WorkflowDefinition{wf})
 	if err != nil {
 		t.Fatalf("expected no error for manual cycle, got: %v", err)
 	}
@@ -349,22 +350,22 @@ func TestScenarioDynamicLoopLimit(t *testing.T) {
 	engine := NewEngine(factory, uuids, txMgr, WithMaxStateVisits(3))
 
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "dynamic-loop", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "dynamic-loop", ModelVersion: "1.0"}
 
 	alwaysTrue := lifecycleCriterion("state", "NOT_NULL", "")
 
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "DynamicLoopWF", InitialState: "A", Active: true,
-		States: map[string]common.StateDefinition{
-			"A": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"A": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_B", Next: "B", Manual: false, Criterion: alwaysTrue},
 			}},
-			"B": {Transitions: []common.TransitionDefinition{
+			"B": {Transitions: []spi.TransitionDefinition{
 				{Name: "TO_A", Next: "A", Manual: false, Criterion: alwaysTrue},
 			}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("dyn1", modelRef, map[string]any{"x": 1})
 	_, err := engine.Execute(ctx, entity, "")
@@ -386,7 +387,7 @@ func TestScenarioDynamicLoopLimit(t *testing.T) {
 	}
 	hasCancelEvent := false
 	for _, ev := range events {
-		if ev.EventType == common.SMEventCancelled {
+		if ev.EventType == spi.SMEventCancelled {
 			hasCancelEvent = true
 			break
 		}
@@ -401,24 +402,24 @@ func TestScenarioDynamicLoopLimit(t *testing.T) {
 func TestScenarioManualTriggersAutoCascade(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "manual-cascade", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "manual-cascade", ModelVersion: "1.0"}
 
 	// INITIAL: no auto transitions
 	// INITIAL -> PROCESS (manual)
 	// PROCESS ->(auto)-> DONE
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "ManualCascadeWF", InitialState: "INITIAL", Active: true,
-		States: map[string]common.StateDefinition{
-			"INITIAL": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "PROCESS", Next: "PROCESS", Manual: true},
 			}},
-			"PROCESS": {Transitions: []common.TransitionDefinition{
+			"PROCESS": {Transitions: []spi.TransitionDefinition{
 				{Name: "AUTO_DONE", Next: "DONE", Manual: false},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	// Create entity → stays at INITIAL (no auto transitions).
 	entity := makeEntity("mc1", modelRef, map[string]any{"x": 1})
@@ -451,20 +452,20 @@ func TestScenarioManualTriggersAutoCascade(t *testing.T) {
 func TestScenarioLoopbackReEvaluates(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
-	modelRef := common.ModelRef{EntityName: "loopback-reeval", ModelVersion: "1.0"}
+	modelRef := spi.ModelRef{EntityName: "loopback-reeval", ModelVersion: "1.0"}
 
 	// WAITING: auto transition with criterion $.ready == true -> DONE
-	wf := common.WorkflowDefinition{
+	wf := spi.WorkflowDefinition{
 		Version: "1.0", Name: "LoopbackReEvalWF", InitialState: "WAITING", Active: true,
-		States: map[string]common.StateDefinition{
-			"WAITING": {Transitions: []common.TransitionDefinition{
+		States: map[string]spi.StateDefinition{
+			"WAITING": {Transitions: []spi.TransitionDefinition{
 				{Name: "AUTO_DONE", Next: "DONE", Manual: false,
 					Criterion: simpleCriterion("$.ready", "EQUALS", true)},
 			}},
-			"DONE": {Transitions: []common.TransitionDefinition{}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
 		},
 	}
-	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	// Create with ready=false → stays at WAITING.
 	entity := makeEntity("lbr1", modelRef, map[string]any{"ready": false})
@@ -532,7 +533,7 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 
 // --- helpers ---
 
-func countEventType(events []common.StateMachineEvent, eventType common.StateMachineEventType) int {
+func countEventType(events []spi.StateMachineEvent, eventType spi.StateMachineEventType) int {
 	count := 0
 	for _, ev := range events {
 		if ev.EventType == eventType {

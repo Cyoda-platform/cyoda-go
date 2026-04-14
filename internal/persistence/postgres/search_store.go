@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -20,8 +20,8 @@ type asyncSearchStore struct {
 	pool *pgxpool.Pool
 }
 
-func (s *asyncSearchStore) tenant(ctx context.Context) (common.TenantID, error) {
-	uc := common.GetUserContext(ctx)
+func (s *asyncSearchStore) tenant(ctx context.Context) (spi.TenantID, error) {
+	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — tenant cannot be resolved")
 	}
@@ -191,7 +191,7 @@ func (s *asyncSearchStore) DeleteJob(ctx context.Context, jobID string) error {
 
 // Cancel marks the job as CANCELLED. Idempotent: cancelling a job already in
 // a terminal state returns nil. Cancelling a non-existent job returns
-// common.ErrNotFound.
+// spi.ErrNotFound.
 func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
@@ -222,7 +222,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string) error {
 		return fmt.Errorf("failed to check existence of search job %s: %w", jobID, err)
 	}
 	if !exists {
-		return fmt.Errorf("search job %q not found: %w", jobID, common.ErrNotFound)
+		return fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 	// Job exists but is already terminal — idempotent.
 	return nil
@@ -256,6 +256,6 @@ func scanSearchJob(row pgx.Row) (*spi.SearchJob, error) {
 		}
 		return nil, fmt.Errorf("failed to scan search job: %w", err)
 	}
-	job.ModelRef = common.ModelRef{EntityName: modelName, ModelVersion: modelVer}
+	job.ModelRef = spi.ModelRef{EntityName: modelName, ModelVersion: modelVer}
 	return &job, nil
 }

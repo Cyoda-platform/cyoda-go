@@ -6,13 +6,14 @@ import (
 	"log/slog"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
 // Default keep-alive configuration. Override with SetKeepAliveConfig.
@@ -50,11 +51,11 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	ctx := stream.Context()
 
 	// 1. Check ROLE_M2M authorization.
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return status.Errorf(codes.Unauthenticated, "no user context")
 	}
-	if !common.HasRole(uc.Roles, "ROLE_M2M") {
+	if !spi.HasRole(uc.Roles, "ROLE_M2M") {
 		return status.Errorf(codes.PermissionDenied, "ROLE_M2M required for streaming")
 	}
 
@@ -86,7 +87,7 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 
 	// 4. Validate tenant.
 	tenantID := uc.Tenant.ID
-	if extra.JoinedLegalEntityID != "" && common.TenantID(extra.JoinedLegalEntityID) != tenantID {
+	if extra.JoinedLegalEntityID != "" && spi.TenantID(extra.JoinedLegalEntityID) != tenantID {
 		return status.Errorf(codes.PermissionDenied, "tenant mismatch")
 	}
 
@@ -241,8 +242,8 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, memberID str
 // pending request on the given member.
 func (s *CloudEventsServiceImpl) handleProcessorResponse(memberID string, payload json.RawMessage) {
 	var resp struct {
-		RequestID string          `json:"requestId"`
-		Success   bool            `json:"success"`
+		RequestID string `json:"requestId"`
+		Success   bool   `json:"success"`
 		Error     *struct {
 			Message string `json:"message"`
 		} `json:"error"`
@@ -305,4 +306,3 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		Warnings: resp.Warnings,
 	})
 }
-

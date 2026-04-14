@@ -95,8 +95,8 @@ func TestSplitProfiles_Validation(t *testing.T) {
 		{"local,postgres,otel", 3},
 		{" local , postgres ", 2},
 		{"", 0},
-		{"../escape", 0},   // path traversal rejected
-		{"foo/bar", 0},     // path separator rejected
+		{"../escape", 0},    // path traversal rejected
+		{"foo/bar", 0},      // path separator rejected
 		{"valid,../bad", 1}, // only valid kept
 	}
 	for _, tt := range tests {

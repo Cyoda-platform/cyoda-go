@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ClusterServiceImpl implements spi.ClusterService by wrapping a MemberRegistry.
+// ClusterServiceImpl implements contract.ClusterService by wrapping a MemberRegistry.
 type ClusterServiceImpl struct {
 	registry *MemberRegistry
 }

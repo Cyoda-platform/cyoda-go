@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"testing"
 
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 // postgresFixture implements parity.BackendFixture for the postgres backend.

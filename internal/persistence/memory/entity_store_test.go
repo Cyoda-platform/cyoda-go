@@ -6,17 +6,18 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
 
-func ctxWithTenant(tid common.TenantID) context.Context {
-	uc := &common.UserContext{
+func ctxWithTenant(tid spi.TenantID) context.Context {
+	uc := &spi.UserContext{
 		UserID: "test-user",
-		Tenant: common.Tenant{ID: tid, Name: string(tid)},
+		Tenant: spi.Tenant{ID: tid, Name: string(tid)},
 		Roles:  []string{"USER"},
 	}
-	return common.WithUserContext(context.Background(), uc)
+	return spi.WithUserContext(context.Background(), uc)
 }
 
 func TestFactoryReturnsStoreForTenant(t *testing.T) {
@@ -44,11 +45,11 @@ func TestStoreAndRetrieve(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-001", TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
-			State: "NEW",
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			State:    "NEW",
 		},
 		Data: []byte(`{"amount": 100}`),
 	}
@@ -71,10 +72,10 @@ func TestTenantIsolationDataInvisible(t *testing.T) {
 	ctxB := ctxWithTenant("tenant-B")
 	storeA, _ := factory.EntityStore(ctxA)
 	storeB, _ := factory.EntityStore(ctxB)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-001", TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 		},
 		Data: []byte(`{"owner": "A"}`),
 	}
@@ -91,15 +92,15 @@ func TestTenantIsolationWritesDontCross(t *testing.T) {
 	ctxB := ctxWithTenant("tenant-B")
 	storeA, _ := factory.EntityStore(ctxA)
 	storeB, _ := factory.EntityStore(ctxB)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-001", TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 		},
 		Data: []byte(`{"owner": "A"}`),
 	}
 	storeA.Save(ctxA, entity)
-	all, _ := storeB.GetAll(ctxB, common.ModelRef{EntityName: "Order", ModelVersion: "1"})
+	all, _ := storeB.GetAll(ctxB, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
 	if len(all) != 0 {
 		t.Errorf("expected 0 entities for tenant-B, got %d", len(all))
 	}
@@ -111,13 +112,13 @@ func TestTenantIsolationDeletesDontCross(t *testing.T) {
 	ctxB := ctxWithTenant("tenant-B")
 	storeA, _ := factory.EntityStore(ctxA)
 	storeB, _ := factory.EntityStore(ctxB)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	entityA := &common.Entity{
-		Meta: common.EntityMeta{ID: "e-001", TenantID: "tenant-A", ModelRef: modelRef},
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	entityA := &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-001", TenantID: "tenant-A", ModelRef: modelRef},
 		Data: []byte(`{"owner": "A"}`),
 	}
-	entityB := &common.Entity{
-		Meta: common.EntityMeta{ID: "e-001", TenantID: "tenant-B", ModelRef: modelRef},
+	entityB := &spi.Entity{
+		Meta: spi.EntityMeta{ID: "e-001", TenantID: "tenant-B", ModelRef: modelRef},
 		Data: []byte(`{"owner": "B"}`),
 	}
 	storeA.Save(ctxA, entityA)
@@ -134,14 +135,14 @@ func TestTenantIsolationDeletesDontCross(t *testing.T) {
 
 func TestSystemTenantIsolated(t *testing.T) {
 	factory := memory.NewStoreFactory()
-	ctxSys := ctxWithTenant(common.SystemTenantID)
+	ctxSys := ctxWithTenant(spi.SystemTenantID)
 	ctxA := ctxWithTenant("tenant-A")
 	storeSys, _ := factory.EntityStore(ctxSys)
 	storeA, _ := factory.EntityStore(ctxA)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
-			ID: "sys-001", TenantID: common.SystemTenantID,
-			ModelRef: common.ModelRef{EntityName: "Config", ModelVersion: "1"},
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
+			ID: "sys-001", TenantID: spi.SystemTenantID,
+			ModelRef: spi.ModelRef{EntityName: "Config", ModelVersion: "1"},
 		},
 		Data: []byte(`{"system": true}`),
 	}
@@ -158,13 +159,13 @@ func TestSameEntityIDDifferentTenants(t *testing.T) {
 	ctxB := ctxWithTenant("tenant-B")
 	storeA, _ := factory.EntityStore(ctxA)
 	storeB, _ := factory.EntityStore(ctxB)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	entityA := &common.Entity{
-		Meta: common.EntityMeta{ID: "same-id", TenantID: "tenant-A", ModelRef: modelRef},
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	entityA := &spi.Entity{
+		Meta: spi.EntityMeta{ID: "same-id", TenantID: "tenant-A", ModelRef: modelRef},
 		Data: []byte(`{"tenant": "A"}`),
 	}
-	entityB := &common.Entity{
-		Meta: common.EntityMeta{ID: "same-id", TenantID: "tenant-B", ModelRef: modelRef},
+	entityB := &spi.Entity{
+		Meta: spi.EntityMeta{ID: "same-id", TenantID: "tenant-B", ModelRef: modelRef},
 		Data: []byte(`{"tenant": "B"}`),
 	}
 	storeA.Save(ctxA, entityA)
@@ -185,11 +186,11 @@ func TestPointInTimeRespectsIsolation(t *testing.T) {
 	ctxB := ctxWithTenant("tenant-B")
 	storeA, _ := factory.EntityStore(ctxA)
 	storeB, _ := factory.EntityStore(ctxB)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-temporal", TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
-			State: "NEW",
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			State:    "NEW",
 		},
 		Data: []byte(`{"v": 1}`),
 	}
@@ -205,11 +206,11 @@ func TestPointInTimeRetrieval(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-002", TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
-			State: "NEW",
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			State:    "NEW",
 		},
 		Data: []byte(`{"amount": 50}`),
 	}
@@ -231,10 +232,10 @@ func TestSoftDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-del", TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 			State:    "NEW",
 		},
 		Data: []byte(`{"x": 1}`),
@@ -258,10 +259,10 @@ func TestSoftDeleteAsAtBeforeDeletion(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-del2", TenantID: "tenant-A",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 			State:    "NEW",
 		},
 		Data: []byte(`{"y": 2}`),
@@ -284,9 +285,9 @@ func TestSoftDeleteCountExcludes(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-del3", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"z": 3}`),
@@ -303,15 +304,15 @@ func TestSoftDeleteGetAllExcludes(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	e1 := &common.Entity{
-		Meta: common.EntityMeta{
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	e1 := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-keep", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"keep": true}`),
 	}
-	e2 := &common.Entity{
-		Meta: common.EntityMeta{
+	e2 := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-gone", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"gone": true}`),
@@ -333,11 +334,11 @@ func TestGetVersionHistory(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Save with CREATED
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-hist", TenantID: "tenant-A", ModelRef: modelRef,
 			State: "NEW", ChangeType: "CREATED", ChangeUser: "user-1",
 		},
@@ -385,10 +386,10 @@ func TestGetVersionHistoryWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-hist-del", TenantID: "tenant-A", ModelRef: modelRef,
 			State: "NEW", ChangeType: "CREATED", ChangeUser: "user-1",
 		},
@@ -429,16 +430,16 @@ func TestGetAllAsAt(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	e1 := &common.Entity{
-		Meta: common.EntityMeta{
+	e1 := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-aa-1", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"v": 1}`),
 	}
-	e2 := &common.Entity{
-		Meta: common.EntityMeta{
+	e2 := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-aa-2", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"v": 1}`),
@@ -493,10 +494,10 @@ func TestGetAllAsAtWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-aad-1", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"x": 1}`),
@@ -545,10 +546,10 @@ func TestCompareAndSaveMatchingTxID(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-cas-1", TenantID: "tenant-A", ModelRef: modelRef,
 			State: "NEW", TransactionID: "tx-001",
 		},
@@ -577,10 +578,10 @@ func TestCompareAndSaveMismatchTxID(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-cas-2", TenantID: "tenant-A", ModelRef: modelRef,
 			State: "NEW", TransactionID: "tx-001",
 		},
@@ -595,7 +596,7 @@ func TestCompareAndSaveMismatchTxID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected conflict error, got nil")
 	}
-	if !errors.Is(err, common.ErrConflict) {
+	if !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("expected ErrConflict, got: %v", err)
 	}
 
@@ -610,12 +611,12 @@ func TestCompareAndSaveNewEntity(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// CompareAndSave on a new entity (no prior versions) should succeed
 	// because there's nothing to conflict with.
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-cas-new", TenantID: "tenant-A", ModelRef: modelRef,
 			State: "NEW", TransactionID: "tx-001",
 		},
@@ -640,7 +641,7 @@ func TestTransactionReadYourOwnWrites(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Begin transaction
 	_, txCtx, err := txMgr.Begin(ctx)
@@ -649,8 +650,8 @@ func TestTransactionReadYourOwnWrites(t *testing.T) {
 	}
 
 	// Save entity within transaction
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-tx-1", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"tx": true}`),
@@ -678,7 +679,7 @@ func TestTransactionIsolation(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Begin transaction
 	_, txCtx, err := txMgr.Begin(ctx)
@@ -687,8 +688,8 @@ func TestTransactionIsolation(t *testing.T) {
 	}
 
 	// Save entity within transaction
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-tx-iso", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"isolated": true}`),
@@ -725,11 +726,11 @@ func TestTransactionDeleteVisibility(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Pre-create entity outside any transaction (auto-commit)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-tx-del", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"delete-me": true}`),
@@ -771,11 +772,11 @@ func TestTransactionGetAllIncludesBuffer(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Pre-create one entity outside tx
-	existing := &common.Entity{
-		Meta: common.EntityMeta{
+	existing := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-existing", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"existing": true}`),
@@ -788,8 +789,8 @@ func TestTransactionGetAllIncludesBuffer(t *testing.T) {
 		t.Fatalf("begin failed: %v", err)
 	}
 
-	newEntity := &common.Entity{
-		Meta: common.EntityMeta{
+	newEntity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-buffered", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"buffered": true}`),
@@ -829,11 +830,11 @@ func TestImplicitAutoCommit(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Save without transaction → visible immediately (existing behavior)
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-auto", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"auto": true}`),
@@ -863,7 +864,7 @@ func TestTransactionExistsAndCount(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Begin transaction, save entity
 	_, txCtx, err := txMgr.Begin(ctx)
@@ -871,8 +872,8 @@ func TestTransactionExistsAndCount(t *testing.T) {
 		t.Fatalf("begin failed: %v", err)
 	}
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-tx-exists", TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 		},
 		Data: []byte(`{"exists": true}`),
@@ -899,12 +900,12 @@ func TestTransactionDeleteAllVisibility(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Pre-create entities
 	for _, id := range []string{"e-da-1", "e-da-2"} {
-		e := &common.Entity{
-			Meta: common.EntityMeta{
+		e := &spi.Entity{
+			Meta: spi.EntityMeta{
 				ID: id, TenantID: "tenant-A", ModelRef: modelRef, State: "NEW",
 			},
 			Data: []byte(`{"da": true}`),
@@ -944,11 +945,11 @@ func TestTransactionCompareAndSave(t *testing.T) {
 
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
-	modelRef := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
 	// Pre-create entity with txID
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID: "e-tx-cas", TenantID: "tenant-A", ModelRef: modelRef,
 			State: "NEW", TransactionID: "tx-original",
 		},
@@ -981,7 +982,7 @@ func TestTransactionCompareAndSave(t *testing.T) {
 	// CompareAndSave with wrong txID → conflict
 	entity.Data = []byte(`{"v": 3}`)
 	_, err = store.CompareAndSave(txCtx, entity, "wrong-tx")
-	if !errors.Is(err, common.ErrConflict) {
+	if !errors.Is(err, spi.ErrConflict) {
 		t.Fatalf("expected ErrConflict, got: %v", err)
 	}
 }
@@ -1009,7 +1010,7 @@ func TestTransactionalDeleteNonExistentEntity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when deleting non-existent entity in transaction, got nil")
 	}
-	if !errors.Is(err, common.ErrNotFound) {
+	if !errors.Is(err, spi.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got: %v", err)
 	}
 

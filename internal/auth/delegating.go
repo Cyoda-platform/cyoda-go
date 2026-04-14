@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// DelegatingAuthenticator implements spi.AuthenticationService by delegating
+// DelegatingAuthenticator implements contract.AuthenticationService by delegating
 // token validation to a JWKSValidator.
 type DelegatingAuthenticator struct {
 	validator *JWKSValidator
@@ -21,7 +21,7 @@ func NewDelegatingAuthenticator(validator *JWKSValidator) *DelegatingAuthenticat
 }
 
 // Authenticate extracts a Bearer token from the Authorization header and validates it.
-func (a *DelegatingAuthenticator) Authenticate(_ context.Context, r *http.Request) (*common.UserContext, error) {
+func (a *DelegatingAuthenticator) Authenticate(_ context.Context, r *http.Request) (*spi.UserContext, error) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return nil, fmt.Errorf("missing Authorization header")

@@ -33,10 +33,10 @@ const (
 )
 
 const (
-	ErrCodeTxRequired               = "TX_REQUIRED"
-	ErrCodeTxConflict               = "TX_CONFLICT"
+	ErrCodeTxRequired                 = "TX_REQUIRED"
+	ErrCodeTxConflict                 = "TX_CONFLICT"
 	ErrCodeTxCoordinatorNotConfigured = "TX_COORDINATOR_NOT_CONFIGURED"
-	ErrCodeTxNoState                = "TX_NO_STATE"
+	ErrCodeTxNoState                  = "TX_NO_STATE"
 )
 
 const (

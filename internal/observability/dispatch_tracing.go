@@ -9,13 +9,13 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // TracingExternalProcessingService wraps an ExternalProcessingService with OTel spans and metrics.
 type TracingExternalProcessingService struct {
-	inner            spi.ExternalProcessingService
+	inner            contract.ExternalProcessingService
 	tracer           trace.Tracer
 	dispatchDuration metric.Float64Histogram
 	dispatchTotal    metric.Int64Counter
@@ -23,7 +23,7 @@ type TracingExternalProcessingService struct {
 
 // NewTracingExternalProcessingService returns a TracingExternalProcessingService that decorates
 // inner with OTel tracing spans and metrics for processor and criteria dispatches.
-func NewTracingExternalProcessingService(inner spi.ExternalProcessingService) *TracingExternalProcessingService {
+func NewTracingExternalProcessingService(inner contract.ExternalProcessingService) *TracingExternalProcessingService {
 	tracer := Tracer()
 	meter := Meter()
 
@@ -42,9 +42,9 @@ func NewTracingExternalProcessingService(inner spi.ExternalProcessingService) *T
 }
 
 func (t *TracingExternalProcessingService) DispatchProcessor(
-	ctx context.Context, entity *common.Entity, processor common.ProcessorDefinition,
+	ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition,
 	workflowName, transitionName, txID string,
-) (*common.Entity, error) {
+) (*spi.Entity, error) {
 	ctx, span := t.tracer.Start(ctx, "dispatch.processor", trace.WithAttributes(
 		AttrProcessorName.String(processor.Name),
 		AttrProcessorMode.String(processor.ExecutionMode),
@@ -71,7 +71,7 @@ func (t *TracingExternalProcessingService) DispatchProcessor(
 }
 
 func (t *TracingExternalProcessingService) DispatchCriteria(
-	ctx context.Context, entity *common.Entity, criterion json.RawMessage,
+	ctx context.Context, entity *spi.Entity, criterion json.RawMessage,
 	target, workflowName, transitionName, processorName, txID string,
 ) (bool, error) {
 	ctx, span := t.tracer.Start(ctx, "dispatch.criteria", trace.WithAttributes(

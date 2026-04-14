@@ -8,20 +8,20 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/search/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 // helper: create a context with a UserContext for the given tenant.
 func tenantCtx(tenantID string) context.Context {
-	return common.WithUserContext(context.Background(), &common.UserContext{
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID:   "test-user",
 		UserName: "Test User",
-		Tenant: common.Tenant{
-			ID:   common.TenantID(tenantID),
+		Tenant: spi.Tenant{
+			ID:   spi.TenantID(tenantID),
 			Name: "Test Tenant",
 		},
 		Roles: []string{"ROLE_USER"},
@@ -29,14 +29,14 @@ func tenantCtx(tenantID string) context.Context {
 }
 
 // helper: save an entity with JSON data, return its ID.
-func saveEntity(t *testing.T, ctx context.Context, factory *memory.StoreFactory, modelRef common.ModelRef, id string, data []byte) {
+func saveEntity(t *testing.T, ctx context.Context, factory *memory.StoreFactory, modelRef spi.ModelRef, id string, data []byte) {
 	t.Helper()
 	store, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	_, err = store.Save(ctx, &common.Entity{
-		Meta: common.EntityMeta{
+	_, err = store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       id,
 			ModelRef: modelRef,
 			State:    "NEW",
@@ -56,7 +56,7 @@ func TestDirectSearchSimpleEquals(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice","age":30}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob","age":25}`))
@@ -91,7 +91,7 @@ func TestDirectSearchNoMatches(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -118,7 +118,7 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	// Save original
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
@@ -131,8 +131,8 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.Save(ctx, &common.Entity{
-		Meta: common.EntityMeta{
+	_, err = store.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       "e1",
 			ModelRef: ref,
 			State:    "UPDATED",
@@ -179,7 +179,7 @@ func TestDirectSearchPagination(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "item", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 
 	for i := 0; i < 5; i++ {
 		saveEntity(t, ctx, factory, ref,
@@ -231,7 +231,7 @@ func TestAsyncLifecycle(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
@@ -293,7 +293,7 @@ func TestAsyncCancel(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	// Create many entities to increase chance the goroutine is still running
 	for i := 0; i < 100; i++ {
@@ -350,7 +350,7 @@ func TestAsyncTenantIsolation(t *testing.T) {
 
 	ctxA := tenantCtx("tenant-A")
 	ctxB := tenantCtx("tenant-B")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctxA, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -401,7 +401,7 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -435,8 +435,8 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 
 	// Verify it deserializes back correctly.
 	var decoded struct {
-		Limit  int  `json:"limit"`
-		Offset int  `json:"offset"`
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
 	}
 	if err := json.Unmarshal(job.SearchOpts, &decoded); err != nil {
 		t.Fatalf("failed to unmarshal SearchOpts: %v", err)
@@ -478,7 +478,7 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, blockedStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -581,7 +581,7 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, store)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.x",
 		OperatorType: "EQUALS",
@@ -622,7 +622,7 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	svc := search.NewSearchService(factory, uuids, searchStore)
 
 	ctx := tenantCtx("tenant-1")
-	ref := common.ModelRef{EntityName: "person", ModelVersion: "1"}
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -654,4 +654,3 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 		t.Fatalf("expected SUCCESSFUL, got %s", status.Status)
 	}
 }
-

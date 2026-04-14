@@ -6,10 +6,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 	openapi_types "github.com/oapi-codegen/runtime/types"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	genapi "github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 )
 
 func TestNewHandler(t *testing.T) {
@@ -22,13 +23,13 @@ func TestNewHandler(t *testing.T) {
 func TestAccountGet(t *testing.T) {
 	h := account.New(nil, nil)
 
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID:   "user-1",
 		UserName: "Test User",
-		Tenant:   common.Tenant{ID: "tenant-1", Name: "Test Tenant"},
+		Tenant:   spi.Tenant{ID: "tenant-1", Name: "Test Tenant"},
 		Roles:    []string{"ROLE_ADMIN", "ROLE_M2M"},
 	}
-	ctx := common.WithUserContext(httptest.NewRequest("GET", "/account", nil).Context(), uc)
+	ctx := spi.WithUserContext(httptest.NewRequest("GET", "/account", nil).Context(), uc)
 	r := httptest.NewRequest("GET", "/account", nil).WithContext(ctx)
 	w := httptest.NewRecorder()
 

@@ -11,10 +11,10 @@ import (
 
 // AuthConfig holds configuration for the AuthService.
 type AuthConfig struct {
-	SigningKeyPEM     string         // PEM-encoded RSA private key
-	Issuer           string         // e.g., "cyoda-go"
-	ExpirySeconds    int            // e.g., 3600
-	TrustedKeyStore  TrustedKeyStore // optional: externally-provided persistent store; if nil, uses in-memory
+	SigningKeyPEM   string          // PEM-encoded RSA private key
+	Issuer          string          // e.g., "cyoda-go"
+	ExpirySeconds   int             // e.g., 3600
+	TrustedKeyStore TrustedKeyStore // optional: externally-provided persistent store; if nil, uses in-memory
 }
 
 // AuthService wires together all auth components and exposes HTTP handlers.
@@ -22,13 +22,13 @@ type AuthConfig struct {
 // Admin endpoints (key mgmt, M2M mgmt, trusted keys) are on AdminHandler()
 // and must be wrapped with authentication middleware by the caller.
 type AuthService struct {
-	keyStore      *InMemoryKeyStore
-	trustedStore  TrustedKeyStore
-	m2mStore      *InMemoryM2MClientStore
-	signingKID    string
-	issuer        string
-	handler       http.Handler
-	adminHandler  http.Handler
+	keyStore     *InMemoryKeyStore
+	trustedStore TrustedKeyStore
+	m2mStore     *InMemoryM2MClientStore
+	signingKID   string
+	issuer       string
+	handler      http.Handler
+	adminHandler http.Handler
 }
 
 // NewAuthService creates a fully wired AuthService from the given config.
@@ -91,13 +91,13 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	adminMux.Handle("/account/m2m", m2mHandler)
 
 	return &AuthService{
-		keyStore:      keyStore,
-		trustedStore:  trustedStore,
-		m2mStore:      m2mStore,
-		signingKID:    kid,
-		issuer:        config.Issuer,
-		handler:       publicMux,
-		adminHandler:  adminMux,
+		keyStore:     keyStore,
+		trustedStore: trustedStore,
+		m2mStore:     m2mStore,
+		signingKID:   kid,
+		issuer:       config.Issuer,
+		handler:      publicMux,
+		adminHandler: adminMux,
 	}, nil
 }
 

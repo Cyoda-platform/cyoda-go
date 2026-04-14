@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
-	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
 // mockBidiStream simulates a BidiStreamingServer for testing StartStreaming.
@@ -22,7 +23,7 @@ type mockBidiStream struct {
 	sentMu  sync.Mutex
 	sent    []*cepb.CloudEvent
 	sentCh  chan *cepb.CloudEvent // optional: signals when a message is sent
-	recvErr error                // if set, Recv returns this after recvCh is drained
+	recvErr error                 // if set, Recv returns this after recvCh is drained
 }
 
 func newMockBidiStream(ctx context.Context) *mockBidiStream {
@@ -60,12 +61,12 @@ func (m *mockBidiStream) Recv() (*cepb.CloudEvent, error) {
 	}
 }
 
-func (m *mockBidiStream) Context() context.Context     { return m.ctx }
-func (m *mockBidiStream) SetHeader(_ metadata.MD) error { return nil }
+func (m *mockBidiStream) Context() context.Context       { return m.ctx }
+func (m *mockBidiStream) SetHeader(_ metadata.MD) error  { return nil }
 func (m *mockBidiStream) SendHeader(_ metadata.MD) error { return nil }
-func (m *mockBidiStream) SetTrailer(_ metadata.MD)      {}
-func (m *mockBidiStream) SendMsg(_ any) error           { return nil }
-func (m *mockBidiStream) RecvMsg(_ any) error           { return nil }
+func (m *mockBidiStream) SetTrailer(_ metadata.MD)       {}
+func (m *mockBidiStream) SendMsg(_ any) error            { return nil }
+func (m *mockBidiStream) RecvMsg(_ any) error            { return nil }
 
 // sentMessages returns a snapshot of all sent messages.
 func (m *mockBidiStream) sentMessages() []*cepb.CloudEvent {
@@ -129,20 +130,20 @@ func newServiceForTest() *CloudEventsServiceImpl {
 	}
 }
 
-func m2mContext(tenantID common.TenantID) context.Context {
-	return common.WithUserContext(context.Background(), &common.UserContext{
+func m2mContext(tenantID spi.TenantID) context.Context {
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID:   "m2m-client",
 		UserName: "m2m",
-		Tenant:   common.Tenant{ID: tenantID, Name: "Test Tenant"},
+		Tenant:   spi.Tenant{ID: tenantID, Name: "Test Tenant"},
 		Roles:    []string{"ROLE_M2M"},
 	})
 }
 
-func nonM2MContext(tenantID common.TenantID) context.Context {
-	return common.WithUserContext(context.Background(), &common.UserContext{
+func nonM2MContext(tenantID spi.TenantID) context.Context {
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID:   "user-1",
 		UserName: "alice",
-		Tenant:   common.Tenant{ID: tenantID, Name: "Test Tenant"},
+		Tenant:   spi.Tenant{ID: tenantID, Name: "Test Tenant"},
 		Roles:    []string{"ROLE_USER"},
 	})
 }
@@ -578,7 +579,7 @@ func TestHasRole(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := common.HasRole(tt.roles, tt.target); got != tt.want {
+			if got := spi.HasRole(tt.roles, tt.target); got != tt.want {
 				t.Errorf("HasRole(%v, %q) = %v, want %v", tt.roles, tt.target, got, tt.want)
 			}
 		})

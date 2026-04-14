@@ -7,10 +7,12 @@ import (
 	"strconv"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
-	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 type Handler struct {
@@ -49,7 +51,7 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 
 	versions, err := store.GetVersionHistory(ctx, entityId.String())
 	if err != nil {
-		if errors.Is(err, common.ErrNotFound) {
+		if errors.Is(err, spi.ErrNotFound) {
 			common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity not found"))
 		} else {
 			common.WriteError(w, r, common.Internal("failed to get version history", err))
@@ -242,7 +244,7 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 	}
 
 	for _, smEvent := range smEvents {
-		if smEvent.EventType == common.SMEventFinished {
+		if smEvent.EventType == spi.SMEventFinished {
 			event := map[string]any{
 				"auditEventType": "StateMachine",
 				"eventType":      string(smEvent.EventType),

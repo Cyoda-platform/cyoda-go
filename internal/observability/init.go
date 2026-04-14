@@ -21,10 +21,10 @@ import (
 const instrumentationName = "github.com/cyoda-platform/cyoda-go"
 
 var (
-	tp       *sdktrace.TracerProvider
-	mp       *sdkmetric.MeterProvider
-	initOnce sync.Once
-	initErr  error
+	tp         *sdktrace.TracerProvider
+	mp         *sdkmetric.MeterProvider
+	initOnce   sync.Once
+	initErr    error
 	shutdownFn func(context.Context) error
 )
 

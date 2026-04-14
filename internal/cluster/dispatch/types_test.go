@@ -5,25 +5,25 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func TestDispatchProcessorRequest_JSONRoundTrip(t *testing.T) {
 	entityData := json.RawMessage(`{"foo":"bar","count":42}`)
 	req := dispatch.DispatchProcessorRequest{
 		Entity: entityData,
-		EntityMeta: common.EntityMeta{
+		EntityMeta: spi.EntityMeta{
 			ID:       "ent-123",
 			TenantID: "tenant-abc",
-			ModelRef: common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 			State:    "CREATED",
 			Version:  3,
 		},
-		Processor: common.ProcessorDefinition{
+		Processor: spi.ProcessorDefinition{
 			Type: "HTTP",
 			Name: "my-processor",
-			Config: common.ProcessorConfig{
+			Config: spi.ProcessorConfig{
 				AttachEntity:         true,
 				CalculationNodesTags: "gpu",
 			},
@@ -149,7 +149,7 @@ func TestDispatchCriteriaRequest_JSONRoundTrip(t *testing.T) {
 
 	req := dispatch.DispatchCriteriaRequest{
 		Entity:         entityData,
-		EntityMeta:     common.EntityMeta{ID: "ent-456", TenantID: "tenant-xyz"},
+		EntityMeta:     spi.EntityMeta{ID: "ent-456", TenantID: "tenant-xyz"},
 		Criterion:      criterion,
 		Target:         "TRANSITION",
 		WorkflowName:   "order-workflow",
@@ -266,7 +266,7 @@ func TestDispatchProcessorRequest_EntityMetaTimestamps(t *testing.T) {
 	now := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
 	req := dispatch.DispatchProcessorRequest{
 		Entity: json.RawMessage(`{}`),
-		EntityMeta: common.EntityMeta{
+		EntityMeta: spi.EntityMeta{
 			ID:               "ent-ts",
 			CreationDate:     now,
 			LastModifiedDate: now.Add(time.Hour),

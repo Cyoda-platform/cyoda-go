@@ -5,19 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/jackc/pgx/v5"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // smAuditStore implements spi.StateMachineAuditStore backed by PostgreSQL.
 type smAuditStore struct {
 	q        Querier
-	tenantID common.TenantID
+	tenantID spi.TenantID
 }
 
 // Record appends an audit event for the given entity. It is append-only;
 // no upsert is performed. event.TimeUUID is used as the event_id primary key.
-func (s *smAuditStore) Record(ctx context.Context, entityID string, event common.StateMachineEvent) error {
+func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.StateMachineEvent) error {
 	doc, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal state machine event: %w", err)
@@ -35,7 +36,7 @@ func (s *smAuditStore) Record(ctx context.Context, entityID string, event common
 
 // GetEvents returns all audit events for the given entity, ordered by
 // timestamp ascending. Returns an error when no events exist for the entity.
-func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]common.StateMachineEvent, error) {
+func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.StateMachineEvent, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT doc FROM sm_audit_events
 		 WHERE tenant_id = $1 AND entity_id = $2
@@ -60,7 +61,7 @@ func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]common
 // to the specified transaction, ordered by timestamp ascending.
 // Unlike GetEvents, it returns an empty slice (not an error) when no events
 // match the transaction.
-func (s *smAuditStore) GetEventsByTransaction(ctx context.Context, entityID string, transactionID string) ([]common.StateMachineEvent, error) {
+func (s *smAuditStore) GetEventsByTransaction(ctx context.Context, entityID string, transactionID string) ([]spi.StateMachineEvent, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT doc FROM sm_audit_events
 		 WHERE tenant_id = $1 AND entity_id = $2 AND transaction_id = $3
@@ -80,14 +81,14 @@ func (s *smAuditStore) GetEventsByTransaction(ctx context.Context, entityID stri
 
 // scanEventRows reads all rows from a doc JSONB query and unmarshals each into
 // a StateMachineEvent. The caller is responsible for closing rows.
-func scanEventRows(rows pgx.Rows) ([]common.StateMachineEvent, error) {
-	var events []common.StateMachineEvent
+func scanEventRows(rows pgx.Rows) ([]spi.StateMachineEvent, error) {
+	var events []spi.StateMachineEvent
 	for rows.Next() {
 		var doc []byte
 		if err := rows.Scan(&doc); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		var e common.StateMachineEvent
+		var e spi.StateMachineEvent
 		if err := json.Unmarshal(doc, &e); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal event doc: %w", err)
 		}

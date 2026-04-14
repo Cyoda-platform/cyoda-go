@@ -8,7 +8,7 @@ import (
 )
 
 // Entity is the compute-test-client's local view of a cyoda entity.
-// Decoupled from internal/common.Entity so this binary builds with
+// Decoupled from internal/spi.Entity so this binary builds with
 // no internal/ imports.
 type Entity struct {
 	ID    string          `json:"id"`
@@ -63,7 +63,9 @@ func newCatalog() *catalog {
 				return nil, fmt.Errorf("inject-error: deliberate failure")
 			},
 			"slow-configurable": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
-				var cfg struct{ SleepMS int `json:"sleep_ms"` }
+				var cfg struct {
+					SleepMS int `json:"sleep_ms"`
+				}
 				_ = json.Unmarshal(config, &cfg)
 				if cfg.SleepMS > 0 {
 					select {

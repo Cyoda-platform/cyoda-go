@@ -5,12 +5,11 @@ import (
 	"errors"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
-
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 // TracingTransactionManager wraps a TransactionManager with OTel spans and metrics.
@@ -141,5 +140,5 @@ func (t *TracingTransactionManager) ReleaseSavepoint(ctx context.Context, txID s
 
 // isConflict reports whether err is a transaction serialization conflict.
 func isConflict(err error) bool {
-	return errors.Is(err, common.ErrConflict)
+	return errors.Is(err, spi.ErrConflict)
 }

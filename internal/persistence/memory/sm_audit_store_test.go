@@ -3,7 +3,7 @@ package memory_test
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
 )
 
@@ -15,10 +15,10 @@ func TestSMAuditRecord(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	events := []common.StateMachineEvent{
-		{EventType: common.SMEventStarted, EntityID: "e-1", TimeUUID: "t1", Details: "started", TransactionID: "tx-1"},
-		{EventType: common.SMEventTransitionMade, EntityID: "e-1", TimeUUID: "t2", State: "APPROVED", Details: "transition", TransactionID: "tx-1"},
-		{EventType: common.SMEventFinished, EntityID: "e-1", TimeUUID: "t3", Details: "done", TransactionID: "tx-1"},
+	events := []spi.StateMachineEvent{
+		{EventType: spi.SMEventStarted, EntityID: "e-1", TimeUUID: "t1", Details: "started", TransactionID: "tx-1"},
+		{EventType: spi.SMEventTransitionMade, EntityID: "e-1", TimeUUID: "t2", State: "APPROVED", Details: "transition", TransactionID: "tx-1"},
+		{EventType: spi.SMEventFinished, EntityID: "e-1", TimeUUID: "t3", Details: "done", TransactionID: "tx-1"},
 	}
 	for _, ev := range events {
 		if err := store.Record(ctx, "e-1", ev); err != nil {
@@ -33,7 +33,7 @@ func TestSMAuditRecord(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected 3 events, got %d", len(got))
 	}
-	if got[0].EventType != common.SMEventStarted {
+	if got[0].EventType != spi.SMEventStarted {
 		t.Errorf("expected first event START, got %s", got[0].EventType)
 	}
 	if got[1].State != "APPROVED" {
@@ -53,9 +53,9 @@ func TestSMAuditFilterByTransaction(t *testing.T) {
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.StateMachineAuditStore(ctx)
 
-	_ = store.Record(ctx, "e-1", common.StateMachineEvent{EventType: common.SMEventStarted, TransactionID: "tx-1", Details: "a"})
-	_ = store.Record(ctx, "e-1", common.StateMachineEvent{EventType: common.SMEventTransitionMade, TransactionID: "tx-2", Details: "b"})
-	_ = store.Record(ctx, "e-1", common.StateMachineEvent{EventType: common.SMEventFinished, TransactionID: "tx-1", Details: "c"})
+	_ = store.Record(ctx, "e-1", spi.StateMachineEvent{EventType: spi.SMEventStarted, TransactionID: "tx-1", Details: "a"})
+	_ = store.Record(ctx, "e-1", spi.StateMachineEvent{EventType: spi.SMEventTransitionMade, TransactionID: "tx-2", Details: "b"})
+	_ = store.Record(ctx, "e-1", spi.StateMachineEvent{EventType: spi.SMEventFinished, TransactionID: "tx-1", Details: "c"})
 
 	got, err := store.GetEventsByTransaction(ctx, "e-1", "tx-1")
 	if err != nil {
@@ -84,7 +84,7 @@ func TestSMAuditTenantIsolation(t *testing.T) {
 	storeA, _ := factory.StateMachineAuditStore(ctxA)
 	storeB, _ := factory.StateMachineAuditStore(ctxB)
 
-	_ = storeA.Record(ctxA, "e-1", common.StateMachineEvent{EventType: common.SMEventStarted, Details: "tenant-A event"})
+	_ = storeA.Record(ctxA, "e-1", spi.StateMachineEvent{EventType: spi.SMEventStarted, Details: "tenant-A event"})
 
 	_, err := storeB.GetEvents(ctxB, "e-1")
 	if err == nil {

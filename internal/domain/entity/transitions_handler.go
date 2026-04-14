@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -89,7 +90,7 @@ func (h *Handler) HandleFetchTransitions(w http.ResponseWriter, r *http.Request)
 	entityName := entityClass[:lastDot]
 	modelVersion := entityClass[lastDot+1:]
 
-	modelRef := common.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
+	modelRef := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 
 	transitions, err := h.engine.GetAvailableTransitions(r.Context(), entityID, modelRef, time.Now())
 	if err != nil {

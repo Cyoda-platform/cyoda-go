@@ -41,11 +41,11 @@ func TestTrustedKeysHandler_RegisterAndList(t *testing.T) {
 	jwk := generateTestJWK(t)
 	validTo := "2027-01-01T00:00:00Z"
 	body := registerTrustedKeyRequest{
-		KeyID:          "ext-key-1",
-		JWK: jwk,
-		Audience:     "my-service",
+		KeyID:     "ext-key-1",
+		JWK:       jwk,
+		Audience:  "my-service",
 		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
-		ValidTo:      &validTo,
+		ValidTo:   &validTo,
 	}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -106,9 +106,9 @@ func TestTrustedKeysHandler_Invalidate(t *testing.T) {
 
 	jwk := generateTestJWK(t)
 	body := registerTrustedKeyRequest{
-		KeyID:          "ext-key-2",
-		JWK: jwk,
-		Audience:     "svc",
+		KeyID:     "ext-key-2",
+		JWK:       jwk,
+		Audience:  "svc",
 		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
 	}
 	bodyBytes, _ := json.Marshal(body)
@@ -145,9 +145,9 @@ func TestTrustedKeysHandler_Reactivate(t *testing.T) {
 
 	jwk := generateTestJWK(t)
 	body := registerTrustedKeyRequest{
-		KeyID:          "ext-key-3",
-		JWK: jwk,
-		Audience:     "svc",
+		KeyID:     "ext-key-3",
+		JWK:       jwk,
+		Audience:  "svc",
 		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
 	}
 	bodyBytes, _ := json.Marshal(body)
@@ -192,9 +192,9 @@ func TestTrustedKeysHandler_Delete(t *testing.T) {
 
 	jwk := generateTestJWK(t)
 	body := registerTrustedKeyRequest{
-		KeyID:          "ext-key-4",
-		JWK: jwk,
-		Audience:     "svc",
+		KeyID:     "ext-key-4",
+		JWK:       jwk,
+		Audience:  "svc",
 		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
 	}
 	bodyBytes, _ := json.Marshal(body)
@@ -234,9 +234,9 @@ func TestTrustedKeysHandler_RegisterInvalidJWK(t *testing.T) {
 	handler := NewTrustedKeysHandler(store)
 
 	body := registerTrustedKeyRequest{
-		KeyID:    "bad-key",
-		JWK:     json.RawMessage(`{"kty":"RSA"}`),
-		Audience: "svc",
+		KeyID:     "bad-key",
+		JWK:       json.RawMessage(`{"kty":"RSA"}`),
+		Audience:  "svc",
 		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
 	}
 	bodyBytes, _ := json.Marshal(body)

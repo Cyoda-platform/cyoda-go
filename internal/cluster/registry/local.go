@@ -3,11 +3,11 @@ package registry
 import (
 	"context"
 
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // Local is a single-node NodeRegistry implementation. It always reports
-// exactly one node — itself — as alive. It satisfies the spi.NodeRegistry
+// exactly one node — itself — as alive. It satisfies the contract.NodeRegistry
 // interface and is the default implementation when cluster mode is disabled.
 type Local struct {
 	nodeID string
@@ -35,8 +35,8 @@ func (l *Local) Lookup(_ context.Context, nodeID string) (string, bool, error) {
 }
 
 // List returns a single-element slice containing this node.
-func (l *Local) List(_ context.Context) ([]spi.NodeInfo, error) {
-	return []spi.NodeInfo{{NodeID: l.nodeID, Addr: l.addr, Alive: true}}, nil
+func (l *Local) List(_ context.Context) ([]contract.NodeInfo, error) {
+	return []contract.NodeInfo{{NodeID: l.nodeID, Addr: l.addr, Alive: true}}, nil
 }
 
 // Deregister is a no-op for a single-node registry.

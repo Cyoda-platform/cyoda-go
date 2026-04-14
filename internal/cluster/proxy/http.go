@@ -11,7 +11,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // TxTokenHeader is the HTTP header carrying the transaction routing token.
@@ -21,7 +21,7 @@ const TxTokenHeader = "X-Tx-Token"
 // node based on the transaction token. Requests without a token, or with a
 // token targeting the local node, are served locally. Requests targeting a
 // remote node are reverse-proxied transparently.
-func HTTPRouting(signer *token.Signer, registry spi.NodeRegistry, selfNodeID string, proxyTimeout time.Duration) func(http.Handler) http.Handler {
+func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeID string, proxyTimeout time.Duration) func(http.Handler) http.Handler {
 	// Shared transport reused across all proxied requests.
 	transport := &http.Transport{
 		ResponseHeaderTimeout: proxyTimeout,

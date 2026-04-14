@@ -3,18 +3,20 @@ package account
 import (
 	"net/http"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
-	openapi_types "github.com/oapi-codegen/runtime/types"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 type Handler struct {
-	authSvc  spi.AuthenticationService
-	authzSvc spi.AuthorizationService
+	authSvc  contract.AuthenticationService
+	authzSvc contract.AuthorizationService
 }
 
-func New(authSvc spi.AuthenticationService, authzSvc spi.AuthorizationService) *Handler {
+func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService) *Handler {
 	return &Handler{authSvc: authSvc, authzSvc: authzSvc}
 }
 
@@ -23,7 +25,7 @@ func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AccountGet(w http.ResponseWriter, r *http.Request) {
-	uc := common.GetUserContext(r.Context())
+	uc := spi.GetUserContext(r.Context())
 	if uc == nil {
 		common.WriteError(w, r, common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "not authenticated"))
 		return
@@ -44,12 +46,12 @@ func (h *Handler) AccountGet(w http.ResponseWriter, r *http.Request) {
 			},
 			"roles": roles,
 			"currentSubscription": map[string]any{
-				"id":              "unlimited",
-				"legalEntityId":   string(uc.Tenant.ID),
-				"status":          "ACTIVE",
-				"tierName":        "unlimited",
-				"periodFrom":      "2020-01-01T00:00:00Z",
-				"limits":          []any{},
+				"id":            "unlimited",
+				"legalEntityId": string(uc.Tenant.ID),
+				"status":        "ACTIVE",
+				"tierName":      "unlimited",
+				"periodFrom":    "2020-01-01T00:00:00Z",
+				"limits":        []any{},
 			},
 		},
 	}

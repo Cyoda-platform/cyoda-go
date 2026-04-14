@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 const trustedKeysNamespace = "trusted-keys"

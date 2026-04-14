@@ -3,8 +3,9 @@ package parity
 import (
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 	"github.com/google/uuid"
+
+	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
 // RunSmokeTest validates the basic create-and-read pipeline against any

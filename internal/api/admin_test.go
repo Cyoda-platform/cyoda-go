@@ -8,21 +8,21 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/api"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
 // adminContext returns a request with a ROLE_ADMIN UserContext attached.
 func adminContext(req *http.Request) *http.Request {
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID:   "test-admin",
 		UserName: "admin",
-		Tenant:   common.Tenant{ID: "test-tenant", Name: "Test"},
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test"},
 		Roles:    []string{"ROLE_ADMIN"},
 	}
-	return req.WithContext(common.WithUserContext(req.Context(), uc))
+	return req.WithContext(spi.WithUserContext(req.Context(), uc))
 }
 
 func TestHandleGetLogLevel(t *testing.T) {

@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 const submitTimeTTL = 1 * time.Hour
@@ -22,7 +23,7 @@ type committedTx struct {
 // savepointSnapshot captures the state of a transaction's buffer maps at the
 // time a savepoint is created. Used by RollbackToSavepoint to restore state.
 type savepointSnapshot struct {
-	buffer   map[string]*common.Entity
+	buffer   map[string]*spi.Entity
 	readSet  map[string]bool
 	writeSet map[string]bool
 	deletes  map[string]bool
@@ -33,12 +34,12 @@ type savepointSnapshot struct {
 // entityData map and mu lock for the atomic commit flush.
 type TransactionManager struct {
 	factory      *StoreFactory
-	uuids        common.UUIDGenerator
+	uuids        spi.UUIDGenerator
 	mu           sync.Mutex // protects active, committedLog, committing, submitTimes, and savepoints
-	active       map[string]*common.TransactionState
+	active       map[string]*spi.TransactionState
 	committedLog []committedTx
-	committing   map[string]bool          // tracks txIDs currently being committed
-	submitTimes  map[string]time.Time     // txID -> submitTime, survives log pruning. Evicted after submitTimeTTL.
+	committing   map[string]bool                         // tracks txIDs currently being committed
+	submitTimes  map[string]time.Time                    // txID -> submitTime, survives log pruning. Evicted after submitTimeTTL.
 	savepoints   map[string]map[string]savepointSnapshot // txID -> spID -> snapshot
 }
 
@@ -46,11 +47,11 @@ type TransactionManager struct {
 var _ spi.TransactionManager = (*TransactionManager)(nil)
 
 // NewTransactionManager creates and registers a TransactionManager on the StoreFactory.
-func (f *StoreFactory) NewTransactionManager(uuids common.UUIDGenerator) *TransactionManager {
+func (f *StoreFactory) NewTransactionManager(uuids spi.UUIDGenerator) *TransactionManager {
 	tm := &TransactionManager{
 		factory:      f,
 		uuids:        uuids,
-		active:       make(map[string]*common.TransactionState),
+		active:       make(map[string]*spi.TransactionState),
 		committedLog: nil,
 		committing:   make(map[string]bool),
 		submitTimes:  make(map[string]time.Time),
@@ -72,7 +73,7 @@ func (f *StoreFactory) GetTransactionManager() spi.TransactionManager {
 // generates a unique transaction ID, captures a snapshot time, and returns
 // a new context carrying the TransactionState.
 func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context, error) {
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", ctx, fmt.Errorf("no user context — cannot begin transaction")
 	}
@@ -80,16 +81,16 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 		return "", ctx, fmt.Errorf("user context has no tenant — cannot begin transaction")
 	}
 
-	txID := m.uuids.NewTimeUUID().String()
+	txID := uuid.UUID(m.uuids.NewTimeUUID()).String()
 	now := time.Now()
 
-	tx := &common.TransactionState{
+	tx := &spi.TransactionState{
 		ID:           txID,
 		TenantID:     uc.Tenant.ID,
 		SnapshotTime: now,
 		ReadSet:      make(map[string]bool),
 		WriteSet:     make(map[string]bool),
-		Buffer:       make(map[string]*common.Entity),
+		Buffer:       make(map[string]*spi.Entity),
 		Deletes:      make(map[string]bool),
 	}
 
@@ -97,7 +98,7 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	m.active[txID] = tx
 	m.mu.Unlock()
 
-	txCtx := common.WithTransaction(ctx, tx)
+	txCtx := spi.WithTransaction(ctx, tx)
 	return txID, txCtx, nil
 }
 
@@ -118,12 +119,12 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 	}
 
 	// Verify tenant matches if UserContext is available.
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	if uc != nil && tx.TenantID != "" && uc.Tenant.ID != tx.TenantID {
 		return nil, fmt.Errorf("tenant mismatch on transaction join")
 	}
 
-	return common.WithTransaction(ctx, tx), nil
+	return spi.WithTransaction(ctx, tx), nil
 }
 
 // Commit validates the transaction against the committed log for SSI conflicts,
@@ -131,12 +132,12 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 // commit in the log.
 func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// 1. Look up the active transaction and mark as committing (TOCTOU guard).
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	tx, ok := m.active[txID]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("transaction not found or already completed: %w", common.ErrNotFound)
+		return fmt.Errorf("transaction not found or already completed: %w", spi.ErrNotFound)
 	}
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
 		m.mu.Unlock()
@@ -170,7 +171,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 					delete(m.savepoints, txID)
 					m.mu.Unlock()
 					m.factory.entityMu.Unlock()
-					return common.ErrConflict
+					return spi.ErrConflict
 				}
 			}
 		}
@@ -283,12 +284,12 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 
 // Rollback discards an active transaction without committing any changes.
 func (m *TransactionManager) Rollback(ctx context.Context, txID string) error {
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
 	tx, ok := m.active[txID]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("transaction not found or already completed: %w", common.ErrNotFound)
+		return fmt.Errorf("transaction not found or already completed: %w", spi.ErrNotFound)
 	}
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
 		m.mu.Unlock()
@@ -348,10 +349,10 @@ func (m *TransactionManager) Savepoint(_ context.Context, txID string) (string, 
 		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
 	}
 
-	spID := m.uuids.NewTimeUUID().String()
+	spID := uuid.UUID(m.uuids.NewTimeUUID()).String()
 
 	// Deep-copy the buffer maps.
-	bufCopy := make(map[string]*common.Entity, len(tx.Buffer))
+	bufCopy := make(map[string]*spi.Entity, len(tx.Buffer))
 	for k, v := range tx.Buffer {
 		bufCopy[k] = copyEntity(v)
 	}

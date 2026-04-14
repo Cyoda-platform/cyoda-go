@@ -12,7 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 func TestEndToEnd_ProxyRouting(t *testing.T) {
@@ -137,4 +137,4 @@ func (r *testRegistry) Lookup(_ context.Context, nodeID string) (string, bool, e
 	addr, ok := r.nodes[nodeID]
 	return addr, ok, nil
 }
-func (r *testRegistry) List(_ context.Context) ([]spi.NodeInfo, error) { return nil, nil }
+func (r *testRegistry) List(_ context.Context) ([]contract.NodeInfo, error) { return nil, nil }

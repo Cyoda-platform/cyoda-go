@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 )
@@ -88,14 +91,14 @@ type CollectionItem struct {
 // CreateEntity creates a single entity with workflow execution and returns
 // the transaction result.
 func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*EntityTransactionResult, error) {
-	uc := common.MustGetUserContext(ctx)
+	uc := spi.MustGetUserContext(ctx)
 
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
 	}
 
-	ref := common.ModelRef{
+	ref := spi.ModelRef{
 		EntityName:   input.EntityName,
 		ModelVersion: input.ModelVersion,
 	}
@@ -107,7 +110,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}
 
 	// Reject if model not locked
-	if desc.State != common.ModelLocked {
+	if desc.State != spi.ModelLocked {
 		return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked, "model is not locked")
 	}
 
@@ -144,11 +147,11 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		return nil, common.Internal("failed to begin transaction", err)
 	}
 
-	entityID := h.uuids.NewTimeUUID()
+	entityID := uuid.UUID(h.uuids.NewTimeUUID())
 	now := time.Now()
 
-	entity := &common.Entity{
-		Meta: common.EntityMeta{
+	entity := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:                      entityID.String(),
 			TenantID:                uc.Tenant.ID,
 			ModelRef:                ref,
@@ -194,7 +197,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
-		if errors.Is(err, common.ErrConflict) {
+		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Conflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
@@ -213,14 +216,14 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	var ent *common.Entity
+	var ent *spi.Entity
 	if input.PointInTime != nil {
 		ent, err = entityStore.GetAsAt(ctx, input.EntityID, *input.PointInTime)
 	} else {
 		ent, err = entityStore.Get(ctx, input.EntityID)
 	}
 	if err != nil {
-		if errors.Is(err, common.ErrNotFound) {
+		if errors.Is(err, spi.ErrNotFound) {
 			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", input.EntityID))
 			appErr.Props = map[string]any{
 				"entityId": input.EntityID,
@@ -370,7 +373,7 @@ func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName s
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	ref := common.ModelRef{
+	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: modelVersion,
 	}
@@ -417,7 +420,7 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	ref := common.ModelRef{
+	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: modelVersion,
 	}
@@ -468,7 +471,7 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
-		if errors.Is(err, common.ErrConflict) {
+		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Conflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
@@ -499,7 +502,7 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string) ([]En
 
 	versions, err := entityStore.GetVersionHistory(ctx, entityID)
 	if err != nil {
-		if errors.Is(err, common.ErrNotFound) {
+		if errors.Is(err, spi.ErrNotFound) {
 			appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", entityID))
 			appErr.Props = map[string]any{
 				"entityId": entityID,
@@ -539,7 +542,7 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string) ([]En
 
 // DeleteAllEntities deletes all entities for a model within a transaction.
 func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, modelVersion string) (*DeleteAllResult, error) {
-	ref := common.ModelRef{
+	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: modelVersion,
 	}
@@ -576,7 +579,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
-		if errors.Is(err, common.ErrConflict) {
+		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Conflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
@@ -597,7 +600,7 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	ref := common.ModelRef{
+	ref := spi.ModelRef{
 		EntityName:   entityName,
 		ModelVersion: modelVersion,
 	}
@@ -654,7 +657,7 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 
 // CreateEntityCollection creates multiple entities in a single transaction.
 func (h *Handler) CreateEntityCollection(ctx context.Context, items []CollectionItem) (*EntityTransactionResult, error) {
-	uc := common.MustGetUserContext(ctx)
+	uc := spi.MustGetUserContext(ctx)
 
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
@@ -663,12 +666,12 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 	// Validate all items before starting the transaction.
 	type parsedItem struct {
-		ref          common.ModelRef
+		ref          spi.ModelRef
 		payloadBytes []byte
 	}
 	parsed := make([]parsedItem, 0, len(items))
 	for i, item := range items {
-		ref := common.ModelRef{
+		ref := spi.ModelRef{
 			EntityName:   item.ModelName,
 			ModelVersion: fmt.Sprintf("%d", item.ModelVersion),
 		}
@@ -679,7 +682,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
 				fmt.Sprintf("item %d: model not found", i))
 		}
-		if desc.State != common.ModelLocked {
+		if desc.State != spi.ModelLocked {
 			return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,
 				fmt.Sprintf("item %d: model is not locked", i))
 		}
@@ -719,13 +722,13 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	// making it safe even if a future SaveAll consumes from multiple goroutines.
 	entityIDs := make([]string, len(parsed))
 	for i := range parsed {
-		entityIDs[i] = h.uuids.NewTimeUUID().String()
+		entityIDs[i] = uuid.UUID(h.uuids.NewTimeUUID()).String()
 	}
 
-	entities := func(yield func(*common.Entity) bool) {
+	entities := func(yield func(*spi.Entity) bool) {
 		for i, item := range parsed {
-			entity := &common.Entity{
-				Meta: common.EntityMeta{
+			entity := &spi.Entity{
+				Meta: spi.EntityMeta{
 					ID:               entityIDs[i],
 					TenantID:         uc.Tenant.ID,
 					ModelRef:         item.ref,
@@ -751,7 +754,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
-		if errors.Is(err, common.ErrConflict) {
+		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Conflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
@@ -826,14 +829,14 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 
 	now := time.Now()
 
-	uc := common.GetUserContext(ctx)
+	uc := spi.GetUserContext(ctx)
 	changeUser := ""
 	if uc != nil {
 		changeUser = uc.UserID
 	}
 
-	updated := &common.Entity{
-		Meta: common.EntityMeta{
+	updated := &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:                      existing.Meta.ID,
 			TenantID:                existing.Meta.TenantID,
 			ModelRef:                existing.Meta.ModelRef,
@@ -872,7 +875,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	if input.IfMatch != "" {
 		if _, err := entityStore.CompareAndSave(txCtx, updated, input.IfMatch); err != nil {
 			h.txMgr.Rollback(txCtx, txID)
-			if errors.Is(err, common.ErrConflict) {
+			if errors.Is(err, spi.ErrConflict) {
 				appErr := common.Conflict("entity has been modified since last read")
 				appErr.Status = http.StatusPreconditionFailed
 				appErr.Props = map[string]any{
@@ -891,7 +894,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
-		if errors.Is(err, common.ErrConflict) {
+		if errors.Is(err, spi.ErrConflict) {
 			return nil, common.Conflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)

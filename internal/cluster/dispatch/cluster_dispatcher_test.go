@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
 )
 
 // --- fakes ---
@@ -21,11 +22,11 @@ import (
 type stubDispatcher struct {
 	noMember       bool
 	otherErr       error
-	processorResp  *common.Entity
+	processorResp  *spi.Entity
 	criteriaResult bool
 }
 
-func (f *stubDispatcher) DispatchProcessor(_ context.Context, _ *common.Entity, _ common.ProcessorDefinition, _ string, _ string, _ string) (*common.Entity, error) {
+func (f *stubDispatcher) DispatchProcessor(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _ string, _ string, _ string) (*spi.Entity, error) {
 	if f.otherErr != nil {
 		return nil, f.otherErr
 	}
@@ -35,7 +36,7 @@ func (f *stubDispatcher) DispatchProcessor(_ context.Context, _ *common.Entity, 
 	return f.processorResp, nil
 }
 
-func (f *stubDispatcher) DispatchCriteria(_ context.Context, _ *common.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, error) {
+func (f *stubDispatcher) DispatchCriteria(_ context.Context, _ *spi.Entity, _ json.RawMessage, _ string, _ string, _ string, _ string, _ string) (bool, error) {
 	if f.otherErr != nil {
 		return false, f.otherErr
 	}
@@ -47,35 +48,35 @@ func (f *stubDispatcher) DispatchCriteria(_ context.Context, _ *common.Entity, _
 
 // stubNodeRegistry returns a fixed list of nodes.
 type stubNodeRegistry struct {
-	nodes []spi.NodeInfo
+	nodes []contract.NodeInfo
 }
 
 func (r *stubNodeRegistry) Register(_ context.Context, _ string, _ string) error { return nil }
 func (r *stubNodeRegistry) Lookup(_ context.Context, _ string) (string, bool, error) {
 	return "", false, nil
 }
-func (r *stubNodeRegistry) List(_ context.Context) ([]spi.NodeInfo, error) {
+func (r *stubNodeRegistry) List(_ context.Context) ([]contract.NodeInfo, error) {
 	return r.nodes, nil
 }
 func (r *stubNodeRegistry) Deregister(_ context.Context, _ string) error { return nil }
 
 // testContext builds a context with UserContext set.
 func testContext() context.Context {
-	uc := &common.UserContext{
+	uc := &spi.UserContext{
 		UserID: "user-1",
-		Tenant: common.Tenant{ID: "tenant-1", Name: "Test Tenant"},
+		Tenant: spi.Tenant{ID: "tenant-1", Name: "Test Tenant"},
 		Roles:  []string{"ROLE_USER"},
 	}
-	return common.WithUserContext(context.Background(), uc)
+	return spi.WithUserContext(context.Background(), uc)
 }
 
 // testEntity builds a minimal entity for dispatch tests.
-func testEntity() *common.Entity {
-	return &common.Entity{
-		Meta: common.EntityMeta{
+func testEntity() *spi.Entity {
+	return &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       "entity-1",
 			TenantID: "tenant-1",
-			ModelRef: common.ModelRef{EntityName: "TestModel", ModelVersion: "1"},
+			ModelRef: spi.ModelRef{EntityName: "TestModel", ModelVersion: "1"},
 			State:    "OPEN",
 		},
 		Data: []byte(`{"key":"value"}`),
@@ -83,11 +84,11 @@ func testEntity() *common.Entity {
 }
 
 // testProcessor builds a processor with calculationNodesTags="python".
-func testProcessor() common.ProcessorDefinition {
-	return common.ProcessorDefinition{
+func testProcessor() spi.ProcessorDefinition {
+	return spi.ProcessorDefinition{
 		Type: "function",
 		Name: "myProcessor",
-		Config: common.ProcessorConfig{
+		Config: spi.ProcessorConfig{
 			AttachEntity:         true,
 			CalculationNodesTags: "python",
 		},
@@ -102,7 +103,7 @@ func testCriterion() json.RawMessage {
 // --- tests ---
 
 func TestClusterDispatcher_LocalFirst(t *testing.T) {
-	updatedEntity := &common.Entity{
+	updatedEntity := &spi.Entity{
 		Meta: testEntity().Meta,
 		Data: []byte(`{"key":"updated"}`),
 	}
@@ -162,7 +163,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 	t.Run("processor_forwarded_to_peer", func(t *testing.T) {
 		// Set up a peer httptest server that acts as a dispatch handler.
 		peerLocal := &stubDispatcher{
-			processorResp: &common.Entity{
+			processorResp: &spi.Entity{
 				Meta: testEntity().Meta,
 				Data: []byte(`{"key":"peer-processed"}`),
 			},
@@ -176,7 +177,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		// Local fails with "no matching calculation member".
 		local := &stubDispatcher{noMember: true}
 		registry := &stubNodeRegistry{
-			nodes: []spi.NodeInfo{
+			nodes: []contract.NodeInfo{
 				{NodeID: "self-node", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
 				{NodeID: "peer-1", Addr: peer.URL, Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
 			},
@@ -208,7 +209,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 
 		local := &stubDispatcher{noMember: true}
 		registry := &stubNodeRegistry{
-			nodes: []spi.NodeInfo{
+			nodes: []contract.NodeInfo{
 				{NodeID: "self-node", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
 				{NodeID: "peer-1", Addr: peer.URL, Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
 			},
@@ -232,7 +233,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 	local := &stubDispatcher{noMember: true}
 	registry := &stubNodeRegistry{
-		nodes: []spi.NodeInfo{
+		nodes: []contract.NodeInfo{
 			{NodeID: "self-node", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{}},
 			{NodeID: "peer-1", Addr: "http://localhost:9998", Alive: true, Tags: map[string][]string{"other-tenant": {"python"}}},
 			{NodeID: "dead-peer", Addr: "http://localhost:9997", Alive: false, Tags: map[string][]string{"tenant-1": {"python"}}},

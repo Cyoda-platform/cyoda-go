@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/jackc/pgx/v5"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // modelStore implements spi.ModelStore backed by PostgreSQL.
 type modelStore struct {
 	q        Querier
-	tenantID common.TenantID
+	tenantID spi.TenantID
 }
 
 // modelDoc is the JSON representation stored in the doc JSONB column.
@@ -23,13 +24,13 @@ type modelDoc struct {
 		EntityName   string `json:"entityName"`
 		ModelVersion string `json:"modelVersion"`
 	} `json:"ref"`
-	State       common.ModelState  `json:"state"`
-	ChangeLevel common.ChangeLevel `json:"changeLevel"`
-	UpdateDate  string             `json:"updateDate"` // RFC3339Nano
-	Schema      []byte             `json:"schema"`
+	State       spi.ModelState  `json:"state"`
+	ChangeLevel spi.ChangeLevel `json:"changeLevel"`
+	UpdateDate  string          `json:"updateDate"` // RFC3339Nano
+	Schema      []byte          `json:"schema"`
 }
 
-func (s *modelStore) Save(ctx context.Context, desc *common.ModelDescriptor) error {
+func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error {
 	var doc modelDoc
 	doc.Ref.EntityName = desc.Ref.EntityName
 	doc.Ref.ModelVersion = desc.Ref.ModelVersion
@@ -53,21 +54,21 @@ func (s *modelStore) Save(ctx context.Context, desc *common.ModelDescriptor) err
 	return nil
 }
 
-func (s *modelStore) Get(ctx context.Context, modelRef common.ModelRef) (*common.ModelDescriptor, error) {
+func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.ModelDescriptor, error) {
 	var raw []byte
 	err := s.q.QueryRow(ctx,
 		`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("model %s not found: %w", modelRef, common.ErrNotFound)
+			return nil, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, err)
 	}
 	return unmarshalModelDoc(raw)
 }
 
-func (s *modelStore) GetAll(ctx context.Context) ([]common.ModelRef, error) {
+func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT model_name, model_version FROM models WHERE tenant_id = $1`,
 		string(s.tenantID))
@@ -76,13 +77,13 @@ func (s *modelStore) GetAll(ctx context.Context) ([]common.ModelRef, error) {
 	}
 	defer rows.Close()
 
-	refs := make([]common.ModelRef, 0)
+	refs := make([]spi.ModelRef, 0)
 	for rows.Next() {
 		var name, version string
 		if err := rows.Scan(&name, &version); err != nil {
 			return nil, fmt.Errorf("failed to scan model row: %w", err)
 		}
-		refs = append(refs, common.ModelRef{EntityName: name, ModelVersion: version})
+		refs = append(refs, spi.ModelRef{EntityName: name, ModelVersion: version})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("row iteration error: %w", err)
@@ -90,7 +91,7 @@ func (s *modelStore) GetAll(ctx context.Context) ([]common.ModelRef, error) {
 	return refs, nil
 }
 
-func (s *modelStore) Delete(ctx context.Context, modelRef common.ModelRef) error {
+func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	_, err := s.q.Exec(ctx,
 		`DELETE FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
@@ -100,22 +101,22 @@ func (s *modelStore) Delete(ctx context.Context, modelRef common.ModelRef) error
 	return nil
 }
 
-func (s *modelStore) Lock(ctx context.Context, modelRef common.ModelRef) error {
-	return s.updateStateField(ctx, modelRef, common.ModelLocked, "lock")
+func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
+	return s.updateStateField(ctx, modelRef, spi.ModelLocked, "lock")
 }
 
-func (s *modelStore) Unlock(ctx context.Context, modelRef common.ModelRef) error {
-	return s.updateStateField(ctx, modelRef, common.ModelUnlocked, "unlock")
+func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
+	return s.updateStateField(ctx, modelRef, spi.ModelUnlocked, "unlock")
 }
 
-func (s *modelStore) IsLocked(ctx context.Context, modelRef common.ModelRef) (bool, error) {
+func (s *modelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool, error) {
 	var raw []byte
 	err := s.q.QueryRow(ctx,
 		`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return false, fmt.Errorf("model %s not found: %w", modelRef, common.ErrNotFound)
+			return false, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return false, fmt.Errorf("failed to check lock status for model %s: %w", modelRef, err)
 	}
@@ -124,10 +125,10 @@ func (s *modelStore) IsLocked(ctx context.Context, modelRef common.ModelRef) (bo
 	if err != nil {
 		return false, err
 	}
-	return desc.State == common.ModelLocked, nil
+	return desc.State == spi.ModelLocked, nil
 }
 
-func (s *modelStore) SetChangeLevel(ctx context.Context, modelRef common.ModelRef, level common.ChangeLevel) error {
+func (s *modelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, level spi.ChangeLevel) error {
 	tag, err := s.q.Exec(ctx,
 		`UPDATE models
 		 SET doc = jsonb_set(doc, '{changeLevel}', to_jsonb($4::text))
@@ -137,13 +138,13 @@ func (s *modelStore) SetChangeLevel(ctx context.Context, modelRef common.ModelRe
 		return fmt.Errorf("failed to set change level for model %s: %w", modelRef, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("model %s not found: %w", modelRef, common.ErrNotFound)
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	return nil
 }
 
 // updateStateField updates the state field in the doc JSONB column for Lock/Unlock.
-func (s *modelStore) updateStateField(ctx context.Context, modelRef common.ModelRef, state common.ModelState, op string) error {
+func (s *modelStore) updateStateField(ctx context.Context, modelRef spi.ModelRef, state spi.ModelState, op string) error {
 	tag, err := s.q.Exec(ctx,
 		`UPDATE models
 		 SET doc = jsonb_set(doc, '{state}', to_jsonb($4::text))
@@ -153,13 +154,13 @@ func (s *modelStore) updateStateField(ctx context.Context, modelRef common.Model
 		return fmt.Errorf("failed to %s model %s: %w", op, modelRef, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("model %s not found: %w", modelRef, common.ErrNotFound)
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	return nil
 }
 
 // unmarshalModelDoc deserializes the JSONB doc column into a ModelDescriptor.
-func unmarshalModelDoc(raw []byte) (*common.ModelDescriptor, error) {
+func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	var doc modelDoc
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal model doc: %w", err)
@@ -170,8 +171,8 @@ func unmarshalModelDoc(raw []byte) (*common.ModelDescriptor, error) {
 		return nil, fmt.Errorf("failed to parse update date %q: %w", doc.UpdateDate, err)
 	}
 
-	return &common.ModelDescriptor{
-		Ref: common.ModelRef{
+	return &spi.ModelDescriptor{
+		Ref: spi.ModelRef{
 			EntityName:   doc.Ref.EntityName,
 			ModelVersion: doc.Ref.ModelVersion,
 		},

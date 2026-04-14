@@ -14,16 +14,17 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
 	"github.com/cyoda-platform/cyoda-go/internal/app"
 	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
-	"github.com/jackc/pgx/v5/pgxpool"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 var (
-	serverURL string                          // base URL of the test server (e.g., "http://127.0.0.1:12345")
-	dbPool    *pgxpool.Pool                   // direct DB access for verification queries
+	serverURL string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
+	dbPool    *pgxpool.Pool                     // direct DB access for verification queries
 	procSvc   *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 )
 

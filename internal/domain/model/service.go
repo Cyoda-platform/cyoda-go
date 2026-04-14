@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
@@ -43,11 +44,11 @@ type ModelTransitionResult struct {
 
 // ModelInfo carries summary information about a model.
 type ModelInfo struct {
-	ID           string
-	Name         string
-	Version      int
-	State        string
-	UpdateDate   time.Time
+	ID         string
+	Name       string
+	Version    int
+	State      string
+	UpdateDate time.Time
 }
 
 // parseVersion converts a string model version to int32.
@@ -75,7 +76,7 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 		existing = nil
 	}
 
-	if existing != nil && existing.State == common.ModelLocked {
+	if existing != nil && existing.State == spi.ModelLocked {
 		appErr := common.Conflict(
 			fmt.Sprintf("cannot save entityModel{name=%s, version=%d} because this model has already been registered", input.EntityName, ver))
 		appErr.Props = map[string]any{
@@ -107,9 +108,9 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 		return nil, common.Internal("failed to marshal schema", err)
 	}
 
-	desc := &common.ModelDescriptor{
+	desc := &spi.ModelDescriptor{
 		Ref:        ref,
-		State:      common.ModelUnlocked,
+		State:      spi.ModelUnlocked,
 		UpdateDate: time.Now(),
 		Schema:     schemaBytes,
 	}
@@ -176,7 +177,7 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 		return nil, modelNotFound(entityName, ver)
 	}
 
-	if desc.State == common.ModelLocked {
+	if desc.State == spi.ModelLocked {
 		appErr := common.Conflict(
 			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
 		appErr.Props = map[string]any{
@@ -213,7 +214,7 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 		return nil, modelNotFound(entityName, ver)
 	}
 
-	if desc.State != common.ModelLocked {
+	if desc.State != spi.ModelLocked {
 		return nil, common.Conflict("model is not locked")
 	}
 
@@ -361,7 +362,7 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 		return modelNotFound(entityName, ver)
 	}
 
-	cl, err := common.ValidateChangeLevel(changeLevel)
+	cl, err := spi.ValidateChangeLevel(changeLevel)
 	if err != nil {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
 	}

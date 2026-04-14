@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // TestIntegration_ClusterDispatch_FullFlow tests the complete end-to-end flow:
@@ -23,7 +24,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 	t.Run("processor_full_flow", func(t *testing.T) {
 		// Node B: local dispatcher returns peer-processed result.
 		nodeBLocal := &stubDispatcher{
-			processorResp: &common.Entity{
+			processorResp: &spi.Entity{
 				Meta: testEntity().Meta,
 				Data: []byte(`{"result":"from-peer-processor"}`),
 			},
@@ -37,7 +38,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 		// Node A: local dispatcher has no matching member.
 		nodeALocal := &stubDispatcher{noMember: true}
 		registry := &stubNodeRegistry{
-			nodes: []spi.NodeInfo{
+			nodes: []contract.NodeInfo{
 				{NodeID: "node-a", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{}},
 				{NodeID: "node-b", Addr: nodeBServer.URL, Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
 			},
@@ -70,7 +71,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 		// Node A: local dispatcher has no matching member.
 		nodeALocal := &stubDispatcher{noMember: true}
 		registry := &stubNodeRegistry{
-			nodes: []spi.NodeInfo{
+			nodes: []contract.NodeInfo{
 				{NodeID: "node-a", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{}},
 				{NodeID: "node-b", Addr: nodeBServer.URL, Alive: true, Tags: map[string][]string{"tenant-1": {"python"}}},
 			},
@@ -101,7 +102,7 @@ func TestIntegration_ClusterDispatch_NoMemberTimeout(t *testing.T) {
 
 	// Registry contains no peers with the required "python" tag for tenant-1.
 	registry := &stubNodeRegistry{
-		nodes: []spi.NodeInfo{
+		nodes: []contract.NodeInfo{
 			{NodeID: "node-a", Addr: "http://localhost:9999", Alive: true, Tags: map[string][]string{}},
 			{NodeID: "node-b", Addr: "http://localhost:9998", Alive: true, Tags: map[string][]string{"other-tenant": {"python"}}},
 			{NodeID: "node-c", Addr: "http://localhost:9997", Alive: false, Tags: map[string][]string{"tenant-1": {"python"}}},

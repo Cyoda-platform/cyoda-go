@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // entityMeta is the JSON-serializable representation of the _meta block
@@ -31,7 +31,7 @@ type entityMeta struct {
 
 // marshalEntityDoc produces a merged JSONB document containing a _meta block
 // and the entity's domain data as top-level keys.
-func marshalEntityDoc(entity *common.Entity, validTime, txTime, wallClockTime time.Time, deleted bool) ([]byte, error) {
+func marshalEntityDoc(entity *spi.Entity, validTime, txTime, wallClockTime time.Time, deleted bool) ([]byte, error) {
 	meta := entityMeta{
 		ID:               entity.Meta.ID,
 		TenantID:         string(entity.Meta.TenantID),
@@ -76,7 +76,7 @@ func marshalEntityDoc(entity *common.Entity, validTime, txTime, wallClockTime ti
 // unmarshalEntityDoc extracts an Entity from a merged JSONB document.
 // The _meta block is parsed into EntityMeta and removed; the remaining
 // keys become entity.Data.
-func unmarshalEntityDoc(raw []byte) (*common.Entity, error) {
+func unmarshalEntityDoc(raw []byte) (*spi.Entity, error) {
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal entity doc: %w", err)
@@ -112,11 +112,11 @@ func unmarshalEntityDoc(raw []byte) (*common.Entity, error) {
 		return nil, fmt.Errorf("failed to parse last_modified_date: %w", err)
 	}
 
-	return &common.Entity{
-		Meta: common.EntityMeta{
+	return &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:       meta.ID,
-			TenantID: common.TenantID(meta.TenantID),
-			ModelRef: common.ModelRef{
+			TenantID: spi.TenantID(meta.TenantID),
+			ModelRef: spi.ModelRef{
 				EntityName:   meta.ModelName,
 				ModelVersion: meta.ModelVersion,
 			},
@@ -135,7 +135,7 @@ func unmarshalEntityDoc(raw []byte) (*common.Entity, error) {
 
 // unmarshalEntityVersion extracts an EntityVersion from a JSONB document,
 // supplementing with the version number and valid time from the query context.
-func unmarshalEntityVersion(raw []byte, version int64, validTime time.Time) (*common.EntityVersion, error) {
+func unmarshalEntityVersion(raw []byte, version int64, validTime time.Time) (*spi.EntityVersion, error) {
 	entity, err := unmarshalEntityDoc(raw)
 	if err != nil {
 		return nil, err
@@ -151,7 +151,7 @@ func unmarshalEntityVersion(raw []byte, version int64, validTime time.Time) (*co
 		return nil, fmt.Errorf("failed to re-unmarshal _meta for deleted flag: %w", err)
 	}
 
-	return &common.EntityVersion{
+	return &spi.EntityVersion{
 		Entity:     entity,
 		ChangeType: meta.ChangeType,
 		User:       meta.ChangeUser,

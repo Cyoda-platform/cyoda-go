@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -14,7 +15,7 @@ import (
 // the entity's current state in the matching workflow at the given point in time.
 // It fetches the entity by ID at the specified pointInTime, then delegates to
 // GetAvailableTransitionsForEntity.
-func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, modelRef common.ModelRef, pointInTime time.Time) ([]string, error) {
+func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, modelRef spi.ModelRef, pointInTime time.Time) ([]string, error) {
 	entityStore, err := e.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
@@ -31,14 +32,14 @@ func (e *Engine) GetAvailableTransitions(ctx context.Context, entityID string, m
 
 // GetAvailableTransitionsForEntity returns transition names for a pre-fetched entity.
 // Use this when the caller already has the entity to avoid a redundant store lookup.
-func (e *Engine) GetAvailableTransitionsForEntity(ctx context.Context, entity *common.Entity) ([]string, error) {
+func (e *Engine) GetAvailableTransitionsForEntity(ctx context.Context, entity *spi.Entity) ([]string, error) {
 	wfStore, err := e.factory.WorkflowStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access workflow store", err)
 	}
 
 	workflows, err := wfStore.Get(ctx, entity.Meta.ModelRef)
-	if err != nil && errors.Is(err, common.ErrNotFound) {
+	if err != nil && errors.Is(err, spi.ErrNotFound) {
 		workflows = nil
 	} else if err != nil {
 		return nil, common.Internal("failed to load workflows", err)

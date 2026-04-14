@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
@@ -12,8 +13,8 @@ import (
 
 // HandleGetLogLevel returns the current log level as JSON.
 func HandleGetLogLevel(w http.ResponseWriter, r *http.Request) {
-	uc := common.GetUserContext(r.Context())
-	if uc == nil || !common.HasRole(uc.Roles, "ROLE_ADMIN") {
+	uc := spi.GetUserContext(r.Context())
+	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
 		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
 		return
 	}
@@ -29,8 +30,8 @@ func HandleGetLogLevel(w http.ResponseWriter, r *http.Request) {
 // HandleGetTraceSampler returns the current OTel trace sampler configuration.
 // Requires ROLE_ADMIN. The response is round-trippable via POST.
 func HandleGetTraceSampler(w http.ResponseWriter, r *http.Request) {
-	uc := common.GetUserContext(r.Context())
-	if uc == nil || !common.HasRole(uc.Roles, "ROLE_ADMIN") {
+	uc := spi.GetUserContext(r.Context())
+	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
 		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
 		return
 	}
@@ -51,8 +52,8 @@ func HandleGetTraceSampler(w http.ResponseWriter, r *http.Request) {
 // capture of all spans if upstream has already decided "do not sample".
 // Set parent_based: false to override upstream decisions locally.
 func HandleSetTraceSampler(w http.ResponseWriter, r *http.Request) {
-	uc := common.GetUserContext(r.Context())
-	if uc == nil || !common.HasRole(uc.Roles, "ROLE_ADMIN") {
+	uc := spi.GetUserContext(r.Context())
+	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
 		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
 		return
 	}
@@ -116,8 +117,8 @@ func HandleSetTraceSampler(w http.ResponseWriter, r *http.Request) {
 
 // HandleSetLogLevel changes the runtime log level and returns the previous and current levels.
 func HandleSetLogLevel(w http.ResponseWriter, r *http.Request) {
-	uc := common.GetUserContext(r.Context())
-	if uc == nil || !common.HasRole(uc.Roles, "ROLE_ADMIN") {
+	uc := spi.GetUserContext(r.Context())
+	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
 		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
 		return
 	}

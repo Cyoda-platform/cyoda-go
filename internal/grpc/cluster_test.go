@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func TestClusterService_ListEmpty(t *testing.T) {
@@ -29,7 +29,7 @@ func TestClusterService_ListEmpty(t *testing.T) {
 
 func TestClusterService_ListWithMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	registry.Register(common.TenantID("tenant-1"), []string{"python"}, func(ce *cepb.CloudEvent) error { return nil })
+	registry.Register(spi.TenantID("tenant-1"), []string{"python"}, func(ce *cepb.CloudEvent) error { return nil })
 
 	svc := NewClusterService(registry)
 	data, err := svc.ListCalculationMembers(context.Background())
@@ -57,7 +57,7 @@ func TestClusterService_ListWithMember(t *testing.T) {
 
 func TestClusterService_GetMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	memberID := registry.Register(common.TenantID("tenant-2"), []string{"java"}, func(ce *cepb.CloudEvent) error { return nil })
+	memberID := registry.Register(spi.TenantID("tenant-2"), []string{"java"}, func(ce *cepb.CloudEvent) error { return nil })
 
 	svc := NewClusterService(registry)
 	data, err := svc.GetCalculationMember(context.Background(), memberID)
@@ -93,9 +93,9 @@ func TestClusterService_GetMemberNotFound(t *testing.T) {
 func TestClusterService_Summary(t *testing.T) {
 	registry := NewMemberRegistry()
 	noop := func(ce *cepb.CloudEvent) error { return nil }
-	registry.Register(common.TenantID("tenant-a"), []string{"python"}, noop)
-	registry.Register(common.TenantID("tenant-a"), []string{"java"}, noop)
-	registry.Register(common.TenantID("tenant-b"), []string{"python"}, noop)
+	registry.Register(spi.TenantID("tenant-a"), []string{"python"}, noop)
+	registry.Register(spi.TenantID("tenant-a"), []string{"java"}, noop)
+	registry.Register(spi.TenantID("tenant-b"), []string{"python"}, noop)
 
 	svc := NewClusterService(registry)
 	data, err := svc.GetSummary(context.Background())

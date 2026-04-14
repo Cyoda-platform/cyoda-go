@@ -5,17 +5,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/common"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 var testTime = time.Date(2026, 3, 28, 10, 0, 0, 123456000, time.UTC)
 
-func testEntity() *common.Entity {
-	return &common.Entity{
-		Meta: common.EntityMeta{
+func testEntity() *spi.Entity {
+	return &spi.Entity{
+		Meta: spi.EntityMeta{
 			ID:                      "ent-001",
 			TenantID:                "tenant-abc",
-			ModelRef:                common.ModelRef{EntityName: "Order", ModelVersion: "1"},
+			ModelRef:                spi.ModelRef{EntityName: "Order", ModelVersion: "1"},
 			State:                   "APPROVED",
 			Version:                 5,
 			CreationDate:            testTime,
