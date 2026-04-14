@@ -1,0 +1,167 @@
+package predicate
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/tidwall/gjson"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+)
+
+// Match evaluates a Condition against entity data and metadata, returning
+// true if the entity satisfies the condition.
+func Match(condition Condition, entityData []byte, entityMeta common.EntityMeta) (bool, error) {
+	switch c := condition.(type) {
+	case *SimpleCondition:
+		return matchSimple(c, entityData)
+	case *LifecycleCondition:
+		return matchLifecycle(c, entityMeta)
+	case *GroupCondition:
+		return matchGroup(c, entityData, entityMeta)
+	case *ArrayCondition:
+		return matchArray(c, entityData)
+	case *FunctionCondition:
+		return false, fmt.Errorf("function conditions not implemented")
+	default:
+		return false, fmt.Errorf("unknown condition type: %T", condition)
+	}
+}
+
+// convertJSONPath converts JSONPath notation to gjson path format.
+// Examples:
+//
+//	"$.name"                    → "name"
+//	"$.laureates[*].motivation" → "laureates.#.motivation"
+//	"$.address.street"          → "address.street"
+//	"name"                      → "name" (already gjson format)
+func convertJSONPath(jsonPath string) string {
+	path := jsonPath
+
+	// Strip leading "$." or "$"
+	if strings.HasPrefix(path, "$.") {
+		path = path[2:]
+	} else if strings.HasPrefix(path, "$") {
+		path = path[1:]
+	}
+
+	// Convert array wildcard [*] to gjson # notation.
+	path = strings.ReplaceAll(path, "[*]", ".#")
+
+	// Clean up any double dots from the conversion.
+	for strings.Contains(path, "..") {
+		path = strings.ReplaceAll(path, "..", ".")
+	}
+
+	return path
+}
+
+func matchSimple(c *SimpleCondition, data []byte) (bool, error) {
+	path := convertJSONPath(c.JsonPath)
+	result := gjson.GetBytes(data, path)
+
+	// If the path produced an array result (from # wildcard), check if ANY
+	// element matches for applicable operators.
+	if result.IsArray() {
+		return matchArrayWildcard(c.OperatorType, result, c.Value)
+	}
+
+	return applyOperator(c.OperatorType, result, c.Value)
+}
+
+// matchArrayWildcard checks if any element in an array result matches the operator.
+func matchArrayWildcard(operatorType string, arrayResult gjson.Result, expected any) (bool, error) {
+	var lastErr error
+	matched := false
+
+	arrayResult.ForEach(func(_, value gjson.Result) bool {
+		ok, err := applyOperator(operatorType, value, expected)
+		if err != nil {
+			lastErr = err
+			return false // stop iteration
+		}
+		if ok {
+			matched = true
+			return false // short-circuit
+		}
+		return true // continue
+	})
+
+	if lastErr != nil {
+		return false, lastErr
+	}
+	return matched, nil
+}
+
+func matchLifecycle(c *LifecycleCondition, meta common.EntityMeta) (bool, error) {
+	var fieldValue string
+
+	switch c.Field {
+	case "state":
+		fieldValue = meta.State
+	case "creationDate":
+		fieldValue = meta.CreationDate.Format(time.RFC3339Nano)
+	case "previousTransition", "transitionForLatestSave":
+		fieldValue = meta.TransitionForLatestSave
+	default:
+		return false, fmt.Errorf("unknown lifecycle field: %s", c.Field)
+	}
+
+	// Wrap the field value in a gjson.Result for uniform operator dispatch.
+	fakeJSON := fmt.Sprintf(`{"v":%q}`, fieldValue)
+	result := gjson.Get(fakeJSON, "v")
+
+	return applyOperator(c.OperatorType, result, c.Value)
+}
+
+func matchGroup(c *GroupCondition, data []byte, meta common.EntityMeta) (bool, error) {
+	switch c.Operator {
+	case "AND":
+		for _, child := range c.Conditions {
+			ok, err := Match(child, data, meta)
+			if err != nil {
+				return false, err
+			}
+			if !ok {
+				return false, nil // short-circuit
+			}
+		}
+		return true, nil
+
+	case "OR":
+		for _, child := range c.Conditions {
+			ok, err := Match(child, data, meta)
+			if err != nil {
+				return false, err
+			}
+			if ok {
+				return true, nil // short-circuit
+			}
+		}
+		return false, nil
+
+	default:
+		return false, fmt.Errorf("unknown group operator: %s", c.Operator)
+	}
+}
+
+func matchArray(c *ArrayCondition, data []byte) (bool, error) {
+	basePath := convertJSONPath(c.JsonPath)
+
+	for i, expected := range c.Values {
+		if expected == nil {
+			continue // skip null positions
+		}
+
+		elemPath := fmt.Sprintf("%s.%d", basePath, i)
+		result := gjson.GetBytes(data, elemPath)
+
+		expStr := fmt.Sprintf("%v", expected)
+		if !result.Exists() || result.String() != expStr {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}

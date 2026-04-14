@@ -1,0 +1,24 @@
+{
+  "auditEventType": "EntityChange",
+  "changeType": "CREATED",
+  "severity": "INFO",
+  "utcTime": "2026-03-16T04:52:47.825Z",
+  "microsTime": 1773636767825000,
+  "changes": {
+    "after": {
+      "name": "Alice",
+      "age": 30,
+      "active": false
+    }
+  },
+  "consistencyTime": "2026-03-16T04:52:47.427Z",
+  "entityId": "222b7eb6-3ac1-11b2-aa9a-1ad9280450f6",
+  "entityModel": "User.1",
+  "transactionId": "fa90ee60-20f3-11f1-b8a5-ae468cd3ed16",
+  "actor": {
+    "id": "f821c32a-20f3-11f1-b8a5-ae468cd3ed16",
+    "legalId": "TEST",
+    "name": "TEST_USER",
+    "externalId": "ext-key-TEST_USER"
+  }
+}

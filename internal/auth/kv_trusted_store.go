@@ -1,0 +1,274 @@
+package auth
+
+import (
+	"context"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"sync"
+	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/spi"
+)
+
+const trustedKeysNamespace = "trusted-keys"
+
+// trustedKeyRecord is the JSON-serializable form of a TrustedKey.
+type trustedKeyRecord struct {
+	KID       string   `json:"kid"`
+	Audience  string   `json:"audience"`
+	Issuers   []string `json:"issuers,omitempty"`
+	Active    bool     `json:"active"`
+	ValidFrom string   `json:"validFrom"`
+	ValidTo   *string  `json:"validTo,omitempty"`
+	// RSA public key in JWK-like format.
+	N string `json:"n"` // base64url-encoded modulus
+	E string `json:"e"` // base64url-encoded exponent
+}
+
+// KVTrustedKeyStore persists trusted keys via a KeyValueStore backend.
+// It keeps an in-memory cache for fast reads and writes through to KV on mutations.
+type KVTrustedKeyStore struct {
+	mu   sync.RWMutex
+	keys map[string]*TrustedKey
+	kv   spi.KeyValueStore
+	// ctx is a long-lived system context for KV operations. It is stored here
+	// because the TrustedKeyStore interface does not accept context parameters.
+	// This context must never carry cancellation or deadlines.
+	ctx context.Context
+}
+
+// NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys from the KV backend.
+func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore) (*KVTrustedKeyStore, error) {
+	s := &KVTrustedKeyStore{
+		keys: make(map[string]*TrustedKey),
+		kv:   kv,
+		ctx:  ctx,
+	}
+	if err := s.loadAll(); err != nil {
+		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
+	}
+	return s, nil
+}
+
+func (s *KVTrustedKeyStore) loadAll() error {
+	entries, err := s.kv.List(s.ctx, trustedKeysNamespace)
+	if err != nil {
+		return err
+	}
+	for _, data := range entries {
+		tk, err := deserializeTrustedKey(data)
+		if err != nil {
+			return fmt.Errorf("failed to deserialize trusted key: %w", err)
+		}
+		s.keys[tk.KID] = tk
+	}
+	return nil
+}
+
+// loadOne loads a single trusted key from the KV backend into the in-memory cache.
+func (s *KVTrustedKeyStore) loadOne(kid string) error {
+	data, err := s.kv.Get(s.ctx, trustedKeysNamespace, kid)
+	if err != nil {
+		return err
+	}
+	tk, err := deserializeTrustedKey(data)
+	if err != nil {
+		return fmt.Errorf("failed to deserialize trusted key %s: %w", kid, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys[tk.KID] = tk
+	return nil
+}
+
+func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
+	data, err := serializeTrustedKey(tk)
+	if err != nil {
+		return err
+	}
+	return s.kv.Put(s.ctx, trustedKeysNamespace, tk.KID, data)
+}
+
+// Register adds a trusted key and persists it.
+func (s *KVTrustedKeyStore) Register(tk *TrustedKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	copied := copyTrustedKey(tk)
+	if err := s.persist(copied); err != nil {
+		return fmt.Errorf("failed to persist trusted key: %w", err)
+	}
+	s.keys[copied.KID] = copied
+	return nil
+}
+
+// Get retrieves a trusted key by KID. If the key is not in the in-memory cache,
+// it attempts to load it from the KV backend. This handles the multi-node case
+// where a key was registered on another node after this store was constructed.
+func (s *KVTrustedKeyStore) Get(kid string) (*TrustedKey, error) {
+	s.mu.RLock()
+	tk, ok := s.keys[kid]
+	s.mu.RUnlock()
+	if ok {
+		return copyTrustedKey(tk), nil
+	}
+
+	// Cache miss — try loading from KV backend (may have been registered on another node)
+	if err := s.loadOne(kid); err != nil {
+		return nil, fmt.Errorf("trusted key not found: %s", kid)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tk, ok = s.keys[kid]
+	if !ok {
+		return nil, fmt.Errorf("trusted key not found: %s", kid)
+	}
+	return copyTrustedKey(tk), nil
+}
+
+// List returns all trusted keys.
+func (s *KVTrustedKeyStore) List() []*TrustedKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*TrustedKey, 0, len(s.keys))
+	for _, tk := range s.keys {
+		result = append(result, copyTrustedKey(tk))
+	}
+	return result
+}
+
+// Delete removes a trusted key and persists the deletion.
+func (s *KVTrustedKeyStore) Delete(kid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.keys[kid]; !ok {
+		return fmt.Errorf("trusted key not found: %s", kid)
+	}
+	if err := s.kv.Delete(s.ctx, trustedKeysNamespace, kid); err != nil {
+		return fmt.Errorf("failed to delete trusted key from KV store: %w", err)
+	}
+	delete(s.keys, kid)
+	return nil
+}
+
+// Invalidate marks a trusted key as inactive and persists.
+func (s *KVTrustedKeyStore) Invalidate(kid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tk, ok := s.keys[kid]
+	if !ok {
+		return fmt.Errorf("trusted key not found: %s", kid)
+	}
+	tk.Active = false
+	if err := s.persist(tk); err != nil {
+		tk.Active = true // rollback in-memory on failure
+		return fmt.Errorf("failed to persist invalidation: %w", err)
+	}
+	return nil
+}
+
+// Reactivate marks a trusted key as active and persists.
+func (s *KVTrustedKeyStore) Reactivate(kid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tk, ok := s.keys[kid]
+	if !ok {
+		return fmt.Errorf("trusted key not found: %s", kid)
+	}
+	tk.Active = true
+	if err := s.persist(tk); err != nil {
+		tk.Active = false // rollback in-memory on failure
+		return fmt.Errorf("failed to persist reactivation: %w", err)
+	}
+	return nil
+}
+
+// --- Serialization ---
+
+func serializeTrustedKey(tk *TrustedKey) ([]byte, error) {
+	rec := trustedKeyRecord{
+		KID:       tk.KID,
+		Audience:  tk.Audience,
+		Issuers:   tk.Issuers,
+		Active:    tk.Active,
+		ValidFrom: tk.ValidFrom.UTC().Format(time.RFC3339Nano),
+		N:         encodeBase64URL(tk.PublicKey.N.Bytes()),
+		E:         encodeBase64URL(big.NewInt(int64(tk.PublicKey.E)).Bytes()),
+	}
+	if tk.ValidTo != nil {
+		s := tk.ValidTo.UTC().Format(time.RFC3339Nano)
+		rec.ValidTo = &s
+	}
+	return json.Marshal(rec)
+}
+
+func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
+	var rec trustedKeyRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return nil, err
+	}
+
+	nBytes, err := decodeBase64URL(rec.N)
+	if err != nil {
+		return nil, fmt.Errorf("invalid n value: %w", err)
+	}
+	eBytes, err := decodeBase64URL(rec.E)
+	if err != nil {
+		return nil, fmt.Errorf("invalid e value: %w", err)
+	}
+
+	pubKey := &rsa.PublicKey{
+		N: new(big.Int).SetBytes(nBytes),
+		E: int(new(big.Int).SetBytes(eBytes).Int64()),
+	}
+
+	validFrom, err := time.Parse(time.RFC3339Nano, rec.ValidFrom)
+	if err != nil {
+		return nil, fmt.Errorf("invalid validFrom: %w", err)
+	}
+
+	var validTo *time.Time
+	if rec.ValidTo != nil {
+		t, err := time.Parse(time.RFC3339Nano, *rec.ValidTo)
+		if err != nil {
+			return nil, fmt.Errorf("invalid validTo: %w", err)
+		}
+		validTo = &t
+	}
+
+	return &TrustedKey{
+		KID:       rec.KID,
+		PublicKey: pubKey,
+		Audience:  rec.Audience,
+		Issuers:   rec.Issuers,
+		Active:    rec.Active,
+		ValidFrom: validFrom,
+		ValidTo:   validTo,
+	}, nil
+}
+
+func encodeBase64URL(data []byte) string {
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func copyTrustedKey(tk *TrustedKey) *TrustedKey {
+	copied := *tk
+	if tk.Issuers != nil {
+		copied.Issuers = make([]string, len(tk.Issuers))
+		copy(copied.Issuers, tk.Issuers)
+	}
+	if tk.PublicKey != nil {
+		pubCopy := *tk.PublicKey
+		pubCopy.N = new(big.Int).Set(tk.PublicKey.N)
+		copied.PublicKey = &pubCopy
+	}
+	if tk.ValidTo != nil {
+		vt := *tk.ValidTo
+		copied.ValidTo = &vt
+	}
+	return &copied
+}

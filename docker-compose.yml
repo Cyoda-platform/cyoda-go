@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: minicyoda-postgres
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: minicyoda
+      POSTGRES_USER: minicyoda
+      POSTGRES_PASSWORD: minicyoda
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minicyoda -d minicyoda"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Observability backend (Grafana + Prometheus + Tempo).
+  # WARNING: Grafana is unauthenticated by default. Do NOT expose to untrusted networks.
+  otel-backend:
+    image: grafana/otel-lgtm:latest
+    container_name: minicyoda-otel
+    ports:
+      - "127.0.0.1:3000:3000"   # Grafana — localhost only
+      - "127.0.0.1:4317:4317"   # OTLP gRPC — for bare-metal cyoda-go
+      - "127.0.0.1:4318:4318"   # OTLP HTTP — for bare-metal cyoda-go
+    volumes:
+      - ./scripts/grafana/dashboards:/otel-lgtm/grafana/dashboards/cyoda-go:ro
+      - ./scripts/grafana/provisioning/dashboards/default.yml:/otel-lgtm/grafana/conf/provisioning/dashboards/cyoda-go.yml:ro
+
+  cyoda-go:
+    build: .
+    container_name: minicyoda-app
+    ports:
+      - "${CYODA_HTTP_PORT:-8123}:${CYODA_HTTP_PORT:-8123}"
+      - "${CYODA_GRPC_PORT:-9123}:${CYODA_GRPC_PORT:-9123}"
+    env_file:
+      - .env.docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      otel-backend:
+        condition: service_started
+
+volumes:
+  pgdata:

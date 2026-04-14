@@ -1,0 +1,3 @@
+docker-compose.generated.yml
+nginx.conf
+.env

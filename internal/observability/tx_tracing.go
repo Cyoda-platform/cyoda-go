@@ -1,0 +1,145 @@
+package observability
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/spi"
+)
+
+// TracingTransactionManager wraps a TransactionManager with OTel spans and metrics.
+type TracingTransactionManager struct {
+	inner       spi.TransactionManager
+	tracer      trace.Tracer
+	txDuration  metric.Float64Histogram
+	txActive    metric.Int64UpDownCounter
+	txConflicts metric.Int64Counter
+}
+
+// NewTracingTransactionManager returns a TracingTransactionManager that decorates inner
+// with OTel tracing spans and metrics.
+func NewTracingTransactionManager(inner spi.TransactionManager) *TracingTransactionManager {
+	tracer := Tracer()
+	meter := Meter()
+
+	txDuration, _ := meter.Float64Histogram("cyoda.tx.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("Transaction operation duration"))
+	txActive, _ := meter.Int64UpDownCounter("cyoda.tx.active",
+		metric.WithDescription("Number of active transactions"))
+	txConflicts, _ := meter.Int64Counter("cyoda.tx.conflicts",
+		metric.WithDescription("Transaction serialization conflicts"))
+
+	return &TracingTransactionManager{
+		inner:       inner,
+		tracer:      tracer,
+		txDuration:  txDuration,
+		txActive:    txActive,
+		txConflicts: txConflicts,
+	}
+}
+
+func (t *TracingTransactionManager) Begin(ctx context.Context) (string, context.Context, error) {
+	ctx, span := t.tracer.Start(ctx, "tx.begin")
+	start := time.Now()
+	txID, txCtx, err := t.inner.Begin(ctx)
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(AttrTxOp.String("begin")))
+	if err != nil {
+		span.RecordError(err)
+		span.End()
+		return "", nil, err
+	}
+	span.SetAttributes(AttrTxID.String(txID))
+	t.txActive.Add(ctx, 1)
+	span.End()
+	return txID, txCtx, nil
+}
+
+func (t *TracingTransactionManager) Commit(ctx context.Context, txID string) error {
+	ctx, span := t.tracer.Start(ctx, "tx.commit", trace.WithAttributes(AttrTxID.String(txID)))
+	defer span.End()
+	start := time.Now()
+	err := t.inner.Commit(ctx, txID)
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(AttrTxOp.String("commit")))
+	if err != nil {
+		span.RecordError(err)
+		if isConflict(err) {
+			span.SetAttributes(attribute.Bool("tx.conflict", true))
+			t.txConflicts.Add(ctx, 1)
+		}
+		return err
+	}
+	t.txActive.Add(ctx, -1)
+	return nil
+}
+
+func (t *TracingTransactionManager) Rollback(ctx context.Context, txID string) error {
+	ctx, span := t.tracer.Start(ctx, "tx.rollback", trace.WithAttributes(AttrTxID.String(txID)))
+	defer span.End()
+	start := time.Now()
+	err := t.inner.Rollback(ctx, txID)
+	t.txDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(AttrTxOp.String("rollback")))
+	if err != nil {
+		span.RecordError(err)
+		return err
+	}
+	t.txActive.Add(ctx, -1)
+	return nil
+}
+
+func (t *TracingTransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
+	return t.inner.Join(ctx, txID)
+}
+
+func (t *TracingTransactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
+	return t.inner.GetSubmitTime(ctx, txID)
+}
+
+func (t *TracingTransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
+	ctx, span := t.tracer.Start(ctx, "tx.savepoint", trace.WithAttributes(AttrTxID.String(txID)))
+	defer span.End()
+	spID, err := t.inner.Savepoint(ctx, txID)
+	if err != nil {
+		span.RecordError(err)
+		return "", err
+	}
+	span.SetAttributes(attribute.String("tx.savepoint_id", spID))
+	return spID, nil
+}
+
+func (t *TracingTransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
+	ctx, span := t.tracer.Start(ctx, "tx.rollback_to_savepoint", trace.WithAttributes(
+		AttrTxID.String(txID),
+		attribute.String("tx.savepoint_id", savepointID),
+	))
+	defer span.End()
+	err := t.inner.RollbackToSavepoint(ctx, txID, savepointID)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
+}
+
+func (t *TracingTransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
+	ctx, span := t.tracer.Start(ctx, "tx.release_savepoint", trace.WithAttributes(
+		AttrTxID.String(txID),
+		attribute.String("tx.savepoint_id", savepointID),
+	))
+	defer span.End()
+	err := t.inner.ReleaseSavepoint(ctx, txID, savepointID)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
+}
+
+// isConflict reports whether err is a transaction serialization conflict.
+func isConflict(err error) bool {
+	return errors.Is(err, common.ErrConflict)
+}

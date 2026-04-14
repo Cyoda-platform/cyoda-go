@@ -1,0 +1,20 @@
+{
+  "content": [
+    {
+      "type": "ENTITY",
+      "data": {"category": "physics"},
+      "meta": {
+        "id": "a9d92c64-3f49-11b2-ad21-125557264b03",
+        "state": "VALIDATED",
+        "creationDate": "2025-08-12T20:32:29.559Z",
+        "lastUpdateTime": "2025-08-12T20:32:29.559Z"
+      }
+    }
+  ],
+  "page": {
+    "size": 20,
+    "totalElements": 1,
+    "totalPages": 1,
+    "number": 0
+  }
+}

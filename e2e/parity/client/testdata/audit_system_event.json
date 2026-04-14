@@ -1,0 +1,19 @@
+{
+  "auditEventType": "System",
+  "severity": "INFO",
+  "utcTime": "2026-03-16T04:52:47.825Z",
+  "microsTime": 1773636767825002,
+  "doneTime": "2026-03-16T04:52:47.838Z",
+  "queueName": "TRANSACTION_EXEC_1_PHASE_VERSION_CHECK",
+  "shardId": "6",
+  "status": "PROCESSED",
+  "data": {"any": "shape"},
+  "system": true,
+  "entityId": "222b7eb6-3ac1-11b2-aa9a-1ad9280450f6",
+  "entityModel": "User.1",
+  "actor": {
+    "id": "00000866-0000-1000-8080-808080808080",
+    "legalId": "SYSTEM",
+    "name": "SYSTEM"
+  }
+}

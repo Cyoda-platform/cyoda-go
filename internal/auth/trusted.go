@@ -1,0 +1,278 @@
+package auth
+
+import (
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// registerTrustedKeyRequest is the JSON body for POST /oauth/keys/trusted.
+// Matches Cyoda Cloud's RegisterTrustedKeyRequest schema.
+type registerTrustedKeyRequest struct {
+	KeyID     string          `json:"keyId"`
+	JWK       json.RawMessage `json:"jwk"`
+	Audience  string          `json:"audience"`
+	Issuers   []string        `json:"issuers,omitempty"`
+	ValidFrom *string         `json:"validFrom,omitempty"`
+	ValidTo   *string         `json:"validTo,omitempty"`
+}
+
+// trustedKeyInfoResponse is the JSON response for trusted key info.
+type trustedKeyInfoResponse struct {
+	KID       string  `json:"kid"`
+	Audience  string  `json:"audience"`
+	Active    bool    `json:"active"`
+	ValidFrom string  `json:"validFrom"`
+	ValidTo   *string `json:"validTo,omitempty"`
+}
+
+// TrustedKeysHandler handles HTTP requests for trusted key management.
+type TrustedKeysHandler struct {
+	trustedKeyStore TrustedKeyStore
+}
+
+// NewTrustedKeysHandler creates a new TrustedKeysHandler.
+func NewTrustedKeysHandler(store TrustedKeyStore) *TrustedKeysHandler {
+	return &TrustedKeysHandler{trustedKeyStore: store}
+}
+
+// ServeHTTP routes requests based on method and path.
+func (h *TrustedKeysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSuffix(r.URL.Path, "/")
+
+	// POST /oauth/keys/trusted/{keyId}/invalidate
+	if r.Method == http.MethodPost && strings.HasSuffix(path, "/invalidate") {
+		h.handleInvalidate(w, r, path)
+		return
+	}
+
+	// POST /oauth/keys/trusted/{keyId}/reactivate
+	if r.Method == http.MethodPost && strings.HasSuffix(path, "/reactivate") {
+		h.handleReactivate(w, r, path)
+		return
+	}
+
+	// GET /oauth/keys/trusted
+	if r.Method == http.MethodGet && path == "/oauth/keys/trusted" {
+		h.handleList(w, r)
+		return
+	}
+
+	// POST /oauth/keys/trusted
+	if r.Method == http.MethodPost && path == "/oauth/keys/trusted" {
+		h.handleRegister(w, r)
+		return
+	}
+
+	// DELETE /oauth/keys/trusted/{keyId}
+	if r.Method == http.MethodDelete {
+		h.handleDelete(w, r, path)
+		return
+	}
+
+	http.Error(w, "not found", http.StatusNotFound)
+}
+
+func (h *TrustedKeysHandler) handleList(w http.ResponseWriter, _ *http.Request) {
+	keys := h.trustedKeyStore.List()
+	resp := make([]trustedKeyInfoResponse, 0, len(keys))
+	for _, tk := range keys {
+		resp = append(resp, toTrustedKeyInfoResponse(tk))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// Limit request body to 1MB to prevent abuse.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var req registerTrustedKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.KeyID == "" {
+		http.Error(w, `{"error":"keyId is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	pubKey, err := parseRSAPublicKeyFromJWK(req.JWK)
+	if err != nil {
+		http.Error(w, `{"error":"invalid jwk"}`, http.StatusBadRequest)
+		return
+	}
+
+	validFrom := time.Now()
+	if req.ValidFrom != nil {
+		parsed, err := time.Parse(time.RFC3339, *req.ValidFrom)
+		if err != nil {
+			http.Error(w, `{"error":"invalid validFrom: expected RFC3339 format"}`, http.StatusBadRequest)
+			return
+		}
+		validFrom = parsed
+	}
+
+	var validTo *time.Time
+	if req.ValidTo != nil {
+		t, err := time.Parse(time.RFC3339, *req.ValidTo)
+		if err != nil {
+			http.Error(w, `{"error":"invalid validTo: expected RFC3339 format"}`, http.StatusBadRequest)
+			return
+		}
+		validTo = &t
+	}
+
+	tk := &TrustedKey{
+		KID:       req.KeyID,
+		PublicKey: pubKey,
+		Audience:  req.Audience,
+		Issuers:   req.Issuers,
+		Active:    true,
+		ValidFrom: validFrom,
+		ValidTo:   validTo,
+	}
+
+	if err := h.trustedKeyStore.Register(tk); err != nil {
+		http.Error(w, fmt.Sprintf("failed to register key: %s", err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	resp := toTrustedKeyInfoResponse(tk)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, _ *http.Request, path string) {
+	keyID := extractKeyID(path, "/oauth/keys/trusted/")
+	if keyID == "" {
+		http.Error(w, "missing key ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.trustedKeyStore.Delete(keyID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, _ *http.Request, path string) {
+	// path: /oauth/keys/trusted/{keyId}/invalidate
+	trimmed := strings.TrimSuffix(path, "/invalidate")
+	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
+	if keyID == "" {
+		http.Error(w, "missing key ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.trustedKeyStore.Invalidate(keyID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, _ *http.Request, path string) {
+	// path: /oauth/keys/trusted/{keyId}/reactivate
+	trimmed := strings.TrimSuffix(path, "/reactivate")
+	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
+	if keyID == "" {
+		http.Error(w, "missing key ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.trustedKeyStore.Reactivate(keyID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// extractKeyID returns the key ID from a path like /oauth/keys/trusted/{keyId}.
+func extractKeyID(path, prefix string) string {
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	kid := strings.TrimPrefix(path, prefix)
+	if kid == "" || strings.Contains(kid, "/") {
+		return ""
+	}
+	return kid
+}
+
+// parseRSAPublicKeyFromPEM parses a PEM-encoded RSA public key.
+func parseRSAPublicKeyFromPEM(pemData []byte) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+	rsaPub, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("not an RSA public key")
+	}
+	return rsaPub, nil
+}
+
+// parseRSAPublicKeyFromJWK parses an RSA public key from a JWK JSON object.
+func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
+	if len(jwkData) == 0 {
+		return nil, fmt.Errorf("empty JWK")
+	}
+	var jwk struct {
+		Kty string `json:"kty"`
+		N   string `json:"n"`
+		E   string `json:"e"`
+	}
+	if err := json.Unmarshal(jwkData, &jwk); err != nil {
+		return nil, fmt.Errorf("failed to parse JWK: %w", err)
+	}
+	if jwk.Kty != "RSA" {
+		return nil, fmt.Errorf("unsupported key type: %s (only RSA supported)", jwk.Kty)
+	}
+	if jwk.N == "" || jwk.E == "" {
+		return nil, fmt.Errorf("missing n or e in JWK")
+	}
+
+	nBytes, err := decodeBase64URL(jwk.N)
+	if err != nil {
+		return nil, fmt.Errorf("invalid n value: %w", err)
+	}
+	eBytes, err := decodeBase64URL(jwk.E)
+	if err != nil {
+		return nil, fmt.Errorf("invalid e value: %w", err)
+	}
+
+	n := new(big.Int).SetBytes(nBytes)
+	e := int(new(big.Int).SetBytes(eBytes).Int64())
+
+	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+// toTrustedKeyInfoResponse converts a TrustedKey to its JSON response representation.
+func toTrustedKeyInfoResponse(tk *TrustedKey) trustedKeyInfoResponse {
+	resp := trustedKeyInfoResponse{
+		KID:       tk.KID,
+		Audience:  tk.Audience,
+		Active:    tk.Active,
+		ValidFrom: tk.ValidFrom.Format(time.RFC3339),
+	}
+	if tk.ValidTo != nil {
+		s := tk.ValidTo.Format(time.RFC3339)
+		resp.ValidTo = &s
+	}
+	return resp
+}

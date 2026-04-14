@@ -1,0 +1,35 @@
+{
+  "version": "1",
+  "name": "default",
+  "desc": "Default entity lifecycle workflow",
+  "initialState": "NONE",
+  "active": true,
+  "states": {
+    "NONE": {
+      "transitions": [
+        {
+          "name": "NEW",
+          "next": "CREATED",
+          "manual": false
+        }
+      ]
+    },
+    "CREATED": {
+      "transitions": [
+        {
+          "name": "UPDATE",
+          "next": "CREATED",
+          "manual": true
+        },
+        {
+          "name": "DELETE",
+          "next": "DELETED",
+          "manual": true
+        }
+      ]
+    },
+    "DELETED": {
+      "transitions": []
+    }
+  }
+}

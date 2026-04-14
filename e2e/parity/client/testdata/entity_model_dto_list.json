@@ -1,0 +1,16 @@
+[
+  {
+    "id": "31134900-d9cb-11ee-b913-ae468cd3ed16",
+    "modelName": "nobel-prize",
+    "modelVersion": 1,
+    "currentState": "LOCKED",
+    "modelUpdateDate": "2025-08-02T13:31:48.141053-07:00"
+  },
+  {
+    "id": "2ed54d80-f3c2-11ee-b913-ae468cd3ed16",
+    "modelName": "family-member",
+    "modelVersion": 3,
+    "currentState": "UNLOCKED",
+    "modelUpdateDate": "2025-08-12T13:31:48.141103-07:00"
+  }
+]

@@ -1,0 +1,78 @@
+{
+  "items": [
+    {
+      "auditEventType": "StateMachine",
+      "state": "CREATED",
+      "eventType": "FINISHED",
+      "severity": "INFO",
+      "utcTime": "2026-03-16T04:52:47.821003Z",
+      "microsTime": 1773636767821003,
+      "data": {
+        "eventType": "FINISHED",
+        "state": "CREATED",
+        "success": true,
+        "stopReason": {
+          "type": "COMPLETED_NO_AUTO_TRANSITIONS",
+          "description": "Workflow completed - no auto-transitions available from current state"
+        }
+      },
+      "consistencyTime": "2026-03-16T04:52:47.427Z",
+      "entityId": "222b7eb6-3ac1-11b2-aa9a-1ad9280450f6",
+      "entityModel": "User.1",
+      "transactionId": "fa90ee60-20f3-11f1-b8a5-ae468cd3ed16",
+      "actor": {
+        "id": "f821c32a-20f3-11f1-b8a5-ae468cd3ed16",
+        "legalId": "TEST",
+        "name": "TEST_USER",
+        "externalId": "ext-key-TEST_USER"
+      },
+      "details": "State machine finished with result: true. Stop reason: Workflow completed - no auto-transitions available from current state"
+    },
+    {
+      "auditEventType": "EntityChange",
+      "changeType": "CREATED",
+      "severity": "INFO",
+      "utcTime": "2026-03-16T04:52:47.825Z",
+      "microsTime": 1773636767825000,
+      "changes": {
+        "after": {
+          "name": "Alice",
+          "age": 30,
+          "active": false
+        }
+      },
+      "consistencyTime": "2026-03-16T04:52:47.427Z",
+      "entityId": "222b7eb6-3ac1-11b2-aa9a-1ad9280450f6",
+      "entityModel": "User.1",
+      "transactionId": "fa90ee60-20f3-11f1-b8a5-ae468cd3ed16",
+      "actor": {
+        "id": "f821c32a-20f3-11f1-b8a5-ae468cd3ed16",
+        "legalId": "TEST",
+        "name": "TEST_USER",
+        "externalId": "ext-key-TEST_USER"
+      }
+    },
+    {
+      "auditEventType": "System",
+      "severity": "INFO",
+      "utcTime": "2026-03-16T04:52:47.825Z",
+      "microsTime": 1773636767825002,
+      "doneTime": "2026-03-16T04:52:47.838Z",
+      "queueName": "TRANSACTION_EXEC_1_PHASE_VERSION_CHECK",
+      "shardId": "6",
+      "status": "PROCESSED",
+      "data": {"any": "shape"},
+      "system": true,
+      "entityId": "222b7eb6-3ac1-11b2-aa9a-1ad9280450f6",
+      "entityModel": "User.1",
+      "actor": {
+        "id": "00000866-0000-1000-8080-808080808080",
+        "legalId": "SYSTEM",
+        "name": "SYSTEM"
+      }
+    }
+  ],
+  "pagination": {
+    "hasNext": false
+  }
+}

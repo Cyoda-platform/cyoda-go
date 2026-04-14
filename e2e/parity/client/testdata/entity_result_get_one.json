@@ -1,0 +1,19 @@
+{
+  "type": "ENTITY",
+  "data": {
+    "category": "physics",
+    "year": "2024",
+    "laureates": [
+      {"firstname": "John", "surname": "Hopfield", "id": "1037", "motivation": "for foundational discoveries", "share": "2"}
+    ]
+  },
+  "meta": {
+    "id": "a9d92c64-3f49-11b2-ad21-125557264b03",
+    "modelKey": {"name": "nobel-prize", "version": 1},
+    "state": "VALIDATED",
+    "creationDate": "2025-08-12T20:32:29.559Z",
+    "lastUpdateTime": "2025-08-12T20:32:29.559Z",
+    "transitionForLatestSave": "VALIDATE",
+    "transactionId": "b1234567-3f49-11b2-ad21-125557264b03"
+  }
+}

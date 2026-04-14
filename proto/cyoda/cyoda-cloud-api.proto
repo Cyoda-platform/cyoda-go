@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package org.cyoda.cloud.api.grpc;
+
+option go_package = "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda";
+
+import "cloudevents/cloudevents.proto";
+
+service CloudEventsService {
+  rpc startStreaming(stream io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+  rpc entityModelManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+  rpc entityManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+  rpc entityManageCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+  rpc entitySearch(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+  rpc entitySearchCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+}

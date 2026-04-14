@@ -1,0 +1,554 @@
+package workflow
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
+)
+
+// lifecycleCriterion returns a criterion that checks a lifecycle field (e.g. "state").
+func lifecycleCriterion(field, op string, value any) json.RawMessage {
+	c, _ := json.Marshal(map[string]any{
+		"type": "lifecycle", "field": field, "operatorType": op, "value": value,
+	})
+	return c
+}
+
+// --- Test: Auto cascade chain ---
+
+func TestScenarioAutoCascadeChain(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := common.ModelRef{EntityName: "cascade-chain", ModelVersion: "1.0"}
+
+	// INITIAL ->(auto)-> STEP1 ->(auto)-> STEP2 ->(auto)-> FINAL
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "CascadeChainWF", InitialState: "INITIAL", Active: true,
+		States: map[string]common.StateDefinition{
+			"INITIAL": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_STEP1", Next: "STEP1", Manual: false},
+			}},
+			"STEP1": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_STEP2", Next: "STEP2", Manual: false},
+			}},
+			"STEP2": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_FINAL", Next: "FINAL", Manual: false},
+			}},
+			"FINAL": {Transitions: []common.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+
+	entity := makeEntity("chain1", modelRef, map[string]any{"ok": true})
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entity.Meta.State != "FINAL" {
+		t.Fatalf("expected state FINAL, got %s", entity.Meta.State)
+	}
+
+	// Verify 3 transitions were made via audit events.
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("failed to get audit store: %v", err)
+	}
+	events, err := auditStore.GetEvents(ctx, "chain1")
+	if err != nil {
+		t.Fatalf("failed to get events: %v", err)
+	}
+	transitionCount := 0
+	for _, ev := range events {
+		if ev.EventType == common.SMEventTransitionMade {
+			transitionCount++
+		}
+	}
+	if transitionCount != 3 {
+		t.Errorf("expected 3 transitions, got %d", transitionCount)
+	}
+}
+
+// --- Test: Loopback with auto exit ---
+
+func TestScenarioLoopbackWithAutoExit(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := common.ModelRef{EntityName: "loopback-exit", ModelVersion: "1.0"}
+
+	// PROCESSING:
+	//   - RETRY -> PROCESSING (manual, loopback)
+	//   - COMPLETE ->(auto, criterion: $.status == "done")-> COMPLETED
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "LoopbackExitWF", InitialState: "PROCESSING", Active: true,
+		States: map[string]common.StateDefinition{
+			"PROCESSING": {Transitions: []common.TransitionDefinition{
+				{Name: "COMPLETE", Next: "COMPLETED", Manual: false,
+					Criterion: simpleCriterion("$.status", "EQUALS", "done")},
+				{Name: "RETRY", Next: "PROCESSING", Manual: true},
+			}},
+			"COMPLETED": {Transitions: []common.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+
+	// Entity with status=done → auto-completes to COMPLETED.
+	entity1 := makeEntity("lb1", modelRef, map[string]any{"status": "done"})
+	result, err := engine.Execute(ctx, entity1, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entity1.Meta.State != "COMPLETED" {
+		t.Fatalf("expected COMPLETED, got %s", entity1.Meta.State)
+	}
+
+	// Entity with status=pending → stays at PROCESSING (criterion false).
+	entity2 := makeEntity("lb2", modelRef, map[string]any{"status": "pending"})
+	result, err = engine.Execute(ctx, entity2, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success (stable state)")
+	}
+	if entity2.Meta.State != "PROCESSING" {
+		t.Fatalf("expected PROCESSING, got %s", entity2.Meta.State)
+	}
+
+	// Manual RETRY transition → stays at PROCESSING, auto re-evaluates, still pending.
+	entity2.Meta.State = "PROCESSING"
+	result, err = engine.ManualTransition(ctx, entity2, "RETRY")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entity2.Meta.State != "PROCESSING" {
+		t.Fatalf("expected PROCESSING after retry (still pending), got %s", entity2.Meta.State)
+	}
+}
+
+// --- Test: Stuck state (only manual transitions) ---
+
+func TestScenarioStuckState(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := common.ModelRef{EntityName: "stuck", ModelVersion: "1.0"}
+
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "StuckWF", InitialState: "STUCK", Active: true,
+		States: map[string]common.StateDefinition{
+			"STUCK": {Transitions: []common.TransitionDefinition{
+				{Name: "UNSTICK", Next: "FREE", Manual: true},
+			}},
+			"FREE": {Transitions: []common.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+
+	entity := makeEntity("stuck1", modelRef, map[string]any{"x": 1})
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success (stable at STUCK)")
+	}
+	if entity.Meta.State != "STUCK" {
+		t.Fatalf("expected STUCK, got %s", entity.Meta.State)
+	}
+}
+
+// --- Test: Successive auto transitions with criteria ---
+
+func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := common.ModelRef{EntityName: "priority-route", ModelVersion: "1.0"}
+
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "PriorityWF", InitialState: "INITIAL", Active: true,
+		States: map[string]common.StateDefinition{
+			"INITIAL": {Transitions: []common.TransitionDefinition{
+				{Name: "FAST", Next: "FAST_TRACK", Manual: false,
+					Criterion: simpleCriterion("$.priority", "EQUALS", "high")},
+				{Name: "SLOW", Next: "SLOW_TRACK", Manual: false,
+					Criterion: simpleCriterion("$.priority", "EQUALS", "low")},
+			}},
+			"FAST_TRACK": {Transitions: []common.TransitionDefinition{
+				{Name: "FAST_DONE", Next: "DONE", Manual: false},
+			}},
+			"SLOW_TRACK": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_REVIEW", Next: "REVIEW", Manual: false},
+			}},
+			"REVIEW": {Transitions: []common.TransitionDefinition{
+				{Name: "REVIEW_DONE", Next: "DONE", Manual: false},
+			}},
+			"DONE": {Transitions: []common.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+
+	// High priority: INITIAL -> FAST_TRACK -> DONE
+	entityHigh := makeEntity("prio-h", modelRef, map[string]any{"priority": "high"})
+	result, err := engine.Execute(ctx, entityHigh, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entityHigh.Meta.State != "DONE" {
+		t.Fatalf("expected DONE for high priority, got %s", entityHigh.Meta.State)
+	}
+
+	// Low priority: INITIAL -> SLOW_TRACK -> REVIEW -> DONE
+	entityLow := makeEntity("prio-l", modelRef, map[string]any{"priority": "low"})
+	result, err = engine.Execute(ctx, entityLow, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entityLow.Meta.State != "DONE" {
+		t.Fatalf("expected DONE for low priority, got %s", entityLow.Meta.State)
+	}
+
+	// Verify different transition counts via audit.
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("failed to get audit store: %v", err)
+	}
+
+	highEvents, _ := auditStore.GetEvents(ctx, "prio-h")
+	lowEvents, _ := auditStore.GetEvents(ctx, "prio-l")
+
+	highTransitions := countEventType(highEvents, common.SMEventTransitionMade)
+	lowTransitions := countEventType(lowEvents, common.SMEventTransitionMade)
+
+	if highTransitions != 2 {
+		t.Errorf("expected 2 transitions for high priority, got %d", highTransitions)
+	}
+	if lowTransitions != 3 {
+		t.Errorf("expected 3 transitions for low priority, got %d", lowTransitions)
+	}
+}
+
+// --- Test: Static loop detection on import ---
+
+func TestScenarioStaticLoopDetection(t *testing.T) {
+	// A -> (auto, no criterion) -> B -> (auto, no criterion) -> A
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "LoopWF", InitialState: "A", Active: true,
+		States: map[string]common.StateDefinition{
+			"A": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_B", Next: "B", Manual: false},
+			}},
+			"B": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_A", Next: "A", Manual: false},
+			}},
+		},
+	}
+
+	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected error for infinite loop")
+	}
+	if !strings.Contains(err.Error(), "infinite loop detected") {
+		t.Fatalf("expected 'infinite loop detected' in error, got: %v", err)
+	}
+}
+
+func TestScenarioStaticLoopDetectionSelfLoop(t *testing.T) {
+	// A -> (auto, no criterion) -> A (self-loop)
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "SelfLoopWF", InitialState: "A", Active: true,
+		States: map[string]common.StateDefinition{
+			"A": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_A", Next: "A", Manual: false},
+			}},
+		},
+	}
+
+	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	if err == nil {
+		t.Fatal("expected error for self-loop")
+	}
+	if !strings.Contains(err.Error(), "infinite loop detected") {
+		t.Fatalf("expected 'infinite loop detected' in error, got: %v", err)
+	}
+}
+
+func TestScenarioStaticValidationPassesGuardedCycle(t *testing.T) {
+	// A -> (auto, WITH criterion) -> B -> (auto, WITH criterion) -> A
+	// This should pass static validation because the criteria may break the cycle.
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "GuardedCycleWF", InitialState: "A", Active: true,
+		States: map[string]common.StateDefinition{
+			"A": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_B", Next: "B", Manual: false,
+					Criterion: simpleCriterion("$.x", "EQUALS", 1)},
+			}},
+			"B": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_A", Next: "A", Manual: false,
+					Criterion: simpleCriterion("$.x", "EQUALS", 2)},
+			}},
+		},
+	}
+
+	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	if err != nil {
+		t.Fatalf("expected no error for guarded cycle, got: %v", err)
+	}
+}
+
+func TestScenarioStaticValidationPassesManualCycle(t *testing.T) {
+	// A -> (manual) -> B -> (manual) -> A
+	// Manual transitions never form infinite automated loops.
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "ManualCycleWF", InitialState: "A", Active: true,
+		States: map[string]common.StateDefinition{
+			"A": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_B", Next: "B", Manual: true},
+			}},
+			"B": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_A", Next: "A", Manual: true},
+			}},
+		},
+	}
+
+	err := validateWorkflows([]common.WorkflowDefinition{wf})
+	if err != nil {
+		t.Fatalf("expected no error for manual cycle, got: %v", err)
+	}
+}
+
+// --- Test: Dynamic loop limit ---
+
+func TestScenarioDynamicLoopLimit(t *testing.T) {
+	// A ->(auto, criterion: lifecycle state NOT_NULL)-> B ->(auto, criterion: lifecycle state NOT_NULL)-> A
+	// Criteria always match, so static validation passes, but dynamic execution loops.
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	// Use a small maxStateVisits for faster test.
+	txMgr := factory.NewTransactionManager(uuids)
+	engine := NewEngine(factory, uuids, txMgr, WithMaxStateVisits(3))
+
+	ctx := ctxWithTenant(testTenant)
+	modelRef := common.ModelRef{EntityName: "dynamic-loop", ModelVersion: "1.0"}
+
+	alwaysTrue := lifecycleCriterion("state", "NOT_NULL", "")
+
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "DynamicLoopWF", InitialState: "A", Active: true,
+		States: map[string]common.StateDefinition{
+			"A": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_B", Next: "B", Manual: false, Criterion: alwaysTrue},
+			}},
+			"B": {Transitions: []common.TransitionDefinition{
+				{Name: "TO_A", Next: "A", Manual: false, Criterion: alwaysTrue},
+			}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+
+	entity := makeEntity("dyn1", modelRef, map[string]any{"x": 1})
+	_, err := engine.Execute(ctx, entity, "")
+	if err == nil {
+		t.Fatal("expected error from dynamic loop limit")
+	}
+	if !strings.Contains(err.Error(), "state machine aborted") {
+		t.Fatalf("expected 'state machine aborted' in error, got: %v", err)
+	}
+
+	// Verify CANCEL event was recorded.
+	auditStore, err2 := factory.StateMachineAuditStore(ctx)
+	if err2 != nil {
+		t.Fatalf("failed to get audit store: %v", err2)
+	}
+	events, err2 := auditStore.GetEvents(ctx, "dyn1")
+	if err2 != nil {
+		t.Fatalf("failed to get events: %v", err2)
+	}
+	hasCancelEvent := false
+	for _, ev := range events {
+		if ev.EventType == common.SMEventCancelled {
+			hasCancelEvent = true
+			break
+		}
+	}
+	if !hasCancelEvent {
+		t.Error("expected CANCEL audit event")
+	}
+}
+
+// --- Test: Manual transition triggers auto cascade ---
+
+func TestScenarioManualTriggersAutoCascade(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := common.ModelRef{EntityName: "manual-cascade", ModelVersion: "1.0"}
+
+	// INITIAL: no auto transitions
+	// INITIAL -> PROCESS (manual)
+	// PROCESS ->(auto)-> DONE
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "ManualCascadeWF", InitialState: "INITIAL", Active: true,
+		States: map[string]common.StateDefinition{
+			"INITIAL": {Transitions: []common.TransitionDefinition{
+				{Name: "PROCESS", Next: "PROCESS", Manual: true},
+			}},
+			"PROCESS": {Transitions: []common.TransitionDefinition{
+				{Name: "AUTO_DONE", Next: "DONE", Manual: false},
+			}},
+			"DONE": {Transitions: []common.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+
+	// Create entity → stays at INITIAL (no auto transitions).
+	entity := makeEntity("mc1", modelRef, map[string]any{"x": 1})
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entity.Meta.State != "INITIAL" {
+		t.Fatalf("expected INITIAL, got %s", entity.Meta.State)
+	}
+
+	// Manual transition PROCESS → cascades to DONE.
+	result, err = engine.ManualTransition(ctx, entity, "PROCESS")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entity.Meta.State != "DONE" {
+		t.Fatalf("expected DONE after manual transition + cascade, got %s", entity.Meta.State)
+	}
+}
+
+// --- Test: Loopback re-evaluates after data change ---
+
+func TestScenarioLoopbackReEvaluates(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := common.ModelRef{EntityName: "loopback-reeval", ModelVersion: "1.0"}
+
+	// WAITING: auto transition with criterion $.ready == true -> DONE
+	wf := common.WorkflowDefinition{
+		Version: "1.0", Name: "LoopbackReEvalWF", InitialState: "WAITING", Active: true,
+		States: map[string]common.StateDefinition{
+			"WAITING": {Transitions: []common.TransitionDefinition{
+				{Name: "AUTO_DONE", Next: "DONE", Manual: false,
+					Criterion: simpleCriterion("$.ready", "EQUALS", true)},
+			}},
+			"DONE": {Transitions: []common.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []common.WorkflowDefinition{wf})
+
+	// Create with ready=false → stays at WAITING.
+	entity := makeEntity("lbr1", modelRef, map[string]any{"ready": false})
+	result, err := engine.Execute(ctx, entity, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entity.Meta.State != "WAITING" {
+		t.Fatalf("expected WAITING, got %s", entity.Meta.State)
+	}
+
+	// Update data to ready=true and loopback → should cascade to DONE.
+	entity.Data, _ = json.Marshal(map[string]any{"ready": true})
+	result, err = engine.Loopback(ctx, entity)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if entity.Meta.State != "DONE" {
+		t.Fatalf("expected DONE after loopback, got %s", entity.Meta.State)
+	}
+}
+
+// --- Test: Static validation via import handler (integration) ---
+
+func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr2 := factory.NewTransactionManager(uuids)
+	engine := NewEngine(factory, uuids, txMgr2)
+	handler := New(factory, engine)
+
+	ctx := ctxWithTenant(testTenant)
+
+	// Prepare the HTTP request with a looping workflow.
+	body := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1",
+			"name": "loop-wf",
+			"initialState": "A",
+			"active": true,
+			"states": {
+				"A": {"transitions": [{"name": "TO_B", "next": "B", "manual": false}]},
+				"B": {"transitions": [{"name": "TO_A", "next": "A", "manual": false}]}
+			}
+		}]
+	}`
+
+	req := newTestHTTPRequest(t, "POST", "/model/looptest/1/workflow/import", body, ctx)
+	rr := newTestHTTPResponse()
+
+	handler.ImportEntityModelWorkflow(rr, req, "looptest", 1)
+
+	if rr.Code != 400 {
+		t.Fatalf("expected status 400 for loop detection, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "infinite loop detected") {
+		t.Fatalf("expected 'infinite loop detected' in response, got: %s", rr.Body.String())
+	}
+}
+
+// --- helpers ---
+
+func countEventType(events []common.StateMachineEvent, eventType common.StateMachineEventType) int {
+	count := 0
+	for _, ev := range events {
+		if ev.EventType == eventType {
+			count++
+		}
+	}
+	return count
+}
+
+func newTestHTTPRequest(t *testing.T, method, target, body string, ctx context.Context) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req.WithContext(ctx)
+}
+
+func newTestHTTPResponse() *httptest.ResponseRecorder {
+	return httptest.NewRecorder()
+}

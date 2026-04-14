@@ -1,0 +1,100 @@
+// Package postgres provides a BackendFixture that runs cyoda-go with
+// the PostgreSQL storage backend (via testcontainers-go) and a
+// compute-test-client subprocess connected via gRPC.
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+)
+
+// postgresFixture implements parity.BackendFixture for the postgres backend.
+type postgresFixture struct {
+	baseURL      string
+	grpcEndpoint string
+	keySet       *fixtureutil.JWTKeySet
+}
+
+// BaseURL implements parity.BackendFixture.
+func (f *postgresFixture) BaseURL() string { return f.baseURL }
+
+// GRPCEndpoint implements parity.BackendFixture.
+func (f *postgresFixture) GRPCEndpoint() string { return f.grpcEndpoint }
+
+// NewTenant implements parity.BackendFixture — mints a fresh JWT with
+// a unique tenant for each test.
+func (f *postgresFixture) NewTenant(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintTenantJWT(t, f.keySet)
+}
+
+// ComputeTenant implements parity.BackendFixture.
+func (f *postgresFixture) ComputeTenant(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
+}
+
+// setup boots a Postgres testcontainer, builds binaries, launches
+// subprocesses, and waits for readiness. It returns a teardown function
+// that kills subprocesses and terminates the container.
+func setup() (*postgresFixture, func(), error) {
+	ctx := context.Background()
+
+	// 1. Start PostgreSQL container.
+	pgContainer, err := tcpostgres.Run(ctx,
+		"postgres:17-alpine",
+		tcpostgres.WithDatabase("cyoda_parity_test"),
+		tcpostgres.WithUsername("testuser"),
+		tcpostgres.WithPassword("testpass"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to start postgres container: %w", err)
+	}
+
+	containerCleanup := func() {
+		_ = pgContainer.Terminate(ctx)
+	}
+
+	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		containerCleanup()
+		return nil, nil, fmt.Errorf("failed to get connection string: %w", err)
+	}
+
+	// 2. Generate JWT key set.
+	ks, err := fixtureutil.GenerateJWTKeySet()
+	if err != nil {
+		containerCleanup()
+		return nil, nil, err
+	}
+
+	// 3. Launch cyoda-go + compute-test-client with postgres backend.
+	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, []string{
+		"CYODA_STORAGE_BACKEND=postgres",
+		fmt.Sprintf("CYODA_DB_URL=%s", connStr),
+		"CYODA_DB_AUTO_MIGRATE=true",
+	})
+	if err != nil {
+		containerCleanup()
+		return nil, nil, err
+	}
+
+	cleanup := func() {
+		processCleanup()
+		containerCleanup()
+	}
+
+	fix := &postgresFixture{
+		baseURL:      result.BaseURL,
+		grpcEndpoint: result.GRPCEndpoint,
+		keySet:       ks,
+	}
+
+	return fix, cleanup, nil
+}

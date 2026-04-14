@@ -1,0 +1,11 @@
+.git
+bin/
+docs/
+scripts/
+.github/
+.env*
+*.md
+*.sh
+coverage.out
+.claude/
+test/

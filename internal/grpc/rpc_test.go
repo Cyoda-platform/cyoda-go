@@ -1,0 +1,1103 @@
+package grpc
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
+	"google.golang.org/grpc/metadata"
+)
+
+// newTestEnv creates a CloudEventsServiceImpl wired to real in-memory stores
+// and a context with a test user/tenant injected.
+func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
+	t.Helper()
+
+	factory := memory.NewStoreFactory()
+	factory.NewTransactionManager(common.NewDefaultUUIDGenerator())
+	txMgr := factory.GetTransactionManager()
+
+	uc := &common.UserContext{
+		UserID:   "test-user",
+		UserName: "Test User",
+		Tenant:   common.Tenant{ID: "test-tenant", Name: "Test Tenant"},
+		Roles:    []string{"ADMIN"},
+	}
+
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine)
+	modelHandler := model.New(factory)
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
+
+	svc := &CloudEventsServiceImpl{
+		registry:      NewMemberRegistry(),
+		txMgr:         txMgr,
+		entityHandler: entityHandler,
+		modelHandler:  modelHandler,
+		searchService: searchService,
+	}
+
+	ctx := common.WithUserContext(context.Background(), uc)
+	return svc, ctx
+}
+
+// importAndLockModel is a test helper that imports a model with sample data
+// and locks it so entities can be created against it.
+func importAndLockModel(t *testing.T, svc *CloudEventsServiceImpl, ctx context.Context, entityName, version string, sampleData map[string]any) {
+	t.Helper()
+	dataBytes, err := json.Marshal(sampleData)
+	if err != nil {
+		t.Fatalf("failed to marshal sample data: %v", err)
+	}
+	_, err = svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   entityName,
+		ModelVersion: version,
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("failed to import model: %v", err)
+	}
+	_, err = svc.modelHandler.LockModel(ctx, entityName, version)
+	if err != nil {
+		t.Fatalf("failed to lock model: %v", err)
+	}
+}
+
+// makeCE builds a CloudEvent with the given type and JSON payload fields.
+func makeCE(eventType string, fields map[string]any) *cepb.CloudEvent {
+	data, _ := json.Marshal(fields)
+	return &cepb.CloudEvent{
+		Id:          "test-req-1",
+		Source:      "test",
+		SpecVersion: "1.0",
+		Type:        eventType,
+		Data:        &cepb.CloudEvent_TextData{TextData: string(data)},
+	}
+}
+
+// parseResponsePayload extracts the JSON payload from a response CloudEvent.
+func parseResponsePayload(t *testing.T, ce *cepb.CloudEvent) map[string]any {
+	t.Helper()
+	td, ok := ce.Data.(*cepb.CloudEvent_TextData)
+	if !ok {
+		t.Fatal("expected text_data in response")
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(td.TextData), &m); err != nil {
+		t.Fatalf("failed to unmarshal response payload: %v", err)
+	}
+	return m
+}
+
+// validateResponse parses a CloudEvent response and validates it against the
+// generated schema type. If any required field is missing, UnmarshalJSON
+// returns an error and the test fails.
+func validateResponse(t *testing.T, ce *cepb.CloudEvent, target any) {
+	t.Helper()
+	td, ok := ce.Data.(*cepb.CloudEvent_TextData)
+	if !ok {
+		t.Fatal("expected text_data in response")
+	}
+	if err := json.Unmarshal([]byte(td.TextData), target); err != nil {
+		t.Fatalf("response does not match schema: %v\nPayload: %s", err, td.TextData)
+	}
+}
+
+// --- Entity tests ---
+
+func TestRPC_EntityCreate(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice", "age": 30})
+
+	ce := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice", "age": 30},
+		},
+	})
+
+	resp, err := svc.EntityManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityTransactionResponse {
+		t.Errorf("expected type %s, got %s", EntityTransactionResponse, resp.Type)
+	}
+
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId")
+	}
+	if len(typed.TransactionInfo.EntityIds) == 0 {
+		t.Fatal("expected non-empty entityIds in transactionInfo")
+	}
+}
+
+func TestRPC_EntityDelete(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Create an entity first.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice"},
+		},
+	})
+	createResp, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	createPayload := parseResponsePayload(t, createResp)
+	txInfo := createPayload["transactionInfo"].(map[string]any)
+	entityID := txInfo["entityIds"].([]any)[0].(string)
+
+	// Delete the entity.
+	deleteCE := makeCE(EntityDeleteRequest, map[string]any{
+		"id":       "test",
+		"entityId": entityID,
+	})
+
+	resp, err := svc.EntityManage(ctx, deleteCE)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityDeleteResponse {
+		t.Errorf("expected type %s, got %s", EntityDeleteResponse, resp.Type)
+	}
+
+	var typed events.EntityDeleteResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.EntityID != entityID {
+		t.Errorf("expected entityId=%s, got %s", entityID, typed.EntityID)
+	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId")
+	}
+}
+
+func TestRPC_EntityTransition(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Create entity.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice"},
+		},
+	})
+	createResp, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	createPayload := parseResponsePayload(t, createResp)
+	txInfo := createPayload["transactionInfo"].(map[string]any)
+	entityID := txInfo["entityIds"].([]any)[0].(string)
+
+	// Transition the entity using the default workflow's UPDATE transition
+	// (no custom workflow configured, so the default workflow applies).
+	transitionCE := makeCE(EntityTransitionRequest, map[string]any{
+		"id":         "test",
+		"entityId":   entityID,
+		"transition": "UPDATE",
+	})
+
+	resp, err := svc.EntityManage(ctx, transitionCE)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityTransitionResponse {
+		t.Errorf("expected type %s, got %s", EntityTransitionResponse, resp.Type)
+	}
+
+	var typed events.EntityTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+}
+
+func TestRPC_EntityManageUnsupportedType(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE("com.cyoda.unknown.request", map[string]any{
+		"id": "test",
+	})
+	_, err := svc.EntityManage(ctx, ce)
+	if err == nil {
+		t.Fatal("expected error for unsupported type")
+	}
+	if !strings.Contains(err.Error(), "unsupported entity event type") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// --- Model tests ---
+
+func TestRPC_ModelImport(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE(EntityModelImportRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "product", "version": 1},
+		"dataFormat": "JSON",
+		"converter":  "SAMPLE_DATA",
+		"payload":    map[string]any{"field": "value"},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelImportResponse {
+		t.Errorf("expected type %s, got %s", EntityModelImportResponse, resp.Type)
+	}
+
+	var typed events.EntityModelImportResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.ModelID == "" {
+		t.Error("expected non-empty modelId in response")
+	}
+}
+
+func TestRPC_ModelExport(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Import a model first.
+	importAndLockModel(t, svc, ctx, "product", "1", map[string]any{"field": "value"})
+
+	// Unlock so we can test the export (export works on both locked/unlocked).
+	// Actually, export works on any state, and we already have a locked model.
+
+	ce := makeCE(EntityModelExportRequest, map[string]any{
+		"id":        "test",
+		"model":     map[string]any{"name": "product", "version": 1},
+		"converter": "SIMPLE_VIEW",
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelExportResponse {
+		t.Errorf("expected type %s, got %s", EntityModelExportResponse, resp.Type)
+	}
+
+	var typed events.EntityModelExportResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.Payload == nil {
+		t.Error("expected non-nil payload in export response")
+	}
+}
+
+func TestRPC_ModelTransitionLock(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Import (but don't lock) a model.
+	dataBytes, _ := json.Marshal(map[string]any{"field": "value"})
+	_, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   "product",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	ce := makeCE(EntityModelTransitionRequest, map[string]any{
+		"id":         "test",
+		"model":      map[string]any{"name": "product", "version": 1},
+		"transition": "LOCK",
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelTransitionResponse {
+		t.Errorf("expected type %s, got %s", EntityModelTransitionResponse, resp.Type)
+	}
+
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.State != "LOCKED" {
+		t.Errorf("expected state=LOCKED, got %s", typed.State)
+	}
+}
+
+func TestRPC_ModelDelete(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Import a model (unlocked, no entities) so it can be deleted.
+	dataBytes, _ := json.Marshal(map[string]any{"field": "value"})
+	_, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName:   "product",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         dataBytes,
+	})
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	ce := makeCE(EntityModelDeleteRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "product", "version": 1},
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelDeleteResponse {
+		t.Errorf("expected type %s, got %s", EntityModelDeleteResponse, resp.Type)
+	}
+
+	var typed events.EntityModelDeleteResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+}
+
+func TestRPC_ModelGetAll(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	// Import two models.
+	for _, name := range []string{"alpha", "beta"} {
+		dataBytes, _ := json.Marshal(map[string]any{"field": name})
+		_, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+			EntityName:   name,
+			ModelVersion: "1",
+			Format:       "JSON",
+			Converter:    "SAMPLE_DATA",
+			Data:         dataBytes,
+		})
+		if err != nil {
+			t.Fatalf("import %s failed: %v", name, err)
+		}
+	}
+
+	ce := makeCE(EntityModelGetAllRequest, map[string]any{
+		"id": "test",
+	})
+
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityModelGetAllResponse {
+		t.Errorf("expected type %s, got %s", EntityModelGetAllResponse, resp.Type)
+	}
+
+	var typed events.EntityModelGetAllResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if len(typed.Models) != 2 {
+		t.Errorf("expected 2 models, got %d", len(typed.Models))
+	}
+}
+
+func TestRPC_ModelUnsupportedType(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE("com.cyoda.model.unknown", map[string]any{
+		"id": "test",
+	})
+	_, err := svc.EntityModelManage(ctx, ce)
+	if err == nil {
+		t.Fatal("expected error for unsupported type")
+	}
+	if !strings.Contains(err.Error(), "unsupported model event type") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// --- Search tests ---
+
+func TestRPC_EntityGet(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Create entity.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice"},
+		},
+	})
+	createResp, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	createPayload := parseResponsePayload(t, createResp)
+	txInfo := createPayload["transactionInfo"].(map[string]any)
+	entityID := txInfo["entityIds"].([]any)[0].(string)
+
+	// Get entity via search.
+	getCE := makeCE(EntityGetRequest, map[string]any{
+		"id":       "test",
+		"entityId": entityID,
+	})
+
+	resp, err := svc.EntitySearch(ctx, getCE)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntityResponse {
+		t.Errorf("expected type %s, got %s", EntityResponse, resp.Type)
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId")
+	}
+	if typed.Payload.Data == nil {
+		t.Fatal("expected data in payload")
+	}
+	dataBytes, err := json.Marshal(typed.Payload.Data)
+	if err != nil {
+		t.Fatalf("failed to marshal payload data: %v", err)
+	}
+	var dataMap map[string]any
+	if err := json.Unmarshal(dataBytes, &dataMap); err != nil {
+		t.Fatalf("failed to unmarshal payload data: %v", err)
+	}
+	if dataMap["name"] != "Alice" {
+		t.Errorf("expected name=Alice, got %v", dataMap["name"])
+	}
+}
+
+func TestRPC_SnapshotSearch(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice", "age": 30})
+
+	// Create an entity so search has something to find.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice", "age": 30},
+		},
+	})
+	_, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// Submit async snapshot search.
+	ce := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":       "group",
+			"operator":   "AND",
+			"conditions": []any{},
+		},
+	})
+
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntitySnapshotSearchResponse {
+		t.Errorf("expected type %s, got %s", EntitySnapshotSearchResponse, resp.Type)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.Status.SnapshotID == "" {
+		t.Error("expected non-empty snapshotId")
+	}
+}
+
+func TestRPC_DirectSearch(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	// Create entity.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Bob"},
+		},
+	})
+	_, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// Direct search.
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":       "group",
+			"operator":   "AND",
+			"conditions": []any{},
+		},
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	err = svc.EntitySearchCollection(ce, stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("expected at least 1 response sent")
+	}
+	// Check first result has the right type.
+	if stream.sent[0].Type != EntityResponse {
+		t.Errorf("expected type %s, got %s", EntityResponse, stream.sent[0].Type)
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+}
+
+// --- Search collection tests ---
+
+func TestRPC_EntityGetAll(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Create two entities.
+	for _, name := range []string{"Alice", "Bob"} {
+		ce := makeCE(EntityCreateRequest, map[string]any{
+			"id":         "test",
+			"dataFormat": "JSON",
+			"payload": map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"name": name},
+			},
+		})
+		_, err := svc.EntityManage(ctx, ce)
+		if err != nil {
+			t.Fatalf("create %s failed: %v", name, err)
+		}
+	}
+
+	ce := makeCE(EntityGetAllRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	err := svc.EntitySearchCollection(ce, stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stream.sent) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(stream.sent))
+	}
+	if stream.sent[0].Type != EntityResponse {
+		t.Errorf("expected type %s, got %s", EntityResponse, stream.sent[0].Type)
+	}
+
+	for i, sent := range stream.sent {
+		var typed events.EntityResponseJson
+		validateResponse(t, sent, &typed)
+		if !typed.Success {
+			t.Errorf("response %d: expected success=true", i)
+		}
+	}
+}
+
+func TestRPC_EntityStats(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Create an entity.
+	ce := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice"},
+		},
+	})
+	_, err := svc.EntityManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	statsCE := makeCE(EntityStatsGetRequest, map[string]any{
+		"id": "test",
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	err = svc.EntitySearchCollection(statsCE, stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stream.sent) < 1 {
+		t.Fatal("expected at least 1 stats response")
+	}
+	if stream.sent[0].Type != EntityStatsResponse {
+		t.Errorf("expected type %s, got %s", EntityStatsResponse, stream.sent[0].Type)
+	}
+
+	var typed events.EntityStatsResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId")
+	}
+}
+
+func TestRPC_EntityChangesMetadata(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Create entity.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice"},
+		},
+	})
+	createResp, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	createPayload := parseResponsePayload(t, createResp)
+	txInfo := createPayload["transactionInfo"].(map[string]any)
+	entityID := txInfo["entityIds"].([]any)[0].(string)
+
+	changesCE := makeCE(EntityChangesMetadataGetRequest, map[string]any{
+		"id":       "test",
+		"entityId": entityID,
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	err = svc.EntitySearchCollection(changesCE, stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stream.sent) < 1 {
+		t.Fatal("expected at least 1 change metadata response")
+	}
+	if stream.sent[0].Type != EntityChangesMetadataResponse {
+		t.Errorf("expected type %s, got %s", EntityChangesMetadataResponse, stream.sent[0].Type)
+	}
+
+	var typed events.EntityChangesMetadataResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if typed.RequestID == "" {
+		t.Error("missing requestId")
+	}
+}
+
+// --- Entity manage collection tests ---
+
+func TestRPC_EntityCreateCollection(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	ce := makeCE(EntityCreateCollectionRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payloads": []any{
+			map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"name": "A"},
+			},
+			map[string]any{
+				"model": map[string]any{"name": "person", "version": 1},
+				"data":  map[string]any{"name": "B"},
+			},
+		},
+	})
+
+	stream := &mockManageStream{ctx: ctx}
+	err := svc.EntityManageCollection(ce, stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(stream.sent))
+	}
+
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if len(typed.TransactionInfo.EntityIds) != 2 {
+		t.Errorf("expected 2 entityIds, got %d", len(typed.TransactionInfo.EntityIds))
+	}
+}
+
+func TestRPC_EntityDeleteAll(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Create an entity first.
+	createCE := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "person", "version": 1},
+			"data":  map[string]any{"name": "Alice"},
+		},
+	})
+	_, err := svc.EntityManage(ctx, createCE)
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	ce := makeCE(EntityDeleteAllRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+	})
+
+	stream := &mockManageStream{ctx: ctx}
+	err = svc.EntityManageCollection(ce, stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(stream.sent))
+	}
+	if stream.sent[0].Type != EntityDeleteAllResponse {
+		t.Errorf("expected type %s, got %s", EntityDeleteAllResponse, stream.sent[0].Type)
+	}
+
+	var typed events.EntityDeleteAllResponseJson
+	validateResponse(t, stream.sent[0], &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+}
+
+// --- Search unsupported type ---
+
+func TestRPC_SearchUnsupportedType(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	ce := makeCE("com.cyoda.search.unknown", map[string]any{
+		"id": "test",
+	})
+	_, err := svc.EntitySearch(ctx, ce)
+	if err == nil {
+		t.Fatal("expected error for unsupported type")
+	}
+	if !strings.Contains(err.Error(), "unsupported search event type") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// --- Snapshot cancel test ---
+
+func TestRPC_SnapshotCancel(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Submit async search to get a snapshot ID.
+	searchCE := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":       "group",
+			"operator":   "AND",
+			"conditions": []any{},
+		},
+	})
+	searchResp, err := svc.EntitySearch(ctx, searchCE)
+	if err != nil {
+		t.Fatalf("snapshot search failed: %v", err)
+	}
+	searchPayload := parseResponsePayload(t, searchResp)
+	statusMap := searchPayload["status"].(map[string]any)
+	snapshotID := statusMap["snapshotId"].(string)
+
+	// Cancel the snapshot.
+	cancelCE := makeCE(SnapshotCancelRequest, map[string]any{
+		"id":         "test",
+		"snapshotId": snapshotID,
+	})
+
+	resp, err := svc.EntitySearch(ctx, cancelCE)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Type != EntitySnapshotSearchResponse {
+		t.Errorf("expected type %s, got %s", EntitySnapshotSearchResponse, resp.Type)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+}
+
+// --- Snapshot get status test ---
+
+func TestRPC_SnapshotGetStatus(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
+
+	// Submit async search.
+	searchCE := makeCE(EntitySnapshotSearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type":       "group",
+			"operator":   "AND",
+			"conditions": []any{},
+		},
+	})
+	searchResp, err := svc.EntitySearch(ctx, searchCE)
+	if err != nil {
+		t.Fatalf("snapshot search failed: %v", err)
+	}
+	searchPayload := parseResponsePayload(t, searchResp)
+	statusMap := searchPayload["status"].(map[string]any)
+	snapshotID := statusMap["snapshotId"].(string)
+
+	// Wait briefly for the async job to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	// Get status.
+	statusCE := makeCE(SnapshotGetStatusRequest, map[string]any{
+		"id":         "test",
+		"snapshotId": snapshotID,
+	})
+
+	resp, err := svc.EntitySearch(ctx, statusCE)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Error("expected success=true")
+	}
+	if typed.Status.SnapshotID != snapshotID {
+		t.Errorf("expected snapshotId=%s, got %s", snapshotID, typed.Status.SnapshotID)
+	}
+}
+
+// --- Error-path schema validation tests ---
+
+func TestRPC_EntityCreate_Error_SchemaValid(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	// Don't create any model — entity create will fail.
+	ce := makeCE(EntityCreateRequest, map[string]any{
+		"id":         "test",
+		"dataFormat": "JSON",
+		"payload": map[string]any{
+			"model": map[string]any{"name": "nonexistent", "version": 1},
+			"data":  map[string]any{"x": 1},
+		},
+	})
+	resp, err := svc.EntityManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+
+	var typed events.EntityTransactionResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Error("expected error field to be populated")
+	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId in error response")
+	}
+}
+
+func TestRPC_EntityDelete_Error_SchemaValid(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	// Delete a non-existent entity.
+	ce := makeCE(EntityDeleteRequest, map[string]any{
+		"id":       "test",
+		"entityId": "00000000-0000-0000-0000-000000000000",
+	})
+	resp, err := svc.EntityManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+
+	var typed events.EntityDeleteResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Error("expected error field to be populated")
+	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId in error response")
+	}
+}
+
+func TestRPC_ModelExport_Error_SchemaValid(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	// Export a non-existent model.
+	ce := makeCE(EntityModelExportRequest, map[string]any{
+		"id":        "test",
+		"model":     map[string]any{"name": "nonexistent", "version": 1},
+		"converter": "SIMPLE_VIEW",
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+
+	var typed events.EntityModelExportResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Error("expected error field to be populated")
+	}
+}
+
+func TestRPC_EntityGet_Error_SchemaValid(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	// Get a non-existent entity.
+	ce := makeCE(EntityGetRequest, map[string]any{
+		"id":       "test",
+		"entityId": "00000000-0000-0000-0000-000000000000",
+	})
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+
+	var typed events.EntityResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Error("expected error field to be populated")
+	}
+	if typed.RequestID == "" {
+		t.Error("missing requestId in error response")
+	}
+}
+
+func TestRPC_SnapshotSearch_Error_SchemaValid(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	// Get status of a non-existent snapshot to trigger an error path.
+	ce := makeCE(SnapshotGetStatusRequest, map[string]any{
+		"id":         "test",
+		"snapshotId": "00000000-0000-0000-0000-000000000000",
+	})
+	resp, err := svc.EntitySearch(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+
+	var typed events.EntitySnapshotSearchResponseJson
+	validateResponse(t, resp, &typed)
+	if typed.Error == nil {
+		t.Error("expected error field to be populated")
+	}
+}
+
+// --- mock stream implementations ---
+
+// mockManageStream implements CloudEventsService_EntityManageCollectionServer.
+type mockManageStream struct {
+	ctx  context.Context
+	sent []*cepb.CloudEvent
+}
+
+func (m *mockManageStream) Send(ce *cepb.CloudEvent) error {
+	m.sent = append(m.sent, ce)
+	return nil
+}
+
+func (m *mockManageStream) SetHeader(metadata.MD) error  { return nil }
+func (m *mockManageStream) SendHeader(metadata.MD) error { return nil }
+func (m *mockManageStream) SetTrailer(metadata.MD)       {}
+func (m *mockManageStream) Context() context.Context      { return m.ctx }
+func (m *mockManageStream) SendMsg(any) error             { return nil }
+func (m *mockManageStream) RecvMsg(any) error             { return nil }
+
+// mockEntityStream implements CloudEventsService_EntitySearchCollectionServer.
+type mockEntityStream struct {
+	ctx  context.Context
+	sent []*cepb.CloudEvent
+}
+
+func (m *mockEntityStream) Send(ce *cepb.CloudEvent) error {
+	m.sent = append(m.sent, ce)
+	return nil
+}
+
+func (m *mockEntityStream) SetHeader(metadata.MD) error  { return nil }
+func (m *mockEntityStream) SendHeader(metadata.MD) error { return nil }
+func (m *mockEntityStream) SetTrailer(metadata.MD)       {}
+func (m *mockEntityStream) Context() context.Context      { return m.ctx }
+func (m *mockEntityStream) SendMsg(any) error             { return nil }
+func (m *mockEntityStream) RecvMsg(any) error             { return nil }
