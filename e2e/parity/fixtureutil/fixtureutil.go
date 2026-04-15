@@ -400,11 +400,17 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 		cyodaReadinessTimeout = 30 * time.Second
 	}
 
-	// Launch cyoda-go.
+	// Launch cyoda-go. Subprocess stdout/stderr flow to the test runner's
+	// stderr so go test -v surfaces the binary's log output — critical
+	// for diagnosing failures (5xx responses, startup panics, etc.).
+	// Without this, failures report only the HTTP error code with no
+	// server-side context.
 	cyodaCmd := exec.Command(cyodaBin)
 	cyodaCmd.WaitDelay = 3 * time.Second
 	cyodaCmd.Env = append(CyodaEnv(httpPort, grpcPort, ks), extraEnv...)
 	cyodaCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cyodaCmd.Stdout = os.Stderr
+	cyodaCmd.Stderr = os.Stderr
 
 	if err := cyodaCmd.Start(); err != nil {
 		return nil, nil, fmt.Errorf("failed to start cyoda-go: %w", err)
