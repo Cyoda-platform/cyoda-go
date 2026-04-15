@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/app"
+
+	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // --- helpers ---

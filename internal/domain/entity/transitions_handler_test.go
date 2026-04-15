@@ -11,6 +11,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
+
+	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // newTestAppAndServer creates an App and an httptest.Server for transition tests.

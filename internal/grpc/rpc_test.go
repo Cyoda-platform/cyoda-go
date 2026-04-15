@@ -17,7 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // newTestEnv creates a CloudEventsServiceImpl wired to real in-memory stores

@@ -14,8 +14,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/internal/app"
+
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {

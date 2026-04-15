@@ -1,6 +1,0 @@
-DROP TABLE IF EXISTS messages;
-DROP TABLE IF EXISTS kv_store;
-DROP TABLE IF EXISTS models;
-DROP TABLE IF EXISTS sm_audit_events;
-DROP TABLE IF EXISTS entity_versions;
-DROP TABLE IF EXISTS entities;
