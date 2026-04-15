@@ -100,12 +100,23 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// stored on an error path.
 	var submitTime time.Time
 	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
-		_ = pgxTx.Rollback(ctx)
 		tm.registry.Remove(txID)
 		tm.removeTenant(txID)
-		// The tx is aborted: most likely due to a serialization failure in a
-		// prior statement. Wrap as ErrConflict so callers can retry.
-		return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
+		// Only classify as ErrConflict when the probe fails specifically because
+		// the transaction is already in an aborted state (SQLSTATE 25P02:
+		// in_failed_sql_transaction). Any other error (context cancellation,
+		// network failure, etc.) is returned as-is so callers are not misled
+		// into treating a transient infrastructure error as a retryable conflict.
+		var pgErr *pgconn.PgError
+		if errors.As(tsErr, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction {
+			_ = pgxTx.Rollback(context.Background())
+			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
+		}
+		// For non-25P02 errors (e.g. network failures, context deadline exceeded)
+		// roll back with a fresh context so we don't leak the connection, then
+		// return the raw error without wrapping it as ErrConflict.
+		_ = pgxTx.Rollback(context.Background())
+		return fmt.Errorf("Commit: failed to capture submit time: %w", tsErr)
 	}
 
 	if err := pgxTx.Commit(ctx); err != nil {

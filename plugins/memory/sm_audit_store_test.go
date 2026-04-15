@@ -77,6 +77,32 @@ func TestSMAuditFilterByTransaction(t *testing.T) {
 	}
 }
 
+func TestSMAuditFilterByTransaction_NoMatch_NonNil(t *testing.T) {
+	// Regression: GetEventsByTransaction must return a non-nil empty slice when
+	// events exist for the (tenant, entity) but none match the given transactionID.
+	// A nil return would break callers that rely on len(result) == 0 without a
+	// nil guard, and diverges from the non-nil contract of the other return paths.
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.StateMachineAuditStore(ctx)
+
+	// Record two events under tx1 so the entity entry exists.
+	_ = store.Record(ctx, "e-1", spi.StateMachineEvent{EventType: spi.SMEventStarted, TransactionID: "tx-1", Details: "a"})
+	_ = store.Record(ctx, "e-1", spi.StateMachineEvent{EventType: spi.SMEventFinished, TransactionID: "tx-1", Details: "b"})
+
+	// Filter by tx2, which has no events — must get non-nil empty slice.
+	got, err := store.GetEventsByTransaction(ctx, "e-1", "tx-2")
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetEventsByTransaction returned nil slice on filter-no-match; want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice for tx-2, got %d events", len(got))
+	}
+}
+
 func TestSMAuditTenantIsolation(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctxA := ctxWithTenant("tenant-A")
@@ -86,12 +112,15 @@ func TestSMAuditTenantIsolation(t *testing.T) {
 
 	_ = storeA.Record(ctxA, "e-1", spi.StateMachineEvent{EventType: spi.SMEventStarted, Details: "tenant-A event"})
 
-	// SPI contract: tenant B sees empty slice, not an error.
+	// SPI contract: tenant B must see an empty slice even when events exist for
+	// this entityID in tenant A. Cross-tenant visibility would be a security
+	// defect; returning an error instead of an empty slice would break callers
+	// that treat "no events" as a normal state.
 	got, err := storeB.GetEvents(ctxB, "e-1")
 	if err != nil {
 		t.Fatalf("expected nil error for tenant isolation, got: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("expected empty slice for tenant B, got %d events", len(got))
+		t.Fatalf("tenant B must see 0 events for entity written by tenant A, got %d", len(got))
 	}
 }

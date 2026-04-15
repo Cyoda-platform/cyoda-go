@@ -47,7 +47,7 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 	if !ok {
 		return []spi.StateMachineEvent{}, nil
 	}
-	var filtered []spi.StateMachineEvent
+	filtered := []spi.StateMachineEvent{}
 	for _, e := range events {
 		if e.TransactionID == transactionID {
 			filtered = append(filtered, copyEvent(e))

@@ -24,7 +24,11 @@ type smAuditStore struct {
 func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.StateMachineEvent) error {
 	eventID := event.TimeUUID
 	if eventID == "" {
-		eventID = uuid.NewString()
+		// TimeUUID is a time-ordered identifier; use UUID v1 to preserve ordering
+		// semantics. uuid.NewString() is v4 (random) and would break callers that
+		// rely on time-based ordering of auto-generated event IDs.
+		id, _ := uuid.NewUUID() // v1; only fails if the system clock is unavailable
+		eventID = id.String()
 	}
 
 	doc, err := json.Marshal(event)
