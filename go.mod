@@ -3,10 +3,9 @@ module github.com/cyoda-platform/cyoda-go
 go 1.26.1
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.1.0
+	github.com/cyoda-platform/cyoda-go-spi v0.3.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-chi/chi/v5 v5.2.5
-	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/jackc/pgx/v5 v5.9.1
@@ -28,6 +27,8 @@ require (
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 )
+
+require github.com/golang-migrate/migrate/v4 v4.19.1 // indirect
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
