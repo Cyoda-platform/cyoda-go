@@ -11,11 +11,11 @@ import (
 func setupSMAuditTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchema(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.MigrateDown(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
 	return postgres.NewStoreFactory(pool)
 }
 
@@ -93,9 +93,13 @@ func TestSMAuditStore_GetEventsNotFound(t *testing.T) {
 	ctx := ctxWithTenant("sm-tenant")
 	store := getSMAuditStore(t, factory, "sm-tenant")
 
-	_, err := store.GetEvents(ctx, "nonexistent-entity")
-	if err == nil {
-		t.Fatal("expected error for entity with no events, got nil")
+	// SPI contract: GetEvents for an entity with no events returns empty slice, not error.
+	events, err := store.GetEvents(ctx, "nonexistent-entity")
+	if err != nil {
+		t.Fatalf("expected nil error for entity with no events, got: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected empty slice for entity with no events, got %d events", len(events))
 	}
 }
 
@@ -169,10 +173,14 @@ func TestSMAuditStore_TenantIsolation(t *testing.T) {
 		t.Fatalf("Record for tenant-A: %v", err)
 	}
 
-	// Tenant-B should not see tenant-A's events
-	_, err = storeB.GetEvents(ctxB, "entity-1")
-	if err == nil {
-		t.Fatal("tenant-B should not see tenant-A's events, expected error")
+	// Tenant-B should not see tenant-A's events — SPI contract: isolation via
+	// empty slice return, not an error.
+	eventsB, err := storeB.GetEvents(ctxB, "entity-1")
+	if err != nil {
+		t.Fatalf("expected nil error for tenant-B (isolation), got: %v", err)
+	}
+	if len(eventsB) != 0 {
+		t.Fatalf("tenant-B should see 0 events (tenant isolation), got %d", len(eventsB))
 	}
 }
 

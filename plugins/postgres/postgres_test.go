@@ -24,7 +24,7 @@ func TestNewPool_Connects(t *testing.T) {
 	cfg := postgres.DBConfig{
 		URL:             dbURL,
 		MaxConns:        5,
-		MinConns:        1,
+		MinConns:        0, // 0 avoids backgroundHealthCheck goroutine interference
 		MaxConnIdleTime: "1m",
 	}
 

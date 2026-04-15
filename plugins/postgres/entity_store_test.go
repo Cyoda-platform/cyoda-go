@@ -12,11 +12,11 @@ import (
 func setupEntityTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchema(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.MigrateDown(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
 	return postgres.NewStoreFactory(pool)
 }
 

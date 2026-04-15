@@ -15,11 +15,11 @@ import (
 func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool) {
 	t.Helper()
 	pool := newTestPool(t)
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchema(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.MigrateDown(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
 
 	uuids := newTestUUIDGenerator()
 	tm := postgres.NewTransactionManager(pool, uuids)

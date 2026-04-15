@@ -12,11 +12,11 @@ import (
 func setupModelTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchema(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.MigrateDown(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
 	return postgres.NewStoreFactory(pool)
 }
 
@@ -172,8 +172,13 @@ func TestModelStore_DeleteNonexistent(t *testing.T) {
 	ctx := ctxWithTenant("model-tenant")
 	store, _ := factory.ModelStore(ctx)
 
-	if err := store.Delete(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"}); err != nil {
-		t.Fatalf("Delete nonexistent should not error, got: %v", err)
+	// SPI contract: deleting a nonexistent model must return ErrNotFound.
+	err := store.Delete(ctx, spi.ModelRef{EntityName: "NoSuch", ModelVersion: "1"})
+	if err == nil {
+		t.Fatal("expected ErrNotFound when deleting a nonexistent model, got nil")
+	}
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
 	}
 }
 

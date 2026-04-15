@@ -2,11 +2,27 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
+
+// jsonEqual reports whether two json.RawMessage values are semantically equal
+// (key ordering is irrelevant). Both inputs are unmarshalled into interface{}
+// and compared via reflect.DeepEqual.
+func jsonEqual(a, b json.RawMessage) bool {
+	var va, vb any
+	if err := json.Unmarshal(a, &va); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &vb); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(va, vb)
+}
 
 func ctxWithTenant(tid spi.TenantID) context.Context {
 	uc := &spi.UserContext{
@@ -21,11 +37,11 @@ func ctxWithTenant(tid spi.TenantID) context.Context {
 func TestPostgresStoreFactory_SkeletonReturnsErrors(t *testing.T) {
 	pool := newTestPool(t)
 
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchema(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.MigrateDown(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
 
 	factory := postgres.NewStoreFactory(pool)
 	ctx := ctxWithTenant("test-tenant")
@@ -87,7 +103,7 @@ func TestPostgresStoreFactory_SkeletonReturnsErrors(t *testing.T) {
 
 func TestPostgresStoreFactory_Close(t *testing.T) {
 	dbURL := skipIfNoPostgres(t)
-	cfg := postgres.DBConfig{URL: dbURL, MaxConns: 2, MinConns: 1, MaxConnIdleTime: "1m"}
+	cfg := postgres.DBConfig{URL: dbURL, MaxConns: 2, MinConns: 0, MaxConnIdleTime: "1m"}
 	pool, err := postgres.NewPool(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("failed to create pool: %v", err)
