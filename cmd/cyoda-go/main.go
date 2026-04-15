@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
@@ -130,6 +132,42 @@ func printBanner(cfg app.Config) {
 		cfg.HTTPPort, cfg.GRPC.Port, cfg.IAM.Mode, cfg.ContextPath, app.ProfileBanner())
 }
 
+func printStorageHelp() {
+	fmt.Println("STORAGE")
+	fmt.Println("  CYODA_STORAGE_BACKEND              Active storage plugin (default: memory)")
+	fmt.Printf("                                     Available: %s\n", strings.Join(spi.RegisteredPlugins(), ", "))
+	fmt.Println("  CYODA_STARTUP_TIMEOUT              Deadline for plugin.NewFactory and TM init (default: 30s)")
+	fmt.Println()
+
+	for _, name := range spi.RegisteredPlugins() {
+		p, _ := spi.GetPlugin(name)
+		fmt.Printf("  [%s]\n", name)
+		dp, ok := p.(spi.DescribablePlugin)
+		if !ok {
+			fmt.Println("  No configuration required.")
+			fmt.Println()
+			continue
+		}
+		vars := dp.ConfigVars()
+		if len(vars) == 0 {
+			fmt.Println("  No configuration required.")
+			fmt.Println()
+			continue
+		}
+		for _, v := range vars {
+			tag := ""
+			switch {
+			case v.Required:
+				tag = " (required)"
+			case v.Default != "":
+				tag = " (default: " + v.Default + ")"
+			}
+			fmt.Printf("  %-36s %s%s\n", v.Name, v.Description, tag)
+		}
+		fmt.Println()
+	}
+}
+
 func printHelp() {
 	fmt.Print(`Cyoda-Go — Lightweight digital twin of the Cyoda platform
 
@@ -154,18 +192,9 @@ SERVER
   CYODA_MAX_STATE_VISITS       Max visits per state in workflow cascade   (default: 10)
   CYODA_LOG_LEVEL              Log level: debug | info | warn | error    (default: info)
 
-STORAGE
-  CYODA_STORAGE_BACKEND        Backend: memory | postgres               (default: memory)
-
-POSTGRESQL (required when storage backend is postgres)
-  CYODA_DB_URL                 Connection string                         (required)
-                                    Example: postgres://user:pass@localhost:5432/minicyoda?sslmode=disable
-  CYODA_DB_MAX_CONNS           Max connection pool size                  (default: 25)
-  CYODA_DB_MIN_CONNS           Min connection pool size                  (default: 5)
-  CYODA_DB_MAX_CONN_IDLE_TIME  Max idle time before closing connection   (default: 5m)
-  CYODA_DB_AUTO_MIGRATE        Run schema migrations on startup          (default: true)
-
-AUTHENTICATION (IAM)
+`)
+	printStorageHelp()
+	fmt.Print(`AUTHENTICATION (IAM)
   CYODA_IAM_MODE               Auth mode: mock | jwt                     (default: mock)
 
   Mock mode (default):
