@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
 type fakeDispatcher struct {

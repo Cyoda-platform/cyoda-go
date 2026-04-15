@@ -14,8 +14,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/logging"
-	"github.com/cyoda-platform/cyoda-go/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 
 	// Stock storage plugins — blank-imported so their init() runs
 	// and they register themselves with the spi registry.

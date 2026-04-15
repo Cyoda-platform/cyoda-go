@@ -13,7 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
-	"github.com/cyoda-platform/cyoda-go/logging"
+	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
 // Default keep-alive configuration. Override with SetKeepAliveConfig.
