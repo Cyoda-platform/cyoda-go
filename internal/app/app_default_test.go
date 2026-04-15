@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/app"
+
+	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 func TestApp_DefaultMemoryBackend(t *testing.T) {

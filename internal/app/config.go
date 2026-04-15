@@ -11,7 +11,6 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 )
 
 type Config struct {
@@ -24,7 +23,7 @@ type Config struct {
 	GRPC               GRPCConfig
 	Bootstrap          BootstrapConfig
 	StorageBackend     string
-	DB                 postgres.DBConfig
+	StartupTimeout     time.Duration
 	Cluster            cluster.Config
 	SearchSnapshotTTL  time.Duration
 	SearchReapInterval time.Duration
@@ -33,10 +32,6 @@ type Config struct {
 	// Used in tests to inject a LocalProcessingService.
 	ExternalProcessing contract.ExternalProcessingService
 }
-
-// DBConfig is an alias kept for backward compatibility.
-// New code should use postgres.DBConfig directly.
-type DBConfig = postgres.DBConfig
 
 type GRPCConfig struct {
 	Port              int
@@ -87,13 +82,7 @@ func DefaultConfig() Config {
 		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
-		DB: DBConfig{
-			URL:             envString("CYODA_DB_URL", ""),
-			MaxConns:        envInt("CYODA_DB_MAX_CONNS", 25),
-			MinConns:        envInt("CYODA_DB_MIN_CONNS", 5),
-			MaxConnIdleTime: envString("CYODA_DB_MAX_CONN_IDLE_TIME", "5m"),
-			AutoMigrate:     envBool("CYODA_DB_AUTO_MIGRATE", true),
-		},
+		StartupTimeout:     envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
 			Mode:           envString("CYODA_IAM_MODE", "mock"),
 			MockUserID:     "mock-user-001",

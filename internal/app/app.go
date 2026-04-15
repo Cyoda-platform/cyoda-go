@@ -36,8 +36,6 @@ import (
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 )
 
@@ -66,34 +64,44 @@ func New(cfg Config) *App {
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
-	switch cfg.StorageBackend {
-	case "memory":
-		memFactory := memory.NewStoreFactory()
-		memFactory.NewTransactionManager(common.NewDefaultUUIDGenerator())
-		a.transactionManager = memFactory.GetTransactionManager()
-		a.storeFactory = memFactory
-	case "postgres":
-		if cfg.DB.URL == "" {
-			panic("CYODA_DB_URL is required when storage backend is postgres")
-		}
-		pool, err := postgres.NewPool(context.Background(), cfg.DB)
-		if err != nil {
-			panic(fmt.Sprintf("failed to create PostgreSQL connection pool: %v", err))
-		}
-		if cfg.DB.AutoMigrate {
-			if err := postgres.Migrate(pool); err != nil {
-				panic(fmt.Sprintf("failed to apply PostgreSQL migrations: %v", err))
-			}
-		}
-		// Postgres stores route through the in-memory transaction manager: they
-		// hold durable state but share the in-process TM with memory stores.
-		memFactory := memory.NewStoreFactory()
-		memFactory.NewTransactionManager(common.NewDefaultUUIDGenerator())
-		a.transactionManager = memFactory.GetTransactionManager()
-		a.storeFactory = postgres.NewStoreFactory(pool)
-	default:
-		panic(fmt.Sprintf("unknown CYODA_STORAGE_BACKEND %q; expected 'memory' or 'postgres'", cfg.StorageBackend))
+	// cfg.StorageBackend is populated at config-construction time from the
+	// CYODA_STORAGE_BACKEND env var with "memory" as the default.
+	plugin, ok := spi.GetPlugin(cfg.StorageBackend)
+	if !ok {
+		slog.Error("unknown storage backend",
+			"backend", cfg.StorageBackend,
+			"available", spi.RegisteredPlugins())
+		os.Exit(1)
 	}
+
+	slog.Info("storage backend selected",
+		"backend", plugin.Name(),
+		"available", spi.RegisteredPlugins())
+
+	var factoryOpts []spi.FactoryOption
+	// ClusterBroadcaster wiring lands in Plan 4 (cassandra plugin consumes it).
+
+	// startupCtx carries a deadline so unreachable infrastructure fails fast
+	// instead of hanging in pgxpool or gocql.
+	startupCtx, cancel := context.WithTimeout(context.Background(), cfg.StartupTimeout)
+	defer cancel()
+
+	factory, err := plugin.NewFactory(startupCtx, os.Getenv, factoryOpts...)
+	if err != nil {
+		panic(fmt.Sprintf("create storage factory for %s: %v", plugin.Name(), err))
+	}
+	a.storeFactory = factory
+
+	txMgr, err := factory.TransactionManager(startupCtx)
+	if err != nil {
+		panic(fmt.Sprintf("get transaction manager from %s: %v", plugin.Name(), err))
+	}
+	a.transactionManager = txMgr
+
+	// Decorator wrap order (innermost → outermost, per D13 of the spec):
+	//   plugin TM → metrics → tracing → logging → domain-service consumers
+	// Today only tracing is wired; add future decorators between tracing and
+	// the plugin TM in the order named here.
 	if cfg.OTelEnabled {
 		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager)
 	}
