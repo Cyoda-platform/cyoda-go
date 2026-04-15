@@ -92,11 +92,14 @@ func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 }
 
 func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
-	_, err := s.q.Exec(ctx,
+	tag, err := s.q.Exec(ctx,
 		`DELETE FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
 	if err != nil {
 		return fmt.Errorf("failed to delete model %s: %w", modelRef, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	return nil
 }

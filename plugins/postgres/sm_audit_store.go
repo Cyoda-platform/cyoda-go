@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -17,8 +18,15 @@ type smAuditStore struct {
 }
 
 // Record appends an audit event for the given entity. It is append-only;
-// no upsert is performed. event.TimeUUID is used as the event_id primary key.
+// no upsert is performed. event.TimeUUID is used as the event_id primary key;
+// if empty, a new UUID is generated so that multiple events for the same
+// entity can be recorded without duplicate-key violations.
 func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.StateMachineEvent) error {
+	eventID := event.TimeUUID
+	if eventID == "" {
+		eventID = uuid.NewString()
+	}
+
 	doc, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal state machine event: %w", err)
@@ -27,15 +35,16 @@ func (s *smAuditStore) Record(ctx context.Context, entityID string, event spi.St
 	_, err = s.q.Exec(ctx,
 		`INSERT INTO sm_audit_events (tenant_id, entity_id, event_id, transaction_id, timestamp, doc)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		string(s.tenantID), entityID, event.TimeUUID, event.TransactionID, event.Timestamp, doc)
+		string(s.tenantID), entityID, eventID, event.TransactionID, event.Timestamp, doc)
 	if err != nil {
-		return fmt.Errorf("failed to record state machine event %s for entity %s: %w", event.TimeUUID, entityID, err)
+		return fmt.Errorf("failed to record state machine event %s for entity %s: %w", eventID, entityID, err)
 	}
 	return nil
 }
 
 // GetEvents returns all audit events for the given entity, ordered by
-// timestamp ascending. Returns an error when no events exist for the entity.
+// timestamp ascending. Returns an empty slice (not an error) when no events
+// exist for the entity.
 func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.StateMachineEvent, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT doc FROM sm_audit_events
@@ -51,8 +60,8 @@ func (s *smAuditStore) GetEvents(ctx context.Context, entityID string) ([]spi.St
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan events for entity %s: %w", entityID, err)
 	}
-	if len(events) == 0 {
-		return nil, fmt.Errorf("no events found for entity %s", entityID)
+	if events == nil {
+		events = []spi.StateMachineEvent{}
 	}
 	return events, nil
 }

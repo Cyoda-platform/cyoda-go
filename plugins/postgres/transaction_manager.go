@@ -92,17 +92,27 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	}
 
 	// Capture the database timestamp before committing.
+	// If the transaction is already in an aborted state (e.g. an earlier Exec
+	// returned 40001 and left the tx aborted), the SELECT will fail with
+	// SQLSTATE 25P02 (in_failed_sql_transaction). In that case we rollback
+	// and surface ErrConflict, since the abort was most likely caused by a
+	// serialization failure. We use time.Now() as a stand-in; it is never
+	// stored on an error path.
 	var submitTime time.Time
-	if err := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); err != nil {
-		// If we can't get the time, the tx may already be in a failed state.
-		// Try to rollback and return the error.
+	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
 		_ = pgxTx.Rollback(ctx)
 		tm.registry.Remove(txID)
 		tm.removeTenant(txID)
-		return classifyError(fmt.Errorf("Commit: failed to get submit time: %w", err))
+		// The tx is aborted: most likely due to a serialization failure in a
+		// prior statement. Wrap as ErrConflict so callers can retry.
+		return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
 	}
 
 	if err := pgxTx.Commit(ctx); err != nil {
+		// On commit failure the transaction is already aborted server-side, but
+		// the pgx.Tx still holds the connection. Rollback explicitly to release
+		// it back to the pool; ignore the rollback error (tx is already invalid).
+		_ = pgxTx.Rollback(ctx)
 		tm.registry.Remove(txID)
 		tm.removeTenant(txID)
 		return classifyError(fmt.Errorf("Commit: %w", err))

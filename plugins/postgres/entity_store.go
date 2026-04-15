@@ -37,26 +37,52 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 
 	entity.Meta.TenantID = s.tenantID
 
-	// Determine next version.
-	var maxVersion int64
-	err := s.q.QueryRow(ctx,
-		`SELECT COALESCE(MAX(version), 0) FROM entity_versions WHERE tenant_id = $1 AND entity_id = $2`,
-		tid, eid).Scan(&maxVersion)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get max version for entity %s: %w", eid, err)
+	// Stamp the transaction ID from context so callers can read it back
+	// after commit (required by the SPI conformance contract).
+	if tx := spi.GetTransaction(ctx); tx != nil && entity.Meta.TransactionID == "" {
+		entity.Meta.TransactionID = tx.ID
 	}
-	nextVersion := maxVersion + 1
-	entity.Meta.Version = nextVersion
 
-	// Get DB timestamps: CURRENT_TIMESTAMP (stable within tx) for valid_time/transaction_time,
-	// clock_timestamp() (actual wall clock) for wall_clock_time.
+	// Get DB timestamps first: CURRENT_TIMESTAMP (stable within tx) for
+	// valid_time/transaction_time, clock_timestamp() (actual wall clock) for
+	// wall_clock_time.
 	var dbNow, wallClockTime time.Time
 	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
-	// Set metadata based on version.
-	if nextVersion == 1 {
+	// Atomically upsert the entities row, incrementing version in the database
+	// without a prior SELECT. This avoids creating a predicate read lock on the
+	// entities table under SERIALIZABLE isolation — a read-then-write pattern
+	// (SELECT MAX(version) followed by INSERT) would cause relation-level
+	// predicate locks when the table is empty, triggering false serialization
+	// failures for concurrent inserts of distinct entities.
+	//
+	// We insert a placeholder doc first, then update it below once we know the
+	// version. The (xmax = 0) expression is true for newly inserted rows and
+	// false for updated rows, letting us distinguish CREATED vs UPDATED.
+	var nextVersion int64
+	var isNew bool
+	err := s.q.QueryRow(ctx,
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+		 VALUES ($1, $2, $3, $4, 1, false, 'null'::jsonb)
+		 ON CONFLICT (tenant_id, entity_id) DO UPDATE SET
+		   model_name = EXCLUDED.model_name,
+		   model_version = EXCLUDED.model_version,
+		   version = entities.version + 1,
+		   deleted = false,
+		   doc = entities.doc
+		 RETURNING version, (xmax = 0)`,
+		tid, eid,
+		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion).Scan(&nextVersion, &isNew)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upsert entity: %w", classifyError(err))
+	}
+
+	entity.Meta.Version = nextVersion
+
+	// Set metadata based on whether this is a new or updated entity.
+	if isNew {
 		entity.Meta.ChangeType = "CREATED"
 		entity.Meta.CreationDate = dbNow
 	} else {
@@ -66,10 +92,18 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	}
 	entity.Meta.LastModifiedDate = dbNow
 
-	// Marshal document.
+	// Marshal document with the now-known version.
 	doc, err := marshalEntityDoc(entity, dbNow, dbNow, wallClockTime, false)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal entity doc: %w", err)
+	}
+
+	// Update the entities row with the final marshaled document.
+	_, err = s.q.Exec(ctx,
+		`UPDATE entities SET doc = $1 WHERE tenant_id = $2 AND entity_id = $3`,
+		doc, tid, eid)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update entity doc: %w", err)
 	}
 
 	// Insert version row (explicit wall_clock_time to match _meta value).
@@ -81,23 +115,6 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 		nextVersion, dbNow, wallClockTime, doc)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert entity version: %w", err)
-	}
-
-	// Upsert current state row.
-	_, err = s.q.Exec(ctx,
-		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		 VALUES ($1, $2, $3, $4, $5, false, $6)
-		 ON CONFLICT (tenant_id, entity_id) DO UPDATE SET
-		   model_name = EXCLUDED.model_name,
-		   model_version = EXCLUDED.model_version,
-		   version = EXCLUDED.version,
-		   deleted = false,
-		   doc = EXCLUDED.doc`,
-		tid, eid,
-		entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
-		nextVersion, doc)
-	if err != nil {
-		return 0, fmt.Errorf("failed to upsert entity: %w", err)
 	}
 
 	return nextVersion, nil
@@ -216,11 +233,13 @@ func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asA
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	tid := string(s.tenantID)
 
-	// Get current entity to verify it exists and get model info.
+	// Get current entity (doc + version) in a single point-lookup on the PK.
+	// Fetching both avoids a second round-trip for the version.
 	var doc []byte
+	var maxVersion int64
 	err := s.q.QueryRow(ctx,
-		`SELECT doc FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
-		tid, entityID).Scan(&doc)
+		`SELECT doc, version FROM entities WHERE tenant_id = $1 AND entity_id = $2 AND NOT deleted`,
+		tid, entityID).Scan(&doc, &maxVersion)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
@@ -233,14 +252,6 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		return fmt.Errorf("failed to unmarshal entity for delete: %w", err)
 	}
 
-	// Determine next version.
-	var maxVersion int64
-	err = s.q.QueryRow(ctx,
-		`SELECT COALESCE(MAX(version), 0) FROM entity_versions WHERE tenant_id = $1 AND entity_id = $2`,
-		tid, entityID).Scan(&maxVersion)
-	if err != nil {
-		return fmt.Errorf("failed to get max version for delete: %w", err)
-	}
 	nextVersion := maxVersion + 1
 
 	// Get DB timestamp.

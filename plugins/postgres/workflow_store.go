@@ -27,7 +27,8 @@ func (s *workflowStore) Save(ctx context.Context, modelRef spi.ModelRef, workflo
 func (s *workflowStore) Get(ctx context.Context, modelRef spi.ModelRef) ([]spi.WorkflowDefinition, error) {
 	data, err := s.kv.Get(ctx, workflowNamespace, modelRef.String())
 	if errors.Is(err, spi.ErrNotFound) {
-		return nil, fmt.Errorf("no workflows found for model %s: %w", modelRef, spi.ErrNotFound)
+		// No workflows stored for this model — return empty slice (not an error).
+		return []spi.WorkflowDefinition{}, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to load workflows for model %s: %w", modelRef, err)
 	}
