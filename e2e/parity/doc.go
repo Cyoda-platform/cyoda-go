@@ -9,4 +9,28 @@
 // under internal/, so it is importable by an external Go module — in
 // particular by out-of-tree storage plugins that want to validate their
 // own backend against the same scenarios.
+//
+// TODO(plan-6-or-later): The following raw-store scenarios are now
+// covered at the SPI layer by spitest.StoreFactoryConformance in
+// github.com/cyoda-platform/cyoda-go-spi/spitest, and are candidates
+// for retirement from this HTTP-stack parity suite once spitest has
+// been in production for a release cycle:
+//
+//   - EntityCreateAndGet
+//   - EntityDelete
+//   - EntityListByModel
+//   - TemporalPointInTimeRetrieval
+//   - TemporalGetAsAtPopulatesFullMeta
+//   - TenantIsolationEntities
+//   - TenantIsolationModels
+//   - DeepSchemaSymmetry
+//   - EmptyTenantOperations
+//   - ConcurrentConflictingUpdate
+//   - ConcurrentTransitionsDifferentEntities
+//
+// These are kept here for now to preserve HTTP-layer coverage
+// (router, serialization, auth middleware) and to avoid removing
+// green coverage during a refactor. A future plan should either
+// slim them into thin HTTP smoke wrappers or remove them entirely
+// once the SPI-layer coverage is proven.
 package parity
