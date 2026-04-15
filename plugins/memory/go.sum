@@ -1,5 +1,3 @@
-github.com/cyoda-platform/cyoda-go v0.0.0-20260414233346-fac3d0311f7f h1:l3KpKE22yh7k6H7I9c03QQo9xkM42KMs+jwEujzlEo8=
-github.com/cyoda-platform/cyoda-go v0.0.0-20260414233346-fac3d0311f7f/go.mod h1:nnnrw0/uH2ZLO39kH3zgHKSsxMPx+GLZvJd1eO3V37g=
 github.com/cyoda-platform/cyoda-go-spi v0.1.0 h1:DNd1hEsqVp0QYQxJQpaqoRx+gD4KZK7ZVbCbB8J8STQ=
 github.com/cyoda-platform/cyoda-go-spi v0.1.0/go.mod h1:hmmmDnvFjiCiU1fJ2PEDHhrU8UAOghNRvMGBM8KOQtA=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

@@ -41,6 +41,47 @@ func TestInternalError(t *testing.T) {
 	}
 }
 
+func TestInternal_AutoRoutesErrConflict(t *testing.T) {
+	// Internal() must detect spi.ErrConflict anywhere in the error chain and
+	// return a 409 Conflict with retryable=true — not a 500. The postgres
+	// plugin's classifyError wraps 40001/40P01 in spi.ErrConflict; every
+	// common.Internal call site in the handler relies on this auto-routing
+	// rather than checking errors.Is itself.
+	t.Run("direct sentinel", func(t *testing.T) {
+		err := common.Internal("save failed", spi.ErrConflict)
+		if err.Status != http.StatusConflict {
+			t.Errorf("status = %d, want 409", err.Status)
+		}
+		if !err.Retryable {
+			t.Error("expected retryable=true")
+		}
+		if err.Level != common.LevelOperational {
+			t.Errorf("level = %v, want Operational", err.Level)
+		}
+	})
+
+	t.Run("wrapped sentinel", func(t *testing.T) {
+		wrapped := fmt.Errorf("failed to insert entity: %w: some pg detail", spi.ErrConflict)
+		err := common.Internal("save failed", wrapped)
+		if err.Status != http.StatusConflict {
+			t.Errorf("status = %d, want 409", err.Status)
+		}
+		if !err.Retryable {
+			t.Error("expected retryable=true")
+		}
+	})
+
+	t.Run("non-conflict error stays 500", func(t *testing.T) {
+		err := common.Internal("save failed", errors.New("plain db error"))
+		if err.Status != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", err.Status)
+		}
+		if err.Retryable {
+			t.Error("plain errors must not be retryable")
+		}
+	})
+}
+
 func TestFatalError(t *testing.T) {
 	err := common.Fatal("data corruption", errors.New("bad state"))
 	if err.Level != common.LevelFatal {

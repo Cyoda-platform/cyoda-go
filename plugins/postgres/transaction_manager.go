@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -230,19 +231,19 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 // fresh snapshot is safe" to spi.ErrConflict. Everything else passes through.
 //
 // Retryable codes:
-//   - 40001 serialization_failure — SSI detected an r/w dependency cycle
-//   - 40P01 deadlock_detected — deadlock victim chosen by the server
+//   - serialization_failure (40001) — SSI detected an r/w dependency cycle
+//   - deadlock_detected (40P01) — deadlock victim chosen by the server
 //
-// The error is wrapped (errors.Is and errors.As still see the original pgErr)
-// so callers can drill in for logging; the sentinel is added to the chain so
-// handler-level `errors.Is(err, spi.ErrConflict)` checks succeed.
+// Both sentinels stay reachable: spi.ErrConflict satisfies handler-level
+// errors.Is checks, and the original *pgconn.PgError stays in the chain so
+// observability and logging can type-assert via errors.As.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01") {
-		return fmt.Errorf("%w: %s", spi.ErrConflict, err.Error())
+	if errors.As(err, &pgErr) && (pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected) {
+		return fmt.Errorf("%w: %w", spi.ErrConflict, err)
 	}
 	return err
 }

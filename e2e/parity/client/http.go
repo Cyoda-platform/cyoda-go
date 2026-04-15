@@ -141,11 +141,13 @@ func (c *Client) doJSON(t *testing.T, method, path string, body any, out any, op
 // response body on success (2xx). Returns a descriptive error
 // wrapping the response body for non-2xx status codes.
 //
-// On 409 Conflict the request is retried up to 5 times with a short
-// backoff: the server classifies SERIALIZABLE 40001/40P01 aborts as
-// 409 retryable: true, and the client's job is to replay against a
-// fresh snapshot. This is the minimum viable client retry; production
-// clients would use bounded jitter and per-operation policies.
+// On 409 Conflict with properties.retryable=true (SERIALIZABLE 40001/40P01
+// aborts, classified by the server) the request is retried up to 5 times
+// with a short backoff — the client's job is to replay against a fresh
+// snapshot. Non-retryable 409s (business-logic conflicts) surface
+// immediately so tests that assert them can see the first response. This
+// is the minimum viable client retry; production clients would use
+// bounded jitter and per-operation policies.
 func (c *Client) doRaw(t *testing.T, method, path, body string) ([]byte, error) {
 	t.Helper()
 	const maxAttempts = 5
@@ -168,7 +170,7 @@ func (c *Client) doRaw(t *testing.T, method, path, body string) ([]byte, error) 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return raw, nil
 		}
-		if resp.StatusCode == http.StatusConflict && attempt < maxAttempts-1 {
+		if resp.StatusCode == http.StatusConflict && isRetryableConflict(raw) && attempt < maxAttempts-1 {
 			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
 			lastErr = fmt.Errorf("%s %s: status 409: %s", method, path, string(raw))
 			continue
@@ -176,6 +178,21 @@ func (c *Client) doRaw(t *testing.T, method, path, body string) ([]byte, error) 
 		return nil, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, string(raw))
 	}
 	return nil, lastErr
+}
+
+// isRetryableConflict reports whether a 409 body advertises
+// properties.retryable=true (the server's signal that the transaction
+// aborted cleanly and replaying against a fresh snapshot is safe).
+func isRetryableConflict(body []byte) bool {
+	var problem struct {
+		Properties struct {
+			Retryable bool `json:"retryable"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		return false
+	}
+	return problem.Properties.Retryable
 }
 
 // ImportModel issues POST /api/model/import/JSON/SAMPLE_DATA/{name}/{version}

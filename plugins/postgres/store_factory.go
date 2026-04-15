@@ -20,9 +20,13 @@ func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 	return &StoreFactory{pool: pool}
 }
 
-// SetTransactionManager associates a TransactionManager with this factory.
-// When set, resolveQuerier returns the active pgx.Tx for transactional operations.
-func (f *StoreFactory) SetTransactionManager(tm *TransactionManager) {
+// setTransactionManager wires the plugin's own TM into the factory. The
+// field is written exactly once, at construction time, by initTransactionManager
+// (same package) — so reads in resolveRaw are safe without synchronization
+// because the construction return establishes happens-before for every
+// subsequent caller. Keep this unexported: there is no legitimate external
+// caller, and opening it would invite a race the factory isn't designed for.
+func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
 	f.tm = tm
 }
 
@@ -141,5 +145,5 @@ func newStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 // initTransactionManager installs a TransactionManager on the factory.
 func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
 	tm := NewTransactionManager(f.pool, uuids)
-	f.SetTransactionManager(tm)
+	f.setTransactionManager(tm)
 }

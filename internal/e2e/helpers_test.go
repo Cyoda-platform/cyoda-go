@@ -59,10 +59,10 @@ func authRequest(t *testing.T, method, path string, body io.Reader) *http.Reques
 }
 
 // doAuth performs an authenticated HTTP request and returns the response.
-// On 409 Conflict (retryable serialization aborts), retries up to 5 times
-// with a short backoff. The server classifies SERIALIZABLE 40001/40P01 as
-// 409 retryable: true; the client is responsible for replaying the request
-// against a fresh snapshot.
+// On 409 Conflict with properties.retryable=true (SERIALIZABLE 40001/40P01
+// aborts, classified by the server), retries up to 5 times with a short
+// backoff. Non-retryable 409s (business-logic conflicts) are returned to
+// the caller on the first response.
 func doAuth(t *testing.T, method, path string, body string) *http.Response {
 	t.Helper()
 	const maxAttempts = 5
@@ -80,13 +80,35 @@ func doAuth(t *testing.T, method, path string, body string) *http.Response {
 		if r.StatusCode != http.StatusConflict {
 			return r
 		}
-		// Drain and close before retry so the transport can reuse the connection.
-		io.Copy(io.Discard, r.Body)
+		// Peek the body without consuming it — caller still owns r.Body.
+		raw, _ := io.ReadAll(r.Body)
 		r.Body.Close()
+		if !isRetryableConflict(raw) {
+			// Not safe to retry; return the response with a re-stuffed body
+			// so the caller can read it normally.
+			r.Body = io.NopCloser(strings.NewReader(string(raw)))
+			return r
+		}
 		resp = r
+		resp.Body = io.NopCloser(strings.NewReader(string(raw)))
 		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
 	}
 	return resp
+}
+
+// isRetryableConflict reports whether a 409 body advertises
+// properties.retryable=true (the server's classified-serialization-abort
+// signal). See e2e/parity/client for the shared implementation.
+func isRetryableConflict(body []byte) bool {
+	var problem struct {
+		Properties struct {
+			Retryable bool `json:"retryable"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		return false
+	}
+	return problem.Properties.Retryable
 }
 
 // readBody reads and returns the response body as a string, closing it.

@@ -27,10 +27,13 @@
 //
 // The plugin's TM is a lifecycle tracker over a thread-safe txRegistry
 // mapping txID → pgx.Tx. TM.Begin starts a SERIALIZABLE transaction,
-// runs SET LOCAL app.current_tenant = $1 for row-level security, and
-// records the handle in the registry. Stores call resolveQuerier(ctx)
-// which reads spi.GetTransaction(ctx), looks up the pgx.Tx in the
-// registry, and returns it (or the pool, outside a transaction).
+// runs SELECT set_config('app.current_tenant', $1, true) for row-level
+// security (the set_config function accepts bound parameters where
+// SET LOCAL does not under pgx's extended-query protocol), and records
+// the handle in the registry. Stores hold a ctxQuerier that re-resolves
+// the underlying pgx.Tx on every call from the passed-in context — so
+// the active tx, discovered via spi.GetTransaction(ctx), is always used
+// when one is present, and the pool is used otherwise.
 //
 // Registration:
 //
