@@ -2,5 +2,6 @@ go 1.26.1
 
 use (
 	.
+	./plugins/memory
 	../cyoda-go-spi
 )
