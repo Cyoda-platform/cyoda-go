@@ -19,7 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
-	"github.com/cyoda-platform/cyoda-go/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
 var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")

@@ -36,7 +36,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
-	"github.com/cyoda-platform/cyoda-go/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 )
 

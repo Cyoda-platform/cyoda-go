@@ -19,7 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/logging"
+	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
 // EntitySearch handles unary search CloudEvents by calling service methods directly.
