@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/cyoda-platform/cyoda-go/internal/app"
+	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 
 	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.

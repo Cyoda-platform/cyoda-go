@@ -19,6 +19,7 @@ import (
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
@@ -78,8 +79,27 @@ func New(cfg Config) *App {
 		"backend", plugin.Name(),
 		"available", spi.RegisteredPlugins())
 
+	// Cluster infrastructure the plugin factory may need (e.g. the cassandra
+	// plugin uses the broadcaster for clock gossip) is created up-front when
+	// cluster mode is on; the same instance is then bound as the app's node
+	// registry later in this function. In single-node mode gossipReg stays
+	// nil and plugins receive no broadcaster.
+	var gossipReg *registry.Gossip
+	if cfg.Cluster.Enabled {
+		validateClusterConfig(cfg.Cluster)
+		var signerErr error
+		a.tokenSigner, signerErr = token.NewSigner(cfg.Cluster.HMACSecret)
+		if signerErr != nil {
+			slog.Error("failed to create token signer", "pkg", "cluster", "err", signerErr)
+			os.Exit(1)
+		}
+		gossipReg = mustNewGossip(cfg.Cluster)
+	}
+
 	var factoryOpts []spi.FactoryOption
-	// ClusterBroadcaster wiring lands in Plan 4 (cassandra plugin consumes it).
+	if gossipReg != nil {
+		factoryOpts = append(factoryOpts, spi.WithClusterBroadcaster(gossipReg))
+	}
 
 	// startupCtx carries a deadline so unreachable infrastructure fails fast
 	// instead of hanging in pgxpool or gocql.
@@ -238,49 +258,9 @@ func New(cfg Config) *App {
 	// handle is orphaned until the database's own idle timeout catches it.
 	a.txLifecycle.SetTransactionManager(a.transactionManager)
 	if cfg.Cluster.Enabled {
-		if cfg.Cluster.NodeID == "" {
-			slog.Error("CYODA_NODE_ID is required when cluster mode is enabled", "pkg", "cluster")
-			os.Exit(1)
-		}
-		if len(cfg.Cluster.HMACSecret) == 0 {
-			slog.Error("CYODA_HMAC_SECRET is required when cluster mode is enabled", "pkg", "cluster")
-			os.Exit(1)
-		}
-		if !strings.HasPrefix(cfg.Cluster.NodeAddr, "http://") && !strings.HasPrefix(cfg.Cluster.NodeAddr, "https://") {
-			slog.Error("CYODA_NODE_ADDR must include scheme (http:// or https://)", "pkg", "cluster", "addr", cfg.Cluster.NodeAddr)
-			os.Exit(1)
-		}
-		var signerErr error
-		a.tokenSigner, signerErr = token.NewSigner(cfg.Cluster.HMACSecret)
-		if signerErr != nil {
-			slog.Error("failed to create token signer", "pkg", "cluster", "err", signerErr)
-			os.Exit(1)
-		}
-
-		gossipHost, gossipPortStr, err := net.SplitHostPort(cfg.Cluster.GossipAddr)
-		if err != nil {
-			slog.Error("invalid CYODA_GOSSIP_ADDR", "pkg", "cluster", "addr", cfg.Cluster.GossipAddr, "err", err)
-			os.Exit(1)
-		}
-		gossipPort, err := strconv.Atoi(gossipPortStr)
-		if err != nil {
-			slog.Error("invalid gossip port", "pkg", "cluster", "port", gossipPortStr, "err", err)
-			os.Exit(1)
-		}
-
-		gossipReg, err := registry.NewGossip(registry.GossipConfig{
-			NodeID:          cfg.Cluster.NodeID,
-			NodeAddr:        cfg.Cluster.NodeAddr,
-			BindAddr:        gossipHost,
-			BindPort:        gossipPort,
-			Seeds:           cfg.Cluster.SeedNodes,
-			StabilityWindow: cfg.Cluster.StabilityWindow,
-			SecretKey:       cfg.Cluster.HMACSecret,
-		})
-		if err != nil {
-			slog.Error("failed to create gossip registry", "pkg", "cluster", "err", err)
-			os.Exit(1)
-		}
+		// gossipReg was created above (before plugin.NewFactory) so the plugin
+		// could subscribe to broadcast topics. Join the cluster now; subscribers
+		// are already registered, so no messages are dropped.
 		if err := gossipReg.Register(context.Background(), cfg.Cluster.NodeID, cfg.Cluster.NodeAddr); err != nil {
 			slog.Error("failed to register with gossip cluster", "pkg", "cluster", "err", err)
 			os.Exit(1)
@@ -499,4 +479,53 @@ func (a *App) Shutdown() {
 			slog.Warn("failed to close store factory", "pkg", "app", "err", err)
 		}
 	}
+}
+
+// validateClusterConfig fails fast on missing/invalid cluster settings.
+// Called before any cluster infrastructure is constructed so the failure
+// surfaces at startup instead of during traffic.
+func validateClusterConfig(c cluster.Config) {
+	if c.NodeID == "" {
+		slog.Error("CYODA_NODE_ID is required when cluster mode is enabled", "pkg", "cluster")
+		os.Exit(1)
+	}
+	if len(c.HMACSecret) == 0 {
+		slog.Error("CYODA_HMAC_SECRET is required when cluster mode is enabled", "pkg", "cluster")
+		os.Exit(1)
+	}
+	if !strings.HasPrefix(c.NodeAddr, "http://") && !strings.HasPrefix(c.NodeAddr, "https://") {
+		slog.Error("CYODA_NODE_ADDR must include scheme (http:// or https://)", "pkg", "cluster", "addr", c.NodeAddr)
+		os.Exit(1)
+	}
+}
+
+// mustNewGossip parses the gossip address, creates the memberlist-backed
+// registry, and exits on any failure. Returns the registry so the caller
+// can both (a) pass it to plugin.NewFactory as a broadcaster and (b) use
+// it as the app's node registry after Register.
+func mustNewGossip(c cluster.Config) *registry.Gossip {
+	gossipHost, gossipPortStr, err := net.SplitHostPort(c.GossipAddr)
+	if err != nil {
+		slog.Error("invalid CYODA_GOSSIP_ADDR", "pkg", "cluster", "addr", c.GossipAddr, "err", err)
+		os.Exit(1)
+	}
+	gossipPort, err := strconv.Atoi(gossipPortStr)
+	if err != nil {
+		slog.Error("invalid gossip port", "pkg", "cluster", "port", gossipPortStr, "err", err)
+		os.Exit(1)
+	}
+	g, err := registry.NewGossip(registry.GossipConfig{
+		NodeID:          c.NodeID,
+		NodeAddr:        c.NodeAddr,
+		BindAddr:        gossipHost,
+		BindPort:        gossipPort,
+		Seeds:           c.SeedNodes,
+		StabilityWindow: c.StabilityWindow,
+		SecretKey:       c.HMACSecret,
+	})
+	if err != nil {
+		slog.Error("failed to create gossip registry", "pkg", "cluster", "err", err)
+		os.Exit(1)
+	}
+	return g
 }

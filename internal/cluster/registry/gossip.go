@@ -55,7 +55,10 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		return nil, fmt.Errorf("marshal node metadata: %w", err)
 	}
 
-	del := &gossipDelegate{meta: metaBytes}
+	del := &gossipDelegate{
+		meta: metaBytes,
+		subs: make(map[string][]func([]byte)),
+	}
 	g := &Gossip{cfg: cfg, delegate: del, meta: nm}
 
 	mlCfg := memberlist.DefaultLANConfig()
@@ -72,6 +75,13 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		return nil, fmt.Errorf("create memberlist: %w", err)
 	}
 	g.list = list
+
+	// The broadcast queue needs a NumNodes callback; wire it up now that the
+	// memberlist exists. Retransmit multiplier follows the memberlist default.
+	del.queue = &memberlist.TransmitLimitedQueue{
+		NumNodes:       list.NumMembers,
+		RetransmitMult: mlCfg.RetransmitMult,
+	}
 
 	slog.Info("gossip registry created",
 		"pkg", "cluster/registry",
@@ -233,11 +243,22 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 	return g.list.UpdateNode(0)
 }
 
-// gossipDelegate implements memberlist.Delegate. Only NodeMeta is meaningful;
-// the rest are no-ops.
+// gossipDelegate implements memberlist.Delegate. NodeMeta carries per-node
+// identity (ID, addr, tags); NotifyMsg/GetBroadcasts implement the
+// topic-multiplexed broadcast channel used by Gossip.Broadcast /
+// Gossip.Subscribe (see gossip_broadcast.go). LocalState / MergeRemoteState
+// are no-ops — we don't use the push/pull anti-entropy state channel.
 type gossipDelegate struct {
 	mu   sync.RWMutex
 	meta []byte
+
+	// Broadcast multiplexing. queue holds outbound messages and is populated
+	// by Gossip.Broadcast; subs maps topic -> handlers called from NotifyMsg
+	// when a broadcast is delivered. queue is set in NewGossip after the
+	// memberlist instance exists (it needs a NumNodes callback).
+	queue  *memberlist.TransmitLimitedQueue
+	subs   map[string][]func([]byte)
+	subsMu sync.RWMutex
 }
 
 func (d *gossipDelegate) updateMeta(meta []byte) {
@@ -260,13 +281,35 @@ func (d *gossipDelegate) NodeMeta(limit int) []byte {
 	return d.meta
 }
 
-func (d *gossipDelegate) NotifyMsg(msg []byte) {}
+func (d *gossipDelegate) NotifyMsg(msg []byte) {
+	topic, payload, ok := decodeTopicMsg(msg)
+	if !ok {
+		slog.Warn("malformed broadcast message",
+			"pkg", "cluster/registry", "size", len(msg))
+		return
+	}
+	d.subsMu.RLock()
+	handlers := d.subs[topic]
+	d.subsMu.RUnlock()
+	for _, h := range handlers {
+		h(payload)
+	}
+}
 
 func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
-	return nil
+	if d.queue == nil {
+		return nil
+	}
+	return d.queue.GetBroadcasts(overhead, limit)
 }
 func (d *gossipDelegate) LocalState(bool) []byte        { return nil }
 func (d *gossipDelegate) MergeRemoteState([]byte, bool) {}
+
+func (d *gossipDelegate) subscribe(topic string, handler func([]byte)) {
+	d.subsMu.Lock()
+	defer d.subsMu.Unlock()
+	d.subs[topic] = append(d.subs[topic], handler)
+}
 
 // slogWriter routes memberlist log output to slog at DEBUG level.
 type slogWriter struct {

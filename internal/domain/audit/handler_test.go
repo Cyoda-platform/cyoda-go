@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/app"
+	"github.com/cyoda-platform/cyoda-go/app"
 
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
