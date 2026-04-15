@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fmt"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -28,11 +27,11 @@ func (s *StateMachineAuditStore) GetEvents(ctx context.Context, entityID string)
 	defer s.factory.smAuditMu.RUnlock()
 	tenantData, ok := s.factory.smAudit[s.tenant]
 	if !ok {
-		return nil, fmt.Errorf("no events found for entity %s", entityID)
+		return []spi.StateMachineEvent{}, nil
 	}
 	events, ok := tenantData[entityID]
 	if !ok {
-		return nil, fmt.Errorf("no events found for entity %s", entityID)
+		return []spi.StateMachineEvent{}, nil
 	}
 	return copyEvents(events), nil
 }
@@ -42,11 +41,11 @@ func (s *StateMachineAuditStore) GetEventsByTransaction(ctx context.Context, ent
 	defer s.factory.smAuditMu.RUnlock()
 	tenantData, ok := s.factory.smAudit[s.tenant]
 	if !ok {
-		return nil, fmt.Errorf("no events found for entity %s", entityID)
+		return []spi.StateMachineEvent{}, nil
 	}
 	events, ok := tenantData[entityID]
 	if !ok {
-		return nil, fmt.Errorf("no events found for entity %s", entityID)
+		return []spi.StateMachineEvent{}, nil
 	}
 	var filtered []spi.StateMachineEvent
 	for _, e := range events {

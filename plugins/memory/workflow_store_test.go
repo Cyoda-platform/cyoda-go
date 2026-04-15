@@ -2,7 +2,6 @@ package memory_test
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -111,13 +110,17 @@ func TestWorkflowStoreDelete(t *testing.T) {
 		t.Fatalf("delete failed: %v", err)
 	}
 
-	_, err := store.Get(ctx, ref)
-	if err == nil {
-		t.Fatal("expected error after delete, got nil")
+	// SPI contract: Get after delete returns empty slice, not an error.
+	got, err := store.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("expected nil error after delete, got: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice after delete, got %d entries", len(got))
 	}
 }
 
-func TestWorkflowStoreGetNotFound_WrapsErrNotFound(t *testing.T) {
+func TestWorkflowStoreGetNotFound_ReturnsEmpty(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, err := factory.WorkflowStore(ctx)
@@ -125,15 +128,14 @@ func TestWorkflowStoreGetNotFound_WrapsErrNotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// SPI contract: unknown model returns empty slice, not ErrNotFound.
 	ref := spi.ModelRef{EntityName: "NonExistent", ModelVersion: "1"}
-	_, err = store.Get(ctx, ref)
-	if err == nil {
-		t.Fatal("expected error for missing workflows, got nil")
+	got, err := store.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("expected nil error for missing model, got: %v", err)
 	}
-
-	// The error must wrap spi.ErrNotFound so callers can use errors.Is.
-	if !errors.Is(err, spi.ErrNotFound) {
-		t.Fatalf("expected error to wrap spi.ErrNotFound, got: %v", err)
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice for missing model, got %d entries", len(got))
 	}
 }
 
@@ -147,8 +149,12 @@ func TestWorkflowStoreTenantIsolation(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	_ = storeA.Save(ctxA, ref, sampleWorkflows())
 
-	_, err := storeB.Get(ctxB, ref)
-	if err == nil {
-		t.Fatal("expected error — tenant B should not see tenant A data")
+	// SPI contract: tenant B sees empty slice, not an error.
+	got, err := storeB.Get(ctxB, ref)
+	if err != nil {
+		t.Fatalf("expected nil error for tenant isolation, got: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice for tenant B, got %d entries", len(got))
 	}
 }

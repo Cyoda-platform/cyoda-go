@@ -6,9 +6,26 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
+
+// idempotentCloser wraps an io.ReadCloser so that Close() is a no-op after the
+// first successful call — satisfying the SPI contract that double-close must not
+// return an error.
+type idempotentCloser struct {
+	once sync.Once
+	rc   io.ReadCloser
+}
+
+func (c *idempotentCloser) Read(p []byte) (int, error) { return c.rc.Read(p) }
+
+func (c *idempotentCloser) Close() error {
+	var err error
+	c.once.Do(func() { err = c.rc.Close() })
+	return err
+}
 
 type messageEntry struct {
 	header   spi.MessageHeader
@@ -112,7 +129,7 @@ func (s *MessageStore) Get(_ context.Context, id string) (spi.MessageHeader, spi
 		return spi.MessageHeader{}, spi.MessageMetaData{}, nil, fmt.Errorf("failed to open blob file: %w", err)
 	}
 
-	return header, metaData, file, nil
+	return header, metaData, &idempotentCloser{rc: file}, nil
 }
 
 func (s *MessageStore) Delete(_ context.Context, id string) error {

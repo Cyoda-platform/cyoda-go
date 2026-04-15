@@ -86,8 +86,12 @@ func TestSMAuditTenantIsolation(t *testing.T) {
 
 	_ = storeA.Record(ctxA, "e-1", spi.StateMachineEvent{EventType: spi.SMEventStarted, Details: "tenant-A event"})
 
-	_, err := storeB.GetEvents(ctxB, "e-1")
-	if err == nil {
-		t.Fatal("expected error — tenant B should not see tenant A data")
+	// SPI contract: tenant B sees empty slice, not an error.
+	got, err := storeB.GetEvents(ctxB, "e-1")
+	if err != nil {
+		t.Fatalf("expected nil error for tenant isolation, got: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice for tenant B, got %d events", len(got))
 	}
 }
