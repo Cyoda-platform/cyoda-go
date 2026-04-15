@@ -70,11 +70,11 @@ func (s *AsyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.Searc
 
 	tenantJobs := s.data[tid]
 	if tenantJobs == nil {
-		return nil, fmt.Errorf("search job %q not found", jobID)
+		return nil, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 	entry, ok := tenantJobs[jobID]
 	if !ok {
-		return nil, fmt.Errorf("search job %q not found", jobID)
+		return nil, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 
 	// Return a defensive copy
