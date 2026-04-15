@@ -23,3 +23,37 @@ jobs:
 
       - name: Build
         run: go build -o bin/cyoda-go ./cmd/cyoda-go
+
+  # Hygiene: each module must be independently buildable with workspace mode off.
+  # Ensures plugin modules' go.mod files declare all dependencies — the workspace
+  # silently patches over missing requires, which would break downstream consumers
+  # (cyoda-go-cassandra).
+  per-module-hygiene:
+    runs-on: ubuntu-latest
+    # Plan 3 note: this job will fail against cyoda-go-spi v0.1.0 because
+    # Plan 3 adds StoreFactory.TransactionManager(ctx) and Plugin.NewFactory(ctx).
+    # Plan 4 tags cyoda-go-spi v0.2.0 and this job becomes required.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build and vet cyoda-go (root) with GOWORK=off
+        run: |
+          GOWORK=off go build ./...
+          GOWORK=off go vet ./...
+
+      - name: Build and vet plugins/memory with GOWORK=off
+        working-directory: plugins/memory
+        run: |
+          GOWORK=off go build ./...
+          GOWORK=off go vet ./...
+
+      - name: Build and vet plugins/postgres with GOWORK=off
+        working-directory: plugins/postgres
+        run: |
+          GOWORK=off go build ./...
+          GOWORK=off go vet ./...
