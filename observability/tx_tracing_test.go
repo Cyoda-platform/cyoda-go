@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/observability"
 )
 
 type fakeTxManager struct {

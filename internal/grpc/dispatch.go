@@ -13,7 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	"github.com/cyoda-platform/cyoda-go/logging"
 )
 
 // ErrNoMatchingMember is returned when no calculation member is registered for
