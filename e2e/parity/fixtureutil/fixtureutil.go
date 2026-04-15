@@ -346,11 +346,37 @@ type LaunchOpts struct {
 	ReadinessTimeout time.Duration
 }
 
-// LaunchCyodaAndCompute builds binaries, starts cyoda-go and
-// compute-test-client, waits for both to be healthy, and returns
-// the result plus a cleanup function that kills both.
+// LaunchCyodaAndCompute builds the stock cyoda-go binary and the
+// compute-test-client from this module, starts both, waits for
+// readiness, and returns the fixture. Use this from in-tree parity
+// tests. For out-of-tree consumers (e.g. cyoda-go-cassandra's full
+// binary) that need to inject their own pre-built cyoda binary, use
+// LaunchCyodaAndComputeWithBinaries.
+//
 // extraEnv is appended to the cyoda environment (for backend-specific vars).
 func LaunchCyodaAndCompute(ks *JWTKeySet, extraEnv []string, opts ...LaunchOpts) (*LaunchResult, func(), error) {
+	cyodaBin, err := BuildCyodaBinary()
+	if err != nil {
+		return nil, nil, err
+	}
+	computeBin, err := BuildComputeBinary()
+	if err != nil {
+		return nil, nil, err
+	}
+	return LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin, ks, extraEnv, opts...)
+}
+
+// LaunchCyodaAndComputeWithBinaries is the binary-path-explicit variant
+// of LaunchCyodaAndCompute. Callers that need to inject their own
+// cyoda binary — typically a downstream binary that blank-imports
+// additional plugins (cassandra, etc.) — build it separately and pass
+// the path here.
+//
+// cyodaBin and computeBin must be absolute paths to already-built
+// executables. The env for cyoda is assembled via CyodaEnv plus
+// extraEnv; the env for compute-test-client carries the gRPC
+// endpoint and an M2M token minted from ks.
+func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySet, extraEnv []string, opts ...LaunchOpts) (*LaunchResult, func(), error) {
 	httpPort, err := FreePort()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get HTTP port: %w", err)
@@ -360,16 +386,6 @@ func LaunchCyodaAndCompute(ks *JWTKeySet, extraEnv []string, opts ...LaunchOpts)
 		return nil, nil, fmt.Errorf("failed to get gRPC port: %w", err)
 	}
 
-	cyodaBin, err := BuildCyodaBinary()
-	if err != nil {
-		return nil, nil, err
-	}
-	computeBin, err := BuildComputeBinary()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Resolve options.
 	var opt LaunchOpts
 	if len(opts) > 0 {
 		opt = opts[0]
