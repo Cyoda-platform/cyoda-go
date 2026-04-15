@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 29 (Phase 1 smoke + Phase 4a CRUD/persistence +
+// Total parity scenarios: 34 (Phase 1 smoke + Phase 4a CRUD/persistence +
 // Phase 4b workflow/compute + distributed-safety contracts).
 //
 // Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,

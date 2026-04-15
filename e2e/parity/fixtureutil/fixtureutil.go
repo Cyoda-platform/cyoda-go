@@ -230,6 +230,9 @@ func FreePort() (int, error) {
 // --- Module root ---
 
 // FindModuleRoot walks up from the caller's source file to find go.mod.
+// Panics if no go.mod is found walking up to the filesystem root —
+// silently falling back to cwd would hide the misconfiguration and
+// surface as an opaque "no packages found" build error later.
 func FindModuleRoot() string {
 	_, thisFile, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(thisFile)
@@ -239,8 +242,7 @@ func FindModuleRoot() string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			wd, _ := os.Getwd()
-			return wd
+			panic(fmt.Sprintf("FindModuleRoot: no go.mod found walking up from %s", thisFile))
 		}
 		dir = parent
 	}
