@@ -14,6 +14,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/app"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+
+	// Stock storage plugins — blank-imported so their init() runs
+	// and they register themselves with the spi registry.
+	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
 var (
