@@ -2,11 +2,67 @@ package lifecycle_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
 )
+
+// fakeTM records Rollback calls for reaper-integration verification.
+type fakeTM struct {
+	mu       sync.Mutex
+	rolled   []string
+	rollback func(txID string) error
+}
+
+func (f *fakeTM) Begin(context.Context) (string, context.Context, error) {
+	return "", nil, nil
+}
+func (f *fakeTM) Commit(context.Context, string) error { return nil }
+func (f *fakeTM) Rollback(_ context.Context, txID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rolled = append(f.rolled, txID)
+	if f.rollback != nil {
+		return f.rollback(txID)
+	}
+	return nil
+}
+func (f *fakeTM) Join(context.Context, string) (context.Context, error) {
+	return nil, nil
+}
+func (f *fakeTM) GetSubmitTime(context.Context, string) (time.Time, error) {
+	return time.Time{}, nil
+}
+func (f *fakeTM) Savepoint(context.Context, string) (string, error)         { return "", nil }
+func (f *fakeTM) RollbackToSavepoint(context.Context, string, string) error { return nil }
+func (f *fakeTM) ReleaseSavepoint(context.Context, string, string) error    { return nil }
+
+var _ spi.TransactionManager = (*fakeTM)(nil)
+
+func TestReapExpired_CallsTMRollback(t *testing.T) {
+	tm := &fakeTM{}
+	m := lifecycle.NewManager(5 * time.Minute)
+	m.SetTransactionManager(tm)
+
+	m.Register(context.Background(), "tx-1", "node-a", 1*time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+
+	reaped, err := m.ReapExpired(context.Background())
+	if err != nil {
+		t.Fatalf("ReapExpired: %v", err)
+	}
+	if reaped != 1 {
+		t.Fatalf("reaped = %d, want 1", reaped)
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if len(tm.rolled) != 1 || tm.rolled[0] != "tx-1" {
+		t.Errorf("TM.Rollback calls = %v, want [tx-1]", tm.rolled)
+	}
+}
 
 func TestManager_RegisterAndIsAlive(t *testing.T) {
 	m := lifecycle.NewManager(5 * time.Minute)

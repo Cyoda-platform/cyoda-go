@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/app"
+
+	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {

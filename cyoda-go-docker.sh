@@ -49,8 +49,8 @@ EOF
 cat >> .env.docker <<EOF
 # Storage: postgres
 CYODA_STORAGE_BACKEND=postgres
-CYODA_DB_URL=postgres://minicyoda:minicyoda@postgres:5432/minicyoda?sslmode=disable
-CYODA_DB_AUTO_MIGRATE=true
+CYODA_POSTGRES_URL=postgres://minicyoda:minicyoda@postgres:5432/minicyoda?sslmode=disable
+CYODA_POSTGRES_AUTO_MIGRATE=true
 
 EOF
 

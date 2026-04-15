@@ -18,8 +18,11 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/cyoda-platform/cyoda-go/internal/app"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/postgres"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
+
+	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.
+	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
 var (
@@ -73,17 +76,25 @@ func TestMain(m *testing.M) {
 	}
 	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}))
 
-	// Configure app with postgres backend.
+	// Configure postgres plugin via env vars — the plugin reads its own
+	// config from CYODA_POSTGRES_* through the getenv function passed to
+	// NewFactory. Unset after app.New captures them.
+	os.Setenv("CYODA_POSTGRES_URL", connStr)
+	os.Setenv("CYODA_POSTGRES_MAX_CONNS", "5")
+	os.Setenv("CYODA_POSTGRES_MIN_CONNS", "1")
+	os.Setenv("CYODA_POSTGRES_MAX_CONN_IDLE_TIME", "1m")
+	os.Setenv("CYODA_POSTGRES_AUTO_MIGRATE", "true")
+	defer func() {
+		os.Unsetenv("CYODA_POSTGRES_URL")
+		os.Unsetenv("CYODA_POSTGRES_MAX_CONNS")
+		os.Unsetenv("CYODA_POSTGRES_MIN_CONNS")
+		os.Unsetenv("CYODA_POSTGRES_MAX_CONN_IDLE_TIME")
+		os.Unsetenv("CYODA_POSTGRES_AUTO_MIGRATE")
+	}()
+
 	cfg := app.DefaultConfig()
 	cfg.ContextPath = "/api"
 	cfg.StorageBackend = "postgres"
-	cfg.DB = postgres.DBConfig{
-		URL:             connStr,
-		MaxConns:        5,
-		MinConns:        1,
-		MaxConnIdleTime: "1m",
-		AutoMigrate:     true,
-	}
 	cfg.IAM = app.IAMConfig{
 		Mode:          "jwt",
 		JWTSigningKey: keyPEM,

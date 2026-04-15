@@ -9,7 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 const testTenant = spi.TenantID("test-tenant")

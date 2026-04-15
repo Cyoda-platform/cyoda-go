@@ -1,0 +1,8 @@
+go 1.26.1
+
+use (
+	.
+	./plugins/memory
+	./plugins/postgres
+	../cyoda-go-spi
+)

@@ -13,7 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // newTestServer creates an App with default config and returns an httptest.Server.

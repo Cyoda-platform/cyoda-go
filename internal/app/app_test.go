@@ -14,7 +14,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/app"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 func TestHealthEndpoint(t *testing.T) {

@@ -5,25 +5,11 @@ import (
 	"testing"
 )
 
-func TestDefaultConfig_DBDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-
-	if cfg.DB.URL != "" {
-		t.Errorf("expected empty DB URL by default, got %q", cfg.DB.URL)
-	}
-	if cfg.DB.MaxConns != 25 {
-		t.Errorf("expected MaxConns=25, got %d", cfg.DB.MaxConns)
-	}
-	if cfg.DB.MinConns != 5 {
-		t.Errorf("expected MinConns=5, got %d", cfg.DB.MinConns)
-	}
-	if cfg.DB.MaxConnIdleTime != "5m" {
-		t.Errorf("expected MaxConnIdleTime=5m, got %q", cfg.DB.MaxConnIdleTime)
-	}
-	if cfg.DB.AutoMigrate != true {
-		t.Error("expected AutoMigrate=true by default")
-	}
-}
+// Note on postgres DB config:
+// Before Plan 3, cfg.DB (postgres.DBConfig) lived on Config. With the
+// plugin refactor, postgres configuration is plugin-internal — read
+// from CYODA_POSTGRES_* via the injected getenv inside the plugin.
+// Nothing in the app layer needs to see or validate it.
 
 func TestDefaultConfig_StorageBackendDefaults(t *testing.T) {
 	cfg := DefaultConfig()

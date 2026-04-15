@@ -12,7 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
-	"github.com/cyoda-platform/cyoda-go/internal/persistence/memory"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // helper: create a context with a UserContext for the given tenant.

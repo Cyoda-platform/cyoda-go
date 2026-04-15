@@ -78,8 +78,8 @@ func setup() (*postgresFixture, func(), error) {
 	// 3. Launch cyoda-go + compute-test-client with postgres backend.
 	result, processCleanup, err := fixtureutil.LaunchCyodaAndCompute(ks, []string{
 		"CYODA_STORAGE_BACKEND=postgres",
-		fmt.Sprintf("CYODA_DB_URL=%s", connStr),
-		"CYODA_DB_AUTO_MIGRATE=true",
+		fmt.Sprintf("CYODA_POSTGRES_URL=%s", connStr),
+		"CYODA_POSTGRES_AUTO_MIGRATE=true",
 	})
 	if err != nil {
 		containerCleanup()
