@@ -60,8 +60,10 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 		return "", nil, fmt.Errorf("Begin: failed to start transaction: %w", err)
 	}
 
-	// Set the current tenant for RLS policies.
-	if _, err := pgxTx.Exec(ctx, "SET LOCAL app.current_tenant = $1", string(tenantID)); err != nil {
+	// Set the current tenant for RLS policies. We use set_config(name, value, is_local)
+	// rather than `SET LOCAL app.current_tenant = $1` because PostgreSQL's SET statement
+	// does not accept bound parameters under pgx's extended-query protocol.
+	if _, err := pgxTx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(tenantID)); err != nil {
 		_ = pgxTx.Rollback(ctx)
 		return "", nil, fmt.Errorf("Begin: failed to set tenant: %w", err)
 	}
