@@ -115,27 +115,46 @@ Provisioned via `start-cluster.sh` with configurable `--nodes` flag. All nodes a
 
 When a node begins a PostgreSQL transaction, it generates a signed routing token encoding which node owns the `pgx.Tx` handle. All subsequent requests for that transaction are routed to the owning node. If the owning node dies, PostgreSQL auto-rolls back the connection and the client retries from scratch.
 
-## Storage Modes
+## Storage backends
 
-Cyoda-Go supports two storage backends, switchable via environment variables without code changes.
+Cyoda-Go's storage layer is a plugin system defined by the stable [`cyoda-go-spi`](https://github.com/Cyoda-platform/cyoda-go-spi) module. Exactly one plugin is active at a time, selected at startup via `CYODA_STORAGE_BACKEND`:
 
-### In-Memory (default)
+| Backend | Default | Notes |
+|---------|---------|-------|
+| `memory` | ✓ | Zero configuration. In-process, ephemeral. Single-node only. The default so `go build && ./cyoda-go` just runs. |
+| `postgres` |   | Durable, `SERIALIZABLE` isolation. Configure via `CYODA_POSTGRES_*`. Supports multi-node clusters (see cluster deployment guide). |
 
-All data lives in process memory. Fast, zero dependencies, ideal for development and testing. Data is lost on restart. Transactions use snapshot isolation with SSI conflict detection. Single-node only.
+The stock binary contains both. A proprietary `cassandra` plugin ships in the separate `cyoda-go-cassandra` binary for deployments that need horizontal write scalability.
 
-```bash
-CYODA_STORAGE_BACKEND=memory   # this is the default
-```
-
-### PostgreSQL
-
-Durable storage with `SERIALIZABLE` isolation. Includes automatic schema migrations, bi-temporal entity versioning, and row-level security policies. Supports single-node and multi-node cluster deployments. Requires a PostgreSQL 17+ instance.
+### PostgreSQL quick configuration
 
 ```bash
 CYODA_STORAGE_BACKEND=postgres
 CYODA_POSTGRES_URL=postgres://user:pass@localhost:5432/minicyoda?sslmode=disable
 CYODA_POSTGRES_AUTO_MIGRATE=true
 ```
+
+### Writing a third-party plugin
+
+Plugin authors depend only on `github.com/cyoda-platform/cyoda-go-spi` (stdlib only). The stock plugins in [`plugins/memory/`](plugins/memory/) and [`plugins/postgres/`](plugins/postgres/) are the reference implementations. Key patterns:
+
+- Register with `spi.Register` from `init()`.
+- Implement `spi.Plugin.NewFactory(ctx, getenv, opts...)` — use the injected `getenv` for config, `ctx` for cancellable blocking setup.
+- Implement `spi.DescribablePlugin.ConfigVars()` so `--help` renders your env vars.
+- Own your `TransactionManager` — expose it via `StoreFactory.TransactionManager(ctx)`. The postgres plugin illustrates the txID-to-physical-handle bridge pattern.
+- Implement `spi.Startable.Start(ctx)` if you spawn background goroutines; tear them down in `StoreFactory.Close()`.
+
+To build a custom binary with your plugin, blank-import it alongside the stock plugins in `main.go`:
+
+```go
+import (
+    _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+    _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+    _ "example.com/my-custom-plugin"
+)
+```
+
+See the [`cyoda-go-spi` package documentation](https://pkg.go.dev/github.com/cyoda-platform/cyoda-go-spi) for the full contract and a worked example.
 
 ## Scale Profile
 
