@@ -10,7 +10,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/app"
+	"github.com/cyoda-platform/cyoda-go/app"
 
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
