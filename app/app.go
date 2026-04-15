@@ -112,6 +112,18 @@ func New(cfg Config) *App {
 	}
 	a.storeFactory = factory
 
+	// Startable plugins (cassandra, etc.) must complete Start BEFORE the
+	// factory can serve TransactionManager: the initial takeover / shard-
+	// rebalance / clock-cache warmup that Start drives is a precondition
+	// for tx begin. Plugins with no background lifecycle (memory,
+	// postgres) don't implement Startable, so this is a no-op for them.
+	if s, ok := factory.(spi.Startable); ok {
+		if err := s.Start(startupCtx); err != nil {
+			panic(fmt.Sprintf("start storage factory for %s: %v", plugin.Name(), err))
+		}
+		slog.Info("storage plugin started", "pkg", "app", "backend", plugin.Name())
+	}
+
 	txMgr, err := factory.TransactionManager(startupCtx)
 	if err != nil {
 		panic(fmt.Sprintf("get transaction manager from %s: %v", plugin.Name(), err))
@@ -422,21 +434,6 @@ func New(cfg Config) *App {
 
 	// gRPC server — uses inner handler (without context path prefix)
 	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, cfg.OTelEnabled)
-
-	// Startable plugins (e.g. cassandra) spin up background goroutines
-	// AFTER HTTP handlers are registered but BEFORE traffic reaches them:
-	// the plugin may open long-lived cluster connections (Redpanda
-	// consumer-group join, shard-rebalance wait, etc.) whose inbound
-	// messages need the full handler tree in place. Callers of app.New
-	// still own serve/shutdown; this is the gap that lives between.
-	if s, ok := a.storeFactory.(spi.Startable); ok {
-		startCtx, cancel := context.WithTimeout(context.Background(), cfg.StartupTimeout)
-		defer cancel()
-		if err := s.Start(startCtx); err != nil {
-			panic(fmt.Sprintf("start storage factory for %s: %v", plugin.Name(), err))
-		}
-		slog.Info("storage plugin started", "pkg", "app", "backend", plugin.Name())
-	}
 
 	return a
 }
