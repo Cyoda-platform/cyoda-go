@@ -14,7 +14,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	"github.com/cyoda-platform/cyoda-go/logging"
 )
 
 // EntityModelManage handles unary model management CloudEvents (import, export,

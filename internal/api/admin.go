@@ -7,8 +7,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/logging"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/logging"
+	"github.com/cyoda-platform/cyoda-go/observability"
 )
 
 // HandleGetLogLevel returns the current log level as JSON.
