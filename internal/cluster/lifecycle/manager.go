@@ -2,8 +2,11 @@ package lifecycle
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type Outcome int
@@ -28,6 +31,18 @@ type Manager struct {
 	active     map[string]txEntry
 	outcomes   map[string]outcomeEntry
 	outcomeTTL time.Duration
+	txMgr      spi.TransactionManager // nil until SetTransactionManager is called
+}
+
+// SetTransactionManager wires the plugin's TransactionManager so that
+// ReapExpired can roll back the underlying transaction when the cluster-
+// level TTL fires. Called once at startup after the active plugin is
+// resolved. Passing nil is allowed for tests that don't exercise
+// rollback propagation.
+func (m *Manager) SetTransactionManager(tm spi.TransactionManager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.txMgr = tm
 }
 
 // NewManager creates a new lifecycle Manager. The outcomeTTL parameter controls
@@ -73,16 +88,15 @@ func (m *Manager) GetOutcome(_ context.Context, txID string) (Outcome, bool) {
 	return entry.Outcome, ok
 }
 
-func (m *Manager) ReapExpired(_ context.Context) (int, error) {
+func (m *Manager) ReapExpired(ctx context.Context) (int, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	now := time.Now()
-	reaped := 0
+	expired := make([]string, 0)
 	for txID, entry := range m.active {
 		if now.After(entry.ExpiresAt) {
+			expired = append(expired, txID)
 			delete(m.active, txID)
 			m.outcomes[txID] = outcomeEntry{Outcome: OutcomeRolledBack, RecordedAt: now}
-			reaped++
 		}
 	}
 	// Clean up old outcome entries that have exceeded their TTL.
@@ -91,7 +105,21 @@ func (m *Manager) ReapExpired(_ context.Context) (int, error) {
 			delete(m.outcomes, txID)
 		}
 	}
-	return reaped, nil
+	tm := m.txMgr
+	m.mu.Unlock()
+
+	// Call Rollback outside the lock to avoid holding it across network I/O.
+	for _, txID := range expired {
+		if tm == nil {
+			continue
+		}
+		if err := tm.Rollback(ctx, txID); err != nil {
+			// "already gone" is success; log at DEBUG level.
+			slog.Debug("reaper rollback: tx already completed or unknown",
+				"pkg", "cluster/lifecycle", "txId", txID, "err", err)
+		}
+	}
+	return len(expired), nil
 }
 
 func (m *Manager) ListByNode(_ context.Context, nodeID string) []string {

@@ -233,6 +233,10 @@ func New(cfg Config) *App {
 
 	// Cluster components
 	a.txLifecycle = lifecycle.NewManager(cfg.Cluster.OutcomeTTL)
+	// Wire the TM so the TTL reaper can roll back the underlying transaction
+	// when a cluster-level timeout fires; otherwise the plugin's physical
+	// handle is orphaned until the database's own idle timeout catches it.
+	a.txLifecycle.SetTransactionManager(a.transactionManager)
 	if cfg.Cluster.Enabled {
 		if cfg.Cluster.NodeID == "" {
 			slog.Error("CYODA_NODE_ID is required when cluster mode is enabled", "pkg", "cluster")
