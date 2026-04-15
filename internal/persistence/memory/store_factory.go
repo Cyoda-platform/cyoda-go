@@ -110,3 +110,13 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 func (f *StoreFactory) Close() error {
 	return os.RemoveAll(f.blobDir)
 }
+
+// TransactionManager implements spi.StoreFactory.
+// Returns the TM registered via NewTransactionManager. Errors if none is set.
+func (f *StoreFactory) TransactionManager(ctx context.Context) (spi.TransactionManager, error) {
+	tm := f.GetTransactionManager()
+	if tm == nil {
+		return nil, fmt.Errorf("memory: TransactionManager not initialized (call NewTransactionManager first)")
+	}
+	return tm, nil
+}

@@ -34,6 +34,9 @@ func (f *failingStoreFactory) StateMachineAuditStore(_ context.Context) (spi.Sta
 func (f *failingStoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
 	return nil, f.err
 }
+func (f *failingStoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
+	return nil, f.err
+}
 func (f *failingStoreFactory) Close() error { return nil }
 
 // failingEntityStore always returns the configured error from Get/GetAsAt.

@@ -115,3 +115,12 @@ func (f *StoreFactory) Close() error {
 	f.pool.Close()
 	return nil
 }
+
+// TransactionManager implements spi.StoreFactory.
+// Returns the TM configured on the factory. Errors if none was set.
+func (f *StoreFactory) TransactionManager(ctx context.Context) (spi.TransactionManager, error) {
+	if f.tm == nil {
+		return nil, fmt.Errorf("postgres: TransactionManager not configured on StoreFactory")
+	}
+	return f.tm, nil
+}
