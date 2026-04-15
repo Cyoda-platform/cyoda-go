@@ -16,14 +16,22 @@ type searchJobEntry struct {
 
 // AsyncSearchStore is a tenant-scoped, in-memory implementation of spi.AsyncSearchStore.
 type AsyncSearchStore struct {
-	mu   sync.RWMutex
-	data map[spi.TenantID]map[string]*searchJobEntry
+	mu    sync.RWMutex
+	clock Clock
+	data  map[spi.TenantID]map[string]*searchJobEntry
 }
 
-// NewAsyncSearchStore creates a new in-memory AsyncSearchStore.
+// NewAsyncSearchStore creates a new in-memory AsyncSearchStore using the wall clock.
+// Prefer newAsyncSearchStore for internal construction so the factory clock is shared.
 func NewAsyncSearchStore() *AsyncSearchStore {
+	return newAsyncSearchStore(wallClock{})
+}
+
+// newAsyncSearchStore creates a new in-memory AsyncSearchStore with the given clock.
+func newAsyncSearchStore(clock Clock) *AsyncSearchStore {
 	return &AsyncSearchStore{
-		data: make(map[spi.TenantID]map[string]*searchJobEntry),
+		clock: clock,
+		data:  make(map[spi.TenantID]map[string]*searchJobEntry),
 	}
 }
 
@@ -70,11 +78,11 @@ func (s *AsyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.Searc
 
 	tenantJobs := s.data[tid]
 	if tenantJobs == nil {
-		return nil, fmt.Errorf("search job %q not found", jobID)
+		return nil, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 	entry, ok := tenantJobs[jobID]
 	if !ok {
-		return nil, fmt.Errorf("search job %q not found", jobID)
+		return nil, fmt.Errorf("search job %q not found: %w", jobID, spi.ErrNotFound)
 	}
 
 	// Return a defensive copy
@@ -225,7 +233,7 @@ func (s *AsyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cutoff := time.Now().Add(-ttl)
+	cutoff := s.clock.Now().Add(-ttl)
 	reaped := 0
 
 	for _, tenantJobs := range s.data {

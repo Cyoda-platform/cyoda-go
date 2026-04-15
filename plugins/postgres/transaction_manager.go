@@ -92,17 +92,38 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	}
 
 	// Capture the database timestamp before committing.
+	// If the transaction is already in an aborted state (e.g. an earlier Exec
+	// returned 40001 and left the tx aborted), the SELECT will fail with
+	// SQLSTATE 25P02 (in_failed_sql_transaction). In that case we rollback
+	// and surface ErrConflict, since the abort was most likely caused by a
+	// serialization failure. We use time.Now() as a stand-in; it is never
+	// stored on an error path.
 	var submitTime time.Time
-	if err := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); err != nil {
-		// If we can't get the time, the tx may already be in a failed state.
-		// Try to rollback and return the error.
-		_ = pgxTx.Rollback(ctx)
+	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
 		tm.registry.Remove(txID)
 		tm.removeTenant(txID)
-		return classifyError(fmt.Errorf("Commit: failed to get submit time: %w", err))
+		// Only classify as ErrConflict when the probe fails specifically because
+		// the transaction is already in an aborted state (SQLSTATE 25P02:
+		// in_failed_sql_transaction). Any other error (context cancellation,
+		// network failure, etc.) is returned as-is so callers are not misled
+		// into treating a transient infrastructure error as a retryable conflict.
+		var pgErr *pgconn.PgError
+		if errors.As(tsErr, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction {
+			_ = pgxTx.Rollback(context.Background())
+			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
+		}
+		// For non-25P02 errors (e.g. network failures, context deadline exceeded)
+		// roll back with a fresh context so we don't leak the connection, then
+		// return the raw error without wrapping it as ErrConflict.
+		_ = pgxTx.Rollback(context.Background())
+		return fmt.Errorf("Commit: failed to capture submit time: %w", tsErr)
 	}
 
 	if err := pgxTx.Commit(ctx); err != nil {
+		// On commit failure the transaction is already aborted server-side, but
+		// the pgx.Tx still holds the connection. Rollback explicitly to release
+		// it back to the pool; ignore the rollback error (tx is already invalid).
+		_ = pgxTx.Rollback(ctx)
 		tm.registry.Remove(txID)
 		tm.removeTenant(txID)
 		return classifyError(fmt.Errorf("Commit: %w", err))

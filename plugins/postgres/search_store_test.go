@@ -14,11 +14,11 @@ import (
 func setupSearchTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.MigrateDown(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 	return postgres.NewStoreFactory(pool)
 }
 
@@ -71,10 +71,11 @@ func TestPGSearchStore_CreateAndGetJob(t *testing.T) {
 	if got.ModelRef.EntityName != "Person" || got.ModelRef.ModelVersion != "1" {
 		t.Errorf("ModelRef = %v, want Person.1", got.ModelRef)
 	}
-	if string(got.Condition) != `{"field":"name","op":"eq","value":"Alice"}` {
+	// Compare JSON semantically (not as strings) — Postgres normalizes key order.
+	if !jsonEqual(got.Condition, json.RawMessage(`{"field":"name","op":"eq","value":"Alice"}`)) {
 		t.Errorf("Condition = %s", got.Condition)
 	}
-	if string(got.SearchOpts) != `{"sort":"asc"}` {
+	if !jsonEqual(got.SearchOpts, json.RawMessage(`{"sort":"asc"}`)) {
 		t.Errorf("SearchOpts = %s", got.SearchOpts)
 	}
 	if !got.PointInTime.Equal(now) {

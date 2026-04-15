@@ -32,11 +32,11 @@ func (s *KeyValueStore) Get(ctx context.Context, namespace string, key string) (
 	defer s.factory.kvMu.RUnlock()
 	ns, ok := s.factory.kvData[s.tenant][namespace]
 	if !ok {
-		return nil, fmt.Errorf("key %s not found in namespace %s", key, namespace)
+		return nil, fmt.Errorf("key %s not found in namespace %s: %w", key, namespace, spi.ErrNotFound)
 	}
 	val, ok := ns[key]
 	if !ok {
-		return nil, fmt.Errorf("key %s not found in namespace %s", key, namespace)
+		return nil, fmt.Errorf("key %s not found in namespace %s: %w", key, namespace, spi.ErrNotFound)
 	}
 	cp := make([]byte, len(val))
 	copy(cp, val)

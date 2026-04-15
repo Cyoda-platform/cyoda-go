@@ -37,7 +37,7 @@ func (s *ModelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 	defer s.factory.modelMu.RUnlock()
 	entry, ok := s.factory.modelData[s.tenant][modelRef]
 	if !ok {
-		return nil, fmt.Errorf("model %s not found", modelRef)
+		return nil, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 	}
 	return cloneDescriptor(entry), nil
 }
@@ -45,7 +45,7 @@ func (s *ModelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 func (s *ModelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 	s.factory.modelMu.RLock()
 	defer s.factory.modelMu.RUnlock()
-	var refs []spi.ModelRef
+	refs := make([]spi.ModelRef, 0, len(s.factory.modelData[s.tenant]))
 	for ref := range s.factory.modelData[s.tenant] {
 		refs = append(refs, ref)
 	}
@@ -55,6 +55,9 @@ func (s *ModelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
 func (s *ModelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	s.factory.modelMu.Lock()
 	defer s.factory.modelMu.Unlock()
+	if _, ok := s.factory.modelData[s.tenant][modelRef]; !ok {
+		return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
+	}
 	delete(s.factory.modelData[s.tenant], modelRef)
 	return nil
 }

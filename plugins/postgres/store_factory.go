@@ -142,8 +142,20 @@ func newStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 	return NewStoreFactory(pool)
 }
 
-// initTransactionManager installs a TransactionManager on the factory.
-func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
+// InitTransactionManager installs a TransactionManager on the factory using
+// the given UUID generator. It must be called before the factory is used to
+// manage transactions; until it is called, TransactionManager() returns an
+// error. Calling it more than once overwrites the previous manager.
+//
+// The internal alias initTransactionManager (same body, unexported) remains
+// for use within the package; external callers — including test packages —
+// should call this exported form.
+func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
 	tm := NewTransactionManager(f.pool, uuids)
 	f.setTransactionManager(tm)
+}
+
+// initTransactionManager is the in-package alias used by Plugin.NewFactory.
+func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
+	f.InitTransactionManager(uuids)
 }

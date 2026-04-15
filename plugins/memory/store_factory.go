@@ -9,7 +9,17 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+// Option is a functional option for NewStoreFactory.
+type Option func(*StoreFactory)
+
+// WithClock injects a custom Clock into the factory.
+// Used by conformance tests to advance time deterministically.
+func WithClock(c Clock) Option {
+	return func(f *StoreFactory) { f.clock = c }
+}
+
 type StoreFactory struct {
+	clock       Clock
 	entityMu    sync.RWMutex
 	modelMu     sync.RWMutex
 	kvMu        sync.RWMutex
@@ -27,21 +37,27 @@ type StoreFactory struct {
 	searchStore *AsyncSearchStore
 }
 
-func NewStoreFactory() *StoreFactory {
+func NewStoreFactory(opts ...Option) *StoreFactory {
 	blobDir, err := os.MkdirTemp("", "cyoda-go-blobs-*")
 	if err != nil {
 		panic(fmt.Sprintf("failed to create blob temp dir: %v", err))
 	}
-	return &StoreFactory{
-		entityData:  make(map[spi.TenantID]map[string][]entityVersion),
-		modelData:   make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
-		kvData:      make(map[spi.TenantID]map[string]map[string][]byte),
-		msgData:     make(map[spi.TenantID]map[string]*messageEntry),
-		wfData:      make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
-		smAudit:     make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
-		blobDir:     blobDir,
-		searchStore: NewAsyncSearchStore(),
+	f := &StoreFactory{
+		clock:      wallClock{},
+		entityData: make(map[spi.TenantID]map[string][]entityVersion),
+		modelData:  make(map[spi.TenantID]map[spi.ModelRef]*spi.ModelDescriptor),
+		kvData:     make(map[spi.TenantID]map[string]map[string][]byte),
+		msgData:    make(map[spi.TenantID]map[string]*messageEntry),
+		wfData:     make(map[spi.TenantID]map[spi.ModelRef][]spi.WorkflowDefinition),
+		smAudit:    make(map[spi.TenantID]map[string][]spi.StateMachineEvent),
+		blobDir:    blobDir,
 	}
+	for _, o := range opts {
+		o(f)
+	}
+	f.searchStore = newAsyncSearchStore(f.clock)
+	f.initTransactionManager(&defaultUUIDGenerator{})
+	return f
 }
 
 func resolveTenant(ctx context.Context) (spi.TenantID, error) {
@@ -122,11 +138,13 @@ func (f *StoreFactory) TransactionManager(ctx context.Context) (spi.TransactionM
 }
 
 // newStoreFactory is the unexported constructor called by Plugin.NewFactory.
+// It delegates to NewStoreFactory so the two paths stay in sync.
 func newStoreFactory() *StoreFactory {
 	return NewStoreFactory()
 }
 
 // initTransactionManager installs a TransactionManager on the factory.
+// Called by NewStoreFactory; also callable from tests via plugin wiring.
 func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
 	f.NewTransactionManager(uuids)
 }

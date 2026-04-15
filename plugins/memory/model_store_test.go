@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -162,6 +163,57 @@ func TestModelStoreDeleteDescriptor(t *testing.T) {
 	_, err := store.Get(ctx, ref)
 	if err == nil {
 		t.Error("expected error after delete, got nil")
+	}
+}
+
+// TestModelStoreGetNotFound verifies that Get wraps spi.ErrNotFound so callers
+// can use errors.Is for sentinel matching.
+func TestModelStoreGetNotFound(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.ModelStore(ctx)
+
+	_, err := store.Get(ctx, spi.ModelRef{EntityName: "nonexistent", ModelVersion: "1"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Errorf("expected errors.Is(err, spi.ErrNotFound), got: %v", err)
+	}
+}
+
+// TestModelStoreDeleteNotFound verifies that Delete returns spi.ErrNotFound for
+// a model that does not exist.
+func TestModelStoreDeleteNotFound(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.ModelStore(ctx)
+
+	err := store.Delete(ctx, spi.ModelRef{EntityName: "nonexistent", ModelVersion: "1"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Errorf("expected errors.Is(err, spi.ErrNotFound), got: %v", err)
+	}
+}
+
+// TestModelStoreGetAllEmpty verifies that GetAll returns a non-nil empty slice
+// (not nil) when no models are stored for the tenant.
+func TestModelStoreGetAllEmpty(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-A")
+	store, _ := factory.ModelStore(ctx)
+
+	refs, err := store.GetAll(ctx)
+	if err != nil {
+		t.Fatalf("getAll failed: %v", err)
+	}
+	if refs == nil {
+		t.Error("GetAll must return a non-nil slice for an empty tenant")
+	}
+	if len(refs) != 0 {
+		t.Errorf("expected 0 refs, got %d", len(refs))
 	}
 }
 

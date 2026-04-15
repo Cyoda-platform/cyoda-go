@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -12,13 +13,22 @@ import (
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dbURL := skipIfNoPostgres(t)
-	cfg := postgres.DBConfig{
-		URL:             dbURL,
-		MaxConns:        5,
-		MinConns:        1,
-		MaxConnIdleTime: "1m",
+
+	// Use pgxpool.ParseConfig + NewWithConfig so we can set HealthCheckPeriod
+	// to 24h (effectively disabled). The default HealthCheckPeriod triggers a
+	// backgroundHealthCheck goroutine that races with pool.Close() in
+	// pgx v5.9.1, causing pool.Close to block in puddle's allResourcesWG.Wait
+	// and hang the test binary.
+	poolCfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatalf("failed to parse pool config: %v", err)
 	}
-	pool, err := postgres.NewPool(context.Background(), cfg)
+	poolCfg.MaxConns = 5
+	poolCfg.MinConns = 0 // 0 avoids keeping idle connections that the health check probes
+	poolCfg.MaxConnIdleTime = 60 * time.Second
+	poolCfg.HealthCheckPeriod = 24 * time.Hour
+
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		t.Fatalf("failed to create pool: %v", err)
 	}
@@ -29,8 +39,11 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 func TestMigrate_AppliesSchema(t *testing.T) {
 	pool := newTestPool(t)
 
-	// Clean slate
-	_ = postgres.MigrateDown(pool)
+	// Clean slate — use DropSchema (robust) instead of MigrateDown (fragile
+	// when test data violates DOWN-migration constraints).
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
 
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
@@ -71,7 +84,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 	}
 
 	// Clean up
-	if err := postgres.MigrateDown(pool); err != nil {
+	if err := postgres.MigrateDownForTest(pool); err != nil {
 		t.Fatalf("migration rollback failed: %v", err)
 	}
 }
@@ -79,7 +92,9 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 func TestMigrate_Idempotent(t *testing.T) {
 	pool := newTestPool(t)
 
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
 
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("first migration failed: %v", err)
@@ -88,5 +103,5 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("second migration (idempotent) failed: %v", err)
 	}
 
-	_ = postgres.MigrateDown(pool)
+	_ = postgres.DropSchemaForTest(pool)
 }

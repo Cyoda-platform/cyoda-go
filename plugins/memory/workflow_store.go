@@ -32,11 +32,11 @@ func (s *WorkflowStore) Get(ctx context.Context, modelRef spi.ModelRef) ([]spi.W
 	defer s.factory.wfMu.RUnlock()
 	tenantData, ok := s.factory.wfData[s.tenant]
 	if !ok {
-		return nil, fmt.Errorf("no workflows found for model %s: %w", modelRef, spi.ErrNotFound)
+		return []spi.WorkflowDefinition{}, nil
 	}
 	wfs, ok := tenantData[modelRef]
 	if !ok {
-		return nil, fmt.Errorf("no workflows found for model %s: %w", modelRef, spi.ErrNotFound)
+		return []spi.WorkflowDefinition{}, nil
 	}
 	cp, err := copyWorkflows(wfs)
 	if err != nil {

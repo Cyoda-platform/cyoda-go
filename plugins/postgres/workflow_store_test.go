@@ -10,11 +10,11 @@ import (
 func setupWorkflowTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	_ = postgres.MigrateDown(pool)
+	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.MigrateDown(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 	return postgres.NewStoreFactory(pool)
 }
 
@@ -94,9 +94,13 @@ func TestWorkflowStore_GetNotFound(t *testing.T) {
 	store, _ := factory.WorkflowStore(ctx)
 
 	ref := spi.ModelRef{EntityName: "Nonexistent", ModelVersion: "1"}
-	_, err := store.Get(ctx, ref)
-	if err == nil {
-		t.Fatal("expected error for nonexistent workflows")
+	got, err := store.Get(ctx, ref)
+	// SPI contract: Get for an unknown model returns an empty slice, not an error.
+	if err != nil {
+		t.Fatalf("expected nil error for nonexistent workflows, got: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice for nonexistent workflows, got %d items", len(got))
 	}
 }
 
@@ -112,9 +116,13 @@ func TestWorkflowStore_Delete(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, err := store.Get(ctx, ref)
-	if err == nil {
-		t.Fatal("expected error after delete")
+	// SPI contract: Get after Delete returns empty slice, not an error.
+	got, err := store.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("expected nil error after delete, got: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice after delete, got %d items", len(got))
 	}
 }
 
@@ -140,8 +148,13 @@ func TestWorkflowStore_TenantIsolation(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	storeA.Save(ctxA, ref, sampleWorkflows())
 
-	_, err := storeB.Get(ctxB, ref)
-	if err == nil {
-		t.Fatal("tenant-B should not see tenant-A's workflows")
+	// SPI contract: Get for a model that exists only in tenant-A returns empty
+	// slice for tenant-B, not an error.
+	got, err := storeB.Get(ctxB, ref)
+	if err != nil {
+		t.Fatalf("expected nil error for tenant-B (isolation), got: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("tenant-B should see 0 workflows (tenant isolation), got %d", len(got))
 	}
 }

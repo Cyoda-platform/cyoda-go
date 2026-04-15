@@ -1018,3 +1018,48 @@ func TestTransactionalDeleteNonExistentEntity(t *testing.T) {
 		t.Fatalf("Rollback failed: %v", err)
 	}
 }
+
+// TestGetAllReturnsNonNilOnEmptyModel asserts that GetAll returns a non-nil empty
+// slice (not nil) when no entities exist for the requested model. The SPI
+// contract requires non-nil so callers can range over the result safely.
+func TestGetAllReturnsNonNilOnEmptyModel(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-getall-empty")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	modelRef := spi.ModelRef{EntityName: "m-empty", ModelVersion: "1"}
+	got, err := store.GetAll(ctx, modelRef)
+	if err != nil {
+		t.Fatalf("GetAll: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetAll on empty model must return non-nil slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("GetAll on empty model must return empty slice, got %d elements", len(got))
+	}
+}
+
+// TestGetAllAsAtReturnsNonNilOnEmptyModel asserts the same non-nil guarantee
+// for GetAllAsAt on an empty model.
+func TestGetAllAsAtReturnsNonNilOnEmptyModel(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := ctxWithTenant("tenant-getallasat-empty")
+	store, err := factory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	modelRef := spi.ModelRef{EntityName: "m-empty", ModelVersion: "1"}
+	got, err := store.GetAllAsAt(ctx, modelRef, time.Now())
+	if err != nil {
+		t.Fatalf("GetAllAsAt: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetAllAsAt on empty model must return non-nil slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("GetAllAsAt on empty model must return empty slice, got %d elements", len(got))
+	}
+}

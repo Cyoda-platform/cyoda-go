@@ -4,5 +4,4 @@ use (
 	.
 	./plugins/memory
 	./plugins/postgres
-	../cyoda-go-spi
 )

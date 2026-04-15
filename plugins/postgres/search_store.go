@@ -252,7 +252,7 @@ func scanSearchJob(row pgx.Row) (*spi.SearchJob, error) {
 		&job.Error, &job.CreateTime, &job.FinishTime, &job.CalcTimeMs)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("search job not found")
+			return nil, fmt.Errorf("search job not found: %w", spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to scan search job: %w", err)
 	}
