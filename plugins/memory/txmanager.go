@@ -82,7 +82,7 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	}
 
 	txID := uuid.UUID(m.uuids.NewTimeUUID()).String()
-	now := time.Now()
+	now := m.factory.clock.Now()
 
 	tx := &spi.TransactionState{
 		ID:           txID,
@@ -179,7 +179,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 	m.mu.Unlock()
 
 	// 4. Flush buffer to entity store.
-	submitTime := time.Now()
+	submitTime := m.factory.clock.Now()
 	tid := tx.TenantID
 
 	for entityID, entity := range tx.Buffer {
@@ -246,7 +246,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 		writeSet:   tx.WriteSet,
 	})
 	m.submitTimes[txID] = submitTime
-	evictBefore := time.Now().Add(-submitTimeTTL)
+	evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
 	for id, t := range m.submitTimes {
 		if t.Before(evictBefore) {
 			delete(m.submitTimes, id)

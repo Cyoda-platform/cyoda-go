@@ -182,7 +182,7 @@ func (s *EntityStore) saveUnlocked(entity *spi.Entity) (int64, error) {
 		}
 	}
 
-	now := time.Now()
+	now := s.factory.clock.Now()
 
 	creationDate := entity.Meta.CreationDate
 	if len(versions) > 0 {
@@ -340,7 +340,7 @@ func (s *EntityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
 
-	var result []*spi.Entity
+	result := make([]*spi.Entity, 0)
 	for _, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
 			continue
@@ -364,7 +364,7 @@ func (s *EntityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asA
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
 	// Historical query: always reads committed data.
-	var result []*spi.Entity
+	result := make([]*spi.Entity, 0)
 	for _, versions := range s.factory.entityData[s.tenant] {
 		if len(versions) == 0 {
 			continue
@@ -438,7 +438,7 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	s.factory.entityData[s.tenant][entityID] = append(versions, entityVersion{
 		entity:        nil,
 		transactionID: "",
-		submitTime:    time.Now(),
+		submitTime:    s.factory.clock.Now(),
 		deleted:       true,
 		changeType:    "DELETED",
 		user:          userName,
@@ -483,7 +483,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
 
-	now := time.Now()
+	now := s.factory.clock.Now()
 	uc := spi.GetUserContext(ctx)
 	userName := ""
 	if uc != nil {

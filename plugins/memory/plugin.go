@@ -24,7 +24,8 @@ func (p *plugin) NewFactory(
 	_ = getenv
 	_ = opts
 
+	// newStoreFactory delegates to NewStoreFactory, which already calls
+	// initTransactionManager internally — no separate call needed.
 	factory := newStoreFactory()
-	factory.initTransactionManager(&defaultUUIDGenerator{})
 	return factory, nil
 }
