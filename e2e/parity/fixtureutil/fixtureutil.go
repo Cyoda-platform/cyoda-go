@@ -313,7 +313,7 @@ func ParseHealthAddr(r io.Reader, timeout time.Duration) (string, error) {
 
 // CyodaEnv returns the base environment variables needed by every
 // cyoda-go fixture. Callers append backend-specific vars (e.g.
-// CYODA_DB_URL for postgres).
+// CYODA_POSTGRES_URL for postgres).
 func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 	return append(os.Environ(),
 		fmt.Sprintf("CYODA_HTTP_PORT=%d", httpPort),

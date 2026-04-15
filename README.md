@@ -133,8 +133,8 @@ Durable storage with `SERIALIZABLE` isolation. Includes automatic schema migrati
 
 ```bash
 CYODA_STORAGE_BACKEND=postgres
-CYODA_DB_URL=postgres://user:pass@localhost:5432/minicyoda?sslmode=disable
-CYODA_DB_AUTO_MIGRATE=true
+CYODA_POSTGRES_URL=postgres://user:pass@localhost:5432/minicyoda?sslmode=disable
+CYODA_POSTGRES_AUTO_MIGRATE=true
 ```
 
 ## Scale Profile
@@ -200,10 +200,10 @@ The `./cyoda-go.sh` script is a convenience wrapper that sets `CYODA_PROFILES=lo
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_DB_URL` | — | Connection string. Required when any store uses `postgres`. |
-| `CYODA_DB_MAX_CONNS` | `25` | Connection pool maximum |
-| `CYODA_DB_MIN_CONNS` | `5` | Connection pool minimum |
-| `CYODA_DB_AUTO_MIGRATE` | `true` | Run schema migrations on startup |
+| `CYODA_POSTGRES_URL` | — | Connection string. Required when any store uses `postgres`. |
+| `CYODA_POSTGRES_MAX_CONNS` | `25` | Connection pool maximum |
+| `CYODA_POSTGRES_MIN_CONNS` | `5` | Connection pool minimum |
+| `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run schema migrations on startup |
 
 ### gRPC
 
