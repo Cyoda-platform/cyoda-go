@@ -225,12 +225,18 @@ if clusterSvc != nil && clusterSvc.Broadcaster() != nil {
     opts = append(opts, spi.WithClusterBroadcaster(clusterSvc.Broadcaster()))
 }
 
-factory, err := plugin.NewFactory(os.Getenv, opts...)
-txMgr, _ := factory.TransactionManager(ctx)
+factory, err := plugin.NewFactory(ctx, os.Getenv, opts...)
 
+// Start runs BEFORE TransactionManager: plugins whose TM depends on
+// Start's side effects (e.g. cassandra's shard-rebalance wait) would
+// otherwise init a half-ready TM. Plugins with no background
+// lifecycle (memory, postgres) don't implement Startable and this is
+// a no-op for them.
 if s, ok := factory.(spi.Startable); ok {
-    s.Start(ctx)   // for plugins with background goroutines
+    s.Start(ctx)
 }
+
+txMgr, _ := factory.TransactionManager(ctx)
 ```
 
 No per-store routing. No swap logic for transaction managers. Every store in the binary comes from the same plugin, and the plugin supplies its own `TransactionManager` whose semantics match its storage engine.
