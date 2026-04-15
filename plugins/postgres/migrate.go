@@ -71,23 +71,27 @@ func Migrate(pool *pgxpool.Pool) error {
 	return runMigrations(context.Background(), pool)
 }
 
-// DropSchema drops all application tables and the migration tracking table by
+// dropSchema drops all application tables and the migration tracking table by
 // running DROP SCHEMA CASCADE + CREATE SCHEMA. This is faster and more robust
 // than MigrateDown for test cleanup because MigrateDown can fail when test
 // data violates constraints introduced by a DOWN migration (e.g. duplicate
 // primary-key values across tenants when reverting a composite-PK migration).
-// Only use DropSchema in tests — never in production code.
 //
-// Before dropping the schema, DropSchema terminates all OTHER backends
+// dropSchema is intentionally unexported. Test code accesses it through
+// DropSchemaForTest declared in export_test.go. This prevents production
+// binaries from ever being able to call it, even by mistake (e.g. a
+// misconfigured CYODA_TEST_DB_URL pointing at a production database).
+//
+// Before dropping the schema, dropSchema terminates all OTHER backends
 // connected to the same database. This is necessary because DROP SCHEMA
 // CASCADE requires an AccessExclusive lock on every object it drops, and idle
 // connections from the main conformance pool can hold those locks open
 // (preventing the DROP from proceeding) even after the pool's Close() has
 // been called but before puddle has fully drained its wait-group.
-func DropSchema(pool *pgxpool.Pool) error {
+func dropSchema(pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(context.Background())
 	if err != nil {
-		return fmt.Errorf("acquire connection for DropSchema: %w", err)
+		return fmt.Errorf("acquire connection for dropSchema: %w", err)
 	}
 	defer conn.Release()
 
@@ -98,13 +102,14 @@ func DropSchema(pool *pgxpool.Pool) error {
 
 	if _, err := conn.Exec(context.Background(),
 		"DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public"); err != nil {
-		return fmt.Errorf("DropSchema: %w", err)
+		return fmt.Errorf("dropSchema: %w", err)
 	}
 	return nil
 }
 
-// MigrateDown is preserved for test cleanup.
-func MigrateDown(pool *pgxpool.Pool) error {
+// migrateDown rolls back all applied migrations. Intentionally unexported —
+// exposed to test code only through MigrateDownForTest in export_test.go.
+func migrateDown(pool *pgxpool.Pool) error {
 	db := openDB(pool)
 	defer db.Close()
 

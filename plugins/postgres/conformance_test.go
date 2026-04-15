@@ -54,7 +54,7 @@ func newConformancePool(t *testing.T) spi.StoreFactory {
 	// used instead of MigrateDown because MigrateDown can fail when test data
 	// from a previous run violates DOWN-migration constraints (e.g. duplicate
 	// job IDs across tenants when reverting a composite-PK migration).
-	if err := postgres.DropSchema(migPool); err != nil {
+	if err := postgres.DropSchemaForTest(migPool); err != nil {
 		migPool.Close()
 		t.Fatalf("failed to reset schema: %v", err)
 	}
@@ -64,7 +64,7 @@ func newConformancePool(t *testing.T) spi.StoreFactory {
 	}
 	t.Cleanup(func() {
 		// DropSchema is robust even when test data is present.
-		_ = postgres.DropSchema(migPool)
+		_ = postgres.DropSchemaForTest(migPool)
 		migPool.Close()
 	})
 
@@ -124,13 +124,13 @@ func newConformancePool(t *testing.T) spi.StoreFactory {
 func newTestFactory(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	if err := postgres.DropSchema(pool); err != nil {
+	if err := postgres.DropSchemaForTest(pool); err != nil {
 		t.Fatalf("failed to reset schema: %v", err)
 	}
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 	factory := postgres.NewStoreFactory(pool)
 	factory.InitTransactionManager(newTestUUIDGenerator())
 	return factory

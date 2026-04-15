@@ -10,11 +10,11 @@ import (
 func setupWorkflowTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
-	if err := postgres.DropSchema(pool); err != nil { t.Fatalf("reset schema: %v", err) }
+	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 	return postgres.NewStoreFactory(pool)
 }
 

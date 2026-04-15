@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -15,11 +16,11 @@ import (
 func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool) {
 	t.Helper()
 	pool := newTestPool(t)
-	if err := postgres.DropSchema(pool); err != nil { t.Fatalf("reset schema: %v", err) }
+	if err := postgres.DropSchemaForTest(pool); err != nil { t.Fatalf("reset schema: %v", err) }
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	t.Cleanup(func() { _ = postgres.DropSchema(pool) })
+	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 
 	uuids := newTestUUIDGenerator()
 	tm := postgres.NewTransactionManager(pool, uuids)
@@ -315,5 +316,33 @@ func TestTxManager_BeginNoTenant(t *testing.T) {
 	_, _, err := tm.Begin(ctx)
 	if err == nil {
 		t.Fatal("expected error when no tenant in context")
+	}
+}
+
+// TestCommitProbe_NonPGError_NotConflict verifies that the submit-time probe
+// error classification does NOT wrap arbitrary (non-25P02) errors as
+// spi.ErrConflict.
+//
+// Prior to the I3 fix, every probe error was unconditionally wrapped as
+// ErrConflict, so a network failure or other infrastructure error would be
+// mis-surfaced as a retryable conflict. The fix narrows the classification
+// to SQLSTATE 25P02 only.
+//
+// We test via ClassifyErrorForTest (the underlying classification helper)
+// because exercising the probe path in Commit directly requires either a
+// real postgres connection in a broken state or a mock — both fragile.
+// The classifyError function embodies the same logic that the probe branches on.
+func TestCommitProbe_NonPGError_NotConflict(t *testing.T) {
+	// Simulate a plain non-postgres error (e.g. io.EOF, context.Canceled).
+	plainErr := fmt.Errorf("simulated network failure")
+	result := postgres.ClassifyErrorForTest(plainErr)
+
+	// Must NOT be classified as ErrConflict.
+	if errors.Is(result, spi.ErrConflict) {
+		t.Errorf("non-pgconn error must NOT be classified as ErrConflict; got: %v", result)
+	}
+	// Must preserve the original error in the chain.
+	if !errors.Is(result, plainErr) {
+		t.Errorf("original error must remain in the error chain; got: %v", result)
 	}
 }

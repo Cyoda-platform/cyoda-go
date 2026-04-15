@@ -41,7 +41,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 
 	// Clean slate — use DropSchema (robust) instead of MigrateDown (fragile
 	// when test data violates DOWN-migration constraints).
-	if err := postgres.DropSchema(pool); err != nil {
+	if err := postgres.DropSchemaForTest(pool); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 	}
 
 	// Clean up
-	if err := postgres.MigrateDown(pool); err != nil {
+	if err := postgres.MigrateDownForTest(pool); err != nil {
 		t.Fatalf("migration rollback failed: %v", err)
 	}
 }
@@ -92,7 +92,7 @@ func TestMigrate_AppliesSchema(t *testing.T) {
 func TestMigrate_Idempotent(t *testing.T) {
 	pool := newTestPool(t)
 
-	if err := postgres.DropSchema(pool); err != nil {
+	if err := postgres.DropSchemaForTest(pool); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
 
@@ -103,5 +103,5 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("second migration (idempotent) failed: %v", err)
 	}
 
-	_ = postgres.DropSchema(pool)
+	_ = postgres.DropSchemaForTest(pool)
 }
