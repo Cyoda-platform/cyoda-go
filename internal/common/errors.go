@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 
 	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // ErrNotFound is a sentinel error for entity/resource not-found conditions.
@@ -67,7 +69,15 @@ func Conflict(message string) *AppError {
 }
 
 // Internal creates a 500 error with internal detail from the wrapped error.
+//
+// If the wrapped error is (or wraps) spi.ErrConflict, the result is routed to
+// Conflict() instead — a serialization abort (40001/40P01) that fully rolled
+// back is retryable, not a server error. This keeps every call site honest
+// without forcing each to reason about pgx error codes.
 func Internal(message string, err error) *AppError {
+	if err != nil && errors.Is(err, spi.ErrConflict) {
+		return Conflict("transaction conflict — retry")
+	}
 	detail := ""
 	if err != nil {
 		detail = err.Error()

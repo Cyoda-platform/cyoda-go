@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // getToken obtains a JWT token via client_credentials grant.
@@ -58,16 +59,32 @@ func authRequest(t *testing.T, method, path string, body io.Reader) *http.Reques
 }
 
 // doAuth performs an authenticated HTTP request and returns the response.
+// On 409 Conflict (retryable serialization aborts), retries up to 5 times
+// with a short backoff. The server classifies SERIALIZABLE 40001/40P01 as
+// 409 retryable: true; the client is responsible for replaying the request
+// against a fresh snapshot.
 func doAuth(t *testing.T, method, path string, body string) *http.Response {
 	t.Helper()
-	var bodyReader io.Reader
-	if body != "" {
-		bodyReader = strings.NewReader(body)
-	}
-	req := authRequest(t, method, path, bodyReader)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("%s %s failed: %v", method, path, err)
+	const maxAttempts = 5
+	var resp *http.Response
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var bodyReader io.Reader
+		if body != "" {
+			bodyReader = strings.NewReader(body)
+		}
+		req := authRequest(t, method, path, bodyReader)
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s failed: %v", method, path, err)
+		}
+		if r.StatusCode != http.StatusConflict {
+			return r
+		}
+		// Drain and close before retry so the transport can reuse the connection.
+		io.Copy(io.Discard, r.Body)
+		r.Body.Close()
+		resp = r
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
 	}
 	return resp
 }

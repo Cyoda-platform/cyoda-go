@@ -42,9 +42,12 @@ func resolveTenant(ctx context.Context) (spi.TenantID, error) {
 	return uc.Tenant.ID, nil
 }
 
-// resolveQuerier returns the active pgx.Tx from context if a transaction is in
-// progress, otherwise the pool.
-func (f *StoreFactory) resolveQuerier(ctx context.Context) Querier {
+// resolveRaw returns the concrete pgx querier for the given context —
+// the active pgx.Tx when one is in context, otherwise the pool. Stores
+// never hold the result directly; they hold a ctxQuerier that re-resolves
+// on every call, so the choice tracks the call-time context rather than
+// the store-construction context.
+func (f *StoreFactory) resolveRaw(ctx context.Context) Querier {
 	if f.tm != nil {
 		if tx := spi.GetTransaction(ctx); tx != nil {
 			if pgxTx, ok := f.tm.LookupTx(tx.ID); ok {
@@ -55,12 +58,17 @@ func (f *StoreFactory) resolveQuerier(ctx context.Context) Querier {
 	return f.pool
 }
 
+// querier returns the per-call-resolving Querier used by all stores.
+func (f *StoreFactory) querier() Querier {
+	return &ctxQuerier{factory: f}
+}
+
 func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
 	tid, err := resolveTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &entityStore{q: f.resolveQuerier(ctx), tenantID: tid}, nil
+	return &entityStore{q: f.querier(), tenantID: tid}, nil
 }
 
 func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
@@ -68,7 +76,7 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{q: f.resolveQuerier(ctx), tenantID: tid}, nil
+	return &modelStore{q: f.querier(), tenantID: tid}, nil
 }
 
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
@@ -76,7 +84,7 @@ func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, er
 	if err != nil {
 		return nil, err
 	}
-	return &kvStore{q: f.resolveQuerier(ctx), tenantID: tid}, nil
+	return &kvStore{q: f.querier(), tenantID: tid}, nil
 }
 
 func (f *StoreFactory) MessageStore(ctx context.Context) (spi.MessageStore, error) {
@@ -84,7 +92,7 @@ func (f *StoreFactory) MessageStore(ctx context.Context) (spi.MessageStore, erro
 	if err != nil {
 		return nil, err
 	}
-	return &messageStore{q: f.resolveQuerier(ctx), tenantID: tid}, nil
+	return &messageStore{q: f.querier(), tenantID: tid}, nil
 }
 
 func (f *StoreFactory) WorkflowStore(ctx context.Context) (spi.WorkflowStore, error) {
@@ -92,7 +100,7 @@ func (f *StoreFactory) WorkflowStore(ctx context.Context) (spi.WorkflowStore, er
 	if err != nil {
 		return nil, err
 	}
-	kv := &kvStore{q: f.resolveQuerier(ctx), tenantID: tid}
+	kv := &kvStore{q: f.querier(), tenantID: tid}
 	return &workflowStore{kv: kv}, nil
 }
 
@@ -101,7 +109,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 	if err != nil {
 		return nil, err
 	}
-	return &smAuditStore{q: f.resolveQuerier(ctx), tenantID: tid}, nil
+	return &smAuditStore{q: f.querier(), tenantID: tid}, nil
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {

@@ -225,15 +225,24 @@ func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string,
 	return nil
 }
 
-// classifyError checks whether an error is a PostgreSQL serialization failure
-// (error code 40001) and returns spi.ErrConflict if so.
+// classifyError maps PostgreSQL errors that mean "this transaction was fully
+// rolled back by the database before any external work stuck — a retry on a
+// fresh snapshot is safe" to spi.ErrConflict. Everything else passes through.
+//
+// Retryable codes:
+//   - 40001 serialization_failure — SSI detected an r/w dependency cycle
+//   - 40P01 deadlock_detected — deadlock victim chosen by the server
+//
+// The error is wrapped (errors.Is and errors.As still see the original pgErr)
+// so callers can drill in for logging; the sentinel is added to the chain so
+// handler-level `errors.Is(err, spi.ErrConflict)` checks succeed.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "40001" {
-		return spi.ErrConflict
+	if errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01") {
+		return fmt.Errorf("%w: %s", spi.ErrConflict, err.Error())
 	}
 	return err
 }

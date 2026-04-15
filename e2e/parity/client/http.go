@@ -140,26 +140,42 @@ func (c *Client) doJSON(t *testing.T, method, path string, body any, out any, op
 // and the standard Content-Type/Authorization headers. Returns the raw
 // response body on success (2xx). Returns a descriptive error
 // wrapping the response body for non-2xx status codes.
+//
+// On 409 Conflict the request is retried up to 5 times with a short
+// backoff: the server classifies SERIALIZABLE 40001/40P01 aborts as
+// 409 retryable: true, and the client's job is to replay against a
+// fresh snapshot. This is the minimum viable client retry; production
+// clients would use bounded jitter and per-operation policies.
 func (c *Client) doRaw(t *testing.T, method, path, body string) ([]byte, error) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("transport: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("transport: %w", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return raw, nil
+		}
+		if resp.StatusCode == http.StatusConflict && attempt < maxAttempts-1 {
+			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+			lastErr = fmt.Errorf("%s %s: status 409: %s", method, path, string(raw))
+			continue
+		}
 		return nil, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, string(raw))
 	}
-	return raw, nil
+	return nil, lastErr
 }
 
 // ImportModel issues POST /api/model/import/JSON/SAMPLE_DATA/{name}/{version}
