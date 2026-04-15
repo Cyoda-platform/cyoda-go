@@ -109,12 +109,13 @@ func (h *Handler) ExportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	}
 
 	workflows, err := wfStore.Get(r.Context(), ref)
-	if err != nil && errors.Is(err, spi.ErrNotFound) {
+	if err != nil {
+		common.WriteError(w, r, common.Internal("failed to load workflows", err))
+		return
+	}
+	if len(workflows) == 0 {
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeWorkflowNotFound,
 			fmt.Sprintf("no workflows found for model %s/%d", entityName, modelVersion)))
-		return
-	} else if err != nil {
-		common.WriteError(w, r, common.Internal("failed to load workflows", err))
 		return
 	}
 
