@@ -121,6 +121,9 @@ func (s *entityStore) searchCurrentStateBase(opts spi.SearchOptions) (string, []
 }
 
 // searchPointInTimeBase returns the base SQL for point-in-time search.
+// Uses submit_time <= ? (non-strict) matching the memory plugin's convention
+// (!v.submitTime.After(snapshotTime)) and all other snapshot queries in this
+// package (getSnapshot, getAllTx, DeleteAll tx).
 func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []any) {
 	pit := timeToMicro(*opts.PointInTime)
 	query := `SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
@@ -129,7 +132,7 @@ func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []a
 	          INNER JOIN (
 	              SELECT entity_id, MAX(version) AS max_ver
 	              FROM entity_versions
-	              WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time < ?
+	              WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
 	              GROUP BY entity_id
 	          ) latest ON ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
 	          WHERE ev.tenant_id = ? AND ev.change_type != 'DELETED'`

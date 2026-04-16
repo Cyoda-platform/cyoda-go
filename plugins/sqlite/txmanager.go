@@ -41,11 +41,12 @@ type transactionManager struct {
 	commitMu sync.Mutex // serializes the entire commit path for SSI correctness
 	mu       sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints
 
-	active       map[string]*spi.TransactionState
-	committedLog []committedTx
-	committing   map[string]bool
-	submitTimes  map[string]time.Time
-	savepoints   map[string]map[string]savepointSnapshot
+	active         map[string]*spi.TransactionState
+	committedLog   []committedTx
+	committing     map[string]bool
+	submitTimes    map[string]time.Time
+	savepoints     map[string]map[string]savepointSnapshot
+	lastSubmitTime int64 // monotonic submit time in microseconds; written under commitMu, read under mu
 }
 
 // Verify interface compliance at compile time.
@@ -62,6 +63,17 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 	}
 }
 
+// seedLastSubmitTime reads the maximum submit_time from entity_versions
+// so that lastSubmitTime is monotonic across process restarts.
+func (m *transactionManager) seedLastSubmitTime() {
+	var maxTime sql.NullInt64
+	err := m.factory.db.QueryRow(
+		"SELECT MAX(submit_time) FROM entity_versions").Scan(&maxTime)
+	if err == nil && maxTime.Valid {
+		m.lastSubmitTime = maxTime.Int64
+	}
+}
+
 // Begin starts a new transaction. It resolves the tenant from the context,
 // generates a unique transaction ID, captures a snapshot time, and returns
 // a new context carrying the TransactionState.
@@ -75,21 +87,28 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	}
 
 	txID := uuid.UUID(m.uuids.NewTimeUUID()).String()
-	now := m.factory.clock.Now()
+	nowMicro := m.factory.clock.Now().UnixMicro()
 
 	tx := &spi.TransactionState{
-		ID:           txID,
-		TenantID:     uc.Tenant.ID,
-		SnapshotTime: now,
-		ReadSet:      make(map[string]bool),
-		WriteSet:     make(map[string]bool),
-		Buffer:       make(map[string]*spi.Entity),
-		Deletes:      make(map[string]bool),
+		ID:       txID,
+		TenantID: uc.Tenant.ID,
+		ReadSet:  make(map[string]bool),
+		WriteSet: make(map[string]bool),
+		Buffer:   make(map[string]*spi.Entity),
+		Deletes:  make(map[string]bool),
 	}
 
+	// Snapshot time must be at least lastSubmitTime so that the transaction
+	// sees all previously committed data. Without this floor, a monotonic
+	// submit-time bump could push a commit past the next Begin's raw clock
+	// value, making committed entities invisible to new transactions.
 	func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		if nowMicro < m.lastSubmitTime {
+			nowMicro = m.lastSubmitTime
+		}
+		tx.SnapshotTime = time.UnixMicro(nowMicro)
 		m.active[txID] = tx
 	}()
 
@@ -101,9 +120,9 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 // transaction.
 func (m *transactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
 	m.mu.Lock()
-	tx, ok := m.active[txID]
-	m.mu.Unlock()
+	defer m.mu.Unlock()
 
+	tx, ok := m.active[txID]
 	if !ok {
 		return nil, fmt.Errorf("transaction not found: %s", txID)
 	}
@@ -186,12 +205,21 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		return err
 	}
 
-	// 4. Capture submit time. Use the clock directly, matching the memory
-	// plugin's behavior. The clock is the single source of truth for both
-	// in-memory SSI structures and persisted submit_time values, ensuring
-	// snapshot queries (submit_time <= snapshotTime) are consistent with
-	// the snapshotTime captured at Begin().
-	submitTime := m.factory.clock.Now()
+	// 4. Capture submit time with monotonicity guarantee.
+	// max(clock.Now().UnixMicro(), lastSubmitTime + 1) ensures forward
+	// progress even under NTP steps, VM pause/migrate, or leap-second
+	// smearing. commitMu serializes the commit path; m.mu protects
+	// lastSubmitTime for reads in Begin.
+	submitTime := func() time.Time {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		nowMicro := m.factory.clock.Now().UnixMicro()
+		if nowMicro <= m.lastSubmitTime {
+			nowMicro = m.lastSubmitTime + 1
+		}
+		m.lastSubmitTime = nowMicro
+		return time.UnixMicro(nowMicro)
+	}()
 
 	// 5. Flush buffer and deletes to SQLite.
 	if err := m.flushToSQLite(ctx, tx, submitTime); err != nil {
@@ -204,7 +232,8 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 			delete(m.committing, txID)
 			delete(m.savepoints, txID)
 		}()
-		return fmt.Errorf("flush to sqlite: %w", err)
+		// Classify SQLITE_BUSY as ErrConflict (retryable) before wrapping.
+		return fmt.Errorf("flush to sqlite: %w", classifyError(err))
 	}
 
 	// 6. Record in committed log, submit times, and prune.

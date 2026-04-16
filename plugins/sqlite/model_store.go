@@ -46,7 +46,7 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		 VALUES (?, ?, ?, jsonb(?))`,
 		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw)
 	if err != nil {
-		return fmt.Errorf("failed to save model %s: %w", desc.Ref, err)
+		return fmt.Errorf("failed to save model %s: %w", desc.Ref, classifyError(err))
 	}
 	return nil
 }
@@ -60,7 +60,7 @@ func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
-		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, err)
+		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, classifyError(err))
 	}
 	return unmarshalModelDoc(raw)
 }
@@ -93,7 +93,7 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 		`DELETE FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
 	if err != nil {
-		return fmt.Errorf("failed to delete model %s: %w", modelRef, err)
+		return fmt.Errorf("failed to delete model %s: %w", modelRef, classifyError(err))
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

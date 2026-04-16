@@ -194,6 +194,8 @@ func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity
 func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return 0, fmt.Errorf("transaction has been rolled back")
 		}
@@ -264,7 +266,7 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 		nextVersion, string(cp.Data), string(metaJSON),
 		createdAtMicro, timeToMicro(now))
 	if err != nil {
-		return 0, fmt.Errorf("upsert entity: %w", err)
+		return 0, fmt.Errorf("upsert entity: %w", classifyError(err))
 	}
 
 	_, err = sqlTx.ExecContext(ctx,
@@ -274,11 +276,11 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 		tid, cp.Meta.ID, cp.Meta.ModelRef.EntityName, cp.Meta.ModelRef.ModelVersion,
 		nextVersion, string(cp.Data), string(metaJSON), changeType, timeToMicro(now))
 	if err != nil {
-		return 0, fmt.Errorf("insert version: %w", err)
+		return 0, fmt.Errorf("insert version: %w", classifyError(err))
 	}
 
 	if err := sqlTx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit: %w", err)
+		return 0, fmt.Errorf("commit: %w", classifyError(err))
 	}
 	return nextVersion, nil
 }
@@ -286,6 +288,8 @@ func (s *entityStore) saveDirectly(ctx context.Context, entity *spi.Entity) (int
 func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return 0, fmt.Errorf("transaction has been rolled back")
 		}
@@ -295,7 +299,7 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 			"SELECT json_extract(json(meta), '$.transaction_id') FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted",
 			string(s.tenantID), entity.Meta.ID).Scan(&currentTxID)
 		if err != nil && err != sql.ErrNoRows {
-			return 0, fmt.Errorf("check transaction ID: %w", err)
+			return 0, fmt.Errorf("check transaction ID: %w", classifyError(err))
 		}
 		if err == nil && currentTxID.Valid && currentTxID.String != expectedTxID {
 			return 0, spi.ErrConflict
@@ -315,7 +319,7 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 		"SELECT json_extract(json(meta), '$.transaction_id') FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted",
 		string(s.tenantID), entity.Meta.ID).Scan(&currentTxID)
 	if err != nil && err != sql.ErrNoRows {
-		return 0, fmt.Errorf("check transaction ID: %w", err)
+		return 0, fmt.Errorf("check transaction ID: %w", classifyError(err))
 	}
 	if err == nil && currentTxID.Valid && currentTxID.String != expectedTxID {
 		return 0, spi.ErrConflict
@@ -327,6 +331,8 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
@@ -364,14 +370,18 @@ func (s *entityStore) getDirect(ctx context.Context, entityID string) (*spi.Enti
 		if err == spi.ErrNotFound {
 			return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 		}
-		return nil, err
+		return nil, classifyError(err)
 	}
 	return e, nil
 }
 
 // getSnapshot reads the entity from entity_versions at the given snapshot time.
-// Uses <= (not strict <) to match the memory plugin's convention:
-// !v.submitTime.After(snapshotTime) means submitTime <= snapshotTime.
+//
+// Snapshot-time convention: submit_time <= snapshotTime (non-strict).
+// This matches the memory plugin's !v.submitTime.After(snapshotTime) and is
+// used consistently across getSnapshot, getAllTx, DeleteAll tx, and
+// searchPointInTimeBase. The separate GetAsAt/GetAllAsAt queries use strict <
+// because they first round asAt up to the next millisecond boundary.
 func (s *entityStore) getSnapshot(ctx context.Context, entityID string, snapshotTime time.Time) (*spi.Entity, error) {
 	snapshotMicro := timeToMicro(snapshotTime)
 	row := s.db.QueryRowContext(ctx,
@@ -404,6 +414,8 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 
 	// Track in read set if in tx.
 	if tx := spi.GetTransaction(ctx); tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
@@ -443,6 +455,8 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi.Entity, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return nil, fmt.Errorf("transaction has been rolled back")
 		}
@@ -569,6 +583,8 @@ func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asA
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
 		}
@@ -639,15 +655,20 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		tid, entityID, modelName, modelVersion,
 		nextVersion, nowMicro, userName)
 	if err != nil {
-		return fmt.Errorf("insert delete version: %w", err)
+		return fmt.Errorf("insert delete version: %w", classifyError(err))
 	}
 
-	return sqlTx.Commit()
+	if err := sqlTx.Commit(); err != nil {
+		return fmt.Errorf("commit delete: %w", classifyError(err))
+	}
+	return nil
 }
 
 func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) error {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("transaction has been rolled back")
 		}
@@ -732,6 +753,8 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return false, fmt.Errorf("transaction has been rolled back")
 		}

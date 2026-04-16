@@ -250,8 +250,10 @@ func (f *StoreFactory) Close() error {
 
 // initTransactionManager installs the SSI transaction manager on the factory.
 // Called by Plugin.NewFactory after the factory is created.
+// Seeds lastSubmitTime from the database to maintain monotonicity across restarts.
 func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
 	f.tm = newTransactionManager(f, uuids)
+	f.tm.seedLastSubmitTime()
 }
 
 // NewStoreFactoryForTest creates a factory with auto-migrate enabled and the
