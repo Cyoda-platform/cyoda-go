@@ -34,6 +34,9 @@ Run `go test ./... -v` and confirm green (this includes E2E tests). Run `go vet 
 E2E tests spin up their own PostgreSQL + HTTP server automatically — just run them.
 Do not claim work is done if any test — unit, integration, or E2E — is failing.
 
+Race detector (`go test -race ./...`) is a one-shot sanity check before PR creation,
+not a per-step gate — see `.claude/rules/race-testing.md`.
+
 ### Gate 6: Continuous improvement — resolve, don't defer
 We strive for continual improvement of code quality and progressively reduce
 technical debt. When you spot an issue — dead code, an outdated comment, a
