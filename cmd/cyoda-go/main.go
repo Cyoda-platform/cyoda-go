@@ -21,6 +21,7 @@ import (
 	// and they register themselves with the spi registry.
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 	_ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+	_ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
 var (

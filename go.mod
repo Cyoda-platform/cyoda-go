@@ -28,7 +28,26 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
-require github.com/golang-migrate/migrate/v4 v4.19.1 // indirect
+require (
+	github.com/gofrs/flock v0.12.1 // indirect
+	github.com/golang-migrate/migrate/v4 v4.19.1 // indirect
+	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/ncruces/go-sqlite3 v0.33.3 // indirect
+	github.com/ncruces/go-sqlite3-wasm v1.1.1-0.20260409221933-87e4b35a38d0 // indirect
+	github.com/ncruces/julianday v1.0.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
+	lukechampine.com/uint128 v1.2.0 // indirect
+	modernc.org/cc/v3 v3.36.3 // indirect
+	modernc.org/ccgo/v3 v3.16.9 // indirect
+	modernc.org/libc v1.17.1 // indirect
+	modernc.org/mathutil v1.5.0 // indirect
+	modernc.org/memory v1.2.1 // indirect
+	modernc.org/opt v0.1.3 // indirect
+	modernc.org/sqlite v1.18.1 // indirect
+	modernc.org/strutil v1.1.3 // indirect
+	modernc.org/token v1.0.0 // indirect
+)
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
@@ -46,6 +65,7 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/cyoda-platform/cyoda-go/plugins/memory v0.0.0-00010101000000-000000000000
 	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.0.0-00010101000000-000000000000
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.0.0-00010101000000-000000000000
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker v28.5.2+incompatible // indirect
