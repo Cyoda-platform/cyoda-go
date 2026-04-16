@@ -80,3 +80,42 @@ func TestRecordRead_MultipleEntities(t *testing.T) {
 		t.Errorf("readSet len = %d, want 3", len(s.readSet))
 	}
 }
+
+// TestRecordWrite_FirstWriteWins verifies that the first write version is
+// kept and subsequent writes of the same entity are ignored.
+func TestRecordWrite_FirstWriteWins(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordWrite("e1", 5)
+	s.RecordWrite("e1", 7) // should be ignored
+	if got := s.writeSet["e1"]; got != 5 {
+		t.Errorf("writeSet[e1] = %d, want 5", got)
+	}
+	if len(s.writeSet) != 1 {
+		t.Errorf("writeSet len = %d, want 1", len(s.writeSet))
+	}
+}
+
+// TestRecordWrite_PromotesFromReadSet verifies that an entity already in
+// readSet is promoted to writeSet using the readSet's captured version
+// and removed from readSet.
+func TestRecordWrite_PromotesFromReadSet(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("e1", 5)
+	s.RecordWrite("e1", 5)
+	if _, ok := s.readSet["e1"]; ok {
+		t.Error("e1 should have been removed from readSet after promotion")
+	}
+	if got := s.writeSet["e1"]; got != 5 {
+		t.Errorf("writeSet[e1] = %d, want 5", got)
+	}
+}
+
+// TestRecordWrite_FreshInsertZero verifies that a fresh insert (version 0)
+// is recorded in writeSet with value 0.
+func TestRecordWrite_FreshInsertZero(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordWrite("e1", 0)
+	if got, ok := s.writeSet["e1"]; !ok || got != 0 {
+		t.Errorf("writeSet[e1] = %d (ok=%v), want 0 and present", got, ok)
+	}
+}
