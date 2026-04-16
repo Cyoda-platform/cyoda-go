@@ -1,5 +1,20 @@
 package postgres
 
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
+
+// ValidateInChunksForTest exposes validateInChunks for integration testing.
+func ValidateInChunksForTest(
+	tm *TransactionManager, ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, sortedIDs []string, chunkSize int,
+) (map[string]int64, error) {
+	return tm.validateInChunks(ctx, tx, tenantID, sortedIDs, chunkSize)
+}
+
 // DropSchemaForTest exposes dropSchema (the unexported implementation) to
 // _test.go files in this package and any external test packages that import
 // "github.com/cyoda-platform/cyoda-go/plugins/postgres". The export_test.go
