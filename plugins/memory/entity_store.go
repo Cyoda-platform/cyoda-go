@@ -573,6 +573,68 @@ func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 	return count, nil
 }
 
+// CountByState returns counts of non-deleted entities grouped by state for the
+// given model. See SPI godoc on EntityStore.CountByState for filter semantics.
+func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+	if states != nil && len(states) == 0 {
+		return map[string]int64{}, nil
+	}
+
+	var filter map[string]struct{}
+	if states != nil {
+		filter = make(map[string]struct{}, len(states))
+		for _, st := range states {
+			filter[st] = struct{}{}
+		}
+	}
+
+	tx := spi.GetTransaction(ctx)
+	if tx != nil {
+		// In-tx: use GetAll's merged-view logic (matches existing Count's in-tx fallback).
+		all, err := s.GetAll(ctx, modelRef)
+		if err != nil {
+			return nil, err
+		}
+		result := make(map[string]int64)
+		for _, e := range all {
+			st := e.Meta.State
+			if filter != nil {
+				if _, ok := filter[st]; !ok {
+					continue
+				}
+			}
+			result[st]++
+		}
+		return result, nil
+	}
+
+	// Non-transaction: iterate latest versions directly.
+	s.factory.entityMu.RLock()
+	defer s.factory.entityMu.RUnlock()
+
+	result := make(map[string]int64)
+	for _, versions := range s.factory.entityData[s.tenant] {
+		if len(versions) == 0 {
+			continue
+		}
+		latest := versions[len(versions)-1]
+		if latest.deleted {
+			continue
+		}
+		if latest.entity.Meta.ModelRef != modelRef {
+			continue
+		}
+		st := latest.entity.Meta.State
+		if filter != nil {
+			if _, ok := filter[st]; !ok {
+				continue
+			}
+		}
+		result[st]++
+	}
+	return result, nil
+}
+
 func (s *EntityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
 	s.factory.entityMu.RLock()
 	defer s.factory.entityMu.RUnlock()
