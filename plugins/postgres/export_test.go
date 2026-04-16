@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -77,4 +78,12 @@ func WriteSetVersionForTest(s TxStateForTest, entityID string) (int64, bool) {
 	defer inner.mu.Unlock()
 	v, present := inner.writeSet[entityID]
 	return v, present
+}
+
+// NewStoreFactoryWithTMForTest creates a StoreFactory with the given pool and
+// TransactionManager pre-wired. Use only in tests.
+func NewStoreFactoryWithTMForTest(pool *pgxpool.Pool, tm *TransactionManager) *StoreFactory {
+	f := NewStoreFactory(pool)
+	f.setTransactionManager(tm)
+	return f
 }

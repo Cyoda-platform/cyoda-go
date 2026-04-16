@@ -82,6 +82,14 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 
 	entity.Meta.Version = nextVersion
 
+	if s.tm != nil {
+		var preWriteVersion int64
+		if !isNew {
+			preWriteVersion = nextVersion - 1
+		}
+		s.tm.recordWriteIfInTx(ctx, eid, preWriteVersion)
+	}
+
 	// Set metadata based on whether this is a new or updated entity.
 	if isNew {
 		entity.Meta.ChangeType = "CREATED"
@@ -154,9 +162,17 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 		}
 		return nil, fmt.Errorf("failed to get entity %s: %w", entityID, err)
 	}
-	return unmarshalEntityDoc(doc)
+	entity, err := unmarshalEntityDoc(doc)
+	if err != nil {
+		return nil, err
+	}
+	if s.tm != nil {
+		s.tm.recordReadIfInTx(ctx, entity.Meta.ID, entity.Meta.Version)
+	}
+	return entity, nil
 }
 
+// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	// Round up to the next millisecond boundary (matching memory implementation).
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
@@ -204,9 +220,19 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 	}
 	defer rows.Close()
 
-	return scanEntities(rows)
+	entities, err := scanEntities(rows)
+	if err != nil {
+		return nil, err
+	}
+	if s.tm != nil {
+		for _, e := range entities {
+			s.tm.recordReadIfInTx(ctx, e.Meta.ID, e.Meta.Version)
+		}
+	}
+	return entities, nil
 }
 
+// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
@@ -246,6 +272,10 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to get entity %s for delete: %w", entityID, err)
+	}
+
+	if s.tm != nil {
+		s.tm.recordWriteIfInTx(ctx, entityID, maxVersion)
 	}
 
 	current, err := unmarshalEntityDoc(doc)
@@ -326,6 +356,7 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	return nil
 }
 
+// Deliberately not tracked in readSet: boolean probe; no version to validate.
 func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error) {
 	var exists bool
 	err := s.q.QueryRow(ctx,
@@ -337,6 +368,7 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 	return exists, nil
 }
 
+// Deliberately not tracked in readSet: aggregate with no per-row identity. See spec §Known limitation (phantom reads).
 func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
 	var count int64
 	err := s.q.QueryRow(ctx,
@@ -348,6 +380,7 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 	return count, nil
 }
 
+// Deliberately not tracked in readSet: observational reads of version history.
 func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT doc, version, valid_time FROM entity_versions
