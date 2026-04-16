@@ -207,8 +207,8 @@ func TestPlanQuery_SourceMeta(t *testing.T) {
 		Value:  "ACTIVE",
 	}
 	plan := planQuery(f)
-	// SourceMeta uses direct column reference, not json_extract.
-	wantWhere := "(state IS NOT NULL AND state = ?)"
+	// "state" is not a direct column — it lives in the meta JSONB blob.
+	wantWhere := "(json_extract(json(meta), '$.state') IS NOT NULL AND json_extract(json(meta), '$.state') = ?)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
@@ -547,18 +547,17 @@ func TestPlanQuery_SourceMetaIsNull(t *testing.T) {
 		Source: spi.SourceMeta,
 	}
 	plan := planQuery(f)
-	wantWhere := "state IS NULL"
+	wantWhere := "json_extract(json(meta), '$.state') IS NULL"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
 }
 
-// metaFieldExpr uses json_extract on the meta column for SourceMeta paths that
-// reference nested JSON fields stored in the meta BLOB.
+// TestPlanQuery_MetaColumnMapping verifies that SourceMeta paths with direct
+// columns (e.g., entity_id) use the column name, while paths without direct
+// columns (e.g., state) use json_extract on the meta JSONB blob.
 func TestPlanQuery_MetaColumnMapping(t *testing.T) {
-	// The meta column stores JSON; metaFieldExpr should use json_extract
-	// for non-direct-column paths. For now, SourceMeta always uses direct
-	// column references as specified in the design.
+	// entity_id is a direct column — should use the column name directly.
 	f := spi.Filter{
 		Op:     spi.FilterEq,
 		Path:   "entity_id",

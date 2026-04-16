@@ -147,12 +147,31 @@ func joinChildren(children []spi.Filter, sep string) (string, []any) {
 	return strings.Join(parts, sep), allArgs
 }
 
+// directMetaColumns lists SourceMeta paths that map to direct columns in
+// the entities table. Paths not in this set live inside the meta JSONB blob
+// and require json_extract(json(meta), '$.path').
+var directMetaColumns = map[string]bool{
+	"entity_id":     true,
+	"tenant_id":     true,
+	"model_name":    true,
+	"model_version": true,
+	"version":       true,
+	"deleted":       true,
+	"created_at":    true,
+	"updated_at":    true,
+}
+
 // fieldExpr returns the SQL expression for accessing a field.
-// SourceMeta fields use a direct column reference (e.g., "state").
+// SourceMeta fields with direct columns use the column name directly.
+// SourceMeta fields without direct columns (e.g., "state") use
+// json_extract on the meta JSONB column.
 // SourceData fields use json_extract on the data BLOB column.
 func fieldExpr(f spi.Filter) string {
 	if f.Source == spi.SourceMeta {
-		return f.Path
+		if directMetaColumns[f.Path] {
+			return f.Path
+		}
+		return fmt.Sprintf("json_extract(json(meta), '$.%s')", f.Path)
 	}
 	return fmt.Sprintf("json_extract(data, '$.%s')", f.Path)
 }
