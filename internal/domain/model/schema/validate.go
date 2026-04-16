@@ -114,11 +114,12 @@ func inferDataType(v any) DataType {
 	case bool:
 		return Boolean
 	case json.Number:
-		// JSON/XML importers preserve numeric leaves as json.Number.
-		// Classify as Double when the literal carries a fractional or
-		// exponent component, Long otherwise. Distinguishing finer
-		// integer widths here would only be used as a "numeric vs
-		// non-numeric" signal by isCompatible, so Long is sufficient.
+		// JSON/XML importers preserve numeric leaves as json.Number to
+		// avoid float64 precision loss for integers >2^53. Classify as
+		// Double when the literal carries a fractional or exponent
+		// component, Long otherwise. Distinguishing finer integer widths
+		// here would only be used as a "numeric vs non-numeric" signal
+		// by isCompatible, so Long is sufficient.
 		if strings.ContainsAny(string(n), ".eE") {
 			return Double
 		}

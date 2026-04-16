@@ -1,7 +1,9 @@
 package entity_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -267,4 +269,96 @@ func flattenStatsByState(stats []entity.EntityStatByState) map[string]int64 {
 		out[s.State] = s.Count
 	}
 	return out
+}
+
+// decodeJSONResponseUseNumber decodes an HTTP response body using
+// json.Decoder.UseNumber() so numeric leaves arrive as json.Number and
+// the test can assert exact literal preservation.
+func decodeJSONResponseUseNumber(t *testing.T, body []byte, v any) {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(v); err != nil {
+		t.Fatalf("failed to decode response with UseNumber: %v", err)
+	}
+}
+
+// TestCreateEntity_PreservesLargeIntPrecision verifies that a JSON entity
+// payload containing an integer larger than 2^53 round-trips through the
+// CreateEntity path without precision loss. Bare json.Unmarshal would
+// decode such an int into a float64 and round it; the precision-preserving
+// path must keep the literal exactly.
+func TestCreateEntity_PreservesLargeIntPrecision(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "PrecisionCreate", 1, `{"id":1,"name":"x"}`)
+
+	// 9007199254740993 == 2^53 + 1, the smallest positive integer that is
+	// not exactly representable as a float64.
+	const bigIDLiteral = "9007199254740993"
+	payload := `{"id":` + bigIDLiteral + `,"name":"big"}`
+
+	entityID := createEntityAndGetID(t, srv.URL, "PrecisionCreate", 1, payload)
+
+	resp := doGetEntity(t, srv.URL, entityID)
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+
+	var envelope map[string]any
+	decodeJSONResponseUseNumber(t, body, &envelope)
+
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data to be an object, got %T", envelope["data"])
+	}
+	idVal := data["id"]
+	num, ok := idVal.(json.Number)
+	if !ok {
+		t.Fatalf("expected id to decode as json.Number, got %T (value=%v)", idVal, idVal)
+	}
+	if string(num) != bigIDLiteral {
+		t.Fatalf("precision lost: expected id=%q, got %q", bigIDLiteral, string(num))
+	}
+	gotInt, err := num.Int64()
+	if err != nil {
+		t.Fatalf("Int64() failed on preserved literal: %v", err)
+	}
+	if gotInt != int64(9007199254740993) {
+		t.Fatalf("expected int64=9007199254740993, got %d", gotInt)
+	}
+}
+
+// TestUpdateEntity_PreservesLargeIntPrecision verifies the same precision
+// preservation through the UpdateEntity HTTP path (service.go :781).
+func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "PrecisionUpdate", 1, `{"id":1,"name":"x"}`)
+
+	// Create with a small id, then update with a >2^53 id.
+	entityID := createEntityAndGetID(t, srv.URL, "PrecisionUpdate", 1, `{"id":1,"name":"orig"}`)
+
+	const bigIDLiteral = "9007199254740993"
+	updateBody := `{"id":` + bigIDLiteral + `,"name":"big"}`
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", updateBody)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	resp = doGetEntity(t, srv.URL, entityID)
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+
+	var envelope map[string]any
+	decodeJSONResponseUseNumber(t, body, &envelope)
+
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data to be an object, got %T", envelope["data"])
+	}
+	idVal := data["id"]
+	num, ok := idVal.(json.Number)
+	if !ok {
+		t.Fatalf("expected id to decode as json.Number, got %T (value=%v)", idVal, idVal)
+	}
+	if string(num) != bigIDLiteral {
+		t.Fatalf("precision lost on update: expected id=%q, got %q", bigIDLiteral, string(num))
+	}
 }
