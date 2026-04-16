@@ -49,6 +49,7 @@ var allTests = []NamedTest{
 	// Phase 4a — audit (Task 4a.4)
 	{"AuditEntityHistory", RunAuditEntityHistory},
 	{"AuditWorkflowEvents", RunAuditWorkflowEvents},
+	{"AuditPostTxIdMatchesWorkflowFinished", RunAuditPostTxIdMatchesWorkflowFinished},
 
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
