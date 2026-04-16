@@ -613,6 +613,164 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 	}
 }
 
+// --- Searcher delegation tests ---
+
+// searcherEntityStore wraps an EntityStore and implements spi.Searcher.
+// It records Search calls and delegates to a provided function.
+type searcherEntityStore struct {
+	spi.EntityStore
+	searchFn    func(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error)
+	searchCalls int
+}
+
+func (s *searcherEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	s.searchCalls++
+	return s.searchFn(ctx, filter, opts)
+}
+
+// searcherFactory wraps a StoreFactory and returns a Searcher-implementing EntityStore.
+type searcherFactory struct {
+	spi.StoreFactory
+	entityStore *searcherEntityStore
+}
+
+func (f *searcherFactory) EntityStore(ctx context.Context) (spi.EntityStore, error) {
+	return f.entityStore, nil
+}
+
+func TestSearchDelegatesToSearcher(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	// Save entities to the real store for fallback verification.
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+
+	expected := []*spi.Entity{
+		{Meta: spi.EntityMeta{ID: "from-searcher"}, Data: []byte(`{}`)},
+	}
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return expected, nil
+		},
+	}
+
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// The searcher was used, not the fallback.
+	if ses.searchCalls != 1 {
+		t.Errorf("searchCalls = %d, want 1", ses.searchCalls)
+	}
+	if len(results) != 1 || results[0].Meta.ID != "from-searcher" {
+		t.Errorf("expected results from searcher, got %d results", len(results))
+	}
+}
+
+func TestSearchFallsBackWhenNotSearcher(t *testing.T) {
+	// The memory plugin doesn't implement Searcher, so this tests the fallback.
+	factory := memory.NewStoreFactory()
+	defer factory.Close()
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := factory.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+
+	results, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].Meta.ID != "e1" {
+		t.Fatalf("expected 1 result (e1), got %d", len(results))
+	}
+}
+
+func TestSearchFallsBackWhenInTransaction(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+
+	saveEntity(t, ctx, base, ref, "e1", []byte(`{"name":"Alice"}`))
+
+	realStore, _ := base.EntityStore(ctx)
+
+	ses := &searcherEntityStore{
+		EntityStore: realStore,
+		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) {
+			return []*spi.Entity{{Meta: spi.EntityMeta{ID: "from-searcher"}}}, nil
+		},
+	}
+
+	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, uuids, searchStore)
+
+	// Create a context with an active transaction.
+	tx := &spi.TransactionState{
+		ID:           "test-tx",
+		TenantID:     "tenant-1",
+		SnapshotTime: time.Now(),
+		ReadSet:      make(map[string]bool),
+		WriteSet:     make(map[string]bool),
+		Buffer:       make(map[string]*spi.Entity),
+		Deletes:      make(map[string]bool),
+	}
+	txCtx := spi.WithTransaction(ctx, tx)
+
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.name",
+		OperatorType: "EQUALS",
+		Value:        "Alice",
+	}
+
+	results, err := svc.Search(txCtx, ref, cond, search.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Should NOT have used the searcher (in-tx fallback).
+	if ses.searchCalls != 0 {
+		t.Errorf("searchCalls = %d, want 0 (should fall back when in transaction)", ses.searchCalls)
+	}
+	// Should get result from the fallback path.
+	if len(results) != 1 || results[0].Meta.ID != "e1" {
+		t.Fatalf("expected 1 result (e1) from fallback, got %d results", len(results))
+	}
+}
+
 // I-3 variant: ensure the fix doesn't break normal successful flow.
 func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	factory := memory.NewStoreFactory()
