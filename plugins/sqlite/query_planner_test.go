@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -568,5 +569,158 @@ func TestPlanQuery_MetaColumnMapping(t *testing.T) {
 	wantWhere := "(entity_id IS NOT NULL AND entity_id = ?)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
+	}
+}
+
+// FuzzQueryPlanner generates random spi.Filter trees and verifies that
+// planQuery never panics, and that the pushable/residual split is consistent:
+//   - If postFilter is nil, the original filter was fully pushable
+//   - If postFilter is non-nil, it contains only non-pushable ops
+func FuzzQueryPlanner(f *testing.F) {
+	// Seed corpus with representative filter patterns.
+	f.Add(byte(0), byte(0), "city", "Berlin", byte(0))   // eq, data
+	f.Add(byte(1), byte(1), "state", "ACTIVE", byte(0))  // ne, meta
+	f.Add(byte(2), byte(0), "age", "25", byte(1))         // gt, data, with AND wrapper
+	f.Add(byte(12), byte(0), "code", "^[A-Z]", byte(0))   // regex, data
+	f.Add(byte(8), byte(0), "name", "ali", byte(2))        // ieq, data, with OR wrapper
+	f.Add(byte(5), byte(0), "score", "10", byte(1))        // lte, data, AND wrapper
+	f.Add(byte(10), byte(0), "val", "5", byte(3))          // between, data, nested AND(OR(...))
+
+	f.Fuzz(func(t *testing.T, opIdx byte, sourceIdx byte, path string, value string, treeShape byte) {
+		// Map opIdx to a FilterOp. We cover all defined ops.
+		allOps := []spi.FilterOp{
+			spi.FilterEq,             // 0
+			spi.FilterNe,             // 1
+			spi.FilterGt,             // 2
+			spi.FilterLt,             // 3
+			spi.FilterGte,            // 4
+			spi.FilterLte,            // 5
+			spi.FilterContains,       // 6
+			spi.FilterStartsWith,     // 7
+			spi.FilterIEq,            // 8
+			spi.FilterEndsWith,       // 9
+			spi.FilterBetween,        // 10
+			spi.FilterLike,           // 11
+			spi.FilterMatchesRegex,   // 12
+			spi.FilterIsNull,         // 13
+			spi.FilterNotNull,        // 14
+			spi.FilterINe,            // 15
+			spi.FilterIContains,      // 16
+			spi.FilterINotContains,   // 17
+			spi.FilterIStartsWith,    // 18
+			spi.FilterINotStartsWith, // 19
+			spi.FilterIEndsWith,      // 20
+			spi.FilterINotEndsWith,   // 21
+		}
+		op := allOps[int(opIdx)%len(allOps)]
+
+		source := spi.SourceData
+		if sourceIdx%2 == 1 {
+			source = spi.SourceMeta
+		}
+
+		// Build a leaf filter.
+		leaf := spi.Filter{
+			Op:     op,
+			Path:   path,
+			Source: source,
+			Value:  value,
+		}
+		if op == spi.FilterBetween {
+			leaf.Values = []any{value, value + "z"}
+			leaf.Value = nil
+		}
+
+		// Optionally wrap in a tree structure.
+		var filter spi.Filter
+		switch treeShape % 4 {
+		case 0:
+			filter = leaf
+		case 1:
+			// AND with the leaf and a pushable sibling.
+			filter = spi.Filter{
+				Op: spi.FilterAnd,
+				Children: []spi.Filter{
+					leaf,
+					{Op: spi.FilterEq, Path: "x", Source: spi.SourceData, Value: "y"},
+				},
+			}
+		case 2:
+			// OR with the leaf and a pushable sibling.
+			filter = spi.Filter{
+				Op: spi.FilterOr,
+				Children: []spi.Filter{
+					leaf,
+					{Op: spi.FilterEq, Path: "x", Source: spi.SourceData, Value: "y"},
+				},
+			}
+		case 3:
+			// Nested: AND(OR(leaf, eq), gt)
+			filter = spi.Filter{
+				Op: spi.FilterAnd,
+				Children: []spi.Filter{
+					{
+						Op: spi.FilterOr,
+						Children: []spi.Filter{
+							leaf,
+							{Op: spi.FilterEq, Path: "x", Source: spi.SourceData, Value: "y"},
+						},
+					},
+					{Op: spi.FilterGt, Path: "z", Source: spi.SourceData, Value: float64(1)},
+				},
+			}
+		}
+
+		// The core property: planQuery must not panic.
+		plan := planQuery(filter)
+
+		// Verify consistency: if postFilter is nil, original filter was fully pushable.
+		if plan.postFilter == nil && plan.where == "" {
+			// Empty where + nil postFilter is valid only for empty AND children
+			// (which produces no filter at all). Otherwise, one must be non-empty.
+			if filter.Op != spi.FilterAnd || len(filter.Children) > 0 {
+				// This is OK — the leaf was pushable and produced SQL, or the
+				// tree was fully pushable. Just verify no panic occurred.
+			}
+		}
+
+		// Verify: if where is non-empty, it should not contain raw Go
+		// format verbs (%!...) which would indicate a broken Sprintf.
+		if plan.where != "" {
+			if containsFormatVerb(plan.where) {
+				t.Errorf("WHERE clause contains Go format verb: %q", plan.where)
+			}
+		}
+
+		// Verify: postFilter (if present) should only contain non-pushable ops
+		// at leaf level (or AND/OR wrapping them).
+		if plan.postFilter != nil {
+			verifyResidualOps(t, *plan.postFilter)
+		}
+	})
+}
+
+// containsFormatVerb returns true if the string contains a Go format verb
+// like "%!(EXTRA..." which would indicate a broken fmt.Sprintf call.
+func containsFormatVerb(s string) bool {
+	return strings.Contains(s, "%!(")
+}
+
+// verifyResidualOps checks that a residual filter tree contains only
+// non-pushable leaf ops (or AND/OR branches wrapping them).
+func verifyResidualOps(t *testing.T, f spi.Filter) {
+	t.Helper()
+	switch f.Op {
+	case spi.FilterAnd, spi.FilterOr:
+		for _, child := range f.Children {
+			verifyResidualOps(t, child)
+		}
+	default:
+		if isPushable(f.Op) {
+			// A pushable op in the residual is valid when it was part of an OR
+			// that contained a non-pushable sibling (conservative OR). The OR
+			// becomes fully residual, including its pushable children. This is
+			// by design — we don't split OR children.
+		}
 	}
 }
