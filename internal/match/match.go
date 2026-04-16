@@ -160,7 +160,8 @@ func matchArray(c *predicate.ArrayCondition, data []byte) (bool, error) {
 
 		// Delegate to opEquals: it handles numeric-aware comparison
 		// (gjson.Number actual + numeric expected) consistently with
-		// scalar EQUALS, so per-element semantics don't diverge.
+		// scalar EQUALS, so per-element semantics don't diverge from
+		// scalar EQUALS.
 		if !result.Exists() || !opEquals(result, expected) {
 			return false, nil
 		}
