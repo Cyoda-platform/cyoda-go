@@ -35,7 +35,7 @@ type TransactionManager struct {
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
 	tenants    map[string]spi.TenantID
-	txStatesMu sync.Mutex
+	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
 }
 
@@ -275,8 +275,8 @@ func (tm *TransactionManager) removeTxState(txID string) {
 
 // lookupTxState returns the txState for the given txID.
 func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
-	tm.txStatesMu.Lock()
-	defer tm.txStatesMu.Unlock()
+	tm.txStatesMu.RLock()
+	defer tm.txStatesMu.RUnlock()
 	s, ok := tm.txStates[txID]
 	return s, ok
 }

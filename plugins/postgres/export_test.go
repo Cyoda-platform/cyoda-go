@@ -37,8 +37,8 @@ var ClassifyErrorForTest = classifyError
 
 // HasTxState reports whether the given txID has an active txState entry.
 func HasTxState(tm *TransactionManager, txID string) bool {
-	tm.txStatesMu.Lock()
-	defer tm.txStatesMu.Unlock()
+	tm.txStatesMu.RLock()
+	defer tm.txStatesMu.RUnlock()
 	_, ok := tm.txStates[txID]
 	return ok
 }
