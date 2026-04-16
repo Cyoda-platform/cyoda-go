@@ -2078,3 +2078,190 @@ EOF
 - `predicate.ArrayCondition{JsonPath, Values []any}` — matches SPI definition at `predicate/condition.go:36`.
 
 No issues found.
+
+---
+
+## PR-4: JSON entity-payload precision (added after PR-2 audit)
+
+> **Working directory:** a fresh worktree of the cyoda-go repo on branch `feat/issue-24-pr4-json-precision` off main. PR-4 is independent of PR-2 and PR-3 (different code path).
+
+> **Why this PR exists:** The PR-2 audit (Section 3.3 of the spec) assumed JSON-imported entity payloads "already do the right thing" because `ParseJSON` uses `UseNumber()`. That assumption was wrong: `internal/domain/entity/service.go` parses user-supplied JSON payloads with bare `json.Unmarshal`, bypassing `ParseJSON`. PR-4 closes the gap. Spec Section 6.
+
+### Task 4.1: Write the failing precision tests
+
+**Files:**
+- Modify: `internal/domain/entity/service_test.go` (or create alongside existing handler tests)
+
+- [ ] **Step 1: Add focused tests using the in-tree memory plugin**
+
+Append to `internal/domain/entity/service_test.go`:
+
+```go
+func TestCreateEntity_PreservesLargeIntPrecision(t *testing.T) {
+	ctx := context.Background()
+	factory, err := memory.New(memory.Config{})
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	defer factory.Close()
+
+	tenantCtx := spi.WithTenantID(ctx, "tenant-precision")
+	h := NewHandler(factory) // adapt to actual constructor
+
+	// Set up a model that accepts arbitrary entities.
+	mref := spi.ModelRef{EntityName: "precision-test", ModelVersion: "1"}
+	mstore, _ := factory.ModelStore(tenantCtx)
+	require.NoError(t, mstore.Save(tenantCtx, &spi.ModelDescriptor{ModelRef: mref}))
+
+	// Create entity with id > 2^53.
+	const bigID = 9007199254740993
+	payload := []byte(`{"id":9007199254740993,"name":"big"}`)
+	created, err := h.CreateEntity(tenantCtx, &CreateEntityInput{
+		EntityName:   "precision-test",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Data:         payload,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, created.EntityIDs)
+
+	// Read back via GetOneEntity.
+	envelope, err := h.GetOneEntity(tenantCtx, &GetOneEntityInput{EntityID: created.EntityIDs[0]})
+	require.NoError(t, err)
+
+	data := envelope.Data.(map[string]any)
+	idVal := data["id"]
+	// MUST be json.Number with exact string preservation, not float64.
+	num, ok := idVal.(json.Number)
+	require.True(t, ok, "id should be json.Number, got %T", idVal)
+	require.Equal(t, "9007199254740993", string(num))
+
+	// Confirm the integer round-trips:
+	gotInt, err := num.Int64()
+	require.NoError(t, err)
+	require.Equal(t, int64(bigID), gotInt)
+}
+
+func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
+	// Same shape as Create test, but exercises the :781 update path.
+	// Create with small id, then UpdateEntity with id = 9007199254740993.
+	// Read back, verify exact preservation.
+	// (Adapt the UpdateEntityInput shape and call pattern to actual signatures.)
+}
+```
+
+> Adapt the `NewHandler` constructor, `CreateEntityInput`/`UpdateEntityInput`/`GetOneEntityInput` shape, and `WithTenantID`/`ModelDescriptor` field names to actual signatures (verify via `grep -n "func NewHandler\|type CreateEntityInput\|WithTenantID" internal/domain/entity/`).
+
+- [ ] **Step 2: Run to confirm FAIL**
+
+```bash
+go test -run TestCreateEntity_PreservesLargeIntPrecision -v ./internal/domain/entity/
+```
+Expected: FAIL — current code returns `float64` for the id, which rounds.
+
+### Task 4.2: Add the helper and apply UseNumber to all 5 sites
+
+**Files:**
+- Modify: `internal/domain/entity/service.go` — add helper, replace 5 call sites
+
+- [ ] **Step 1: Add the helper at the top of the file (after imports, before the first existing function)**
+
+```go
+// decodeJSONPreservingNumbers is the precision-preserving counterpart to
+// json.Unmarshal: numeric leaves arrive as json.Number rather than float64,
+// so callers can choose Int64()/Float64()/string preservation. Mirrors
+// importer.ParseJSON's UseNumber() behavior.
+func decodeJSONPreservingNumbers(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
+}
+```
+
+Add `"bytes"` to the imports if not already present.
+
+- [ ] **Step 2: Replace each of the 5 call sites**
+
+For each of the following lines in `internal/domain/entity/service.go`, replace `json.Unmarshal(...)` with `decodeJSONPreservingNumbers(...)`:
+
+```
+:122  → decodeJSONPreservingNumbers(bodyBytes, &parsedData)
+:238  → decodeJSONPreservingNumbers(ent.Data, &data)
+:633  → decodeJSONPreservingNumbers(ent.Data, &data)
+:693  → decodeJSONPreservingNumbers(payloadBytes, &parsedData)
+:781  → decodeJSONPreservingNumbers(bodyBytes, &parsedData)
+```
+
+> Line numbers may shift slightly after edits — search for the exact string `json.Unmarshal(bodyBytes,` etc. in the file before each edit.
+
+- [ ] **Step 3: Run new tests to confirm GREEN**
+
+```bash
+go test -run TestCreateEntity_PreservesLargeIntPrecision -run TestUpdateEntity_PreservesLargeIntPrecision -v ./internal/domain/entity/
+```
+Expected: PASS.
+
+### Task 4.3: Audit and fix downstream consumers
+
+- [ ] **Step 1: Grep for typed numeric assertions in entity package**
+
+```bash
+grep -rnE "\\.\\((int64|float64)\\)" internal/domain/entity/ --include="*.go"
+```
+
+For each match, verify whether the asserted value comes from one of the 5 paths we just changed. If so, the consumer needs to handle `json.Number`.
+
+- [ ] **Step 2: Run the full entity-domain test suite**
+
+```bash
+go test ./internal/domain/entity/... -v 2>&1 | tail -30
+```
+Any failure is a downstream consumer to fix. Per Gate 6, fix inline.
+
+- [ ] **Step 3: Run race + full suite**
+
+```bash
+go test -race -short ./...
+```
+Expected: all PASS.
+
+### Task 4.4: Commit and open PR
+
+- [ ] **Step 1: Commit**
+
+```bash
+git add internal/domain/entity/service.go internal/domain/entity/service_test.go
+# Plus any consumer fixes.
+git commit -m "fix(entity): preserve numeric precision in JSON entity payloads
+
+Bare json.Unmarshal at five sites in service.go (CreateEntity,
+UpdateEntity, collection items, two entity-data re-parses) was losing
+precision for integers >2^53 — same root cause as the XML fix in PR-2,
+different code path. Now uses a UseNumber-decoded helper that mirrors
+importer.ParseJSON.
+
+Closes the JSON-precision gap discovered during PR-2's audit."
+```
+
+- [ ] **Step 2: Push and open PR**
+
+```bash
+git -c credential.helper="!f() { echo username=pschleger; echo password=\$GH_TOKEN; }; f" push -u origin feat/issue-24-pr4-json-precision
+
+gh pr create --title "fix(entity): JSON entity-payload precision (issue #24 part 4)" --body "$(cat <<'EOF'
+## Summary
+
+Closes the JSON-precision gap discovered during PR-2's downstream audit. The XML fix in PR-2 assumed JSON imports "already preserved precision" because `ParseJSON` uses `UseNumber()`. That was true for the model importer but not for the entity-create / entity-update HTTP handlers — those parsed payloads with bare `json.Unmarshal` and lost precision for integers >2^53.
+
+This PR adds a `decodeJSONPreservingNumbers` helper and applies it at all 5 call sites in `internal/domain/entity/service.go`.
+
+## Test plan
+
+- [ ] New unit tests exercise the create + update paths with `9007199254740993` (>2^53) and verify exact round-trip
+- [ ] Downstream audit clean (any consumer assuming float64 was fixed)
+- [ ] Full test suite green under -race
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```

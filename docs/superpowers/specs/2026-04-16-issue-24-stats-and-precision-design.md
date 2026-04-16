@@ -347,3 +347,65 @@ Add a unit test covering `toFloat64(json.Number("1.5")) → 1.5`, and an integra
 - Capability-interface refactor of the SPI (separate spec if/when we go there).
 - `matchArray` operators beyond equality. The bug is about equality; we don't extend to `LESS_THAN`-per-element or similar.
 - Backwards-compatibility shims for the SPI bump. Per CLAUDE.md project conventions, we don't add fallback paths for hypothetical un-migrated plugins; cassandra is migrated as part of the rollout.
+
+---
+
+## Section 6 — JSON entity-payload precision (PR-4)
+
+### 6.1 Background
+
+Section 3 (PR-2) fixed numeric precision for XML-imported entity payloads by switching `inferXMLValue` to `json.Number`. Section 3.3's audit assumed JSON-imported payloads "already do the right thing" because `ParseJSON` (in `internal/domain/model/importer/parser.go`) uses `json.NewDecoder(...).UseNumber()`.
+
+That assumption is wrong for the entity-create / entity-update path. The HTTP entity handlers in `internal/domain/entity/service.go` parse user-supplied JSON payloads with **bare `json.Unmarshal`**, bypassing `ParseJSON`. Result: a JSON payload containing a numeric field >2^53 loses precision the same way XML did before PR-2.
+
+### 6.2 Scope (PR-4)
+
+Replace bare `json.Unmarshal` with `json.NewDecoder(...).UseNumber()` at the following 5 call sites in `internal/domain/entity/service.go`:
+
+- `:122` (CreateEntity, case "JSON")
+- `:238` (entity-data re-parse for response — preserves round-trip precision)
+- `:633` (entity-data re-parse — same)
+- `:693` (collection item payload)
+- `:781` (UpdateEntity, case "JSON")
+
+Pattern (helper function recommended for DRY):
+
+```go
+// decodeJSONPreservingNumbers is the precision-preserving counterpart to
+// json.Unmarshal: numeric leaves arrive as json.Number rather than float64,
+// so callers can choose Int64()/Float64()/string preservation. Mirrors
+// importer.ParseJSON's UseNumber() behavior.
+func decodeJSONPreservingNumbers(data []byte, v any) error {
+    dec := json.NewDecoder(bytes.NewReader(data))
+    dec.UseNumber()
+    return dec.Decode(v)
+}
+```
+
+Place the helper in `internal/domain/entity/service.go` (private, package-scoped) — there's no need to push it to `common/` unless other packages want it.
+
+### 6.3 Downstream consumer audit
+
+The consumer audit done in PR-2 already fixed `internal/domain/model/schema/validate.go:inferDataType` to handle `json.Number`. That fix carries over (since the entity-create path goes through `validateOrExtend → schema.Validate → inferDataType`).
+
+PR-4 must additionally check:
+- Anything in `internal/domain/entity/` that does typed assertions on `int64`/`float64` against the parsed `parsedData` (or the `data` from the entity-data re-parse paths). Grep for `\.\((int64|float64)\)` in the package.
+- Any consumer that re-marshals `parsedData` to JSON downstream — `json.Marshal` handles `json.Number` natively (it emits as numeric literal), so this path is round-trip-safe by default.
+
+Per Gate 6: any consumer found is fixed in PR-4.
+
+### 6.4 Tests
+
+Add focused unit tests in `internal/domain/entity/service_test.go`:
+
+- `TestCreateEntity_PreservesLargeIntPrecision` — POST a JSON payload with `{"id": 9007199254740993}`, GET the entity back, verify the `id` field is the exact integer (not rounded). Backed by the in-tree memory plugin.
+- `TestUpdateEntity_PreservesLargeIntPrecision` — same shape, exercises the update path at `:781`.
+- (Optional but recommended) `TestCollectionCreate_PreservesLargeIntPrecision` — for the `:693` site.
+
+E2E coverage: extend an existing entity E2E test (e.g. `TestEntityLifecycle_CRUD`) with a large-int payload assertion, OR add a new minimal E2E. The HTTP round-trip is the strongest evidence the fix works end-to-end.
+
+### 6.5 Out of scope
+
+- gRPC entity-payload precision. The gRPC dispatcher (`internal/grpc/dispatch.go`, `internal/grpc/model.go`) also uses bare `json.Unmarshal` for some payloads, but most parse into typed structs (less precision exposure). Track separately.
+- Other repositories' parsers (workflow, search, model). Same audit pattern but different scope; track separately if they prove to be precision-leaky.
+- Migrating the helper to `internal/common/` until a second package needs it (YAGNI).
