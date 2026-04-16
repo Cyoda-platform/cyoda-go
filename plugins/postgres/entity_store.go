@@ -17,6 +17,7 @@ import (
 type entityStore struct {
 	q        Querier
 	tenantID spi.TenantID
+	tm       *TransactionManager
 }
 
 func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {

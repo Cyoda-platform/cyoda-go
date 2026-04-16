@@ -72,7 +72,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 	if err != nil {
 		return nil, err
 	}
-	return &entityStore{q: f.querier(), tenantID: tid}, nil
+	return &entityStore{q: f.querier(), tenantID: tid, tm: f.tm}, nil
 }
 
 func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {

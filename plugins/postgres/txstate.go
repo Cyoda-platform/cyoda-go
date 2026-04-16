@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -198,6 +199,34 @@ func (s *txState) RestoreSavepoint(id string) error {
 	}
 	s.savepoints = s.savepoints[:idx+1]
 	return nil
+}
+
+// recordReadIfInTx records a read into the tx's state, if the context
+// carries a transaction. No-op for non-tx reads.
+func (tm *TransactionManager) recordReadIfInTx(ctx context.Context, entityID string, version int64) {
+	txState := spi.GetTransaction(ctx)
+	if txState == nil {
+		return
+	}
+	s, ok := tm.lookupTxState(txState.ID)
+	if !ok {
+		return
+	}
+	s.RecordRead(entityID, version)
+}
+
+// recordWriteIfInTx records a write into the tx's state, if the context
+// carries a transaction. No-op for non-tx writes.
+func (tm *TransactionManager) recordWriteIfInTx(ctx context.Context, entityID string, preWriteVersion int64) {
+	txState := spi.GetTransaction(ctx)
+	if txState == nil {
+		return
+	}
+	s, ok := tm.lookupTxState(txState.ID)
+	if !ok {
+		return
+	}
+	s.RecordWrite(entityID, preWriteVersion)
 }
 
 // ReleaseSavepoint drops the savepoint entry without touching the current
