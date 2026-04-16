@@ -284,51 +284,68 @@ git commit -m "chore: bump cyoda-go-spi to v0.5.0"
 ```
 > The build is currently red. Next task makes it green. This is the RED of TDD at the integration level — the SPI conformance suite is the failing test driving the implementation.
 
-### Task B2: Implement CountByState
+### Task B2: Implement CountByState (revised — uses existing $._meta.state index)
+
+> **Design reference:** Section 2.3 cassandra subsection of the spec. The original plan assumed state lived in `entity_by_model`. It does not — state is already indexed at `$._meta.state` via `AddLifecycleIndexEntries` (`index_engine.go:165`, called from `tx_coordinator.go:812` on every commit). `CountByState` reads from the existing string-index path. **Mandatory:** streaming (no full row-set materialization), per-shard parallel fan-out, errgroup-bounded concurrency.
 
 **Files:**
-- Modify: `entity_store.go` — add `CountByState` method on `*EntityStore`
+- Create: `entity_store_count_by_state.go` — keeps the new orchestration code self-contained and reviewable; the method is wired onto `*EntityStore`.
+- Modify (only if a new CQL constant is needed): `cql.go` — add a streaming SELECT for `(field_path='$._meta.state')` rows.
 
-- [ ] **Step 1: Locate the existing Count method**
-
-```bash
-grep -n "func.*EntityStore.*Count(\|func.*EntityStore.*GetVersionHistory" entity_store.go
-```
-Note the `Count` method's body — the new method will mirror its shard-scan pattern but additionally read the `state` column.
-
-- [ ] **Step 2: Confirm the entity_by_model query reads state**
+- [ ] **Step 1: Verify CQL primitives available for streaming state-index reads**
 
 ```bash
-grep -n "cqlEntityByModelSelectByModel" cql.go entity_store.go | head -10
+grep -n "cqlIndexStringDataSelectEqual\|cqlIndexStringDataSelectRange\|index_string_data\|index_string_meta" cql.go | head -20
 ```
-Find the SQL constant. If it does NOT include `state`, you'll need to either:
-- (preferred) add a new constant `cqlEntityByModelSelectByModelWithState` that selects `(eid, deleted, state)` from the same partition key, or
-- modify the existing constant if no other call site needs the narrower result.
 
-Check call sites of the existing constant first:
-```bash
-grep -rn "cqlEntityByModelSelectByModel" .
-```
-If only `Count` uses it, it's safe to extend the column list. Otherwise add a new constant.
+Confirm whether existing CQL constants can produce the required result set — `(entity_id, submit_time, value, in_out_marker, tx_id)` rows for `(tenant, model, model_version, shard, field_type=String, field_path='$._meta.state')`, ordered for streaming consumption. The existing `cqlIndexStringDataSelectEqual` may already be sufficient when `value` is supplied; for the all-states path you need a SELECT that does NOT pin `value` (returns all values for the field path).
 
-- [ ] **Step 3: Write the CountByState method**
+If a suitable constant does not exist, add one. Suggested name: `cqlIndexStringDataSelectAllForFieldPath` (or similar). Register via `registerCQL(...)`. The query partition key is `(tenant_id, model_name, model_version, shard, field_type, field_path, index_id, cmp_idx_val)` — for "all values" you need to also enumerate `cmp_idx_val` via `index_string_meta`, OR scan a broader partition. Investigate the existing search executor's pattern (`grep -rn "IndexLookupNode\|executeIndexLookup" search/`) to see how it handles the "select all rows for a field path" case and reuse that approach.
 
-In `entity_store.go`, immediately after the `Count` method:
+- [ ] **Step 2: Write the file with CountByState entry point and per-shard worker**
+
+Create `entity_store_count_by_state.go`:
 
 ```go
+package cassandra
+
+import (
+	"context"
+	"fmt"
+	"runtime"
+	"time"
+
+	"github.com/gocql/gocql"
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"golang.org/x/sync/errgroup"
+)
+
+// winnerEntry holds the latest (submit_time, value, marker) for one entity_id
+// during per-shard streaming aggregation. It must NOT escape its shard goroutine
+// — the per-shard map is dropped after collapse to free heap.
+type winnerEntry struct {
+	submitTime int64
+	value      string
+	marker     int8
+}
+
 // CountByState returns counts of non-deleted entities grouped by state for the
-// given model. NOTE: Mirrors Count's shard-scan; reads the state column for
-// every row in addition to (eid, deleted). O(n). Acceptable for the current
-// phase; a state-indexed materialized view is a possible future optimization.
+// given model. See SPI godoc on EntityStore.CountByState for filter semantics.
+//
+// Implementation: reads the existing $._meta.state string-index (maintained by
+// AddLifecycleIndexEntries on every commit). Streams rows per (shard, period)
+// without materializing the full row set; resolves IN/OUT per entity within
+// each shard via a small per-entity winner map, then collapses to per-state
+// counts and aggregates across shards via errgroup with bounded concurrency.
+//
+// In-tx callers get committed_at_snapshot + writeset_delta semantics.
 func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+	// Empty (non-nil) filter slice short-circuits without I/O.
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}
 
-	tid := string(s.tenantID)
-	modelVer := modelVersionToInt(modelRef.ModelVersion)
-
-	// Build state filter set for fast lookup.
+	// Build filter set for fast lookup.
 	var filter map[string]struct{}
 	if states != nil {
 		filter = make(map[string]struct{}, len(states))
@@ -337,79 +354,284 @@ func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 		}
 	}
 
-	result := make(map[string]int64)
-	for shard := 0; shard < s.numShards; shard++ {
-		iter := newTimedQuery(s.session, s.cqlDuration, ctx,
-			cqlEntityByModelSelectByModelWithState, // or whatever constant from Step 2
-			tid, modelRef.EntityName, modelVer, shard,
-		).Iter()
+	// Compute committed counts at snapshot time (or "now" if no tx).
+	committed, err := s.countByStateCommitted(ctx, modelRef, filter)
+	if err != nil {
+		return nil, err
+	}
 
-		var eid gocql.UUID
-		var deleted bool
-		var state string
-		for iter.Scan(&eid, &deleted, &state) {
-			if deleted {
-				continue
-			}
-			if filter != nil {
-				if _, ok := filter[state]; !ok {
-					continue
-				}
-			}
-			result[state]++
+	// In-tx: apply writeset delta to the snapshot-time counts.
+	if txCtx, ok := getTxState(ctx); ok {
+		if err := s.applyTxDeltaToCountByState(ctx, modelRef, txCtx, committed, filter); err != nil {
+			return nil, err
 		}
-		if err := iter.Close(); err != nil {
-			return nil, fmt.Errorf("failed to query entity_by_model shard %d: %w", shard, err)
+	}
+
+	// Drop zero-count entries per SPI contract.
+	for k, v := range committed {
+		if v == 0 {
+			delete(committed, k)
+		}
+	}
+	return committed, nil
+}
+
+// countByStateCommitted runs the per-shard parallel scan against the
+// $._meta.state index, returning a map[state]int64 of committed counts.
+// If filter != nil, only states in the filter set are included in the result.
+func (s *EntityStore) countByStateCommitted(ctx context.Context, modelRef spi.ModelRef, filter map[string]struct{}) (map[string]int64, error) {
+	tid := string(s.tenantID)
+	modelVer := modelVersionToInt(modelRef.ModelVersion)
+
+	maxParallel := runtime.GOMAXPROCS(0)
+	if s.numShards < maxParallel {
+		maxParallel = s.numShards
+	}
+	if maxParallel < 1 {
+		maxParallel = 1
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxParallel)
+
+	shardResults := make([]map[string]int64, s.numShards)
+	for shard := 0; shard < s.numShards; shard++ {
+		shard := shard
+		g.Go(func() error {
+			m, err := s.countByStateInShard(gctx, tid, modelRef.EntityName, modelVer, shard, filter)
+			if err != nil {
+				return fmt.Errorf("count by state shard %d: %w", shard, err)
+			}
+			shardResults[shard] = m
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	// Aggregate per-shard counts (entity_ids are non-overlapping across shards).
+	result := make(map[string]int64)
+	for _, m := range shardResults {
+		for state, n := range m {
+			result[state] += n
 		}
 	}
 	return result, nil
 }
+
+// countByStateInShard streams index_string_data rows for $._meta.state in the
+// given shard. Maintains a per-entity winner map (latest submit_time across
+// all values for this entity) and collapses to per-state counts on close.
+//
+// Memory bound: O(entities-with-state-history-in-shard). Does NOT materialize
+// the row set.
+func (s *EntityStore) countByStateInShard(
+	ctx context.Context,
+	tenantID, entityName string,
+	modelVer, shard int,
+	filter map[string]struct{},
+) (map[string]int64, error) {
+	winners := make(map[gocql.UUID]winnerEntry)
+
+	// IMPORTANT: this iter must be a streaming query. Use newTimedQuery / Iter()
+	// and Scan row-at-a-time. Do NOT call .SliceMap() or accumulate rows.
+	//
+	// The actual CQL constant and bind args depend on Step 1's investigation —
+	// the query must select rows for (tenant, entityName, modelVer, shard,
+	// field_type=String, field_path='$._meta.state') across all values, with
+	// columns (entity_id, submit_time, value, in_out_marker, tx_id).
+	//
+	// NOTE: enumerating "all values for a field_path" may require iterating
+	// index_string_meta first (to get cmp_idx_val list per period) and then
+	// querying index_string_data per (cmp_idx_val, period). Mirror whatever
+	// pattern the search executor uses — see search/planner.go and the
+	// IndexLookupNode execution path.
+
+	iter := /* TODO at impl time: streaming iter for the field-path scan */ /* placeholder */ (*gocql.Iter)(nil)
+
+	var (
+		eid        gocql.UUID
+		submitTime int64
+		value      string
+		marker     int8
+		txID       gocql.UUID
+	)
+	for iter.Scan(&eid, &submitTime, &value, &marker, &txID) {
+		// Cheap committed-tx check (resolver caches by tx_id).
+		committed, err := s.txStatusResolver.IsCommitted(ctx, spi.TenantID(tenantID), txID)
+		if err != nil {
+			_ = iter.Close()
+			return nil, fmt.Errorf("IsCommitted(%s): %w", txID, err)
+		}
+		if !committed {
+			continue
+		}
+		// Per-entity winner: keep the row with the highest submit_time.
+		if w, ok := winners[eid]; !ok || submitTime > w.submitTime {
+			winners[eid] = winnerEntry{submitTime: submitTime, value: value, marker: marker}
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("close iter: %w", err)
+	}
+
+	// Collapse winners to per-state counts. Filter applied here, AFTER winner
+	// resolution — filtering during scan would miscount entities whose latest
+	// IN is at a non-filtered state.
+	out := make(map[string]int64)
+	for _, w := range winners {
+		if w.marker != InOutMarkerIN {
+			continue
+		}
+		if filter != nil {
+			if _, ok := filter[w.value]; !ok {
+				continue
+			}
+		}
+		out[w.value]++
+	}
+	// winners goes out of scope here — the large per-entity map is freed.
+	return out, nil
+}
+
+// applyTxDeltaToCountByState mutates `counts` in place to reflect uncommitted
+// writes from the current transaction. The writeset is bounded by what THIS tx
+// has touched — typically <10 entries, certainly small.
+//
+// Underflow during decrement signals a writeset/snapshot inconsistency
+// (stale PrevData, missing entity_version row, ancestor visibility bug) and
+// is reported as an internal error rather than silently clamped.
+func (s *EntityStore) applyTxDeltaToCountByState(
+	ctx context.Context,
+	modelRef spi.ModelRef,
+	txCtx /* tx state type — depends on existing types */ interface{},
+	counts map[string]int64,
+	filter map[string]struct{},
+) error {
+	// Iterate the current tx's writeset entries scoped to the given modelRef.
+	// For each entry:
+	//   oldState = state at snapshot time:
+	//     - prefer the state extracted from entry.PrevData (already used by
+	//       the lifecycle indexer at tx_coordinator.go:805-812 — reuse
+	//       `extractMetaState` if it exists)
+	//     - if PrevData is absent on the entry, fall back to a single
+	//       entity_version lookup at snapshot time (bounded by writeset size).
+	//   newState = entry.State
+	//
+	//   if entry.Deleted:
+	//       counts[oldState]-- (underflow check below)
+	//   elif oldState == newState:
+	//       continue (no change in this tx)
+	//   elif oldState == "":
+	//       counts[newState]++ (new entity in this tx)
+	//   else:
+	//       counts[oldState]--
+	//       counts[newState]++
+	//
+	//   filter handling: if filter != nil, skip increments/decrements for
+	//   states not in the filter (the result map should not contain them).
+	//
+	//   underflow check after EVERY decrement:
+	//     if counts[oldState] < 0 {
+	//         return common.Internal( ... ) — see spec Section 2.3 for exact
+	//         error wording. Wrap/route through whatever the cassandra plugin
+	//         uses for SPI-boundary internal errors.
+	//     }
+	//
+	// IMPORTANT: do NOT panic, do NOT silently clamp to zero.
+	return fmt.Errorf("TODO at impl time: implement writeset-delta application per spec Section 2.3")
+}
+
+// _ = time.Now // placeholder — remove if unused
+var _ = time.Now
 ```
 
-> Adapt the constant name to whatever you chose in Step 2.
+> **This file is a scaffold.** It is intentionally incomplete in two places:
+> 1. The streaming iter setup (Step 1's investigation determines the exact CQL constant and bind shape).
+> 2. The writeset-delta application (depends on the existing tx-state types in cassandra plugin — `getTxState`, `txCtx.snapshotTime`, writeset entry shape).
+>
+> Both gaps require the implementer to read the existing tx_coordinator and search executor patterns and adapt. **Do NOT commit the file with `TODO at impl time` comments still present** — fully implement before commit. The scaffold's purpose is to lock in the structure (winner map, errgroup fan-out, no full row-set materialization, post-resolution filter, underflow-as-error) so the implementer doesn't drift.
 
-- [ ] **Step 4: Run the SPI conformance suite against the cassandra plugin**
+- [ ] **Step 3: Verify build succeeds before running tests**
 
-The cassandra repo runs the SPI suite via something like `RunEntityStoreSuite(...)` from `cyoda-go-spi/spitest`. Find the test that drives it:
 ```bash
-grep -rn "RunEntityStoreSuite\|runSubtest" --include="*_test.go" | head -10
+go build ./...
 ```
+Expected: SUCCESS once the TODOs in Step 2 are resolved.
 
-Run it (adjust to actual cassandra test invocation, likely requires a running cassandra container):
+- [ ] **Step 4: Run the SPI conformance suite for CountByState only**
+
+The cassandra repo's `conformance_test.go` already drives `spitest.StoreFactoryConformance(...)`. The new `CountByState` subtest is auto-registered by the v0.5.0 SPI bump. Run it:
+
 ```bash
-go test -run TestConformance/CountByState -v ./...
+go test -run TestConformance/EntityStore/CountByState -v ./...
 ```
-Expected: PASS for `CountByState` subtest. If it fails, fix the implementation. Do not commit until green.
+Expected: PASS. The conformance test exercises 9 distinct contract bullets (empty model with nil/empty filter, mixed states grouping, single+missing state filter, deleted exclusion, tenant isolation, transactional visibility). If any subtest fails, fix the implementation; do not commit until green.
+
+> **In-tx visibility is the most likely failure point.** If `Transaction/Visibility/UncommittedSaveVisibleInTx` (or similar) fails, the writeset-delta application in `applyTxDeltaToCountByState` is the suspect. Trace `getTxState`, the writeset entry shape, and `extractMetaState` from existing call sites in `tx_coordinator.go`.
 
 - [ ] **Step 5: Run full conformance suite as regression check**
 
 ```bash
-go test -run TestConformance -v ./... 2>&1 | tail -50
+go test -run TestConformance -v ./... 2>&1 | tail -80
 ```
-Expected: all subtests including pre-existing ones still pass.
+Expected: all subtests pass, including the existing ones (Count, Get, Save, etc.). The new code should not affect any other code path.
 
-- [ ] **Step 6: Commit implementation**
+- [ ] **Step 6: Run any cassandra-specific perf/benchmark tests if present**
 
 ```bash
-git add entity_store.go cql.go
-git commit -m "feat: implement EntityStore.CountByState
+go test -bench=. -run=^$ ./... 2>&1 | tail -30
+```
+Optional but recommended: confirm the fan-out and streaming pattern doesn't regress existing benchmarks. Look for any benchmark named `BenchmarkCount*` and add a `BenchmarkCountByState_*` mirror if it makes sense.
 
-Mirrors Count's shard-scan; additionally reads the state column for
-each non-deleted entity to build the grouping. Applies optional state
-filter in Go. O(n) — same scan-cost class as Count. A state-indexed
-materialized view is a possible future optimization."
+- [ ] **Step 7: Commit implementation**
+
+```bash
+git add entity_store_count_by_state.go cql.go
+git commit -m "$(cat <<'EOF'
+feat: implement EntityStore.CountByState via $._meta.state index
+
+Reads the existing string-index path (AddLifecycleIndexEntries already
+maintains $._meta.state on every commit). Implementation details:
+
+- Per-shard parallel fan-out via errgroup with bounded concurrency
+  (capped at min(numShards, GOMAXPROCS)).
+- Streaming row consumption — no full row-set materialization. Memory
+  bound per shard is O(entities-with-state-history-in-shard), not
+  O(index rows).
+- State filter applied AFTER winner resolution (per-shard), so an
+  entity whose latest IN is at a non-filtered state is correctly
+  excluded.
+- In-tx path: committed_at_snapshot + writeset_delta. Underflow during
+  delta application surfaces as an internal error, not a silent clamp.
+
+A COUNTER-based O(1) variant is a possible future optimization if
+production scan performance proves insufficient.
+EOF
+)"
 ```
 
 ### Task B3: Tag a release
 
-- [ ] **Step 1: Tag and push**
+- [ ] **Step 1: Tag v0.1.0**
 
-Use whatever version scheme the cassandra repo uses (check `git tag --sort=-v:refname | head -3` for the latest). Bump appropriately and push.
+This is the cassandra repo's first tag (no prior tags exist). Create `v0.1.0`:
 
 ```bash
-git push origin main
-git push origin <new-tag>
+git tag v0.1.0
+git -c credential.helper="!f() { echo username=pschleger; echo password=$GH_TOKEN; }; f" push origin feat/count-by-state
+git -c credential.helper="!f() { echo username=pschleger; echo password=$GH_TOKEN; }; f" push origin v0.1.0
 ```
+
+> The credential-helper pattern is required because SSH and `gh auth setup-git` are blocked in the sandbox. See `~/.claude/projects/.../memory/feedback_git_push_credential.md`.
+
+- [ ] **Step 2: Verify the tag is published**
+
+```bash
+git ls-remote --tags origin | grep v0.1.0
+```
+Expected: a single line with the SHA and `refs/tags/v0.1.0`.
 
 ---
 
