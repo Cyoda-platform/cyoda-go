@@ -9,6 +9,25 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
+// setupEntityTestWithTM creates a StoreFactory that has a TransactionManager
+// wired in. Used by hook tests.
+func setupEntityTestWithTM(t *testing.T) (*postgres.StoreFactory, *postgres.TransactionManager) {
+	t.Helper()
+	pool := newTestPool(t)
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	if err := postgres.Migrate(pool); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
+
+	uuids := newTestUUIDGenerator()
+	tm := postgres.NewTransactionManager(pool, uuids)
+	factory := postgres.NewStoreFactoryWithTMForTest(pool, tm)
+	return factory, tm
+}
+
 func setupEntityTest(t *testing.T) *postgres.StoreFactory {
 	t.Helper()
 	pool := newTestPool(t)
@@ -546,5 +565,220 @@ func TestEntityStore_DeleteCreatesVersionEntry(t *testing.T) {
 	}
 	if history[1].ChangeType != "DELETED" {
 		t.Errorf("expected ChangeType=DELETED, got %q", history[1].ChangeType)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// readSet / writeSet hook tests
+// ---------------------------------------------------------------------------
+
+// TestEntityStore_Get_PopulatesReadSet verifies that a Get within a
+// transaction records the entity's version in the readSet.
+func TestEntityStore_Get_PopulatesReadSet(t *testing.T) {
+	factory, tm := setupEntityTestWithTM(t)
+	ctx := ctxWithTenant("hook-tenant")
+
+	// Seed e1 at version 3 (save three times).
+	seedStore, _ := factory.EntityStore(ctx)
+	e := makeEntity("e1-read")
+	e.Meta.ModelRef = spi.ModelRef{EntityName: "Hook", ModelVersion: "1"}
+	seedStore.Save(ctx, e) // v1
+	seedStore.Save(ctx, e) // v2
+	seedStore.Save(ctx, e) // v3
+
+	// Begin a transaction.
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+
+	// Get within the transaction.
+	txStore, _ := factory.EntityStore(txCtx)
+	got, err := txStore.Get(txCtx, "e1-read")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Meta.Version != 3 {
+		t.Fatalf("expected version 3, got %d", got.Meta.Version)
+	}
+
+	// Verify readSet recorded version 3.
+	state, ok := postgres.LookupTxStateForTest(tm, txID)
+	if !ok {
+		t.Fatal("txState not found")
+	}
+	if v := postgres.ReadSetVersionForTest(state, "e1-read"); v != 3 {
+		t.Errorf("readSet[e1-read] = %d, want 3", v)
+	}
+}
+
+// TestEntityStore_Get_NoTxContext_DoesNotRecord verifies that Get outside
+// a transaction does not panic and records nothing.
+func TestEntityStore_Get_NoTxContext_DoesNotRecord(t *testing.T) {
+	factory, _ := setupEntityTestWithTM(t)
+	ctx := ctxWithTenant("hook-tenant")
+
+	store, _ := factory.EntityStore(ctx)
+	e := makeEntity("e1-notx")
+	e.Meta.ModelRef = spi.ModelRef{EntityName: "Hook", ModelVersion: "1"}
+	store.Save(ctx, e)
+
+	// Get outside a transaction — no panic expected.
+	got, err := store.Get(ctx, "e1-notx")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil entity")
+	}
+}
+
+// TestEntityStore_Save_FreshInsertNotRecorded verifies that a fresh Save
+// (new entity) does NOT record in the writeSet. Fresh inserts are not tracked
+// because the UPSERT's ON CONFLICT DO UPDATE handles concurrent inserts
+// gracefully at the DB level, and tracking would cause false positives when
+// validateInChunks (running inside the same tx) sees the tx's own insert.
+func TestEntityStore_Save_FreshInsertNotRecorded(t *testing.T) {
+	factory, tm := setupEntityTestWithTM(t)
+	ctx := ctxWithTenant("hook-tenant")
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+
+	txStore, _ := factory.EntityStore(txCtx)
+	e := makeEntity("new-e1")
+	e.Meta.ModelRef = spi.ModelRef{EntityName: "Hook", ModelVersion: "1"}
+	if _, err := txStore.Save(txCtx, e); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	state, ok := postgres.LookupTxStateForTest(tm, txID)
+	if !ok {
+		t.Fatal("txState not found")
+	}
+	_, present := postgres.WriteSetVersionForTest(state, "new-e1")
+	if present {
+		t.Error("fresh insert must NOT be recorded in writeSet")
+	}
+}
+
+// TestEntityStore_Save_UpdateRecordsPreWriteVersion verifies that updating
+// an existing entity records preWriteVersion = nextVersion-1 in the writeSet.
+func TestEntityStore_Save_UpdateRecordsPreWriteVersion(t *testing.T) {
+	factory, tm := setupEntityTestWithTM(t)
+	ctx := ctxWithTenant("hook-tenant")
+
+	// Seed existing entity at v4.
+	seedStore, _ := factory.EntityStore(ctx)
+	e := makeEntity("existing-e1")
+	e.Meta.ModelRef = spi.ModelRef{EntityName: "Hook", ModelVersion: "1"}
+	for i := 0; i < 4; i++ {
+		seedStore.Save(ctx, e)
+	}
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+
+	txStore, _ := factory.EntityStore(txCtx)
+	if _, err := txStore.Save(txCtx, e); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	state, ok := postgres.LookupTxStateForTest(tm, txID)
+	if !ok {
+		t.Fatal("txState not found")
+	}
+	v, present := postgres.WriteSetVersionForTest(state, "existing-e1")
+	if !present {
+		t.Fatal("existing-e1 not found in writeSet")
+	}
+	if v != 4 {
+		t.Errorf("writeSet[existing-e1] = %d, want 4 (preWriteVersion = nextVersion-1)", v)
+	}
+}
+
+// TestEntityStore_Delete_RecordsWriteSet verifies that Delete records the
+// entity's pre-delete version in the writeSet.
+func TestEntityStore_Delete_RecordsWriteSet(t *testing.T) {
+	factory, tm := setupEntityTestWithTM(t)
+	ctx := ctxWithTenant("hook-tenant")
+
+	// Seed del-e at v6.
+	seedStore, _ := factory.EntityStore(ctx)
+	e := makeEntity("del-e")
+	e.Meta.ModelRef = spi.ModelRef{EntityName: "Hook", ModelVersion: "1"}
+	for i := 0; i < 6; i++ {
+		seedStore.Save(ctx, e)
+	}
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+
+	txStore, _ := factory.EntityStore(txCtx)
+	if err := txStore.Delete(txCtx, "del-e"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	state, ok := postgres.LookupTxStateForTest(tm, txID)
+	if !ok {
+		t.Fatal("txState not found")
+	}
+	v, present := postgres.WriteSetVersionForTest(state, "del-e")
+	if !present {
+		t.Fatal("del-e not found in writeSet")
+	}
+	if v != 6 {
+		t.Errorf("writeSet[del-e] = %d, want 6", v)
+	}
+}
+
+// TestEntityStore_GetAll_RecordsEachReadSet verifies that GetAll within a
+// transaction records each returned entity's version in the readSet.
+func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
+	factory, tm := setupEntityTestWithTM(t)
+	ctx := ctxWithTenant("hook-tenant")
+
+	ref := spi.ModelRef{EntityName: "Hook", ModelVersion: "1"}
+
+	seedStore, _ := factory.EntityStore(ctx)
+	for _, id := range []string{"ga-1", "ga-2", "ga-3"} {
+		e := makeEntity(id)
+		e.Meta.ModelRef = ref
+		seedStore.Save(ctx, e)
+	}
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+
+	txStore, _ := factory.EntityStore(txCtx)
+	all, err := txStore.GetAll(txCtx, ref)
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 entities, got %d", len(all))
+	}
+
+	state, ok := postgres.LookupTxStateForTest(tm, txID)
+	if !ok {
+		t.Fatal("txState not found")
+	}
+	for _, id := range []string{"ga-1", "ga-2", "ga-3"} {
+		if v := postgres.ReadSetVersionForTest(state, id); v != 1 {
+			t.Errorf("readSet[%s] = %d, want 1", id, v)
+		}
 	}
 }

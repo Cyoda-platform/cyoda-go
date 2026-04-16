@@ -17,8 +17,12 @@ import (
 type entityStore struct {
 	q        Querier
 	tenantID spi.TenantID
+	tm       *TransactionManager
 }
 
+// SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
+// call records in writeSet (for updates) via recordWriteIfInTx. If this
+// is ever optimized to a batch INSERT, the writeSet hooks must be preserved.
 func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
@@ -80,6 +84,16 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 	}
 
 	entity.Meta.Version = nextVersion
+
+	// Record writes only for updates (not fresh inserts). Fresh inserts
+	// (isNew=true) are not tracked in writeSet: the UPSERT's ON CONFLICT DO
+	// UPDATE means concurrent inserts are gracefully converted to updates by
+	// the database — no insert race can produce a false conflict. Tracking
+	// fresh inserts would falsely fire because validateInChunks runs inside the
+	// current transaction and sees the tx's own uncommitted writes.
+	if s.tm != nil && !isNew {
+		s.tm.recordWriteIfInTx(ctx, eid, nextVersion-1)
+	}
 
 	// Set metadata based on whether this is a new or updated entity.
 	if isNew {
@@ -153,9 +167,17 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 		}
 		return nil, fmt.Errorf("failed to get entity %s: %w", entityID, err)
 	}
-	return unmarshalEntityDoc(doc)
+	entity, err := unmarshalEntityDoc(doc)
+	if err != nil {
+		return nil, err
+	}
+	if s.tm != nil {
+		s.tm.recordReadIfInTx(ctx, entity.Meta.ID, entity.Meta.Version)
+	}
+	return entity, nil
 }
 
+// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Time) (*spi.Entity, error) {
 	// Round up to the next millisecond boundary (matching memory implementation).
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
@@ -203,9 +225,19 @@ func (s *entityStore) GetAll(ctx context.Context, modelRef spi.ModelRef) ([]*spi
 	}
 	defer rows.Close()
 
-	return scanEntities(rows)
+	entities, err := scanEntities(rows)
+	if err != nil {
+		return nil, err
+	}
+	if s.tm != nil {
+		for _, e := range entities {
+			s.tm.recordReadIfInTx(ctx, e.Meta.ID, e.Meta.Version)
+		}
+	}
+	return entities, nil
 }
 
+// Deliberately not tracked in readSet: historical reads target immutable versions. See spec §Known limitation.
 func (s *entityStore) GetAllAsAt(ctx context.Context, modelRef spi.ModelRef, asAt time.Time) ([]*spi.Entity, error) {
 	asAt = asAt.Truncate(time.Millisecond).Add(time.Millisecond)
 
@@ -245,6 +277,10 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 			return fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to get entity %s for delete: %w", entityID, err)
+	}
+
+	if s.tm != nil {
+		s.tm.recordWriteIfInTx(ctx, entityID, maxVersion)
 	}
 
 	current, err := unmarshalEntityDoc(doc)
@@ -325,6 +361,7 @@ func (s *entityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	return nil
 }
 
+// Deliberately not tracked in readSet: boolean probe; no version to validate.
 func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error) {
 	var exists bool
 	err := s.q.QueryRow(ctx,
@@ -336,6 +373,7 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 	return exists, nil
 }
 
+// Deliberately not tracked in readSet: aggregate with no per-row identity. See spec §Known limitation (phantom reads).
 func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
 	var count int64
 	err := s.q.QueryRow(ctx,
@@ -347,6 +385,7 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 	return count, nil
 }
 
+// Deliberately not tracked in readSet: observational reads of version history.
 func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
 	rows, err := s.q.Query(ctx,
 		`SELECT doc, version, valid_time FROM entity_versions

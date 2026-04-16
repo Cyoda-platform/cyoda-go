@@ -19,8 +19,10 @@ import (
 const submitTimeTTL = 1 * time.Hour
 
 // TransactionManager implements spi.TransactionManager backed by PostgreSQL
-// with SERIALIZABLE isolation. Each Begin() acquires a real pgx.Tx and
-// registers it in the txRegistry so that stores can look it up by ID.
+// with REPEATABLE READ isolation plus application-layer row-granular
+// first-committer-wins validation. Each Begin() acquires a real pgx.Tx,
+// registers it in the txRegistry, and allocates a *txState for read/write
+// bookkeeping used by Commit.
 type TransactionManager struct {
 	pool     *pgxpool.Pool
 	registry *txRegistry
@@ -32,7 +34,9 @@ type TransactionManager struct {
 	// tenants records the tenant for each active transaction so Join can
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
-	tenants map[string]spi.TenantID
+	tenants    map[string]spi.TenantID
+	txStatesMu sync.RWMutex
+	txStates   map[string]*txState
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
@@ -43,11 +47,16 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *Transac
 		uuids:       uuids,
 		submitTimes: make(map[string]time.Time),
 		tenants:     make(map[string]spi.TenantID),
+		txStates:    make(map[string]*txState),
 	}
 }
 
-// Begin starts a new SERIALIZABLE transaction and returns the transaction ID
-// and a context carrying the TransactionState.
+// Begin starts a new REPEATABLE READ transaction (snapshot isolation) and
+// returns the transaction ID and a context carrying the TransactionState.
+//
+// Row-granular first-committer-wins is enforced in application code via
+// txState bookkeeping (readSet/writeSet) and commit-time validation — see
+// Commit() and docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md.
 func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Context, error) {
 	tenantID, err := resolveTenant(ctx)
 	if err != nil {
@@ -56,7 +65,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	txID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 
-	pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return "", nil, fmt.Errorf("Begin: failed to start transaction: %w", err)
 	}
@@ -71,24 +80,65 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	tm.registry.Register(txID, pgxTx)
 
-	tm.mu.Lock()
-	tm.tenants[txID] = tenantID
-	tm.mu.Unlock()
+	func() {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		tm.tenants[txID] = tenantID
+	}()
 
-	txState := &spi.TransactionState{
+	func() {
+		tm.txStatesMu.Lock()
+		defer tm.txStatesMu.Unlock()
+		tm.txStates[txID] = newTxState(tenantID)
+	}()
+
+	txSpiState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
 	}
 
-	return txID, spi.WithTransaction(ctx, txState), nil
+	return txID, spi.WithTransaction(ctx, txSpiState), nil
 }
 
 // Commit commits the transaction and records its submit time.
-// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001).
+// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001)
+// or when the application-layer first-committer-wins validation detects a
+// stale read or write set.
 func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return fmt.Errorf("Commit: transaction %s not found", txID)
+	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return fmt.Errorf("Commit: tx state for %s not found", txID)
+	}
+
+	// --- First-committer-wins validation (read-set) ---
+	// Re-read the current committed versions of all entities we read in this tx
+	// and compare against the captured readSet. A version mismatch or missing row
+	// means a concurrent committer changed data we made decisions on; abort with
+	// ErrConflict so the caller can retry on a fresh snapshot.
+	//
+	// Write-write conflicts (writeSet) are handled by PostgreSQL's own tuple-level
+	// locks from the DML statements (INSERT/UPDATE/DELETE) — they raise SQLSTATE
+	// 40001 at DML time or commit time, which classifyError maps to ErrConflict.
+	// We do NOT validate writeSet versions here: the validateInChunks query runs
+	// inside the current transaction and therefore sees the tx's own uncommitted
+	// writes, making writeSet version comparison unreliable.
+	readIDs := state.SortedReadIDs()
+	if len(readIDs) > 0 {
+		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, readIDs, 0)
+		if err != nil {
+			tm.cleanupTx(txID)
+			_ = pgxTx.Rollback(context.Background())
+			return classifyError(fmt.Errorf("Commit: validate: %w", err))
+		}
+		if verr := state.ValidateReadSet(current); verr != nil {
+			tm.cleanupTx(txID)
+			_ = pgxTx.Rollback(context.Background())
+			return fmt.Errorf("%w: Commit: %w", spi.ErrConflict, verr)
+		}
 	}
 
 	// Capture the database timestamp before committing.
@@ -100,8 +150,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// stored on an error path.
 	var submitTime time.Time
 	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
-		tm.registry.Remove(txID)
-		tm.removeTenant(txID)
+		tm.cleanupTx(txID)
 		// Only classify as ErrConflict when the probe fails specifically because
 		// the transaction is already in an aborted state (SQLSTATE 25P02:
 		// in_failed_sql_transaction). Any other error (context cancellation,
@@ -124,23 +173,23 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// the pgx.Tx still holds the connection. Rollback explicitly to release
 		// it back to the pool; ignore the rollback error (tx is already invalid).
 		_ = pgxTx.Rollback(ctx)
-		tm.registry.Remove(txID)
-		tm.removeTenant(txID)
+		tm.cleanupTx(txID)
 		return classifyError(fmt.Errorf("Commit: %w", err))
 	}
 
-	tm.registry.Remove(txID)
-	tm.removeTenant(txID)
+	tm.cleanupTx(txID)
 
-	tm.mu.Lock()
-	tm.submitTimes[txID] = submitTime
-	evictBefore := time.Now().Add(-submitTimeTTL)
-	for id, t := range tm.submitTimes {
-		if t.Before(evictBefore) {
-			delete(tm.submitTimes, id)
+	func() {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		tm.submitTimes[txID] = submitTime
+		evictBefore := time.Now().Add(-submitTimeTTL)
+		for id, t := range tm.submitTimes {
+			if t.Before(evictBefore) {
+				delete(tm.submitTimes, id)
+			}
 		}
-	}
-	tm.mu.Unlock()
+	}()
 
 	return nil
 }
@@ -153,8 +202,7 @@ func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	}
 
 	err := pgxTx.Rollback(ctx)
-	tm.registry.Remove(txID)
-	tm.removeTenant(txID)
+	tm.cleanupTx(txID)
 
 	if err != nil {
 		return fmt.Errorf("Rollback: %w", err)
@@ -170,9 +218,12 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 		return nil, fmt.Errorf("Join: transaction %s not found", txID)
 	}
 
-	tm.mu.Lock()
-	tenantID := tm.tenants[txID]
-	tm.mu.Unlock()
+	var tenantID spi.TenantID
+	func() {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		tenantID = tm.tenants[txID]
+	}()
 
 	txState := &spi.TransactionState{
 		ID:       txID,
@@ -200,48 +251,93 @@ func (tm *TransactionManager) LookupTx(txID string) (pgx.Tx, bool) {
 	return tm.registry.Lookup(txID)
 }
 
+// cleanupTx removes all per-transaction state (registry, tenant, txState).
+// Called on every Commit/Rollback exit path.
+func (tm *TransactionManager) cleanupTx(txID string) {
+	tm.registry.Remove(txID)
+	tm.removeTenant(txID)
+	tm.removeTxState(txID)
+}
+
 // removeTenant cleans up the tenant mapping for a completed transaction.
 func (tm *TransactionManager) removeTenant(txID string) {
 	tm.mu.Lock()
+	defer tm.mu.Unlock()
 	delete(tm.tenants, txID)
-	tm.mu.Unlock()
 }
 
-// Savepoint creates a named savepoint within the given PostgreSQL transaction.
+// removeTxState removes the txState entry for a completed transaction.
+func (tm *TransactionManager) removeTxState(txID string) {
+	tm.txStatesMu.Lock()
+	defer tm.txStatesMu.Unlock()
+	delete(tm.txStates, txID)
+}
+
+// lookupTxState returns the txState for the given txID.
+func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
+	tm.txStatesMu.RLock()
+	defer tm.txStatesMu.RUnlock()
+	s, ok := tm.txStates[txID]
+	return s, ok
+}
+
+// Savepoint creates a named savepoint within the given PostgreSQL transaction
+// and pushes a snapshot of the current readSet/writeSet onto the txState stack.
 func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
+	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return "", fmt.Errorf("Savepoint: tx state for %s not found", txID)
 	}
 	spID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 	spName := "sp_" + spID
 	if _, err := pgxTx.Exec(ctx, "SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return "", fmt.Errorf("Savepoint: %w", err)
 	}
+	state.PushSavepoint(spID)
 	return spID, nil
 }
 
-// RollbackToSavepoint rolls back all work done since the named savepoint.
+// RollbackToSavepoint rolls back all work done since the named savepoint and
+// restores the txState readSet/writeSet to the snapshot captured at that savepoint.
 func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
 	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return fmt.Errorf("RollbackToSavepoint: tx state for %s not found", txID)
+	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
+		return fmt.Errorf("RollbackToSavepoint: %w", err)
+	}
+	if err := state.RestoreSavepoint(savepointID); err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
 	}
 	return nil
 }
 
 // ReleaseSavepoint releases a savepoint, merging its work into the parent transaction.
+// The txState snapshot for this savepoint is dropped; work done after the push is kept.
 func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return fmt.Errorf("ReleaseSavepoint: transaction %s not found", txID)
 	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return fmt.Errorf("ReleaseSavepoint: tx state for %s not found", txID)
+	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
+		return fmt.Errorf("ReleaseSavepoint: %w", err)
+	}
+	if err := state.ReleaseSavepoint(savepointID); err != nil {
 		return fmt.Errorf("ReleaseSavepoint: %w", err)
 	}
 	return nil

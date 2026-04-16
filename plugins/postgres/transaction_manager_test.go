@@ -346,3 +346,224 @@ func TestCommitProbe_NonPGError_NotConflict(t *testing.T) {
 		t.Errorf("original error must remain in the error chain; got: %v", result)
 	}
 }
+
+func TestTxManager_BeginAllocatesTxState(t *testing.T) {
+	tm, _ := newTestTxManager(t)
+	ctx := ctxWithTenant("tx-tenant")
+	txID, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if !postgres.HasTxState(tm, txID) {
+		t.Errorf("expected txState registered for %s", txID)
+	}
+	if err := tm.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if postgres.HasTxState(tm, txID) {
+		t.Errorf("expected txState removed after Commit for %s", txID)
+	}
+}
+
+func TestTxManager_RollbackCleansTxState(t *testing.T) {
+	tm, _ := newTestTxManager(t)
+	ctx := ctxWithTenant("tx-tenant")
+	txID, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := tm.Rollback(ctx, txID); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if postgres.HasTxState(tm, txID) {
+		t.Errorf("expected txState removed after Rollback for %s", txID)
+	}
+}
+
+func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
+	tm, _ := newTestTxManager(t)
+	ctx := ctxWithTenant("t1")
+
+	// Tx1: insert a row.
+	txID1, txCtx1, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin 1: %v", err)
+	}
+	tx1, _ := tm.LookupTx(txID1)
+	if _, err := tx1.Exec(txCtx1,
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+         VALUES ('t1', 'e1', 'M', '1', 1, false, '{}'::jsonb)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// Read-your-own-writes.
+	var v int64
+	if err := tx1.QueryRow(txCtx1,
+		`SELECT version FROM entities WHERE tenant_id='t1' AND entity_id='e1'`).Scan(&v); err != nil {
+		t.Fatalf("read own write: %v", err)
+	}
+	if v != 1 {
+		t.Errorf("want version=1, got %d", v)
+	}
+	if err := tm.Commit(ctx, txID1); err != nil {
+		t.Fatalf("Commit 1: %v", err)
+	}
+
+	// Tx2: takes snapshot.
+	txID2, txCtx2, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin 2: %v", err)
+	}
+	tx2, _ := tm.LookupTx(txID2)
+	var v2 int64
+	if err := tx2.QueryRow(txCtx2,
+		`SELECT version FROM entities WHERE tenant_id='t1' AND entity_id='e1'`).Scan(&v2); err != nil {
+		t.Fatalf("tx2 read: %v", err)
+	}
+	if v2 != 1 {
+		t.Errorf("tx2 snapshot: want 1, got %d", v2)
+	}
+
+	// Tx3 (outside tx2) commits a version bump.
+	txID3, txCtx3, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin 3: %v", err)
+	}
+	tx3, _ := tm.LookupTx(txID3)
+	if _, err := tx3.Exec(txCtx3,
+		`UPDATE entities SET version=2 WHERE tenant_id='t1' AND entity_id='e1'`); err != nil {
+		t.Fatalf("tx3 update: %v", err)
+	}
+	if err := tm.Commit(ctx, txID3); err != nil {
+		t.Fatalf("Commit 3: %v", err)
+	}
+
+	// Tx2 should STILL see version 1 (snapshot preserved).
+	if err := tx2.QueryRow(txCtx2,
+		`SELECT version FROM entities WHERE tenant_id='t1' AND entity_id='e1'`).Scan(&v2); err != nil {
+		t.Fatalf("tx2 re-read: %v", err)
+	}
+	if v2 != 1 {
+		t.Errorf("snapshot preserved after concurrent commit: want 1, got %d", v2)
+	}
+	_ = tm.Rollback(ctx, txID2)
+}
+
+func TestTxManager_Commit_ReadSetConflict(t *testing.T) {
+	tm, pool := newTestTxManager(t)
+	ctx := ctxWithTenant("t1")
+
+	// Seed.
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+		VALUES ('t1', 'e1', 'M', '1', 5, false, '{}'::jsonb)
+	`)
+
+	// Tx A: begin, record a read at version 5.
+	txA, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin A: %v", err)
+	}
+	stateA, _ := postgres.LookupTxStateForTest(tm, txA)
+	stateA.RecordRead("e1", 5)
+
+	// Tx B: bumps e1 to version 6 and commits.
+	txB, txCtxB, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin B: %v", err)
+	}
+	txBpgx, _ := tm.LookupTx(txB)
+	if _, err := txBpgx.Exec(txCtxB,
+		`UPDATE entities SET version=6 WHERE tenant_id='t1' AND entity_id='e1'`); err != nil {
+		t.Fatalf("B update: %v", err)
+	}
+	if err := tm.Commit(ctx, txB); err != nil {
+		t.Fatalf("B commit: %v", err)
+	}
+
+	// Tx A: commit must fail with ErrConflict.
+	err = tm.Commit(ctx, txA)
+	if err == nil {
+		t.Fatal("want ErrConflict on A.Commit, got nil")
+	}
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Errorf("want ErrConflict, got %v", err)
+	}
+}
+
+// TestTxManager_Savepoint_RollsBackTxStateEntries verifies that
+// RollbackToSavepoint restores the txState readSet/writeSet to the
+// snapshot captured at Savepoint time: entries added after the savepoint
+// are dropped, entries added before are preserved.
+func TestTxManager_Savepoint_RollsBackTxStateEntries(t *testing.T) {
+	tm, pool := newTestTxManager(t)
+	ctx := ctxWithTenant("sp-tenant")
+
+	// Seed two entities x and y at version 1.
+	for _, id := range []string{"sp-x", "sp-y"} {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+			VALUES ('sp-tenant', $1, 'M', '1', 1, false, '{}'::jsonb)`, id)
+		if err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM entities WHERE tenant_id='sp-tenant'`)
+	})
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+
+	pgxTx, _ := tm.LookupTx(txID)
+	state, ok := postgres.LookupTxStateForTest(tm, txID)
+	if !ok {
+		t.Fatal("txState not found")
+	}
+
+	// Read x within the transaction (records x in readSet).
+	var vx int64
+	if err := pgxTx.QueryRow(txCtx,
+		`SELECT version FROM entities WHERE tenant_id='sp-tenant' AND entity_id='sp-x'`).Scan(&vx); err != nil {
+		t.Fatalf("read x: %v", err)
+	}
+	state.RecordRead("sp-x", vx)
+
+	// Push savepoint — x is in readSet at this point.
+	spID, err := tm.Savepoint(txCtx, txID)
+	if err != nil {
+		t.Fatalf("Savepoint: %v", err)
+	}
+
+	// Read y within the transaction (records y in readSet after the savepoint).
+	var vy int64
+	if err := pgxTx.QueryRow(txCtx,
+		`SELECT version FROM entities WHERE tenant_id='sp-tenant' AND entity_id='sp-y'`).Scan(&vy); err != nil {
+		t.Fatalf("read y: %v", err)
+	}
+	state.RecordRead("sp-y", vy)
+
+	// Verify both are in readSet before rollback.
+	if postgres.ReadSetVersionForTest(state, "sp-x") != 1 {
+		t.Errorf("pre-rollback: sp-x not in readSet at v1")
+	}
+	if postgres.ReadSetVersionForTest(state, "sp-y") != 1 {
+		t.Errorf("pre-rollback: sp-y not in readSet at v1")
+	}
+
+	// Rollback to savepoint — should drop y, preserve x.
+	if err := tm.RollbackToSavepoint(txCtx, txID, spID); err != nil {
+		t.Fatalf("RollbackToSavepoint: %v", err)
+	}
+
+	// y must be gone from readSet.
+	if v := postgres.ReadSetVersionForTest(state, "sp-y"); v != 0 {
+		t.Errorf("post-rollback: sp-y should be absent from readSet, got version %d", v)
+	}
+	// x must still be present.
+	if v := postgres.ReadSetVersionForTest(state, "sp-x"); v != 1 {
+		t.Errorf("post-rollback: sp-x should remain in readSet at v1, got %d", v)
+	}
+}
