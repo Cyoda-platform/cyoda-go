@@ -540,6 +540,68 @@ func TestManualTransitionUsesCallerTxID(t *testing.T) {
 	}
 }
 
+// TestLoopbackUsesCallerTxID verifies Loopback uses the caller-provided
+// txID (same issue #20 pattern as Execute and ManualTransition).
+func TestLoopbackUsesCallerTxID(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "lb-txid", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "LbTxWF", InitialState: "ACTIVE", Active: true,
+		States: map[string]spi.StateDefinition{
+			"ACTIVE": {Transitions: []spi.TransitionDefinition{
+				{Name: "auto-finish", Next: "DONE", Manual: false},
+			}},
+			"DONE": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := txMgr.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	entity := makeEntity("lb-txid-e1", modelRef, map[string]any{"x": 1})
+	entity.Meta.State = "ACTIVE"
+	entity.Meta.TransactionID = txID
+
+	_, err = engine.Loopback(txCtx, entity)
+	if err != nil {
+		t.Fatalf("Loopback: %v", err)
+	}
+
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	events, err := auditStore.GetEventsByTransaction(ctx, "lb-txid-e1", txID)
+	if err != nil {
+		t.Fatalf("GetEventsByTransaction: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected SM audit events to be findable by the entity-write txID, but got 0 events")
+	}
+
+	var foundFinished bool
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventFinished {
+			foundFinished = true
+		}
+		if ev.TransactionID != txID {
+			t.Errorf("event %s has txID %q, want %q", ev.EventType, ev.TransactionID, txID)
+		}
+	}
+	if !foundFinished {
+		t.Error("FINISHED event not found among events matching entity-write txID")
+	}
+}
+
 func TestLoopback(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
