@@ -2,12 +2,16 @@
 
 A Go [EDBMS](https://medium.com/@paul_42036/whats-an-entity-database-11f8538b631a) (Entity Database Management System) — a database engine where the first-class abstraction is not a row or document but a *stateful entity* with schema, lifecycle, temporal history, and transactional integrity. Cyoda-Go replicates the functional behavior of the [Cyoda](https://cyoda.com) platform's APIs, gRPC integrations, entity lifecycle management, and workflow engine.
 
-Cyoda-Go operates in two modes:
+Cyoda-Go operates in three modes:
 
 - **In-Memory mode** — a single-process, zero-dependency instance. Sub-millisecond latencies. Data is lost on restart.
   - **Local development target** — build and test Cyoda applications without a full distributed deployment
   - **Functional test harness** — verify API inputs/outputs and gRPC integration contracts
   - **Digital Twin Universe component** — validate at volumes and rates far exceeding production limits, run thousands of scenarios per hour without rate limits or API costs
+- **SQLite mode** — persistent, zero-ops embedded storage. Data survives restarts in a single file. No external server required.
+  - **Edge and IoT deployments** — single-binary, single-file persistence for resource-constrained environments
+  - **Small team self-hosting** — durable storage without the operational overhead of a database server
+  - **Local development with persistence** — keep data across restarts while retaining the simplicity of `go run`
 - **PostgreSQL mode** — durable storage with `SERIALIZABLE` isolation for production workloads.
   - **Zero-compromise transactional safety** — full ACID with PostgreSQL-native SSI; no eventual consistency, no conflict windows, no split-brain
   - **Active-active high availability** — 3-10 stateless Go nodes behind a load balancer, any node serves any request, no leader election
@@ -122,9 +126,20 @@ Cyoda-Go's storage layer is a plugin system defined by the stable [`cyoda-go-spi
 | Backend | Default | Notes |
 |---------|---------|-------|
 | `memory` | ✓ | Zero configuration. In-process, ephemeral. Single-node only. The default so `go build && ./cyoda-go` just runs. |
+| `sqlite` |   | Persistent, zero-ops embedded storage. Single-node, single-process. No external dependencies. Configure via `CYODA_SQLITE_*`. |
 | `postgres` |   | Durable, `SERIALIZABLE` isolation. Configure via `CYODA_POSTGRES_*`. Supports multi-node clusters (see cluster deployment guide). |
 
-The stock binary contains both. A proprietary `cassandra` plugin ships in the separate `cyoda-go-cassandra` binary for deployments that need horizontal write scalability.
+The stock binary contains all three. A proprietary `cassandra` plugin ships in the separate `cyoda-go-cassandra` binary for deployments that need horizontal write scalability.
+
+### SQLite quick configuration
+
+```bash
+CYODA_STORAGE_BACKEND=sqlite
+# Optional — defaults to $XDG_DATA_HOME/cyoda-go/cyoda.db
+CYODA_SQLITE_PATH=/var/lib/cyoda-go/cyoda.db
+```
+
+Data persists across restarts in a single file. WAL mode is enabled automatically. No external server required. The process acquires an exclusive file lock on startup — only one instance can use a given database file.
 
 ### PostgreSQL quick configuration
 
@@ -214,6 +229,16 @@ The `./cyoda-go.sh` script is a convenience wrapper that sets `CYODA_PROFILES=lo
 | `CYODA_BOOTSTRAP_CLIENT_SECRET` | *(generated)* | Fixed secret, or omit to auto-generate |
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for the bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
+
+### SQLite
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_SQLITE_PATH` | `$XDG_DATA_HOME/cyoda-go/cyoda.db` | Database file path |
+| `CYODA_SQLITE_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup |
+| `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for SQLite write lock |
+| `CYODA_SQLITE_CACHE_SIZE` | `64000` | Page cache in KiB |
+| `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows examined per search with residual filter |
 
 ### PostgreSQL
 
