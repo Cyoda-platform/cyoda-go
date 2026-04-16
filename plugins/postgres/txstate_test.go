@@ -262,3 +262,118 @@ func TestValidateWriteSet_UpdateVersionMismatch(t *testing.T) {
 		t.Errorf("error does not mention entity ID: %v", err)
 	}
 }
+
+// TestPushSavepoint_DeepCopiesSets verifies that PushSavepoint stores
+// independent copies of readSet and writeSet (mutations after push don't
+// affect the snapshot).
+func TestPushSavepoint_DeepCopiesSets(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("e1", 5)
+	s.RecordWrite("e2", 10)
+	s.PushSavepoint("sp1")
+
+	// Mutate state after the push.
+	s.RecordRead("e3", 99)
+	s.RecordWrite("e4", 77)
+
+	if len(s.savepoints) != 1 {
+		t.Fatalf("savepoints len = %d, want 1", len(s.savepoints))
+	}
+	snap := s.savepoints[0]
+	if _, ok := snap.readSet["e3"]; ok {
+		t.Error("snapshot readSet should not contain e3 added after push")
+	}
+	if _, ok := snap.writeSet["e4"]; ok {
+		t.Error("snapshot writeSet should not contain e4 added after push")
+	}
+	// Original entries should be in snapshot.
+	if snap.readSet["e1"] != 5 {
+		t.Errorf("snapshot readSet[e1] = %d, want 5", snap.readSet["e1"])
+	}
+	if snap.writeSet["e2"] != 10 {
+		t.Errorf("snapshot writeSet[e2] = %d, want 10", snap.writeSet["e2"])
+	}
+}
+
+// TestRestoreSavepoint_RestoresSets verifies that RestoreSavepoint reverts
+// readSet and writeSet to the snapshot and that the savepoint itself is
+// preserved (postgres ROLLBACK TO SAVEPOINT semantics).
+func TestRestoreSavepoint_RestoresSets(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("e1", 5)
+	s.PushSavepoint("sp1")
+
+	// Do more work after the savepoint.
+	s.RecordRead("e2", 20)
+	s.RecordWrite("e3", 30)
+
+	if err := s.RestoreSavepoint("sp1"); err != nil {
+		t.Fatalf("RestoreSavepoint: %v", err)
+	}
+
+	// Sets should be back to snapshot state.
+	if len(s.readSet) != 1 || s.readSet["e1"] != 5 {
+		t.Errorf("readSet after restore = %v, want {e1:5}", s.readSet)
+	}
+	if len(s.writeSet) != 0 {
+		t.Errorf("writeSet after restore = %v, want empty", s.writeSet)
+	}
+	// Savepoint itself is preserved.
+	if len(s.savepoints) != 1 || s.savepoints[0].id != "sp1" {
+		t.Errorf("savepoints after restore = %v, want [sp1]", s.savepoints)
+	}
+}
+
+// TestRestoreSavepoint_TrimsLaterSavepoints verifies that restoring sp1
+// trims sp2 (which was pushed after sp1) but keeps sp1.
+func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
+	s := newTxState("t1")
+	s.PushSavepoint("sp1")
+	s.RecordRead("e1", 1)
+	s.PushSavepoint("sp2")
+
+	if err := s.RestoreSavepoint("sp1"); err != nil {
+		t.Fatalf("RestoreSavepoint: %v", err)
+	}
+
+	if len(s.savepoints) != 1 {
+		t.Errorf("savepoints len = %d, want 1", len(s.savepoints))
+	}
+	if s.savepoints[0].id != "sp1" {
+		t.Errorf("savepoints[0].id = %q, want sp1", s.savepoints[0].id)
+	}
+}
+
+// TestReleaseSavepoint_DropsEntryKeepsWork verifies that ReleaseSavepoint
+// removes the savepoint entry but leaves the current readSet/writeSet intact.
+func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
+	s := newTxState("t1")
+	s.PushSavepoint("sp1")
+	s.RecordRead("e1", 5)
+	s.RecordWrite("e2", 10)
+
+	if err := s.ReleaseSavepoint("sp1"); err != nil {
+		t.Fatalf("ReleaseSavepoint: %v", err)
+	}
+
+	if len(s.savepoints) != 0 {
+		t.Errorf("savepoints len = %d, want 0", len(s.savepoints))
+	}
+	// Work done after the push is preserved.
+	if s.readSet["e1"] != 5 {
+		t.Errorf("readSet[e1] = %d, want 5", s.readSet["e1"])
+	}
+	if s.writeSet["e2"] != 10 {
+		t.Errorf("writeSet[e2] = %d, want 10", s.writeSet["e2"])
+	}
+}
+
+// TestRestoreSavepoint_Unknown verifies that restoring an unknown savepoint
+// returns an error.
+func TestRestoreSavepoint_Unknown(t *testing.T) {
+	s := newTxState("t1")
+	err := s.RestoreSavepoint("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown savepoint, got nil")
+	}
+}
