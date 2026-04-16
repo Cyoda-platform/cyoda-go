@@ -3,7 +3,7 @@ module github.com/cyoda-platform/cyoda-go
 go 1.26.1
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.3.0
+	github.com/cyoda-platform/cyoda-go-spi v0.4.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/google/uuid v1.6.0
