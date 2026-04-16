@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -165,5 +166,99 @@ func TestSortedUnionIDs_Disjoint(t *testing.T) {
 	}
 	if len(ids) > 0 && ids[0] != "e1" {
 		t.Errorf("ids[0] = %q, want e1", ids[0])
+	}
+}
+
+// TestValidateReadSet_AllMatch verifies that no error is returned when all
+// readSet entities match the current snapshot.
+func TestValidateReadSet_AllMatch(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("e1", 5)
+	s.RecordRead("e2", 10)
+	current := map[string]int64{"e1": 5, "e2": 10, "e3": 99}
+	if err := s.ValidateReadSet(current); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestValidateReadSet_VersionMismatch verifies that a version mismatch
+// returns an error containing the entity ID.
+func TestValidateReadSet_VersionMismatch(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("e1", 5)
+	current := map[string]int64{"e1": 6}
+	err := s.ValidateReadSet(current)
+	if err == nil {
+		t.Fatal("expected error for version mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "e1") {
+		t.Errorf("error does not mention entity ID: %v", err)
+	}
+}
+
+// TestValidateReadSet_MissingEntity verifies that a deleted entity (absent
+// from current snapshot) returns an error.
+func TestValidateReadSet_MissingEntity(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("e1", 5)
+	current := map[string]int64{}
+	err := s.ValidateReadSet(current)
+	if err == nil {
+		t.Fatal("expected error for missing entity, got nil")
+	}
+	if !strings.Contains(err.Error(), "e1") {
+		t.Errorf("error does not mention entity ID: %v", err)
+	}
+}
+
+// TestValidateWriteSet_UpdateMatch verifies that no error is returned when
+// an update entity's pre-write version matches the current snapshot.
+func TestValidateWriteSet_UpdateMatch(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordWrite("e1", 5)
+	current := map[string]int64{"e1": 5}
+	if err := s.ValidateWriteSet(current); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestValidateWriteSet_FreshInsertAbsent verifies that a fresh insert
+// (preWriteVersion 0) with no current entry returns no error.
+func TestValidateWriteSet_FreshInsertAbsent(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordWrite("e1", 0)
+	current := map[string]int64{}
+	if err := s.ValidateWriteSet(current); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestValidateWriteSet_FreshInsertRaceLost verifies that a fresh insert
+// (preWriteVersion 0) fails when the current snapshot already has the entity.
+func TestValidateWriteSet_FreshInsertRaceLost(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordWrite("e1", 0)
+	current := map[string]int64{"e1": 1}
+	err := s.ValidateWriteSet(current)
+	if err == nil {
+		t.Fatal("expected error for insert race, got nil")
+	}
+	if !strings.Contains(err.Error(), "e1") {
+		t.Errorf("error does not mention entity ID: %v", err)
+	}
+}
+
+// TestValidateWriteSet_UpdateVersionMismatch verifies that an update entity
+// whose pre-write version differs from current returns an error.
+func TestValidateWriteSet_UpdateVersionMismatch(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordWrite("e1", 5)
+	current := map[string]int64{"e1": 6}
+	err := s.ValidateWriteSet(current)
+	if err == nil {
+		t.Fatal("expected error for version mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "e1") {
+		t.Errorf("error does not mention entity ID: %v", err)
 	}
 }
