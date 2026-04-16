@@ -119,3 +119,51 @@ func TestRecordWrite_FreshInsertZero(t *testing.T) {
 		t.Errorf("writeSet[e1] = %d (ok=%v), want 0 and present", got, ok)
 	}
 }
+
+// TestSortedUnionIDs_EmptyState verifies that an empty txState returns an
+// empty (non-nil) slice.
+func TestSortedUnionIDs_EmptyState(t *testing.T) {
+	s := newTxState("t1")
+	ids := s.SortedUnionIDs()
+	if ids == nil {
+		t.Error("SortedUnionIDs() = nil, want empty slice")
+	}
+	if len(ids) != 0 {
+		t.Errorf("SortedUnionIDs() len = %d, want 0", len(ids))
+	}
+}
+
+// TestSortedUnionIDs_MixedReadAndWrite verifies that IDs from both readSet
+// and writeSet are returned together in sorted order.
+func TestSortedUnionIDs_MixedReadAndWrite(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("c", 1)
+	s.RecordRead("a", 2)
+	s.RecordWrite("d", 3)
+	s.RecordWrite("b", 4)
+	ids := s.SortedUnionIDs()
+	want := []string{"a", "b", "c", "d"}
+	if len(ids) != len(want) {
+		t.Fatalf("SortedUnionIDs() = %v, want %v", ids, want)
+	}
+	for i, w := range want {
+		if ids[i] != w {
+			t.Errorf("ids[%d] = %q, want %q", i, ids[i], w)
+		}
+	}
+}
+
+// TestSortedUnionIDs_Disjoint verifies that after a read-then-write
+// promotion, the entity ID appears exactly once in the result.
+func TestSortedUnionIDs_Disjoint(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordRead("e1", 5)
+	s.RecordWrite("e1", 5) // promotes from readSet to writeSet
+	ids := s.SortedUnionIDs()
+	if len(ids) != 1 {
+		t.Errorf("SortedUnionIDs() len = %d, want 1 (got %v)", len(ids), ids)
+	}
+	if len(ids) > 0 && ids[0] != "e1" {
+		t.Errorf("ids[0] = %q, want e1", ids[0])
+	}
+}
