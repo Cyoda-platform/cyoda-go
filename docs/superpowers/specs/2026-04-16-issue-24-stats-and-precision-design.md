@@ -50,7 +50,11 @@ Add to `EntityStore` interface in `persistence.go`:
 // CountByState returns the count of non-deleted entities grouped by state
 // for the given model. If states is non-nil, only the listed states are
 // included in the result. If states is nil, all states are returned.
-// An empty (non-nil) states slice returns an empty map.
+// An empty (non-nil) states slice returns an empty map without querying
+// the storage layer.
+//
+// Unknown model: returns an empty map with no error, matching Count's
+// behavior (no model-registry check at this layer).
 //
 // Implementations MUST push the state filter down to the storage layer
 // when feasible. Callers may invoke this from inside a transaction; the
@@ -69,7 +73,8 @@ Add `testEntityCountByState` covering:
 - `states = []string{"approved"}` → only `"approved"` returned.
 - `states = []string{"approved", "missing"}` → only `"approved"` returned (missing states omitted, not zero-valued).
 - `states = nil` → all states returned.
-- `states = []string{}` → empty map returned.
+- `states = []string{}` → empty map returned (and the implementation does not hit storage — early return).
+- Unknown model (`modelRef` not registered, no entities saved) → empty map, no error.
 - Deleted entities excluded.
 - Tenant isolation: entities in another tenant don't appear.
 - Transactional visibility: uncommitted save in current tx is visible; uncommitted save in another tx is not.
@@ -78,11 +83,13 @@ The test must run against memory, sqlite, postgres, and cassandra (cassandra pic
 
 ### 2.3 Plugin implementations
 
+**Common early-exit (all plugins):** `if states != nil && len(states) == 0 { return map[string]int64{}, nil }` before any storage call. Makes the empty-slice contract explicit and driver-independent (no reliance on how a Go empty slice is serialized into a postgres `ANY` array, an sqlite `IN ()` clause, etc.).
+
 **postgres** (`plugins/postgres/entity_store.go`):
 ```sql
 SELECT state, count(*) FROM entities
 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted
-  [AND state = ANY($4)]   -- only when states != nil
+  [AND state = ANY($4)]   -- only when states != nil (and len > 0; len == 0 returns early)
 GROUP BY state
 ```
 Single round-trip. State filter via `state = ANY($4)` with a `[]string` parameter.
@@ -96,18 +103,30 @@ Iterate `entityData[tenant]`, group `latest.entity.Meta.State` for non-deleted e
 **cassandra** (external repo):
 Mirror existing `Count` shard-scan. Iterate shards, scan `(eid, deleted, state)`, group in Go. State filter applied in Go (cassandra has no efficient cross-partition `GROUP BY`).
 
+> **Cassandra performance note:** `CountByState` reads the `state` column for every (non-deleted) entity in every shard, in addition to what `Count` already reads (`eid, deleted`). It is strictly more expensive than `Count` per row, and asymptotically the same scan cost. The existing `Count` is documented in the cassandra plugin as O(n) with the comment "acceptable for the current phase," so `CountByState` inherits that posture. We do not have calibrated entity-count estimates per tenant in this repo; the cassandra plugin's own performance tracking is the source of truth for whether the scan is acceptable at production scale.
+
 > **Open follow-up (out of scope):** state-indexed materialized view for cassandra if scan performance proves insufficient. Track as a separate issue post-merge.
 
 ### 2.4 Handler changes (`internal/domain/entity/service.go`)
 
 Replace lines 332-364 (`GetStatisticsByState`) and 386-411 (`GetStatisticsByStateForModel`):
 
-- Dereference `*[]string` → `[]string` (or `nil`).
-- Call `entityStore.CountByState(ctx, ref, statesSlice)`.
+- Dereference `*[]string` → `[]string` (or `nil`):
+  ```go
+  var filterStates []string
+  if states != nil {
+      filterStates = *states  // pointer-to-empty-slice intentionally preserved as []string{},
+                              // which the SPI contract handles as "empty map, no storage call"
+  }
+  ```
+  This handles both nil-pointer (no filter) and pointer-to-empty-slice (empty map result) cases distinctly.
+- Call `entityStore.CountByState(ctx, ref, filterStates)`.
 - Flatten the returned `map[string]int64` into the existing `[]EntityStatByState` shape.
 - Per-model loop in `GetStatisticsByState` is unchanged (still iterates `modelStore.GetAll` and aggregates per model).
 
 The existing `[]EntityStatByState` struct, the HTTP/gRPC response shapes, and route signatures are unchanged — only the handler implementation.
+
+> **Known limitation (follow-up):** `GetStatisticsByState` still loads every model definition via `modelStore.GetAll(ctx)` and issues one `CountByState` call per model. With the entity-loading bottleneck removed, the per-model fan-out becomes the next pressure point for tenants with many models. Acceptable at current scale; track as a separate follow-up issue with two natural directions: (a) batch — extend the SPI with `CountByStateAll(ctx, states) (map[ModelRef]map[string]int64, error)` so postgres/sqlite can do one `GROUP BY (model_name, model_version, state)` query; (b) parallelize the per-model loop with bounded concurrency. Out of scope for this issue.
 
 ### 2.5 In-tx fallback (documented limitation)
 
@@ -137,10 +156,21 @@ func inferXMLValue(s string) any {
 }
 ```
 
-`isJSONNumber(s)` validates strictly against the JSON number grammar:
-`-? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)?`
+`isJSONNumber(s)` validates strictly against the JSON number grammar (RFC 8259 §6):
+`-? (0 | [1-9][0-9]*) (\.[0-9]+)? ([eE][+-]?[0-9]+)?` — anchored at both ends.
 
-We don't use `strconv.ParseFloat` for the check because it accepts `NaN`, `Inf`, hex floats — none of which are valid JSON numbers, and accepting them would produce trees that fail downstream serialization. Implementation choice (regex vs hand-rolled scanner) deferred to writing-plans; both are equivalent under the same test cases.
+To eliminate any risk of regex/grammar drift, the **canonical implementation** is:
+
+```go
+func isJSONNumber(s string) bool {
+    var n json.Number
+    return json.Unmarshal([]byte(s), &n) == nil
+}
+```
+
+This delegates the exact validation rules to `encoding/json`, which is the authority that downstream code will use to round-trip the value. Anything `json.Unmarshal` accepts as a `json.Number` is round-trip-safe; anything it rejects would have produced a broken tree. Implementation cost is one byte-slice allocation per call — acceptable for an XML import path that is not in any hot loop.
+
+Test cases below MUST exercise the JSON-grammar edge cases directly so the test suite catches any future implementation switch (e.g., to a hand-rolled scanner for performance) that diverges from `encoding/json`'s behavior.
 
 ### 3.2 Tests (`parser_xml_value_test.go`, new file)
 
@@ -149,6 +179,18 @@ We don't use `strconv.ParseFloat` for the check because it accepts `NaN`, `Inf`,
 - `<x>-0.0</x>`, `<x>1e10</x>`, `<x>1.5e-5</x>` → all `json.Number`.
 - `<x>true</x>`, `<x>false</x>` → `bool`.
 - `<x>NaN</x>`, `<x>Inf</x>`, `<x>0x1a</x>` → `string` (rejected by `isJSONNumber`).
+- **JSON-grammar edge cases (must be `string`, not `json.Number`):**
+  - `<x>007</x>` → `string` (leading zeros not allowed by JSON grammar)
+  - `<x>00</x>` → `string`
+  - `<x>-</x>` → `string` (lone minus)
+  - `<x>+1</x>` → `string` (leading plus not allowed)
+  - `<x>1.</x>` → `string` (trailing dot)
+  - `<x>.5</x>` → `string` (no integer part)
+  - `<x>1e</x>`, `<x>1e+</x>` → `string` (incomplete exponent)
+- **Edge cases that ARE valid:**
+  - `<x>0</x>` → `json.Number("0")`
+  - `<x>-0</x>` → `json.Number("-0")`
+  - `<x>1E2</x>` → `json.Number("1E2")` (uppercase E allowed)
 - `<x>hello</x>`, `<x></x>` → `string`.
 - `<x>  42  </x>` → confirms existing trim behavior still produces `json.Number("42")`.
 
@@ -185,22 +227,28 @@ if !result.Exists() || !opEquals(result, expected) {
 
 ### 4.2 Tests (additions to `internal/match/match_test.go`)
 
+> Verified: `predicate.ArrayCondition` (defined in SPI at `predicate/condition.go:36`) has fields `JsonPath string` and `Values []any`. Test cases below use those exact field names.
+
 - **Numeric across Go types:** entity `"scores": [1, 2, 3]`. Predicate `Values: []any{1, 2, 3}` (`int`) → match. Same with `int64(1), int64(2), int64(3)` → match. Same with `1.0, 2.0, 3.0` (`float64`) → match.
 - **`json.Number` expected:** entity `"scores": [1.5]`. Predicate `Values: []any{json.Number("1.5")}` → match. (Important because PR-2 makes XML produce `json.Number`, so XML-imported predicates feed `json.Number` here.)
 - **Type mismatch:** entity `"tags": ["go"]` (string). Predicate `Values: []any{42}` (number) → no match.
 - **Existing nil-skip:** entity `"tags": ["go", "rust", "python"]`. Predicate `Values: []any{"go", nil, "python"}` → match (existing test, kept).
 - **Existence:** entity has 2 elements at path, predicate requires 3 → no match (existing behavior).
 
-### 4.3 `toFloat64` for `json.Number`
+### 4.3 `toFloat64` extension for `json.Number` (required)
 
-If `toFloat64` (in `operators.go`) doesn't already handle `json.Number`, extend it:
+`toFloat64` at `internal/match/operators.go:243` currently switches on: `float64`, `float32`, `int`, `int64`, `string`, default. **Audit confirms it does NOT handle `json.Number`** — `json.Number` has underlying type `string` but Go type switches use exact type, so `json.Number` falls to the `default` branch and returns `cannot convert json.Number to float64`.
+
+**Extension (lands in PR-3):**
 
 ```go
 case json.Number:
-    return v.Float64()
+    return n.Float64()
 ```
 
-Small, well-scoped extension. Benefits all numeric operators uniformly, not just `matchArray`. Lands in PR-3 per Gate 6.
+Add to the switch in `toFloat64`. Benefits every numeric operator (`opEquals`, `opCompare`, `opBetween`, `matchArray`) uniformly — not just the array case. Without this extension, predicates built from XML-imported documents (which produce `json.Number` after PR-2) would break across the board, not only in `matchArray`.
+
+Add a unit test covering `toFloat64(json.Number("1.5")) → 1.5`, and an integration-level test that runs an `EQUALS` predicate with `json.Number` expected against a numeric entity field — proving the fix propagates through `opEquals`.
 
 ---
 
@@ -222,11 +270,13 @@ Small, well-scoped extension. Benefits all numeric operators uniformly, not just
 | Cassandra repo PR not merged when cyoda-go PR-1 is ready | Sequence step 2 → step 3 explicitly. Temporary `replace` directive only if absolutely needed. |
 | XML consumer audit misses a downstream type assertion | Full test suite run is the safety net; Gate 6 says any breakage is fixed in PR-2. |
 | In-tx `CountByState` still loads entities (sqlite/memory) | Matches existing `Count` behavior. Documented in SPI godoc. Not a regression. |
-| `toFloat64` doesn't handle `json.Number` | Extend it in PR-3. Small, well-scoped. |
+| `toFloat64` doesn't handle `json.Number` | Confirmed missing (Section 4.3). Extension lands in PR-3. |
+| Per-model fan-out in `GetStatisticsByState` becomes new bottleneck | Documented as known limitation in Section 2.4. Follow-up issue post-merge. |
 
 ### 5.3 Out of scope
 
 - State-indexed materialized view for cassandra `CountByState` (separate follow-up if needed).
+- Per-model fan-out optimization for `GetStatisticsByState` — batched `CountByStateAll` SPI or parallelized loop (Section 2.4 documents this as a known limitation; track as separate follow-up).
 - Capability-interface refactor of the SPI (separate spec if/when we go there).
 - `matchArray` operators beyond equality. The bug is about equality; we don't extend to `LESS_THAN`-per-element or similar.
 - Backwards-compatibility shims for the SPI bump. Per CLAUDE.md project conventions, we don't add fallback paths for hypothetical un-migrated plugins; cassandra is migrated as part of the rollout.
