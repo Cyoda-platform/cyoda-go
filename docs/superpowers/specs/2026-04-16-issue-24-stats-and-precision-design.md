@@ -101,11 +101,75 @@ Same query semantics. SQLite has no array type, so the filter expands to `IN (?,
 Iterate `entityData[tenant]`, group `latest.entity.Meta.State` for non-deleted entities matching `modelRef`, apply optional filter. In-tx: same fallback as existing `Count`.
 
 **cassandra** (external repo):
-Mirror existing `Count` shard-scan. Iterate shards, scan `(eid, deleted, state)`, group in Go. State filter applied in Go (cassandra has no efficient cross-partition `GROUP BY`).
 
-> **Cassandra performance note:** `CountByState` reads the `state` column for every (non-deleted) entity in every shard, in addition to what `Count` already reads (`eid, deleted`). It is strictly more expensive than `Count` per row, and asymptotically the same scan cost. The existing `Count` is documented in the cassandra plugin as O(n) with the comment "acceptable for the current phase," so `CountByState` inherits that posture. We do not have calibrated entity-count estimates per tenant in this repo; the cassandra plugin's own performance tracking is the source of truth for whether the scan is acceptable at production scale.
+Use the existing string-index path. `AddLifecycleIndexEntries` (in `index_engine.go:165`, called from `tx_coordinator.go:812`) already writes `$._meta.state` IN/OUT entries to `index_string_data` on every commit. `CountByState` reads from that index — no schema migration, no write-path change. The search planner already routes `LifecycleCondition{Field:"state"}` queries to `$._meta.state` lookups (`search/planner.go:67`), proving the read path is feasible.
 
-> **Open follow-up (out of scope):** state-indexed materialized view for cassandra if scan performance proves insufficient. Track as a separate issue post-merge.
+**Memory and concurrency discipline (mandatory):**
+
+- **Stream rows; never materialize full row sets.** The existing `resolveInOut` and `filterCommitted` helpers in `search/in_out_resolver.go` accept `[]IndexedRow` slices — fine for `LIMIT`-bounded search results, wrong for an unbounded aggregate scan. `CountByState` writes its own streaming pipeline using the gocql iterator, scanning row-at-a-time and updating a per-entity "winner" map (`entity_id → {submit_time, value, marker}`). Memory bound per shard: `O(entities with state history in shard)`, **not** `O(index rows)`.
+- **Per-shard parallel fan-out.** Each shard's index partition is independent and entity_ids are stably hashed to one shard, so per-shard partial counts are non-overlapping. Use `golang.org/x/sync/errgroup` with bounded concurrency (`g.SetLimit(min(numShards, runtime.GOMAXPROCS(0)))` or via the existing `ConcurrencyLimiter`). Each goroutine returns a `map[state]int64` for its shard; aggregator sums into the final result.
+- **Collapse-and-drop within each shard goroutine.** After processing all rows in a shard, collapse the per-entity winner map into `map[state]int64`, drop the winner map (frees heap), and only the small count map flows back to the aggregator.
+- **State filter applied AFTER winner resolution per shard.** Pruning during scan would miscount: an entity whose latest IN is at a non-filtered state must not be counted as residing in an older (filtered) state. Per-shard pruning post-resolution reduces inter-goroutine traffic.
+
+**All-states path (`states == nil`):**
+
+The streaming pipeline naturally produces counts for every state value it observes. No upfront enumeration of distinct values needed — the per-shard winner map fills itself as rows are processed. Caller passes `nil` filter; shards return their full count maps; aggregator sums them.
+
+**Filtered path (`len(states) > 0`):**
+
+Same streaming pipeline. Each shard prunes its count map by the filter set after winner resolution, then returns. Aggregator sums per state.
+
+**In-tx path:**
+
+Conceptually: `in_tx_counts == committed_counts_at_snapshot_time + delta_from_writeset`.
+
+The cassandra plugin already supports snapshot-time reads (`txCtx.snapshotTime`, `txCtx.ancestors`, resolver-based committed-tx visibility). The current transaction's writeset is bounded by what *this* tx has touched — typically <10 entities for normal workflows.
+
+```
+1. Compute committed counts at snapshot time using the same streaming/parallel
+   indexed scan as the non-tx path. The TxStatusResolver (cached) resolves
+   IsCommitted(txID, snapshotTime, ancestors) per row. Result: map[state]int64.
+
+2. Apply tx writeset delta (bounded, small):
+     for each entry in txCtx.writeSet for this model:
+         oldState = state at snapshot time (extracted from entry.PrevData,
+                    or fetched from entity_version at snapshotTime if not cached)
+         newState = entry.State
+         if entry.Deleted:
+             counts[oldState]--                      // entity no longer counts
+         elif oldState != newState:
+             counts[oldState]--
+             counts[newState]++
+         elif oldState == "" && newState != "":      // new in this tx
+             counts[newState]++
+         // else: state unchanged in this tx — no delta
+
+         // After every decrement, check for underflow:
+         if counts[oldState] < 0:
+             return Internal("stats inconsistency: state %q count underflow during tx delta application "+
+                 "(entity %s, snapshot=%s); writeset/snapshot mismatch indicates "+
+                 "index drift or stale PrevData", oldState, entry.EntityID, snapshot)
+
+3. Apply state filter to post-delta map.
+4. Drop zero-count entries (per SPI contract: counts of zero are omitted, not zero-valued).
+```
+
+**Negative counts must surface as errors, not be silently clamped.** Underflow means an invariant violation (stale PrevData, missing entity_version row, snapshot inconsistent with read) that needs investigation, not a wrong count returned to the caller. Wrap as `common.Internal(...)` (5xx with ticket UUID per project error-handling rules — full detail logged at ERROR with the ticket).
+
+`PrevData` is already carried on writeset entries for the lifecycle indexer's own use (`tx_coordinator.go:805-812`). `CountByState` reuses it. If a writeset entry lacks `PrevData`, fall back to a single `entity_version` lookup at snapshot time per missing entry — still bounded by writeset size.
+
+**CQL constants needed:**
+
+One new streaming SELECT against `index_string_data` for `(tenant, model, model_version, shard, field_type=String, field_path='$._meta.state')`, returning `(entity_id, submit_time, value, in_out_marker, tx_id)` clustered for efficient iteration. Implementer verifies during impl whether an existing constant can be reused; if not, add a new one and register via `registerCQL(...)`.
+
+**Performance characteristics (target):**
+
+- Wall-clock dominated by `max(per-shard scan time)`, not sum. Linear speedup with shard count up to the parallelism cap.
+- Network bytes per shard: `O(state-index entries in shard)` — bounded by `entities × avg_transitions_per_entity`. Far smaller than entity payloads (which the previous "scan entity_by_model" design would have implied via secondary lookups).
+- Heap per shard: `O(entities-with-state-history-in-shard)` during scan, `O(distinct-states)` after collapse.
+- No full-row-set materialization at any stage.
+
+> **Open follow-up (out of scope):** Cassandra COUNTER table for O(1) state stats. Materialize counts per `(tenant, model, state)` via increment on IN, decrement on OUT during the same commit batch. Avoids any scan but adds write-path complexity and counter-precision concerns under heavy contention. Track separately if scan performance proves insufficient at production scale.
 
 ### 2.4 Handler changes (`internal/domain/entity/service.go`)
 
@@ -130,7 +194,9 @@ The existing `[]EntityStatByState` struct, the HTTP/gRPC response shapes, and ro
 
 ### 2.5 In-tx fallback (documented limitation)
 
-`CountByState` inside a long transaction can still load entities into memory in sqlite/memory plugins, because their merged-view logic requires it. This matches the existing `Count` behavior — not a regression. Documented in the SPI godoc.
+`CountByState` inside a long transaction can still load entities into memory in **sqlite and memory** plugins, because their merged-view logic requires it. Matches existing `Count` behavior — not a regression. Documented in the SPI godoc.
+
+**Cassandra is the exception:** the cassandra plugin uses the proper `committed_at_snapshot + writeset_delta` approach (see Section 2.3 cassandra subsection), so in-tx `CountByState` is fast there. The "in-tx loads entities" limitation does not apply to cassandra.
 
 ---
 
@@ -269,13 +335,14 @@ Add a unit test covering `toFloat64(json.Number("1.5")) → 1.5`, and an integra
 |------|-----------|
 | Cassandra repo PR not merged when cyoda-go PR-1 is ready | Sequence step 2 → step 3 explicitly. Temporary `replace` directive only if absolutely needed. |
 | XML consumer audit misses a downstream type assertion | Full test suite run is the safety net; Gate 6 says any breakage is fixed in PR-2. |
-| In-tx `CountByState` still loads entities (sqlite/memory) | Matches existing `Count` behavior. Documented in SPI godoc. Not a regression. |
+| In-tx `CountByState` still loads entities (sqlite/memory only — cassandra has proper indexed in-tx path per Section 2.3) | Matches existing `Count` behavior in those plugins. Documented in SPI godoc. Not a regression. |
 | `toFloat64` doesn't handle `json.Number` | Confirmed missing (Section 4.3). Extension lands in PR-3. |
 | Per-model fan-out in `GetStatisticsByState` becomes new bottleneck | Documented as known limitation in Section 2.4. Follow-up issue post-merge. |
 
 ### 5.3 Out of scope
 
-- State-indexed materialized view for cassandra `CountByState` (separate follow-up if needed).
+- Cassandra COUNTER table for O(1) state stats (see Section 2.3 cassandra subsection "Open follow-up"). The scan-based approach using the existing `$._meta.state` index is the PR-B implementation; a COUNTER table is a potential future optimization if per-tenant scale demands it.
+- Broader lifecycle-field indexing (lastModifiedDate, changeType, changeUser, transactionID, version). The existing indexing covers `$._meta.state`, `$._meta.creationDate`, `$._meta.previousTransition`, and `_meta.transitionForLatestSave`, which is sufficient for `CountByState`. Additional lifecycle fields are out of scope for this issue; track as a separate spec if needed.
 - Per-model fan-out optimization for `GetStatisticsByState` — batched `CountByStateAll` SPI or parallelized loop (Section 2.4 documents this as a known limitation; track as separate follow-up).
 - Capability-interface refactor of the SPI (separate spec if/when we go there).
 - `matchArray` operators beyond equality. The bug is about equality; we don't extend to `LESS_THAN`-per-element or similar.
