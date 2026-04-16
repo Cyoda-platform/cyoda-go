@@ -91,18 +91,17 @@ func (s *txState) RecordWrite(id string, preWriteVersion int64) {
 // SortedUnionIDs returns a sorted slice of all entity IDs appearing in
 // either readSet or writeSet. The sorted order provides a deterministic
 // lock-acquisition sequence for the commit-time validation phase.
+//
+// The readSet and writeSet are guaranteed disjoint by the RecordRead/RecordWrite
+// invariants, so no deduplication is needed.
 func (s *txState) SortedUnionIDs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	seen := make(map[string]struct{}, len(s.readSet)+len(s.writeSet))
+	ids := make([]string, 0, len(s.readSet)+len(s.writeSet))
 	for id := range s.readSet {
-		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
 	for id := range s.writeSet {
-		seen[id] = struct{}{}
-	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)

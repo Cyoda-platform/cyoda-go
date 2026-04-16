@@ -377,3 +377,29 @@ func TestRestoreSavepoint_Unknown(t *testing.T) {
 		t.Fatal("expected error for unknown savepoint, got nil")
 	}
 }
+
+// TestValidateWriteSet_UpdateDeletedByConcurrent verifies that an update
+// target (expected > 0) absent from the current snapshot — meaning a
+// concurrent committer deleted it — returns an error containing the entity ID.
+func TestValidateWriteSet_UpdateDeletedByConcurrent(t *testing.T) {
+	s := newTxState("t1")
+	s.RecordWrite("e1", 5) // update: pre-write version 5
+	current := map[string]int64{} // e1 absent — deleted by concurrent committer
+	err := s.ValidateWriteSet(current)
+	if err == nil {
+		t.Fatal("expected error for deleted entity, got nil")
+	}
+	if !strings.Contains(err.Error(), "e1") {
+		t.Errorf("error does not mention entity ID: %v", err)
+	}
+}
+
+// TestReleaseSavepoint_Unknown verifies that releasing an unknown savepoint
+// returns an error.
+func TestReleaseSavepoint_Unknown(t *testing.T) {
+	s := newTxState("t1")
+	err := s.ReleaseSavepoint("bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown savepoint, got nil")
+	}
+}
