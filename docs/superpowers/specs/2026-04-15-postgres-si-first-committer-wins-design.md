@@ -110,6 +110,16 @@ Every method on `EntityStore` that touches an entity row inside a tx context rec
 
 Non-tx reads (no `txCtx`) bypass bookkeeping entirely. A public HTTP GET on `/entities/{id}` reads the current snapshot without recording anything.
 
+#### Known limitation: phantom reads on range/list queries
+
+`GetAll(txCtx, ref)` records the IDs of the **entities returned** into `readSet`. Commit-time validation is strictly ID-indexed, so it detects changes to those specific rows — but it **does not detect a concurrent transaction inserting a new row that would have satisfied the `GetAll` predicate**. This is a classic phantom-read anomaly that snapshot isolation with ID-granular first-committer-wins cannot prevent.
+
+Cassandra's plugin has the same limitation by construction (its per-entity read-set tracking is also ID-indexed; the earlier architecture report on `cyoda-go-cassandra` confirms phantom reads are not prevented). Parity with cassandra is preserved.
+
+**What this means for application developers:** do not rely on `GetAll` / `ListEntities` / `Count` results being serializable against concurrent inserts within a transaction. If a workflow's correctness depends on "no new entity of kind X existed at the time of my decision," an ID-indexed first-committer-wins model — on either plugin — will not enforce that invariant. Application-level locking on the logical resource (e.g., the model ref) is the correct remediation when/if a path requires it.
+
+Implementation note: `GetAll` and `Count` carry a code comment documenting this limitation so a future contributor does not "fix" the omission by adding range-predicate tracking.
+
 Helper: `plugins/postgres/txstate.go` exposes
 
 ```go
