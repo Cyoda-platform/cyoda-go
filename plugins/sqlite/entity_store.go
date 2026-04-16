@@ -602,19 +602,9 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		return nil
 	}
 
-	// Non-transaction: check existence, then soft delete.
+	// Non-transaction: begin SQLite transaction first, then check existence
+	// and delete atomically (no race window between check and delete).
 	tid := string(s.tenantID)
-	var exists bool
-	err := s.db.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted)",
-		tid, entityID).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("check entity existence: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
-	}
-
 	now := s.clock.Now()
 	nowMicro := timeToMicro(now)
 
@@ -627,8 +617,11 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	var curVersion int64
 	var modelName, modelVersion string
 	err = sqlTx.QueryRowContext(ctx,
-		"SELECT version, model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ?",
+		"SELECT version, model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ? AND NOT deleted",
 		tid, entityID).Scan(&curVersion, &modelName, &modelVersion)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+	}
 	if err != nil {
 		return fmt.Errorf("get entity for delete: %w", err)
 	}

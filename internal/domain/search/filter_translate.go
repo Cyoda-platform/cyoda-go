@@ -69,15 +69,34 @@ func groupToFilter(c *predicate.GroupCondition) (spi.Filter, error) {
 	return spi.Filter{Op: op, Children: children}, nil
 }
 
-// arrayToFilter translates an ArrayCondition. Array conditions are not directly
-// translatable to SQL pushdown, so they are mapped to an op that forces
-// post-filtering (matches_regex).
+// arrayToFilter translates an ArrayCondition into an AND group of positional
+// equality checks. Each non-nil value in the array becomes an equality filter
+// on the corresponding array index (e.g., "tags.0", "tags.2"). Nil entries
+// mean "skip this position". This makes individual checks pushable to SQL
+// via json_extract and correctly evaluable in post-filtering.
 func arrayToFilter(c *predicate.ArrayCondition) spi.Filter {
-	return spi.Filter{
-		Op:     spi.FilterMatchesRegex, // forces post-filter
-		Path:   stripDollarDot(c.JsonPath),
-		Source: spi.SourceData,
+	basePath := stripDollarDot(c.JsonPath)
+	var children []spi.Filter
+	for i, val := range c.Values {
+		if val == nil {
+			continue
+		}
+		children = append(children, spi.Filter{
+			Op:     spi.FilterEq,
+			Path:   fmt.Sprintf("%s.%d", basePath, i),
+			Source: spi.SourceData,
+			Value:  val,
+		})
 	}
+	if len(children) == 0 {
+		// All positions are nil (don't-care) — matches everything.
+		// Return a tautology: an empty AND is true.
+		return spi.Filter{Op: spi.FilterAnd}
+	}
+	if len(children) == 1 {
+		return children[0]
+	}
+	return spi.Filter{Op: spi.FilterAnd, Children: children}
 }
 
 // stripDollarDot removes the leading "$." from a JSONPath expression.

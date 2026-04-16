@@ -231,12 +231,64 @@ func TestConditionToFilter_Array(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Array conditions force post-filtering via matches_regex.
-	if f.Op != spi.FilterMatchesRegex {
-		t.Errorf("Op = %s, want matches_regex for array condition", f.Op)
+	// Array conditions expand to AND of positional equality checks.
+	// Values: ["go", nil, "test"] → tags.0 = "go" AND tags.2 = "test"
+	if f.Op != spi.FilterAnd {
+		t.Errorf("Op = %s, want and for array condition", f.Op)
 	}
-	if f.Path != "tags" {
-		t.Errorf("Path = %s, want tags", f.Path)
+	if len(f.Children) != 2 {
+		t.Fatalf("Children count = %d, want 2 (nil positions skipped)", len(f.Children))
+	}
+	if f.Children[0].Path != "tags.0" {
+		t.Errorf("Children[0].Path = %s, want tags.0", f.Children[0].Path)
+	}
+	if f.Children[0].Op != spi.FilterEq {
+		t.Errorf("Children[0].Op = %s, want eq", f.Children[0].Op)
+	}
+	if f.Children[0].Value != "go" {
+		t.Errorf("Children[0].Value = %v, want go", f.Children[0].Value)
+	}
+	if f.Children[1].Path != "tags.2" {
+		t.Errorf("Children[1].Path = %s, want tags.2", f.Children[1].Path)
+	}
+	if f.Children[1].Value != "test" {
+		t.Errorf("Children[1].Value = %v, want test", f.Children[1].Value)
+	}
+}
+
+func TestConditionToFilter_ArraySingleValue(t *testing.T) {
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.items",
+		Values:   []any{nil, "only"},
+	}
+	f, err := ConditionToFilter(cond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Single non-nil value should produce a bare eq filter (no AND wrapper).
+	if f.Op != spi.FilterEq {
+		t.Errorf("Op = %s, want eq for single-value array", f.Op)
+	}
+	if f.Path != "items.1" {
+		t.Errorf("Path = %s, want items.1", f.Path)
+	}
+}
+
+func TestConditionToFilter_ArrayAllNil(t *testing.T) {
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.arr",
+		Values:   []any{nil, nil},
+	}
+	f, err := ConditionToFilter(cond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All-nil values produce an empty AND (tautology — matches everything).
+	if f.Op != spi.FilterAnd {
+		t.Errorf("Op = %s, want and for all-nil array", f.Op)
+	}
+	if len(f.Children) != 0 {
+		t.Errorf("Children count = %d, want 0", len(f.Children))
 	}
 }
 

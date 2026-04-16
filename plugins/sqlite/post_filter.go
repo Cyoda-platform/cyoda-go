@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/tidwall/gjson"
 )
 
 // evaluateFilter evaluates a spi.Filter against an entity's data in Go.
@@ -58,28 +59,17 @@ func extractFieldValue(f spi.Filter, entity *spi.Entity) (any, bool) {
 }
 
 // extractDataValue extracts a value from JSON data using a dot-notation path.
+// Uses gjson for zero-allocation path lookups instead of full json.Unmarshal,
+// which matters when post-filtering thousands of entities.
 func extractDataValue(path string, data []byte) (any, bool) {
-	var raw any
-	if err := json.Unmarshal(data, &raw); err != nil {
+	result := gjson.GetBytes(data, path)
+	if !result.Exists() {
 		return nil, false
 	}
-	return navigatePath(raw, strings.Split(path, "."))
-}
-
-// navigatePath walks a dot-separated path through a parsed JSON structure.
-func navigatePath(current any, parts []string) (any, bool) {
-	for _, part := range parts {
-		m, ok := current.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		val, exists := m[part]
-		if !exists {
-			return nil, false
-		}
-		current = val
+	if result.Type == gjson.Null {
+		return nil, true
 	}
-	return current, true
+	return result.Value(), true
 }
 
 // extractMetaValue extracts a metadata field value.
@@ -276,8 +266,11 @@ func toFloat64(v any) *float64 {
 }
 
 // matchLike implements SQL LIKE pattern matching in Go.
-// % matches any sequence, _ matches any single character.
+// % matches any sequence, _ matches any single byte.
 // Backslash is the escape character.
+//
+// matchLike operates on bytes, not runes. This matches SQLite's default LIKE
+// behavior where _ matches a single byte, not a Unicode code point.
 func matchLike(s, pattern string) bool {
 	return matchLikeHelper(s, 0, pattern, 0)
 }

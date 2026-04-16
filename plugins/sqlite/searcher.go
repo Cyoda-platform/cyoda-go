@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -37,7 +38,11 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 		baseArgs = append(baseArgs, plan.args...)
 	}
 
-	baseQuery += " ORDER BY entity_id"
+	if opts.PointInTime != nil {
+		baseQuery += orderByClause(opts, "ev")
+	} else {
+		baseQuery += orderByClause(opts, "")
+	}
 
 	// When there is no residual, apply LIMIT/OFFSET in SQL.
 	if plan.postFilter == nil {
@@ -138,4 +143,47 @@ func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []a
 	          WHERE ev.tenant_id = ? AND ev.change_type != 'DELETED'`
 	args := []any{string(s.tenantID), opts.ModelName, opts.ModelVersion, pit, string(s.tenantID)}
 	return query, args
+}
+
+// orderByClause builds a SQL ORDER BY clause from opts.OrderBy.
+// When OrderBy is empty, defaults to "ORDER BY entity_id".
+// tablePrefix is prepended to direct column names (e.g., "ev" for point-in-time
+// queries where the entity_versions table is aliased as "ev").
+// For SourceMeta paths that are direct columns, uses the column name.
+// For SourceMeta paths in the meta BLOB, uses json_extract(json(meta), '$.path').
+// For SourceData paths, uses json_extract(data, '$.path').
+func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
+	if len(opts.OrderBy) == 0 {
+		col := "entity_id"
+		if tablePrefix != "" {
+			col = tablePrefix + "." + col
+		}
+		return " ORDER BY " + col
+	}
+	clauses := make([]string, 0, len(opts.OrderBy))
+	for _, spec := range opts.OrderBy {
+		expr := orderByFieldExpr(spec, tablePrefix)
+		if spec.Desc {
+			expr += " DESC"
+		}
+		clauses = append(clauses, expr)
+	}
+	return " ORDER BY " + strings.Join(clauses, ", ")
+}
+
+// orderByFieldExpr returns the SQL expression for an OrderSpec field.
+func orderByFieldExpr(spec spi.OrderSpec, tablePrefix string) string {
+	qualify := func(col string) string {
+		if tablePrefix != "" {
+			return tablePrefix + "." + col
+		}
+		return col
+	}
+	if spec.Source == spi.SourceMeta {
+		if directMetaColumns[spec.Path] {
+			return qualify(spec.Path)
+		}
+		return fmt.Sprintf("json_extract(json(%s), '$.%s')", qualify("meta"), spec.Path)
+	}
+	return fmt.Sprintf("json_extract(%s, '$.%s')", qualify("data"), spec.Path)
 }
