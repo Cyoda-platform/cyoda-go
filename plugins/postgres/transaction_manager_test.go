@@ -346,3 +346,37 @@ func TestCommitProbe_NonPGError_NotConflict(t *testing.T) {
 		t.Errorf("original error must remain in the error chain; got: %v", result)
 	}
 }
+
+func TestTxManager_BeginAllocatesTxState(t *testing.T) {
+	tm, _ := newTestTxManager(t)
+	ctx := ctxWithTenant("tx-tenant")
+	txID, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if !postgres.HasTxState(tm, txID) {
+		t.Errorf("expected txState registered for %s", txID)
+	}
+	if err := tm.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if postgres.HasTxState(tm, txID) {
+		t.Errorf("expected txState removed after Commit for %s", txID)
+	}
+}
+
+func TestTxManager_RollbackCleansTxState(t *testing.T) {
+	tm, _ := newTestTxManager(t)
+	ctx := ctxWithTenant("tx-tenant")
+	txID, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := tm.Rollback(ctx, txID); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if postgres.HasTxState(tm, txID) {
+		t.Errorf("expected txState removed after Rollback for %s", txID)
+	}
+}
+

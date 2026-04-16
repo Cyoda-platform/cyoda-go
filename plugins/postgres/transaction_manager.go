@@ -19,8 +19,9 @@ import (
 const submitTimeTTL = 1 * time.Hour
 
 // TransactionManager implements spi.TransactionManager backed by PostgreSQL
-// with SERIALIZABLE isolation. Each Begin() acquires a real pgx.Tx and
-// registers it in the txRegistry so that stores can look it up by ID.
+// with SERIALIZABLE isolation. Each Begin() acquires a real pgx.Tx,
+// registers it in the txRegistry, and allocates a *txState for read/write
+// bookkeeping used by Commit.
 type TransactionManager struct {
 	pool     *pgxpool.Pool
 	registry *txRegistry
@@ -32,7 +33,9 @@ type TransactionManager struct {
 	// tenants records the tenant for each active transaction so Join can
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
-	tenants map[string]spi.TenantID
+	tenants    map[string]spi.TenantID
+	txStatesMu sync.Mutex
+	txStates   map[string]*txState
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
@@ -43,6 +46,7 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *Transac
 		uuids:       uuids,
 		submitTimes: make(map[string]time.Time),
 		tenants:     make(map[string]spi.TenantID),
+		txStates:    make(map[string]*txState),
 	}
 }
 
@@ -75,12 +79,16 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	tm.tenants[txID] = tenantID
 	tm.mu.Unlock()
 
-	txState := &spi.TransactionState{
+	tm.txStatesMu.Lock()
+	tm.txStates[txID] = newTxState(tenantID)
+	tm.txStatesMu.Unlock()
+
+	txSpiState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
 	}
 
-	return txID, spi.WithTransaction(ctx, txState), nil
+	return txID, spi.WithTransaction(ctx, txSpiState), nil
 }
 
 // Commit commits the transaction and records its submit time.
@@ -102,6 +110,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
 		tm.registry.Remove(txID)
 		tm.removeTenant(txID)
+		tm.removeTxState(txID)
 		// Only classify as ErrConflict when the probe fails specifically because
 		// the transaction is already in an aborted state (SQLSTATE 25P02:
 		// in_failed_sql_transaction). Any other error (context cancellation,
@@ -126,11 +135,13 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		_ = pgxTx.Rollback(ctx)
 		tm.registry.Remove(txID)
 		tm.removeTenant(txID)
+		tm.removeTxState(txID)
 		return classifyError(fmt.Errorf("Commit: %w", err))
 	}
 
 	tm.registry.Remove(txID)
 	tm.removeTenant(txID)
+	tm.removeTxState(txID)
 
 	tm.mu.Lock()
 	tm.submitTimes[txID] = submitTime
@@ -155,6 +166,7 @@ func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	err := pgxTx.Rollback(ctx)
 	tm.registry.Remove(txID)
 	tm.removeTenant(txID)
+	tm.removeTxState(txID)
 
 	if err != nil {
 		return fmt.Errorf("Rollback: %w", err)
@@ -203,8 +215,23 @@ func (tm *TransactionManager) LookupTx(txID string) (pgx.Tx, bool) {
 // removeTenant cleans up the tenant mapping for a completed transaction.
 func (tm *TransactionManager) removeTenant(txID string) {
 	tm.mu.Lock()
+	defer tm.mu.Unlock()
 	delete(tm.tenants, txID)
-	tm.mu.Unlock()
+}
+
+// removeTxState removes the txState entry for a completed transaction.
+func (tm *TransactionManager) removeTxState(txID string) {
+	tm.txStatesMu.Lock()
+	defer tm.txStatesMu.Unlock()
+	delete(tm.txStates, txID)
+}
+
+// lookupTxState returns the txState for the given txID.
+func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
+	tm.txStatesMu.Lock()
+	defer tm.txStatesMu.Unlock()
+	s, ok := tm.txStates[txID]
+	return s, ok
 }
 
 // Savepoint creates a named savepoint within the given PostgreSQL transaction.

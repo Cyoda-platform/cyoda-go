@@ -18,3 +18,48 @@ var MigrateDownForTest = migrateDown
 // ClassifyErrorForTest exposes classifyError to allow unit-testing of the
 // serialization/deadlock classification logic without requiring a live database.
 var ClassifyErrorForTest = classifyError
+
+// HasTxState reports whether the given txID has an active txState entry.
+func HasTxState(tm *TransactionManager, txID string) bool {
+	tm.txStatesMu.Lock()
+	defer tm.txStatesMu.Unlock()
+	_, ok := tm.txStates[txID]
+	return ok
+}
+
+// TxStateForTest exposes the recording/savepoint methods needed by tests.
+type TxStateForTest interface {
+	RecordRead(id string, version int64)
+	RecordWrite(id string, preWriteVersion int64)
+	PushSavepoint(id string)
+	RestoreSavepoint(id string) error
+	ReleaseSavepoint(id string) error
+}
+
+// LookupTxStateForTest returns the TxStateForTest for the given txID.
+func LookupTxStateForTest(tm *TransactionManager, txID string) (TxStateForTest, bool) {
+	return tm.lookupTxState(txID)
+}
+
+// ReadSetVersionForTest returns the captured readSet version for the given entity, or 0 if not present.
+func ReadSetVersionForTest(s TxStateForTest, entityID string) int64 {
+	inner, ok := s.(*txState)
+	if !ok {
+		return 0
+	}
+	inner.mu.Lock()
+	defer inner.mu.Unlock()
+	return inner.readSet[entityID]
+}
+
+// WriteSetVersionForTest returns the captured writeSet version and whether it exists.
+func WriteSetVersionForTest(s TxStateForTest, entityID string) (int64, bool) {
+	inner, ok := s.(*txState)
+	if !ok {
+		return 0, false
+	}
+	inner.mu.Lock()
+	defer inner.mu.Unlock()
+	v, present := inner.writeSet[entityID]
+	return v, present
+}
