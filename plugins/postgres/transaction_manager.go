@@ -101,11 +101,48 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 }
 
 // Commit commits the transaction and records its submit time.
-// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001).
+// Returns spi.ErrConflict on serialization failure (PostgreSQL error 40001)
+// or when the application-layer first-committer-wins validation detects a
+// stale read or write set.
 func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return fmt.Errorf("Commit: transaction %s not found", txID)
+	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return fmt.Errorf("Commit: tx state for %s not found", txID)
+	}
+
+	// --- First-committer-wins validation ---
+	// Fetch current committed versions for all entities touched by this tx
+	// and compare against the captured read/write sets. A mismatch means a
+	// concurrent committer has changed data we depended on; abort with
+	// ErrConflict so the caller can retry on a fresh snapshot.
+	ids := state.SortedUnionIDs()
+	if len(ids) > 0 {
+		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, ids, 0)
+		if err != nil {
+			tm.registry.Remove(txID)
+			tm.removeTenant(txID)
+			tm.removeTxState(txID)
+			_ = pgxTx.Rollback(context.Background())
+			return classifyError(fmt.Errorf("Commit: validate: %w", err))
+		}
+		if verr := state.ValidateReadSet(current); verr != nil {
+			tm.registry.Remove(txID)
+			tm.removeTenant(txID)
+			tm.removeTxState(txID)
+			_ = pgxTx.Rollback(context.Background())
+			return fmt.Errorf("%w: Commit: %w", spi.ErrConflict, verr)
+		}
+		if verr := state.ValidateWriteSet(current); verr != nil {
+			tm.registry.Remove(txID)
+			tm.removeTenant(txID)
+			tm.removeTxState(txID)
+			_ = pgxTx.Rollback(context.Background())
+			return fmt.Errorf("%w: Commit: %w", spi.ErrConflict, verr)
+		}
 	}
 
 	// Capture the database timestamp before committing.

@@ -447,3 +447,45 @@ func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
 	}
 	_ = tm.Rollback(ctx, txID2)
 }
+
+func TestTxManager_Commit_ReadSetConflict(t *testing.T) {
+	tm, pool := newTestTxManager(t)
+	ctx := ctxWithTenant("t1")
+
+	// Seed.
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+		VALUES ('t1', 'e1', 'M', '1', 5, false, '{}'::jsonb)
+	`)
+
+	// Tx A: begin, record a read at version 5.
+	txA, _, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin A: %v", err)
+	}
+	stateA, _ := postgres.LookupTxStateForTest(tm, txA)
+	stateA.RecordRead("e1", 5)
+
+	// Tx B: bumps e1 to version 6 and commits.
+	txB, txCtxB, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin B: %v", err)
+	}
+	txBpgx, _ := tm.LookupTx(txB)
+	if _, err := txBpgx.Exec(txCtxB,
+		`UPDATE entities SET version=6 WHERE tenant_id='t1' AND entity_id='e1'`); err != nil {
+		t.Fatalf("B update: %v", err)
+	}
+	if err := tm.Commit(ctx, txB); err != nil {
+		t.Fatalf("B commit: %v", err)
+	}
+
+	// Tx A: commit must fail with ErrConflict.
+	err = tm.Commit(ctx, txA)
+	if err == nil {
+		t.Fatal("want ErrConflict on A.Commit, got nil")
+	}
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Errorf("want ErrConflict, got %v", err)
+	}
+}
