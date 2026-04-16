@@ -130,16 +130,12 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	if len(readIDs) > 0 {
 		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, readIDs, 0)
 		if err != nil {
-			tm.registry.Remove(txID)
-			tm.removeTenant(txID)
-			tm.removeTxState(txID)
+			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
 			return classifyError(fmt.Errorf("Commit: validate: %w", err))
 		}
 		if verr := state.ValidateReadSet(current); verr != nil {
-			tm.registry.Remove(txID)
-			tm.removeTenant(txID)
-			tm.removeTxState(txID)
+			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
 			return fmt.Errorf("%w: Commit: %w", spi.ErrConflict, verr)
 		}
@@ -154,9 +150,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// stored on an error path.
 	var submitTime time.Time
 	if tsErr := pgxTx.QueryRow(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&submitTime); tsErr != nil {
-		tm.registry.Remove(txID)
-		tm.removeTenant(txID)
-		tm.removeTxState(txID)
+		tm.cleanupTx(txID)
 		// Only classify as ErrConflict when the probe fails specifically because
 		// the transaction is already in an aborted state (SQLSTATE 25P02:
 		// in_failed_sql_transaction). Any other error (context cancellation,
@@ -179,25 +173,23 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// the pgx.Tx still holds the connection. Rollback explicitly to release
 		// it back to the pool; ignore the rollback error (tx is already invalid).
 		_ = pgxTx.Rollback(ctx)
-		tm.registry.Remove(txID)
-		tm.removeTenant(txID)
-		tm.removeTxState(txID)
+		tm.cleanupTx(txID)
 		return classifyError(fmt.Errorf("Commit: %w", err))
 	}
 
-	tm.registry.Remove(txID)
-	tm.removeTenant(txID)
-	tm.removeTxState(txID)
+	tm.cleanupTx(txID)
 
-	tm.mu.Lock()
-	tm.submitTimes[txID] = submitTime
-	evictBefore := time.Now().Add(-submitTimeTTL)
-	for id, t := range tm.submitTimes {
-		if t.Before(evictBefore) {
-			delete(tm.submitTimes, id)
+	func() {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		tm.submitTimes[txID] = submitTime
+		evictBefore := time.Now().Add(-submitTimeTTL)
+		for id, t := range tm.submitTimes {
+			if t.Before(evictBefore) {
+				delete(tm.submitTimes, id)
+			}
 		}
-	}
-	tm.mu.Unlock()
+	}()
 
 	return nil
 }
@@ -210,9 +202,7 @@ func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	}
 
 	err := pgxTx.Rollback(ctx)
-	tm.registry.Remove(txID)
-	tm.removeTenant(txID)
-	tm.removeTxState(txID)
+	tm.cleanupTx(txID)
 
 	if err != nil {
 		return fmt.Errorf("Rollback: %w", err)
@@ -259,6 +249,14 @@ func (tm *TransactionManager) GetSubmitTime(_ context.Context, txID string) (tim
 // layer (resolveQuerier). Production code should prefer resolveQuerier.
 func (tm *TransactionManager) LookupTx(txID string) (pgx.Tx, bool) {
 	return tm.registry.Lookup(txID)
+}
+
+// cleanupTx removes all per-transaction state (registry, tenant, txState).
+// Called on every Commit/Rollback exit path.
+func (tm *TransactionManager) cleanupTx(txID string) {
+	tm.registry.Remove(txID)
+	tm.removeTenant(txID)
+	tm.removeTxState(txID)
 }
 
 // removeTenant cleans up the tenant mapping for a completed transaction.

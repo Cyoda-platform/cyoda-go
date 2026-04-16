@@ -20,6 +20,9 @@ type entityStore struct {
 	tm       *TransactionManager
 }
 
+// SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
+// call records in writeSet (for updates) via recordWriteIfInTx. If this
+// is ever optimized to a batch INSERT, the writeSet hooks must be preserved.
 func (s *entityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity]) ([]int64, error) {
 	return spi.DefaultSaveAll(s, ctx, entities)
 }
