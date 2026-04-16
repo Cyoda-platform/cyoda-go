@@ -801,7 +801,7 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 // given model. See SPI godoc on EntityStore.CountByState for filter semantics.
 //
 // The state value is stored inside the meta BLOB as JSON; we extract it via
-// json_extract(meta, '$.state'). An indexed expression on this extraction is
+// json_extract(json(meta), '$.state'). An indexed expression on this extraction is
 // a future optimization (out of scope for this issue).
 //
 // In-tx callers fall back to GetAll-then-count-in-Go to honour merged-view
@@ -840,7 +840,7 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 
 	// Non-transaction: aggregate at the database.
 	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
-	q := `SELECT COALESCE(json_extract(meta, '$.state'), '') AS state, COUNT(*)
+	q := `SELECT COALESCE(json_extract(json(meta), '$.state'), '') AS state, COUNT(*)
 	      FROM entities
 	      WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted`
 
@@ -853,7 +853,7 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 			}
 			placeholders = append(placeholders, '?')
 		}
-		q += ` AND json_extract(meta, '$.state') IN (` + string(placeholders) + `)`
+		q += ` AND json_extract(json(meta), '$.state') IN (` + string(placeholders) + `)`
 		for _, st := range states {
 			args = append(args, st)
 		}

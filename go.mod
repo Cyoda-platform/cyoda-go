@@ -67,7 +67,7 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/cyoda-platform/cyoda-go/plugins/memory v0.1.0
 	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.1.0
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.0.0-00010101000000-000000000000
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.1.0
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
