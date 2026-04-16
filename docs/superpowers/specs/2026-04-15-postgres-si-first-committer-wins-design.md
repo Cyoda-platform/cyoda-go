@@ -32,7 +32,7 @@ The postgres plugin implements first-committer-wins by:
 1. Running every tx at `REPEATABLE READ` (snapshot isolation) instead of `SERIALIZABLE` (SSI).
 2. Tracking `(entity_id → expected_version)` for every entity read within the tx, in a plugin-local per-tx state map.
 3. Tracking `(entity_id → pre-write version)` for every entity write within the tx.
-4. At `Commit`, issuing one batched `SELECT ... FOR SHARE` over the union of read-set and write-set rows. Postgres's own RR-level concurrent-update detection raises `40001` if any of those rows was modified by a concurrent committer since our snapshot. The returned versions are compared to the expected versions; any mismatch → `spi.ErrConflict`. On success, row-level locks held until `pgxTx.Commit` protect the validate-then-commit window.
+4. At `Commit`, issuing one batched `SELECT ... FOR SHARE` over the read-set rows only. Postgres's own RR-level concurrent-update detection raises `40001` if any of those rows was modified by a concurrent committer since our snapshot. The returned versions are compared to the expected versions; any mismatch → `spi.ErrConflict`. On success, row-level locks held until `pgxTx.Commit` protect the validate-then-commit window. Write-write conflicts are caught by postgres's native tuple-level DML locks at `UPDATE`/`INSERT` time — before commit phase runs.
 
 The entire mechanism lives inside the postgres plugin. No SPI changes.
 
@@ -100,8 +100,8 @@ Every method on `EntityStore` that touches an entity row inside a tx context rec
 |---|---|
 | `Get(txCtx, id)` | `readSet[id] = entity.Meta.Version` (if not already present) |
 | `GetAll(txCtx, ref)` | For each returned entity: `readSet[id] = version` |
-| `Save(txCtx, entity)` | `writeSet[id] = previousVersion` (or `0` for INSERT) |
-| `SaveAll(txCtx, iter)` | Per-entity: `writeSet[id] = previousVersion` |
+| `Save(txCtx, entity)` | Updates: `writeSet[id] = previousVersion`. Fresh inserts: **not recorded in writeSet** — write-write conflicts on new rows are enforced by the unique constraint + tuple-level DML lock at INSERT time. |
+| `SaveAll(txCtx, iter)` | Per-entity: same as `Save` — updates recorded, fresh inserts not. |
 | `CompareAndSave(txCtx, entity, ifMatch)` | `writeSet[id] = parsedIfMatch` |
 | `Delete(txCtx, id)` | `writeSet[id] = previousVersion` (soft delete bumps version) |
 | `GetAsAt(txCtx, id, t)` | **Not tracked** — point-in-time reads target an immutable historical version, not the live row; they don't participate in first-committer-wins. If application logic reads a historical version and then decides a live-row write, the decision is intentionally not validated at commit (the "live-row only" semantic). The implementation should carry a code comment stating this explicitly so a future contributor doesn't "fix" the omission by adding tracking. |
@@ -159,17 +159,19 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
         return fmt.Errorf("Commit: tx state for %s not found", txID)
     }
 
-    // Collect all distinct entity IDs from read+write set, sorted.
+    // Collect all distinct entity IDs from the read-set only, sorted.
+    // writeSet is NOT validated here — see "Design divergence: writeSet not
+    // validated at commit" section below for the full rationale.
     // Sorting makes FOR SHARE lock acquisition order deterministic across
     // concurrent committers, eliminating a class of deadlock (40P01) that
     // would otherwise surface as ErrConflict under contention. postgres
     // still may deadlock-abort in pathological cases — classifyError maps
     // 40P01 to ErrConflict — but sorted acquisition keeps that to the
     // genuinely unavoidable cases.
-    ids := state.sortedUnionIDs()
+    ids := state.sortedReadIDs()
 
     if len(ids) > 0 {
-        // Single batched FOR SHARE over the union set, scoped to tenant
+        // Single batched FOR SHARE over the read-set, scoped to tenant
         // for defence-in-depth alongside RLS. Chunked to keep the ANY($2)
         // array within planner-friendly bounds (see validateInChunks).
         // FOR SHARE (not FOR UPDATE) is the right mode: we want to detect
@@ -194,14 +196,9 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
             _ = pgxTx.Rollback(context.Background())
             return fmt.Errorf("%w: %w", spi.ErrConflict, err)
         }
-
-        // Write-set check: every write target must still be at the
-        // pre-write version we expected. (Inserts: 0 expected / absent.)
-        if err := state.validateWriteSet(current); err != nil {
-            tm.cleanupTx(txID)
-            _ = pgxTx.Rollback(context.Background())
-            return fmt.Errorf("%w: %w", spi.ErrConflict, err)
-        }
+        // Write-set is NOT validated here — write-write conflicts are caught
+        // by postgres's tuple-level DML locks (SQLSTATE 40001) at
+        // UPDATE/INSERT time. See "Design divergence" section.
     }
 
     // Existing: capture submit time, commit pgxTx, record submit time.
@@ -214,30 +211,31 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 }
 ```
 
-`validateReadSet` / `validateWriteSet` are straightforward map compares. Semantics:
+`validateReadSet` is a straightforward map compare. Semantics:
 
 - Read-set: captured version must equal current; missing current (deleted by concurrent committer) → conflict.
-- Write-set: expected pre-write version must equal current; version `0` (new insert) requires the row to not yet exist in `current`.
+
+`validateWriteSet` is retained on `txState` for the readSet-disjoint invariant and future use (#35), but is **not called at commit time** (see "Design divergence" section).
 
 `classifyError` already maps pgcode `40001` and `40P01` to `spi.ErrConflict`. We rely on it for errors raised from the validation query itself (postgres raising concurrent-update mid-SELECT-FOR-SHARE).
 
 ### Batch size guard
 
-A single tx's read+write set is typically tens of entities, but pathological workloads (long workflows with re-entrant processors, bulk imports) may produce hundreds or thousands. Postgres handles `ANY($1::uuid[])` efficiently up to a few thousand elements, but planning cost grows and very large arrays degrade predictably. The validator chunks accordingly:
+A single tx's read-set is typically tens of entities, but pathological workloads (long workflows with re-entrant processors, bulk reads) may produce hundreds or thousands. Postgres handles `ANY($1::uuid[])` efficiently up to a few thousand elements, but planning cost grows and very large arrays degrade predictably. The validator chunks accordingly:
 
 ```go
 const validateChunkSize = 1000  // conservative — well under planner thresholds.
 
 func (tm *TransactionManager) validateInChunks(
-    ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, sortedIDs []string,
+    ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, sortedReadIDs []string,
 ) (map[string]int64, error) {
-    current := make(map[string]int64, len(sortedIDs))
-    for i := 0; i < len(sortedIDs); i += validateChunkSize {
+    current := make(map[string]int64, len(sortedReadIDs))
+    for i := 0; i < len(sortedReadIDs); i += validateChunkSize {
         end := i + validateChunkSize
-        if end > len(sortedIDs) {
-            end = len(sortedIDs)
+        if end > len(sortedReadIDs) {
+            end = len(sortedReadIDs)
         }
-        chunk := sortedIDs[i:end]
+        chunk := sortedReadIDs[i:end]
         rows, err := tx.Query(ctx, `
             SELECT id, version
               FROM entities
@@ -263,7 +261,20 @@ func (tm *TransactionManager) validateInChunks(
 }
 ```
 
-Because `sortedIDs` is sorted and chunks are taken in order, lock acquisition order remains deterministic across chunks within one tx and across concurrent txs — the deadlock prevention property of sorted acquisition is preserved through chunking.
+Because `sortedReadIDs` is sorted and chunks are taken in order, lock acquisition order remains deterministic across chunks within one tx and across concurrent txs — the deadlock prevention property of sorted acquisition is preserved through chunking.
+
+### Design divergence: writeSet not validated at commit
+
+**Root cause.** `FOR SHARE` executed inside the same `pgx.Tx` as the DML reads the tx's own *uncommitted* writes (read-your-own-writes under Repeatable Read). When the commit-phase validator issues `SELECT id, version FROM entities WHERE id = ANY($1) FOR SHARE` over the write-set, postgres returns the post-write version that the *current tx* already wrote — not the committed version that a concurrent committer might have written. As a result, `validateWriteSet` would always see the expected pre-write version matching the current returned version, making the check trivially pass even in the face of real conflicts — or, equivalently, it would never see the concurrent committer's version, producing neither correct detection nor spurious errors from this path.
+
+**Consequence.** Including writeSet IDs in the `FOR SHARE` set does not add correctness: the `current` map entry for a written entity always reflects this tx's own write, making the version comparison useless (the check would compare `preWriteVersion` against `preWriteVersion + 1` — always a mismatch — which means every commit involving a write would produce a spurious `ErrConflict`).
+
+**The fix.** Only `readSet` is validated via `FOR SHARE`. Write-write conflicts rely exclusively on postgres's native **tuple-level DML locks**:
+
+- Under Repeatable Read, when two concurrent transactions both attempt to `UPDATE` or `INSERT` the same entity row, the second one blocks until the first commits or rolls back. If the first committed, postgres raises `SQLSTATE 40001` (`could not serialize access due to concurrent update`) immediately on the second tx's DML statement — well before commit phase. `classifyError` maps `40001` → `spi.ErrConflict`.
+- The unique constraint on `(tenant_id, id)` covers the concurrent-insert case for new entities: two txs inserting the same entity ID collide at INSERT time with a duplicate-key error, which `classifyError` likewise maps to `spi.ErrConflict`.
+
+**writeSet is still maintained.** `txState.writeSet` is populated on every write and is used to enforce the readSet-disjoint invariant (an entity ID cannot appear in both `readSet` and `writeSet` with inconsistent expected versions). It is also preserved for future use under [#35](https://github.com/Cyoda-platform/cyoda-go/issues/35), which may extend first-committer-wins validation to non-entity stores where the read-your-own-writes problem may not apply in the same way.
 
 ### Rollback
 
