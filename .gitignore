@@ -65,7 +65,7 @@ bin/
 coverage.out
 
 .sandbox/
-.claude/
+.claude/settings.local.json
 .playwright-mcp/
 .superpowers/
 
