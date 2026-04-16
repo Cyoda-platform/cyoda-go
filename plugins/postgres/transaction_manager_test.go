@@ -381,7 +381,7 @@ func TestTxManager_RollbackCleansTxState(t *testing.T) {
 }
 
 func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
-	tm, pool := newTestTxManager(t)
+	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("t1")
 
 	// Tx1: insert a row.
@@ -445,6 +445,5 @@ func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
 	if v2 != 1 {
 		t.Errorf("snapshot preserved after concurrent commit: want 1, got %d", v2)
 	}
-	_ = pool
 	_ = tm.Rollback(ctx, txID2)
 }

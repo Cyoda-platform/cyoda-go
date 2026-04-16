@@ -80,13 +80,17 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	tm.registry.Register(txID, pgxTx)
 
-	tm.mu.Lock()
-	tm.tenants[txID] = tenantID
-	tm.mu.Unlock()
+	func() {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		tm.tenants[txID] = tenantID
+	}()
 
-	tm.txStatesMu.Lock()
-	tm.txStates[txID] = newTxState(tenantID)
-	tm.txStatesMu.Unlock()
+	func() {
+		tm.txStatesMu.Lock()
+		defer tm.txStatesMu.Unlock()
+		tm.txStates[txID] = newTxState(tenantID)
+	}()
 
 	txSpiState := &spi.TransactionState{
 		ID:       txID,
@@ -187,9 +191,12 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 		return nil, fmt.Errorf("Join: transaction %s not found", txID)
 	}
 
-	tm.mu.Lock()
-	tenantID := tm.tenants[txID]
-	tm.mu.Unlock()
+	var tenantID spi.TenantID
+	func() {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		tenantID = tm.tenants[txID]
+	}()
 
 	txState := &spi.TransactionState{
 		ID:       txID,
