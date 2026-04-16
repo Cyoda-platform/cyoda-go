@@ -380,3 +380,71 @@ func TestTxManager_RollbackCleansTxState(t *testing.T) {
 	}
 }
 
+func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
+	tm, pool := newTestTxManager(t)
+	ctx := ctxWithTenant("t1")
+
+	// Tx1: insert a row.
+	txID1, txCtx1, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin 1: %v", err)
+	}
+	tx1, _ := tm.LookupTx(txID1)
+	if _, err := tx1.Exec(txCtx1,
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
+         VALUES ('t1', 'e1', 'M', '1', 1, false, '{}'::jsonb)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// Read-your-own-writes.
+	var v int64
+	if err := tx1.QueryRow(txCtx1,
+		`SELECT version FROM entities WHERE tenant_id='t1' AND entity_id='e1'`).Scan(&v); err != nil {
+		t.Fatalf("read own write: %v", err)
+	}
+	if v != 1 {
+		t.Errorf("want version=1, got %d", v)
+	}
+	if err := tm.Commit(ctx, txID1); err != nil {
+		t.Fatalf("Commit 1: %v", err)
+	}
+
+	// Tx2: takes snapshot.
+	txID2, txCtx2, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin 2: %v", err)
+	}
+	tx2, _ := tm.LookupTx(txID2)
+	var v2 int64
+	if err := tx2.QueryRow(txCtx2,
+		`SELECT version FROM entities WHERE tenant_id='t1' AND entity_id='e1'`).Scan(&v2); err != nil {
+		t.Fatalf("tx2 read: %v", err)
+	}
+	if v2 != 1 {
+		t.Errorf("tx2 snapshot: want 1, got %d", v2)
+	}
+
+	// Tx3 (outside tx2) commits a version bump.
+	txID3, txCtx3, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin 3: %v", err)
+	}
+	tx3, _ := tm.LookupTx(txID3)
+	if _, err := tx3.Exec(txCtx3,
+		`UPDATE entities SET version=2 WHERE tenant_id='t1' AND entity_id='e1'`); err != nil {
+		t.Fatalf("tx3 update: %v", err)
+	}
+	if err := tm.Commit(ctx, txID3); err != nil {
+		t.Fatalf("Commit 3: %v", err)
+	}
+
+	// Tx2 should STILL see version 1 (snapshot preserved).
+	if err := tx2.QueryRow(txCtx2,
+		`SELECT version FROM entities WHERE tenant_id='t1' AND entity_id='e1'`).Scan(&v2); err != nil {
+		t.Fatalf("tx2 re-read: %v", err)
+	}
+	if v2 != 1 {
+		t.Errorf("snapshot preserved after concurrent commit: want 1, got %d", v2)
+	}
+	_ = pool
+	_ = tm.Rollback(ctx, txID2)
+}

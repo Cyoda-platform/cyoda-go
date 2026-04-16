@@ -19,7 +19,8 @@ import (
 const submitTimeTTL = 1 * time.Hour
 
 // TransactionManager implements spi.TransactionManager backed by PostgreSQL
-// with SERIALIZABLE isolation. Each Begin() acquires a real pgx.Tx,
+// with REPEATABLE READ isolation plus application-layer row-granular
+// first-committer-wins validation. Each Begin() acquires a real pgx.Tx,
 // registers it in the txRegistry, and allocates a *txState for read/write
 // bookkeeping used by Commit.
 type TransactionManager struct {
@@ -50,8 +51,12 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *Transac
 	}
 }
 
-// Begin starts a new SERIALIZABLE transaction and returns the transaction ID
-// and a context carrying the TransactionState.
+// Begin starts a new REPEATABLE READ transaction (snapshot isolation) and
+// returns the transaction ID and a context carrying the TransactionState.
+//
+// Row-granular first-committer-wins is enforced in application code via
+// txState bookkeeping (readSet/writeSet) and commit-time validation — see
+// Commit() and docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md.
 func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Context, error) {
 	tenantID, err := resolveTenant(ctx)
 	if err != nil {
@@ -60,7 +65,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	txID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 
-	pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return "", nil, fmt.Errorf("Begin: failed to start transaction: %w", err)
 	}
