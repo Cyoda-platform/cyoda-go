@@ -2,9 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -30,23 +33,26 @@ type savepointSnapshot struct {
 // Serializable Snapshot Isolation. In-memory committedLog tracks conflicts;
 // SQLite is the persistence layer.
 //
-// Full implementation will be added in a later task. This stub provides the
-// type so store_factory.go compiles.
+// Commit ordering: acquire commitMu -> validate SSI -> capture submitTime ->
+// BEGIN IMMEDIATE -> flush -> COMMIT -> append committedLog -> prune -> release commitMu.
 type transactionManager struct {
-	factory        *StoreFactory
-	uuids          spi.UUIDGenerator
-	commitMu       sync.Mutex
-	mu             sync.Mutex
-	active         map[string]*spi.TransactionState
-	committedLog   []committedTx
-	committing     map[string]bool
-	submitTimes    map[string]time.Time
-	savepoints     map[string]map[string]savepointSnapshot
-	lastSubmitTime int64
+	factory  *StoreFactory
+	uuids    spi.UUIDGenerator
+	commitMu sync.Mutex // serializes the entire commit path for SSI correctness
+	mu       sync.Mutex // protects active, committedLog, committing, submitTimes, savepoints
+
+	active       map[string]*spi.TransactionState
+	committedLog []committedTx
+	committing   map[string]bool
+	submitTimes  map[string]time.Time
+	savepoints   map[string]map[string]savepointSnapshot
 }
 
+// Verify interface compliance at compile time.
+var _ spi.TransactionManager = (*transactionManager)(nil)
+
 func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *transactionManager {
-	tm := &transactionManager{
+	return &transactionManager{
 		factory:     factory,
 		uuids:       uuids,
 		active:      make(map[string]*spi.TransactionState),
@@ -54,48 +60,488 @@ func newTransactionManager(factory *StoreFactory, uuids spi.UUIDGenerator) *tran
 		submitTimes: make(map[string]time.Time),
 		savepoints:  make(map[string]map[string]savepointSnapshot),
 	}
-	tm.seedLastSubmitTime()
-	return tm
 }
 
-func (m *transactionManager) seedLastSubmitTime() {
-	var maxTime int64
-	err := m.factory.db.QueryRow("SELECT COALESCE(MAX(submit_time), 0) FROM entity_versions").Scan(&maxTime)
-	if err != nil {
-		// Table may not exist yet (pre-migration). Safe to start at 0.
-		return
-	}
-	m.lastSubmitTime = maxTime
-}
-
+// Begin starts a new transaction. It resolves the tenant from the context,
+// generates a unique transaction ID, captures a snapshot time, and returns
+// a new context carrying the TransactionState.
 func (m *transactionManager) Begin(ctx context.Context) (string, context.Context, error) {
-	return "", nil, fmt.Errorf("sqlite tx manager: not yet implemented")
+	uc := spi.GetUserContext(ctx)
+	if uc == nil {
+		return "", ctx, fmt.Errorf("no user context — cannot begin transaction")
+	}
+	if uc.Tenant.ID == "" {
+		return "", ctx, fmt.Errorf("user context has no tenant — cannot begin transaction")
+	}
+
+	txID := uuid.UUID(m.uuids.NewTimeUUID()).String()
+	now := m.factory.clock.Now()
+
+	tx := &spi.TransactionState{
+		ID:           txID,
+		TenantID:     uc.Tenant.ID,
+		SnapshotTime: now,
+		ReadSet:      make(map[string]bool),
+		WriteSet:     make(map[string]bool),
+		Buffer:       make(map[string]*spi.Entity),
+		Deletes:      make(map[string]bool),
+	}
+
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.active[txID] = tx
+	}()
+
+	return txID, spi.WithTransaction(ctx, tx), nil
 }
 
-func (m *transactionManager) Commit(_ context.Context, _ string) error {
-	return fmt.Errorf("sqlite tx manager: not yet implemented")
+// Join returns a context carrying the TransactionState for an existing active
+// transaction. This allows multiple goroutines to participate in the same
+// transaction.
+func (m *transactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
+	m.mu.Lock()
+	tx, ok := m.active[txID]
+	m.mu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("transaction not found: %s", txID)
+	}
+	if tx.RolledBack || tx.Closed {
+		return nil, fmt.Errorf("transaction already closed: %s", txID)
+	}
+
+	// Verify tenant matches if UserContext is available.
+	uc := spi.GetUserContext(ctx)
+	if uc != nil && tx.TenantID != "" && uc.Tenant.ID != tx.TenantID {
+		return nil, fmt.Errorf("tenant mismatch on transaction join")
+	}
+
+	return spi.WithTransaction(ctx, tx), nil
 }
 
-func (m *transactionManager) Rollback(_ context.Context, _ string) error {
-	return fmt.Errorf("sqlite tx manager: not yet implemented")
+// Commit validates the transaction against the committed log for SSI conflicts,
+// flushes the write buffer and deletes to SQLite, and records the commit in the
+// log.
+//
+// The commitMu serializes the entire commit path. This is required for SSI
+// correctness -- without it, two commits could both validate against a stale
+// committedLog and both succeed, missing a conflict.
+func (m *transactionManager) Commit(ctx context.Context, txID string) error {
+	// 1. Look up the active transaction and mark as committing (TOCTOU guard).
+	uc := spi.GetUserContext(ctx)
+	m.mu.Lock()
+	tx, ok := m.active[txID]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("transaction not found or already completed: %w", spi.ErrNotFound)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		m.mu.Unlock()
+		return fmt.Errorf("transaction tenant mismatch")
+	}
+	if m.committing[txID] {
+		m.mu.Unlock()
+		return fmt.Errorf("transaction already being committed")
+	}
+	m.committing[txID] = true
+	m.mu.Unlock()
+
+	// 1b. Acquire transaction operation write lock -- waits for in-flight operations.
+	tx.OpMu.Lock()
+	defer func() {
+		tx.Closed = true
+		tx.OpMu.Unlock()
+	}()
+
+	// 2. Acquire commitMu -- serializes the entire commit path.
+	m.commitMu.Lock()
+	defer m.commitMu.Unlock()
+
+	// 3. Conflict detection: check committed log for overlapping write sets.
+	// Unlike the memory plugin which uses entityMu to serialize CAS checks
+	// against commits, the SQLite plugin uses commitMu. The SSI check uses
+	// !Before (>=) rather than After (>) for the submit time comparison.
+	// This catches write-write conflicts even when commits happen at the
+	// same clock tick (e.g., frozen TestClock). The memory plugin avoids
+	// this by holding entityMu.Lock during commit, which blocks concurrent
+	// CompareAndSave reads until the commit is visible.
+	if err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		for _, committed := range m.committedLog {
+			if !committed.submitTime.Before(tx.SnapshotTime) {
+				for entityID := range committed.writeSet {
+					if tx.ReadSet[entityID] || tx.WriteSet[entityID] {
+						delete(m.committing, txID)
+						delete(m.active, txID)
+						delete(m.savepoints, txID)
+						return spi.ErrConflict
+					}
+				}
+			}
+		}
+		return nil
+	}(); err != nil {
+		return err
+	}
+
+	// 4. Capture submit time. Use the clock directly, matching the memory
+	// plugin's behavior. The clock is the single source of truth for both
+	// in-memory SSI structures and persisted submit_time values, ensuring
+	// snapshot queries (submit_time <= snapshotTime) are consistent with
+	// the snapshotTime captured at Begin().
+	submitTime := m.factory.clock.Now()
+
+	// 5. Flush buffer and deletes to SQLite.
+	if err := m.flushToSQLite(ctx, tx, submitTime); err != nil {
+		// On flush failure, clean up the transaction.
+		func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			tx.RolledBack = true
+			delete(m.active, txID)
+			delete(m.committing, txID)
+			delete(m.savepoints, txID)
+		}()
+		return fmt.Errorf("flush to sqlite: %w", err)
+	}
+
+	// 6. Record in committed log, submit times, and prune.
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		m.committedLog = append(m.committedLog, committedTx{
+			id:         txID,
+			submitTime: submitTime,
+			writeSet:   tx.WriteSet,
+		})
+		m.submitTimes[txID] = submitTime
+
+		// Evict old submit times beyond TTL.
+		evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
+		for id, t := range m.submitTimes {
+			if t.Before(evictBefore) {
+				delete(m.submitTimes, id)
+			}
+		}
+
+		// Prune: find oldest active transaction's snapshot, remove older entries.
+		delete(m.active, txID)
+		delete(m.committing, txID)
+		delete(m.savepoints, txID)
+		var oldest time.Time
+		for _, activeTx := range m.active {
+			if oldest.IsZero() || activeTx.SnapshotTime.Before(oldest) {
+				oldest = activeTx.SnapshotTime
+			}
+		}
+		if !oldest.IsZero() {
+			pruned := m.committedLog[:0]
+			for _, c := range m.committedLog {
+				if !c.submitTime.Before(oldest) {
+					pruned = append(pruned, c)
+				}
+			}
+			m.committedLog = pruned
+		} else {
+			// No active transactions -- all entries can be pruned.
+			m.committedLog = m.committedLog[:0]
+		}
+	}()
+
+	// Prune old submit_times from SQLite (best-effort).
+	evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
+	_, _ = m.factory.db.ExecContext(ctx,
+		"DELETE FROM submit_times WHERE submit_time < ?",
+		timeToMicro(evictBefore))
+
+	return nil
 }
 
-func (m *transactionManager) Join(_ context.Context, _ string) (context.Context, error) {
-	return nil, fmt.Errorf("sqlite tx manager: not yet implemented")
+// flushToSQLite performs the atomic write of the transaction's buffered
+// entities and deletes to SQLite within a single SQLite transaction.
+func (m *transactionManager) flushToSQLite(ctx context.Context, tx *spi.TransactionState, submitTime time.Time) error {
+	sqlTx, err := m.factory.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin sqlite tx: %w", err)
+	}
+	defer sqlTx.Rollback()
+
+	submitMicro := timeToMicro(submitTime)
+	tid := string(tx.TenantID)
+
+	// Flush buffered entities.
+	for entityID, entity := range tx.Buffer {
+		var existingVersion sql.NullInt64
+		var existingCreatedAt sql.NullInt64
+		err := sqlTx.QueryRowContext(ctx,
+			"SELECT version, created_at FROM entities WHERE tenant_id = ? AND entity_id = ?",
+			tid, entityID).Scan(&existingVersion, &existingCreatedAt)
+		isNew := err == sql.ErrNoRows
+		if err != nil && !isNew {
+			return fmt.Errorf("check entity %s: %w", entityID, err)
+		}
+
+		var nextVersion int64
+		changeType := "CREATED"
+		createdAtMicro := submitMicro
+		if !isNew {
+			nextVersion = existingVersion.Int64 + 1
+			changeType = "UPDATED"
+			createdAtMicro = existingCreatedAt.Int64
+		}
+
+		// Preserve the entity's change type if explicitly set (e.g. by workflow).
+		if entity.Meta.ChangeType != "" && entity.Meta.ChangeType != "CREATED" && !isNew {
+			changeType = entity.Meta.ChangeType
+		}
+
+		entity.Meta.Version = nextVersion
+		entity.Meta.LastModifiedDate = submitTime
+		entity.Meta.TransactionID = tx.ID
+		entity.Meta.ChangeType = changeType
+		entity.Meta.TenantID = tx.TenantID
+		if isNew {
+			entity.Meta.CreationDate = submitTime
+		} else {
+			entity.Meta.CreationDate = microToTime(createdAtMicro)
+		}
+
+		metaJSON, err := marshalEntityMeta(&entity.Meta)
+		if err != nil {
+			return fmt.Errorf("marshal meta for %s: %w", entityID, err)
+		}
+
+		_, err = sqlTx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO entities
+			 (tenant_id, entity_id, model_name, model_version, version, data, meta, deleted, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, jsonb(?), jsonb(?), 0, ?, ?)`,
+			tid, entityID,
+			entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
+			nextVersion, string(entity.Data), string(metaJSON),
+			createdAtMicro, submitMicro)
+		if err != nil {
+			return fmt.Errorf("upsert entity %s: %w", entityID, err)
+		}
+
+		_, err = sqlTx.ExecContext(ctx,
+			`INSERT INTO entity_versions
+			 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
+			 VALUES (?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, ?, ?, ?)`,
+			tid, entityID,
+			entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion,
+			nextVersion, string(entity.Data), string(metaJSON),
+			changeType, tx.ID, submitMicro,
+			entity.Meta.ChangeUser)
+		if err != nil {
+			return fmt.Errorf("insert version %s: %w", entityID, err)
+		}
+	}
+
+	// Flush deletes.
+	for entityID := range tx.Deletes {
+		// Get current entity info for the delete version record.
+		var curVersion int64
+		var modelName, modelVersion string
+		err := sqlTx.QueryRowContext(ctx,
+			"SELECT version, model_name, model_version FROM entities WHERE tenant_id = ? AND entity_id = ?",
+			tid, entityID).Scan(&curVersion, &modelName, &modelVersion)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				continue // Entity does not exist; skip.
+			}
+			return fmt.Errorf("check entity for delete %s: %w", entityID, err)
+		}
+
+		nextVersion := curVersion + 1
+
+		_, err = sqlTx.ExecContext(ctx,
+			"UPDATE entities SET deleted = 1, updated_at = ?, version = ? WHERE tenant_id = ? AND entity_id = ?",
+			submitMicro, nextVersion, tid, entityID)
+		if err != nil {
+			return fmt.Errorf("soft delete entity %s: %w", entityID, err)
+		}
+
+		_, err = sqlTx.ExecContext(ctx,
+			`INSERT INTO entity_versions
+			 (tenant_id, entity_id, model_name, model_version, version, data, meta, change_type, transaction_id, submit_time, user_id)
+			 VALUES (?, ?, ?, ?, ?, NULL, NULL, 'DELETED', ?, ?, '')`,
+			tid, entityID,
+			modelName, modelVersion,
+			nextVersion, tx.ID, submitMicro)
+		if err != nil {
+			return fmt.Errorf("insert delete version %s: %w", entityID, err)
+		}
+	}
+
+	// Record submit time.
+	_, err = sqlTx.ExecContext(ctx,
+		"INSERT OR REPLACE INTO submit_times (tx_id, submit_time) VALUES (?, ?)",
+		tx.ID, submitMicro)
+	if err != nil {
+		return fmt.Errorf("record submit time: %w", err)
+	}
+
+	return sqlTx.Commit()
 }
 
-func (m *transactionManager) GetSubmitTime(_ context.Context, _ string) (time.Time, error) {
-	return time.Time{}, fmt.Errorf("sqlite tx manager: not yet implemented")
+// Rollback discards an active transaction without committing any changes.
+func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
+	uc := spi.GetUserContext(ctx)
+	m.mu.Lock()
+	tx, ok := m.active[txID]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("transaction not found or already completed: %w", spi.ErrNotFound)
+	}
+	if uc == nil || uc.Tenant.ID != tx.TenantID {
+		m.mu.Unlock()
+		return fmt.Errorf("transaction tenant mismatch")
+	}
+	m.mu.Unlock()
+
+	// Acquire transaction operation write lock -- waits for in-flight operations.
+	tx.OpMu.Lock()
+	defer func() {
+		tx.Closed = true
+		tx.OpMu.Unlock()
+	}()
+
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		tx.RolledBack = true
+		delete(m.active, txID)
+		delete(m.committing, txID)
+		delete(m.savepoints, txID)
+	}()
+	return nil
 }
 
-func (m *transactionManager) Savepoint(_ context.Context, _ string) (string, error) {
-	return "", fmt.Errorf("sqlite tx manager: not yet implemented")
+// GetSubmitTime returns the submit time of a committed transaction.
+// Checks in-memory cache first, then falls back to the submit_times table.
+func (m *transactionManager) GetSubmitTime(_ context.Context, txID string) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.active[txID]; ok {
+		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
+	}
+
+	if t, ok := m.submitTimes[txID]; ok {
+		return t, nil
+	}
+
+	// Fall back to persisted submit_times table.
+	var micro int64
+	err := m.factory.db.QueryRow(
+		"SELECT submit_time FROM submit_times WHERE tx_id = ?", txID).Scan(&micro)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("transaction not found: %s", txID)
+	}
+	return time.UnixMicro(micro), nil
 }
 
-func (m *transactionManager) RollbackToSavepoint(_ context.Context, _, _ string) error {
-	return fmt.Errorf("sqlite tx manager: not yet implemented")
+// CommittedLogLen returns the current length of the committed log.
+// Exported for testing only.
+func (m *transactionManager) CommittedLogLen() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.committedLog)
 }
 
-func (m *transactionManager) ReleaseSavepoint(_ context.Context, _, _ string) error {
-	return fmt.Errorf("sqlite tx manager: not yet implemented")
+// Savepoint creates a named savepoint within the given transaction by
+// deep-copying the transaction's buffer maps.
+func (m *transactionManager) Savepoint(_ context.Context, txID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tx, ok := m.active[txID]
+	if !ok {
+		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
+	}
+
+	spID := uuid.UUID(m.uuids.NewTimeUUID()).String()
+
+	// Deep-copy the buffer maps.
+	bufCopy := make(map[string]*spi.Entity, len(tx.Buffer))
+	for k, v := range tx.Buffer {
+		bufCopy[k] = copyEntity(v)
+	}
+	readCopy := make(map[string]bool, len(tx.ReadSet))
+	for k, v := range tx.ReadSet {
+		readCopy[k] = v
+	}
+	writeCopy := make(map[string]bool, len(tx.WriteSet))
+	for k, v := range tx.WriteSet {
+		writeCopy[k] = v
+	}
+	delCopy := make(map[string]bool, len(tx.Deletes))
+	for k, v := range tx.Deletes {
+		delCopy[k] = v
+	}
+
+	if m.savepoints[txID] == nil {
+		m.savepoints[txID] = make(map[string]savepointSnapshot)
+	}
+	m.savepoints[txID][spID] = savepointSnapshot{
+		buffer:   bufCopy,
+		readSet:  readCopy,
+		writeSet: writeCopy,
+		deletes:  delCopy,
+	}
+	return spID, nil
+}
+
+// RollbackToSavepoint restores the transaction's buffer maps from the snapshot
+// captured when the savepoint was created, then removes the snapshot.
+func (m *transactionManager) RollbackToSavepoint(_ context.Context, txID string, savepointID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tx, ok := m.active[txID]
+	if !ok {
+		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
+	}
+
+	txSavepoints, ok := m.savepoints[txID]
+	if !ok {
+		return fmt.Errorf("RollbackToSavepoint: savepoint %s not found", savepointID)
+	}
+	snap, ok := txSavepoints[savepointID]
+	if !ok {
+		return fmt.Errorf("RollbackToSavepoint: savepoint %s not found", savepointID)
+	}
+
+	tx.Buffer = snap.buffer
+	tx.ReadSet = snap.readSet
+	tx.WriteSet = snap.writeSet
+	tx.Deletes = snap.deletes
+
+	delete(txSavepoints, savepointID)
+	return nil
+}
+
+// ReleaseSavepoint releases a savepoint. The work done since the savepoint is
+// already in the parent transaction's buffer, so this just removes the snapshot.
+func (m *transactionManager) ReleaseSavepoint(_ context.Context, txID string, savepointID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.active[txID]; !ok {
+		return fmt.Errorf("ReleaseSavepoint: transaction %s not found", txID)
+	}
+
+	txSavepoints, ok := m.savepoints[txID]
+	if !ok {
+		return fmt.Errorf("ReleaseSavepoint: savepoint %s not found", savepointID)
+	}
+	if _, ok := txSavepoints[savepointID]; !ok {
+		return fmt.Errorf("ReleaseSavepoint: savepoint %s not found", savepointID)
+	}
+
+	delete(txSavepoints, savepointID)
+	return nil
 }
