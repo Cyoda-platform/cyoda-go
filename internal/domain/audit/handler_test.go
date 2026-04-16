@@ -345,14 +345,31 @@ func TestAuditTransactionIdFilter(t *testing.T) {
 	entityID, createTxID := createEntityAndGetIDAndTxID(t, srv.URL, "AuditTx", 1, `{"name":"Bob"}`)
 	_ = updateEntity(t, srv.URL, entityID, `{"name":"Carol"}`)
 
-	// Filter by the create transaction ID
+	// Filter by the create transaction ID — returns both EntityChange and
+	// StateMachine events that share the same txID (issue #20: the workflow
+	// engine now uses the entity-write txID for SM audit events).
 	events, _ := getAuditEvents(t, srv.URL, entityID, "transactionId="+createTxID)
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event with txId filter, got %d", len(events))
+	if len(events) < 1 {
+		t.Fatal("expected at least 1 event with txId filter, got 0")
 	}
-	if events[0]["changeType"] != "CREATED" {
-		t.Errorf("expected changeType=CREATED, got %v", events[0]["changeType"])
+
+	// The EntityChange CREATED event must be present.
+	var foundCreated bool
+	for _, ev := range events {
+		if ev["auditEventType"] == "EntityChange" && ev["changeType"] == "CREATED" {
+			foundCreated = true
+		}
+	}
+	if !foundCreated {
+		t.Error("expected an EntityChange event with changeType=CREATED in filtered results")
+	}
+
+	// The update's EntityChange event (different txID) must NOT be present.
+	for _, ev := range events {
+		if ev["auditEventType"] == "EntityChange" && ev["changeType"] == "UPDATED" {
+			t.Error("update event should not appear when filtering by create txID")
+		}
 	}
 }
 

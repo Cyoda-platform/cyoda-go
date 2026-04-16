@@ -142,3 +142,37 @@ func RunAuditWorkflowEvents(t *testing.T, fixture BackendFixture) {
 		t.Error("expected at least one audit event with a transactionId for cross-referencing")
 	}
 }
+
+// RunAuditPostTxIdMatchesWorkflowFinished verifies that the transactionId
+// returned by POST /entity can be used directly with
+// /audit/entity/{id}/workflow/{txId}/finished to look up the workflow result
+// (issue #20). This confirms the fix works across all storage backends.
+func RunAuditPostTxIdMatchesWorkflowFinished(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "audit-txid-parity"
+	const modelVersion = 1
+
+	setupSimpleWorkflow(t, c, modelName, modelVersion)
+
+	entityID, txID, err := c.CreateEntityWithTxID(t, modelName, modelVersion,
+		`{"name":"TxParity","amount":50,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityWithTxID: %v", err)
+	}
+	if txID == "" {
+		t.Fatal("POST /entity returned empty transactionId")
+	}
+
+	status, result, err := c.GetWorkflowFinished(t, entityID, txID)
+	if err != nil {
+		t.Fatalf("GetWorkflowFinished with POST txId %q: status %d, err: %v", txID, status, err)
+	}
+	if status != 200 {
+		t.Fatalf("expected 200 from workflow finished endpoint using POST txId, got %d", status)
+	}
+	if result["state"] != "CREATED" {
+		t.Errorf("expected state=CREATED in workflow finished response, got %v", result["state"])
+	}
+}

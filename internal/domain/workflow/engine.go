@@ -82,6 +82,10 @@ func WithMaxStateVisits(n int) EngineOption {
 // Execute runs the workflow engine for entity creation. It selects the matching
 // workflow, sets the initial state, optionally fires a named transition, and
 // cascades automated transitions.
+//
+// State-machine audit events are recorded under entity.Meta.TransactionID so
+// that the transaction ID returned by POST /entity can be used to look up
+// workflow results via /audit/entity/{id}/workflow/{txId}/finished (issue #20).
 func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName string) (*spi.ExecutionResult, error) {
 	ctx, span := tracer.Start(ctx, "workflow.execute", trace.WithAttributes(
 		observability.AttrEntityID.String(entity.Meta.ID),
@@ -99,7 +103,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
 	}
 
-	txID := uuid.UUID(e.uuids.NewTimeUUID()).String()
+	txID := e.resolveAuditTxID(entity)
 
 	// Record STARTED.
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
@@ -170,7 +174,7 @@ func (e *Engine) ManualTransition(ctx context.Context, entity *spi.Entity, trans
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
 	}
 
-	txID := uuid.UUID(e.uuids.NewTimeUUID()).String()
+	txID := e.resolveAuditTxID(entity)
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Manual transition started", nil)
@@ -231,7 +235,7 @@ func (e *Engine) Loopback(ctx context.Context, entity *spi.Entity) (*spi.Executi
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
 	}
 
-	txID := uuid.UUID(e.uuids.NewTimeUUID()).String()
+	txID := e.resolveAuditTxID(entity)
 
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventStarted, "Loopback started", nil)
@@ -624,6 +628,19 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 		return fmt.Errorf("savepoint release failed: %w", err)
 	}
 	return nil
+}
+
+// resolveAuditTxID returns the transaction ID to use for state-machine audit
+// events. It uses the entity's transaction ID (set by the caller, e.g.
+// CreateEntity or UpdateEntity) so that audit events are keyed on the same
+// txID returned in the HTTP response. Falls back to generating a fresh ID
+// when the entity has no transaction ID set (e.g. unit tests that don't
+// simulate a full transaction lifecycle).
+func (e *Engine) resolveAuditTxID(entity *spi.Entity) string {
+	if entity.Meta.TransactionID != "" {
+		return entity.Meta.TransactionID
+	}
+	return uuid.UUID(e.uuids.NewTimeUUID()).String()
 }
 
 // recordEvent records a single audit event.

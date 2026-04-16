@@ -320,3 +320,78 @@ func TestWorkflowProc_FullAuditTrail(t *testing.T) {
 		t.Errorf("expected final state DONE, got %s", state)
 	}
 }
+
+// createEntityE2EWithTxID creates a single entity via the REST API and returns
+// both the entity ID and the transactionId from the POST response.
+func createEntityE2EWithTxID(t *testing.T, entityName string, modelVersion int, payload string) (entityID, txID string) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%d", entityName, modelVersion)
+	resp := doAuth(t, http.MethodPost, path, payload)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("createEntity %s/%d: expected 200, got %d: %s", entityName, modelVersion, resp.StatusCode, body)
+	}
+
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(body), &results); err != nil {
+		t.Fatalf("createEntity: failed to parse response: %v\nbody: %s", err, body)
+	}
+	if len(results) == 0 {
+		t.Fatalf("createEntity: expected at least one result")
+	}
+
+	ids, ok := results[0]["entityIds"].([]any)
+	if !ok || len(ids) == 0 {
+		t.Fatalf("createEntity: expected entityIds array, got: %v", results[0])
+	}
+	entityID, _ = ids[0].(string)
+
+	txID, _ = results[0]["transactionId"].(string)
+	if txID == "" {
+		t.Fatal("createEntity: expected non-empty transactionId in response")
+	}
+	return entityID, txID
+}
+
+// --- Test: POST /entity txId works with /audit/entity/{id}/workflow/{txId}/finished (issue #20) ---
+
+func TestWorkflowProc_PostTxIdMatchesAuditEndpoint(t *testing.T) {
+	const model = "e2e-wfproc-txid"
+
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1", "name": "txid-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
+				"CREATED": {"transitions": [{"name": "finish", "next": "DONE", "manual": false}]},
+				"DONE": {}
+			}
+		}]
+	}`
+	setupModelWithWorkflow(t, model, wf)
+
+	entityID, postTxID := createEntityE2EWithTxID(t, model, 1, `{"name":"Test","amount":10,"status":"new"}`)
+
+	// The POST response's transactionId must be usable to look up the
+	// workflow finished event via the audit endpoint.
+	path := fmt.Sprintf("/api/audit/entity/%s/workflow/%s/finished", entityID, postTxID)
+	resp := doAuth(t, http.MethodGet, path, "")
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		// This is the bug: the audit endpoint returns 404 because the POST
+		// txId doesn't match the SM audit events' txId.
+		t.Fatalf("expected 200 from audit finished endpoint using POST txId, got %d: %s", resp.StatusCode, body)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatalf("failed to parse audit response: %v", err)
+	}
+
+	// The finished event should report success and the final state.
+	if result["state"] != "DONE" {
+		t.Errorf("expected state=DONE in audit response, got %v", result["state"])
+	}
+}

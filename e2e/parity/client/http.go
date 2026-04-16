@@ -252,6 +252,31 @@ func (c *Client) CreateEntity(t *testing.T, modelName string, modelVersion int, 
 	return id, nil
 }
 
+// CreateEntityWithTxID issues POST /api/entity/JSON/{name}/{version} and
+// returns both the entity ID and the transactionId from the response.
+func (c *Client) CreateEntityWithTxID(t *testing.T, modelName string, modelVersion int, body string) (uuid.UUID, string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%d", modelName, modelVersion)
+	raw, err := c.doRaw(t, http.MethodPost, path, body)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var txInfos []EntityTransactionInfo
+	if err := dec.Decode(&txInfos); err != nil {
+		return uuid.Nil, "", fmt.Errorf("decode CreateEntityWithTxID response: %w", err)
+	}
+	if len(txInfos) == 0 || len(txInfos[0].EntityIDs) != 1 {
+		return uuid.Nil, "", fmt.Errorf("unexpected CreateEntityWithTxID response: %v", txInfos)
+	}
+	id, err := uuid.Parse(txInfos[0].EntityIDs[0])
+	if err != nil {
+		return uuid.Nil, "", fmt.Errorf("parse entity ID: %w", err)
+	}
+	return id, txInfos[0].TransactionID, nil
+}
+
 // ListModels issues GET /api/model/ and returns the parsed model list.
 // Canonical: docs/cyoda/openapi.yml:2764 (getAvailableEntityModels).
 func (c *Client) ListModels(t *testing.T) ([]EntityModelDto, error) {
@@ -416,6 +441,21 @@ func (c *Client) DeleteEntityRaw(t *testing.T, entityID uuid.UUID) (int, error) 
 	t.Helper()
 	path := "/api/entity/" + entityID.String()
 	return c.doJSON(t, http.MethodDelete, path, nil, nil)
+}
+
+// GetWorkflowFinished issues GET /api/audit/entity/{entityId}/workflow/{txId}/finished
+// and returns the HTTP status code and the decoded JSON response body.
+// On non-2xx responses the returned map is nil and the error contains the
+// response body for diagnostics.
+func (c *Client) GetWorkflowFinished(t *testing.T, entityID uuid.UUID, txID string) (int, map[string]any, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/audit/entity/%s/workflow/%s/finished", entityID.String(), txID)
+	var result map[string]any
+	status, err := c.doJSON(t, http.MethodGet, path, nil, &result)
+	if err != nil {
+		return status, nil, err
+	}
+	return status, result, nil
 }
 
 // GetAuditEventsRaw issues GET /api/audit/entity/{entityId} and returns
