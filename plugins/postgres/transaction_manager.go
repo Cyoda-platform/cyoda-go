@@ -114,14 +114,21 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		return fmt.Errorf("Commit: tx state for %s not found", txID)
 	}
 
-	// --- First-committer-wins validation ---
-	// Fetch current committed versions for all entities touched by this tx
-	// and compare against the captured read/write sets. A mismatch means a
-	// concurrent committer has changed data we depended on; abort with
+	// --- First-committer-wins validation (read-set) ---
+	// Re-read the current committed versions of all entities we read in this tx
+	// and compare against the captured readSet. A version mismatch or missing row
+	// means a concurrent committer changed data we made decisions on; abort with
 	// ErrConflict so the caller can retry on a fresh snapshot.
-	ids := state.SortedUnionIDs()
-	if len(ids) > 0 {
-		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, ids, 0)
+	//
+	// Write-write conflicts (writeSet) are handled by PostgreSQL's own tuple-level
+	// locks from the DML statements (INSERT/UPDATE/DELETE) — they raise SQLSTATE
+	// 40001 at DML time or commit time, which classifyError maps to ErrConflict.
+	// We do NOT validate writeSet versions here: the validateInChunks query runs
+	// inside the current transaction and therefore sees the tx's own uncommitted
+	// writes, making writeSet version comparison unreliable.
+	readIDs := state.SortedReadIDs()
+	if len(readIDs) > 0 {
+		current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, readIDs, 0)
 		if err != nil {
 			tm.registry.Remove(txID)
 			tm.removeTenant(txID)
@@ -130,13 +137,6 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 			return classifyError(fmt.Errorf("Commit: validate: %w", err))
 		}
 		if verr := state.ValidateReadSet(current); verr != nil {
-			tm.registry.Remove(txID)
-			tm.removeTenant(txID)
-			tm.removeTxState(txID)
-			_ = pgxTx.Rollback(context.Background())
-			return fmt.Errorf("%w: Commit: %w", spi.ErrConflict, verr)
-		}
-		if verr := state.ValidateWriteSet(current); verr != nil {
 			tm.registry.Remove(txID)
 			tm.removeTenant(txID)
 			tm.removeTxState(txID)
@@ -283,41 +283,63 @@ func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
 	return s, ok
 }
 
-// Savepoint creates a named savepoint within the given PostgreSQL transaction.
+// Savepoint creates a named savepoint within the given PostgreSQL transaction
+// and pushes a snapshot of the current readSet/writeSet onto the txState stack.
 func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return "", fmt.Errorf("Savepoint: transaction %s not found", txID)
+	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return "", fmt.Errorf("Savepoint: tx state for %s not found", txID)
 	}
 	spID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 	spName := "sp_" + spID
 	if _, err := pgxTx.Exec(ctx, "SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
 		return "", fmt.Errorf("Savepoint: %w", err)
 	}
+	state.PushSavepoint(spID)
 	return spID, nil
 }
 
-// RollbackToSavepoint rolls back all work done since the named savepoint.
+// RollbackToSavepoint rolls back all work done since the named savepoint and
+// restores the txState readSet/writeSet to the snapshot captured at that savepoint.
 func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return fmt.Errorf("RollbackToSavepoint: transaction %s not found", txID)
 	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return fmt.Errorf("RollbackToSavepoint: tx state for %s not found", txID)
+	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
+		return fmt.Errorf("RollbackToSavepoint: %w", err)
+	}
+	if err := state.RestoreSavepoint(savepointID); err != nil {
 		return fmt.Errorf("RollbackToSavepoint: %w", err)
 	}
 	return nil
 }
 
 // ReleaseSavepoint releases a savepoint, merging its work into the parent transaction.
+// The txState snapshot for this savepoint is dropped; work done after the push is kept.
 func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
 		return fmt.Errorf("ReleaseSavepoint: transaction %s not found", txID)
 	}
+	state, ok := tm.lookupTxState(txID)
+	if !ok {
+		return fmt.Errorf("ReleaseSavepoint: tx state for %s not found", txID)
+	}
 	spName := "sp_" + savepointID
 	if _, err := pgxTx.Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{spName}.Sanitize()); err != nil {
+		return fmt.Errorf("ReleaseSavepoint: %w", err)
+	}
+	if err := state.ReleaseSavepoint(savepointID); err != nil {
 		return fmt.Errorf("ReleaseSavepoint: %w", err)
 	}
 	return nil

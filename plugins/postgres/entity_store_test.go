@@ -634,9 +634,12 @@ func TestEntityStore_Get_NoTxContext_DoesNotRecord(t *testing.T) {
 	}
 }
 
-// TestEntityStore_Save_FreshInsertRecordsZero verifies that a fresh Save
-// records preWriteVersion=0 in the writeSet.
-func TestEntityStore_Save_FreshInsertRecordsZero(t *testing.T) {
+// TestEntityStore_Save_FreshInsertNotRecorded verifies that a fresh Save
+// (new entity) does NOT record in the writeSet. Fresh inserts are not tracked
+// because the UPSERT's ON CONFLICT DO UPDATE handles concurrent inserts
+// gracefully at the DB level, and tracking would cause false positives when
+// validateInChunks (running inside the same tx) sees the tx's own insert.
+func TestEntityStore_Save_FreshInsertNotRecorded(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
 
@@ -657,12 +660,9 @@ func TestEntityStore_Save_FreshInsertRecordsZero(t *testing.T) {
 	if !ok {
 		t.Fatal("txState not found")
 	}
-	v, present := postgres.WriteSetVersionForTest(state, "new-e1")
-	if !present {
-		t.Fatal("new-e1 not found in writeSet")
-	}
-	if v != 0 {
-		t.Errorf("writeSet[new-e1] = %d, want 0 (fresh insert)", v)
+	_, present := postgres.WriteSetVersionForTest(state, "new-e1")
+	if present {
+		t.Error("fresh insert must NOT be recorded in writeSet")
 	}
 }
 

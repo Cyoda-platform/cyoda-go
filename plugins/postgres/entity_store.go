@@ -82,12 +82,14 @@ func (s *entityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 
 	entity.Meta.Version = nextVersion
 
-	if s.tm != nil {
-		var preWriteVersion int64
-		if !isNew {
-			preWriteVersion = nextVersion - 1
-		}
-		s.tm.recordWriteIfInTx(ctx, eid, preWriteVersion)
+	// Record writes only for updates (not fresh inserts). Fresh inserts
+	// (isNew=true) are not tracked in writeSet: the UPSERT's ON CONFLICT DO
+	// UPDATE means concurrent inserts are gracefully converted to updates by
+	// the database — no insert race can produce a false conflict. Tracking
+	// fresh inserts would falsely fire because validateInChunks runs inside the
+	// current transaction and sees the tx's own uncommitted writes.
+	if s.tm != nil && !isNew {
+		s.tm.recordWriteIfInTx(ctx, eid, nextVersion-1)
 	}
 
 	// Set metadata based on whether this is a new or updated entity.

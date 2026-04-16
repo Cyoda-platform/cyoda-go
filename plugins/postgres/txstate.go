@@ -109,6 +109,22 @@ func (s *txState) SortedUnionIDs() []string {
 	return ids
 }
 
+// SortedReadIDs returns a sorted slice of entity IDs in readSet only.
+// Used by Commit to restrict the FOR SHARE validation query to entities we
+// read but did not write in this transaction. Write-write conflicts are
+// detected by PostgreSQL's tuple-level locks (SQLSTATE 40001), so writeSet
+// entities do not need to be included in the validation query.
+func (s *txState) SortedReadIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.readSet))
+	for id := range s.readSet {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // ValidateReadSet checks that every entity in readSet still exists in
 // the DB at the captured version. Returns an error describing the first
 // mismatch; nil if all match.
