@@ -40,13 +40,24 @@ The entire mechanism lives inside the postgres plugin. No SPI changes.
 
 Cassandra's mechanism (for reference): every entity read captures `expected_version`; commit phase validates each via a coordinated version-check fan-out against the owning shard plus a `shard_commit_log` SSI check ("anyone committed a write to this entity's row after my snapshot HLC?"). Both the version check and the SSI check are **per-entity (row-level)**.
 
-Postgres's native RR gives us both checks for free:
+Postgres's native RR gives us both checks for free — but via **two distinct mechanisms** working in concert. Making the distinction explicit is important for reviewer intuition:
 
-- `SELECT id, version FROM entities WHERE id = ANY($1) AND tenant_id = $2 FOR SHARE` reads the **latest committed** row version, not the snapshot version. Comparing to `expected_version` catches the version-mismatch case.
-- Under RR, if that row was modified by a concurrent committed tx after our snapshot, postgres raises `ERROR: could not serialize access due to concurrent update` (SQLSTATE `40001`) automatically. That's the SSI-style "committed after snapshot" check, performed at row granularity by postgres itself.
-- `FOR SHARE` holds the row locks until our tx commits or rolls back, protecting the validate → commit window.
+- **Write-write conflicts (writeSet vs concurrent writer)** are caught by postgres's **inherent tuple-level locks** from the DML statements themselves. When our tx's `INSERT` / `UPDATE` / `DELETE` runs against the entity row, postgres takes a row-exclusive lock and, under RR, raises `40001` immediately if another concurrent tx has already committed a write to that row. This protection is already in place before the commit phase runs.
+- **Read-set staleness (readSet vs concurrent committer we never wrote against)** is what our commit-time validation catches. A tx that reads X at v=5, decides something based on it, and writes Y (not X) has no native DB mechanism surfacing the fact that X moved to v=6 under a concurrent committer. That's the case our `SELECT ... FOR SHARE` + version compare covers.
+
+Put together:
+
+- `SELECT id, version FROM entities WHERE id = ANY($1) AND tenant_id = $2 FOR SHARE` reads the **latest committed** row version, not the snapshot version. Comparing to `expected_version` catches the read-set staleness case.
+- Under RR, if that row was modified by a concurrent committed tx after our snapshot, postgres raises `40001` automatically on the `FOR SHARE` itself (`could not serialize access due to concurrent update`). That's a second, redundant guard that mirrors the SSI-style "committed after snapshot" check at row granularity.
+- `FOR SHARE` (not `FOR UPDATE`) is the right lock mode: we need to detect concurrent writers, not block concurrent readers. Two concurrent committing txs both issuing `FOR SHARE` on the same unchanged row succeed compatibly — exactly what we want; the first-committer-wins enforcement is still intact because any write-write overlap was already caught by the DML's tuple locks upstream.
+- `FOR SHARE` holds the row locks until our tx commits or rolls back, protecting the validate → commit window from a fourth-party committing mid-window.
 
 The coverage contract is explicit: this applies to entity reads/writes only. Non-entity stores (Model, KV, Message, Workflow, SMAudit) are untracked and operate at plain SI — identical to cassandra's data-store paths. #35 tracks the symmetric follow-up.
+
+### Preconditions on the `entities` schema
+
+1. **Unique constraint on `(tenant_id, id)`.** Required for insert-conflict correctness: two concurrent txs inserting the same entity ID must collide at DML time, not leak through the commit-time validator. The commit-time `SELECT ... FOR SHARE` would not detect a concurrent uncommitted insert on its own — the unique constraint is what surfaces it (as a duplicate-key error from the `INSERT`).
+2. **Index usable by `WHERE tenant_id = $1 AND id = ANY($2)`.** The unique constraint above covers this if it is a btree index leading with `(tenant_id, id)`. Any commit with a non-trivial read-set runs this query; a missing or mis-ordered index would turn it into a seq scan per commit. Validate in the implementation PR.
 
 ## Data structures
 
@@ -93,7 +104,7 @@ Every method on `EntityStore` that touches an entity row inside a tx context rec
 | `SaveAll(txCtx, iter)` | Per-entity: `writeSet[id] = previousVersion` |
 | `CompareAndSave(txCtx, entity, ifMatch)` | `writeSet[id] = parsedIfMatch` |
 | `Delete(txCtx, id)` | `writeSet[id] = previousVersion` (soft delete bumps version) |
-| `GetAsAt(txCtx, id, t)` | **Not tracked** — point-in-time reads don't participate in first-committer-wins (they target a historical version, not the live row) |
+| `GetAsAt(txCtx, id, t)` | **Not tracked** — point-in-time reads target an immutable historical version, not the live row; they don't participate in first-committer-wins. If application logic reads a historical version and then decides a live-row write, the decision is intentionally not validated at commit (the "live-row only" semantic). The implementation should carry a code comment stating this explicitly so a future contributor doesn't "fix" the omission by adding tracking. |
 | `GetVersionHistory(txCtx, id)` | **Not tracked** — history reads are observational |
 | `Count(txCtx, ref)` | **Not tracked** — coarse aggregate, no per-row identity to validate |
 
@@ -138,19 +149,25 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
         return fmt.Errorf("Commit: tx state for %s not found", txID)
     }
 
-    // Collect all distinct entity IDs from read+write set.
-    ids := state.unionIDs()
+    // Collect all distinct entity IDs from read+write set, sorted.
+    // Sorting makes FOR SHARE lock acquisition order deterministic across
+    // concurrent committers, eliminating a class of deadlock (40P01) that
+    // would otherwise surface as ErrConflict under contention. postgres
+    // still may deadlock-abort in pathological cases — classifyError maps
+    // 40P01 to ErrConflict — but sorted acquisition keeps that to the
+    // genuinely unavoidable cases.
+    ids := state.sortedUnionIDs()
 
     if len(ids) > 0 {
         // Single batched FOR SHARE over the union set, scoped to tenant
-        // for defence-in-depth alongside RLS.
-        rows, err := pgxTx.Query(ctx, `
-            SELECT id, version
-              FROM entities
-             WHERE tenant_id = $1
-               AND id = ANY($2)
-             FOR SHARE
-        `, state.tenantID, ids)
+        // for defence-in-depth alongside RLS. Chunked to keep the ANY($2)
+        // array within planner-friendly bounds (see validateInChunks).
+        // FOR SHARE (not FOR UPDATE) is the right mode: we want to detect
+        // concurrent committed writers, not block concurrent readers.
+        // Two committing txs both issuing FOR SHARE on the same unchanged
+        // row succeed compatibly; any write-write overlap between them
+        // was already caught by tuple-level locks on the DML upstream.
+        current, err := tm.validateInChunks(ctx, pgxTx, state.tenantID, ids)
         if err != nil {
             // 40001 here is exactly the signal we want — postgres caught
             // a concurrent committer since our snapshot. Map to ErrConflict.
@@ -158,20 +175,6 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
             _ = pgxTx.Rollback(context.Background())
             return classifyError(fmt.Errorf("Commit: validate: %w", err))
         }
-
-        current := make(map[string]int64, len(ids))
-        for rows.Next() {
-            var id string
-            var v int64
-            if err := rows.Scan(&id, &v); err != nil {
-                rows.Close()
-                tm.cleanupTx(txID)
-                _ = pgxTx.Rollback(context.Background())
-                return fmt.Errorf("Commit: scan: %w", err)
-            }
-            current[id] = v
-        }
-        rows.Close()
 
         // Read-set check: every captured entity must still exist at the
         // captured version. Missing row = deleted by a concurrent
@@ -208,6 +211,50 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 
 `classifyError` already maps pgcode `40001` and `40P01` to `spi.ErrConflict`. We rely on it for errors raised from the validation query itself (postgres raising concurrent-update mid-SELECT-FOR-SHARE).
 
+### Batch size guard
+
+A single tx's read+write set is typically tens of entities, but pathological workloads (long workflows with re-entrant processors, bulk imports) may produce hundreds or thousands. Postgres handles `ANY($1::uuid[])` efficiently up to a few thousand elements, but planning cost grows and very large arrays degrade predictably. The validator chunks accordingly:
+
+```go
+const validateChunkSize = 1000  // conservative — well under planner thresholds.
+
+func (tm *TransactionManager) validateInChunks(
+    ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, sortedIDs []string,
+) (map[string]int64, error) {
+    current := make(map[string]int64, len(sortedIDs))
+    for i := 0; i < len(sortedIDs); i += validateChunkSize {
+        end := i + validateChunkSize
+        if end > len(sortedIDs) {
+            end = len(sortedIDs)
+        }
+        chunk := sortedIDs[i:end]
+        rows, err := tx.Query(ctx, `
+            SELECT id, version
+              FROM entities
+             WHERE tenant_id = $1
+               AND id = ANY($2)
+             FOR SHARE
+        `, tenantID, chunk)
+        if err != nil {
+            return nil, err
+        }
+        for rows.Next() {
+            var id string
+            var v int64
+            if err := rows.Scan(&id, &v); err != nil {
+                rows.Close()
+                return nil, err
+            }
+            current[id] = v
+        }
+        rows.Close()
+    }
+    return current, nil
+}
+```
+
+Because `sortedIDs` is sorted and chunks are taken in order, lock acquisition order remains deterministic across chunks within one tx and across concurrent txs — the deadlock prevention property of sorted acquisition is preserved through chunking.
+
 ### Rollback
 
 Same as today, plus `tm.cleanupTx(txID)` to drop the txState entry.
@@ -240,12 +287,17 @@ Failure mode: if the origin node dies mid-tx, the pgx connection drops, the tx a
 7. `TestCommit_DisjointRowsNoConflict` — the #17 scenario: 8 concurrent txs writing distinct UUIDs, all commit. (Regression guard.)
 8. `TestCommit_InsertNoReadSetInterference` — pure INSERT of a new entity with no prior reads does not hit validation overhead.
 9. `TestCommit_TenantScoped` — validation query is tenant-scoped; entities in other tenants cannot collide.
-10. `TestCommit_BatchedQuery` — a tx touching N entities triggers exactly one SELECT at commit (observable via pg logs / query count).
+10. `TestCommit_BatchedQuery` — a tx touching N entities (N ≤ `validateChunkSize`) triggers exactly one SELECT at commit.
+11. `TestCommit_DeletedEntityConflict` — tx A reads entity X; concurrent tx B (soft-)deletes X; A's commit detects the version bump and returns `ErrConflict`.
+12. `TestCommit_LargeReadSet` — tx touching > `validateChunkSize` entities validates via multiple chunked SELECTs in sorted order; commit succeeds when no conflicts, and performance stays within a documented bound.
+13. `TestCommit_SortedLockAcquisition` — two concurrent committers with overlapping read-sets in different insertion orders both issue their validation queries in the same sorted order; no deadlock-induced `40P01`.
+14. `TestCommit_SavepointRollbackDropsReadSet` — tx reads X, takes savepoint, reads Y, rolls back to savepoint; Y is dropped from readSet; concurrent tx modifies Y; commit succeeds because Y is no longer validated.
 
 **Updated conformance tests** in `internal/spitest`:
 
 - `TestConformance/Entity/Concurrent/DifferentEntities` (the #17 flake case) now passes reliably on postgres. Issue #17 closes.
 - Add a `TestConformance/Entity/Concurrent/SameEntity` scenario: two txs race an update on the same entity, expect exactly one success and one `ErrConflict` on both memory and postgres plugins. Cassandra behavior unchanged (it already passes).
+- **Savepoint semantic note.** The postgres plugin preserves readSet across savepoint via snapshot/restore; the cassandra plugin clears readSet on savepoint. The two are *not* behaviorally identical on the edge case of "read inside savepoint → rollback → commit main tx": on postgres the read is validated, on cassandra it is not. The conformance harness documents this divergence explicitly (a `// DIVERGENCE:` comment on the relevant assertion) so a future contributor doesn't file it as a bug. If we later choose to converge the two plugins, that's a separate, scoped change.
 
 **Parity verification:**
 
