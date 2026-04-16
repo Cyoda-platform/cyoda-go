@@ -52,6 +52,18 @@ expand the change, **stop and surface the choice to the human** rather than
 silently leaving it broken. Recording a `TODO(...)` is the last resort, not
 the first response.
 
+## External Storage Plugins
+
+The Cassandra storage plugin lives in a separate repository:
+- Repo: https://github.com/Cyoda-platform/cyoda-go-cassandra
+- Local checkout: `../cyoda-go-cassandra`
+
+When doing cross-plugin work (changing the SPI, adding parity tests, modifying
+shared contracts), verify the change does not break the Cassandra plugin. The
+parity test registry (`e2e/parity/registry.go`) is picked up by all backends
+including Cassandra — new parity tests will surface there on their next
+dependency update.
+
 ## Go Conventions
 
 - Go 1.26+. Use `log/slog` exclusively — never `log.Printf` or `fmt.Printf`.
