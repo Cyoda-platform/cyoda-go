@@ -149,11 +149,11 @@ func TestXMLParserAttributes(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected map for item, got %T", m["item"])
 	}
-	id, ok := item["id"].(float64)
+	id, ok := item["id"].(json.Number)
 	if !ok {
-		t.Fatalf("expected float64 for id, got %T", item["id"])
+		t.Fatalf("expected json.Number for id, got %T", item["id"])
 	}
-	if id != 5 {
+	if id.String() != "5" {
 		t.Errorf("expected id=5, got %v", id)
 	}
 	active, ok := item["active"].(bool)

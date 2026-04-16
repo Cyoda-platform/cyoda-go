@@ -1,6 +1,10 @@
 package schema
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // ValidationError describes a single validation failure at a specific path.
 type ValidationError struct {
@@ -106,11 +110,22 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 
 // inferDataType maps a Go value (typically from JSON decoding) to a DataType.
 func inferDataType(v any) DataType {
-	switch v.(type) {
+	switch n := v.(type) {
 	case bool:
 		return Boolean
+	case json.Number:
+		// JSON/XML importers preserve numeric leaves as json.Number.
+		// Classify as Double when the literal carries a fractional or
+		// exponent component, Long otherwise. Distinguishing finer
+		// integer widths here would only be used as a "numeric vs
+		// non-numeric" signal by isCompatible, so Long is sufficient.
+		if strings.ContainsAny(string(n), ".eE") {
+			return Double
+		}
+		return Long
 	case float64:
-		// JSON numbers decode as float64; we treat them as numeric.
+		// JSON numbers decoded without UseNumber() arrive as float64;
+		// we treat them as numeric.
 		return Double
 	case int:
 		return Integer
