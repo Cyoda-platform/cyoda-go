@@ -313,6 +313,12 @@ type EntityStatByState struct {
 }
 
 // GetStatisticsByState retrieves entity count statistics by state for all models.
+//
+// Known limitation (follow-up): this still iterates every model definition and
+// issues one CountByState call per model. For tenants with many models, the
+// per-model fan-out is the next pressure point now that the per-entity loading
+// bottleneck is gone. Possible directions for a follow-up: a batched
+// CountByStateAll SPI method, or bounded parallelism over models.
 func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string) ([]EntityStatByState, error) {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
@@ -329,31 +335,21 @@ func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string) ([
 		return nil, common.Internal("failed to list models", err)
 	}
 
+	// Dereference the optional filter. Distinguish nil-pointer (no filter)
+	// from pointer-to-empty-slice — per the SPI contract, the latter yields
+	// an empty map without a storage call.
+	var filterStates []string
+	if states != nil {
+		filterStates = *states
+	}
+
 	result := make([]EntityStatByState, 0)
 	for _, ref := range refs {
-		entities, err := entityStore.GetAll(ctx, ref)
+		counts, err := entityStore.CountByState(ctx, ref, filterStates)
 		if err != nil {
-			return nil, common.Internal("failed to get entities", err)
+			return nil, common.Internal("failed to count entities by state", err)
 		}
-
-		stateCounts := make(map[string]int64)
-		for _, ent := range entities {
-			stateCounts[ent.Meta.State]++
-		}
-
-		for state, count := range stateCounts {
-			if states != nil {
-				found := false
-				for _, s := range *states {
-					if s == state {
-						found = true
-						break
-					}
-				}
-				if !found {
-					continue
-				}
-			}
+		for state, count := range counts {
 			result = append(result, EntityStatByState{
 				ModelName:    ref.EntityName,
 				ModelVersion: ref.ModelVersion,
@@ -378,30 +374,21 @@ func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName s
 		ModelVersion: modelVersion,
 	}
 
-	entities, err := entityStore.GetAll(ctx, ref)
+	// Dereference the optional filter. Distinguish nil-pointer (no filter)
+	// from pointer-to-empty-slice — per the SPI contract, the latter yields
+	// an empty map without a storage call.
+	var filterStates []string
+	if states != nil {
+		filterStates = *states
+	}
+
+	counts, err := entityStore.CountByState(ctx, ref, filterStates)
 	if err != nil {
-		return nil, common.Internal("failed to get entities", err)
+		return nil, common.Internal("failed to count entities by state", err)
 	}
 
-	stateCounts := make(map[string]int64)
-	for _, ent := range entities {
-		stateCounts[ent.Meta.State]++
-	}
-
-	result := make([]EntityStatByState, 0, len(stateCounts))
-	for state, count := range stateCounts {
-		if states != nil {
-			found := false
-			for _, s := range *states {
-				if s == state {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
+	result := make([]EntityStatByState, 0, len(counts))
+	for state, count := range counts {
 		result = append(result, EntityStatByState{
 			ModelName:    entityName,
 			ModelVersion: modelVersion,
