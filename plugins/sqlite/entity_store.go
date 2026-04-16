@@ -840,6 +840,9 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 
 	// Non-transaction: aggregate at the database.
 	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+	// Entities with no $._meta.state are bucketed under "" rather than dropped,
+	// preserving them for diagnostic visibility. This matches the in-tx Go path
+	// which reads e.Meta.State (also "" if unset).
 	q := `SELECT COALESCE(json_extract(json(meta), '$.state'), '') AS state, COUNT(*)
 	      FROM entities
 	      WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted`

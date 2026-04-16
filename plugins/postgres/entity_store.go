@@ -400,11 +400,15 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	}
 
 	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+	// Entities with no $._meta.state are bucketed under "" rather than dropped,
+	// preserving them for diagnostic visibility. This matches the in-tx Go path
+	// which reads e.Meta.State (also "" if unset).
 	q := `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*)
 	      FROM entities
 	      WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
 
 	if states != nil {
+		// pgx encodes []string as text[] for the ANY() comparison; no manual casting needed.
 		args = append(args, states)
 		q += ` AND doc -> '_meta' ->> 'state' = ANY($4)`
 	}
