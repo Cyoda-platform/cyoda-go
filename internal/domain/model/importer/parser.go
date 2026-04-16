@@ -116,9 +116,6 @@ func inferXMLValue(s string) any {
 // Delegates to encoding/json so the validation rules stay aligned with the
 // authority that downstream code uses to round-trip the value.
 func isJSONNumber(s string) bool {
-	if s == "" {
-		return false
-	}
 	var n json.Number
 	return json.Unmarshal([]byte(s), &n) == nil
 }
