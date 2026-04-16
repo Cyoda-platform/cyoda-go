@@ -1,6 +1,7 @@
 package match
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -740,5 +741,84 @@ func TestMatchNestedField(t *testing.T) {
 	}
 	if !got {
 		t.Error("expected true")
+	}
+}
+
+// --- Issue #24: matchArray numeric-aware comparison ---
+
+func TestMatchArrayCondition_NumericInt(t *testing.T) {
+	data := []byte(`{"scores":[1,2,3]}`)
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.scores",
+		Values:   []any{1, 2, 3}, // Go int
+	}
+	got, err := Match(cond, data, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected match for int values against numeric JSON array")
+	}
+}
+
+func TestMatchArrayCondition_NumericInt64(t *testing.T) {
+	data := []byte(`{"scores":[1,2,3]}`)
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.scores",
+		Values:   []any{int64(1), int64(2), int64(3)},
+	}
+	got, err := Match(cond, data, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected match for int64 values against numeric JSON array")
+	}
+}
+
+func TestMatchArrayCondition_NumericFloat64(t *testing.T) {
+	data := []byte(`{"scores":[1,2,3]}`)
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.scores",
+		Values:   []any{1.0, 2.0, 3.0},
+	}
+	got, err := Match(cond, data, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected match for float64 values against numeric JSON array")
+	}
+}
+
+func TestMatchArrayCondition_JSONNumber(t *testing.T) {
+	// Predicates built from XML imports (after PR-2) deliver json.Number.
+	data := []byte(`{"scores":[1.5]}`)
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.scores",
+		Values:   []any{json.Number("1.5")},
+	}
+	got, err := Match(cond, data, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected match for json.Number expected against numeric JSON array")
+	}
+}
+
+func TestMatchArrayCondition_TypeMismatch(t *testing.T) {
+	// String entity field, numeric expected — must NOT match.
+	data := []byte(`{"tags":["go"]}`)
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.tags",
+		Values:   []any{42},
+	}
+	got, err := Match(cond, data, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("expected no match: numeric expected against string JSON array element")
 	}
 }

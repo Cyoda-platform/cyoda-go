@@ -1,6 +1,7 @@
 package match
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -250,6 +251,8 @@ func toFloat64(v any) (float64, error) {
 		return float64(n), nil
 	case int64:
 		return float64(n), nil
+	case json.Number:
+		return n.Float64()
 	case string:
 		return strconv.ParseFloat(n, 64)
 	default:
