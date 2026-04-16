@@ -822,3 +822,26 @@ func TestMatchArrayCondition_TypeMismatch(t *testing.T) {
 		t.Error("expected no match: numeric expected against string JSON array element")
 	}
 }
+
+// TestMatchArrayCondition_NumericFormatDivergence proves the regression that
+// motivated this fix. Pre-fix, matchArray compared fmt.Sprintf("%v", expected)
+// to gjson's result.String(). For float64(1e10), Sprintf renders "1e+10"
+// while gjson decimal-expands the JSON literal 1e10 to "10000000000". These
+// strings differ even though the values are equal. The pre-fix code would
+// return no-match; opEquals does numeric comparison (actual.Float() ==
+// toFloat64(expected)) and returns match. This case is the executable proof
+// that the change has user-visible behavioral effect.
+func TestMatchArrayCondition_NumericFormatDivergence(t *testing.T) {
+	data := []byte(`{"scores":[1e10]}`) // gjson.String() = "10000000000"
+	cond := &predicate.ArrayCondition{
+		JsonPath: "$.scores",
+		Values:   []any{float64(1e10)}, // Sprintf renders "1e+10"
+	}
+	got, err := Match(cond, data, meta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Error("expected match: float64(1e10) against JSON 1e10 — numeric equality required, string comparison would fail")
+	}
+}
