@@ -385,6 +385,52 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 	return count, nil
 }
 
+// CountByState returns counts of non-deleted entities grouped by state for the
+// given model. See SPI godoc on EntityStore.CountByState for filter semantics.
+//
+// State is stored inside the doc JSONB at $._meta.state. An indexed expression
+// (e.g. CREATE INDEX ON entities ((doc->'_meta'->>'state')) WHERE NOT deleted)
+// is a future optimization (out of scope for this issue).
+//
+// Deliberately not tracked in readSet: aggregate with no per-row identity. See
+// Count's note on phantom reads.
+func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+	if states != nil && len(states) == 0 {
+		return map[string]int64{}, nil
+	}
+
+	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+	q := `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*)
+	      FROM entities
+	      WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
+
+	if states != nil {
+		args = append(args, states)
+		q += ` AND doc -> '_meta' ->> 'state' = ANY($4)`
+	}
+	q += ` GROUP BY state`
+
+	rows, err := s.q.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count entities by state: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int64)
+	for rows.Next() {
+		var st string
+		var n int64
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, fmt.Errorf("failed to scan count by state row: %w", err)
+		}
+		result[st] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate count by state rows: %w", err)
+	}
+	return result, nil
+}
+
 // Deliberately not tracked in readSet: observational reads of version history.
 func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
 	rows, err := s.q.Query(ctx,
