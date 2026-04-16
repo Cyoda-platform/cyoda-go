@@ -121,54 +121,6 @@ func TestRecordWrite_FreshInsertZero(t *testing.T) {
 	}
 }
 
-// TestSortedUnionIDs_EmptyState verifies that an empty txState returns an
-// empty (non-nil) slice.
-func TestSortedUnionIDs_EmptyState(t *testing.T) {
-	s := newTxState("t1")
-	ids := s.SortedUnionIDs()
-	if ids == nil {
-		t.Error("SortedUnionIDs() = nil, want empty slice")
-	}
-	if len(ids) != 0 {
-		t.Errorf("SortedUnionIDs() len = %d, want 0", len(ids))
-	}
-}
-
-// TestSortedUnionIDs_MixedReadAndWrite verifies that IDs from both readSet
-// and writeSet are returned together in sorted order.
-func TestSortedUnionIDs_MixedReadAndWrite(t *testing.T) {
-	s := newTxState("t1")
-	s.RecordRead("c", 1)
-	s.RecordRead("a", 2)
-	s.RecordWrite("d", 3)
-	s.RecordWrite("b", 4)
-	ids := s.SortedUnionIDs()
-	want := []string{"a", "b", "c", "d"}
-	if len(ids) != len(want) {
-		t.Fatalf("SortedUnionIDs() = %v, want %v", ids, want)
-	}
-	for i, w := range want {
-		if ids[i] != w {
-			t.Errorf("ids[%d] = %q, want %q", i, ids[i], w)
-		}
-	}
-}
-
-// TestSortedUnionIDs_Disjoint verifies that after a read-then-write
-// promotion, the entity ID appears exactly once in the result.
-func TestSortedUnionIDs_Disjoint(t *testing.T) {
-	s := newTxState("t1")
-	s.RecordRead("e1", 5)
-	s.RecordWrite("e1", 5) // promotes from readSet to writeSet
-	ids := s.SortedUnionIDs()
-	if len(ids) != 1 {
-		t.Errorf("SortedUnionIDs() len = %d, want 1 (got %v)", len(ids), ids)
-	}
-	if len(ids) > 0 && ids[0] != "e1" {
-		t.Errorf("ids[0] = %q, want e1", ids[0])
-	}
-}
-
 // TestValidateReadSet_AllMatch verifies that no error is returned when all
 // readSet entities match the current snapshot.
 func TestValidateReadSet_AllMatch(t *testing.T) {
@@ -205,58 +157,6 @@ func TestValidateReadSet_MissingEntity(t *testing.T) {
 	err := s.ValidateReadSet(current)
 	if err == nil {
 		t.Fatal("expected error for missing entity, got nil")
-	}
-	if !strings.Contains(err.Error(), "e1") {
-		t.Errorf("error does not mention entity ID: %v", err)
-	}
-}
-
-// TestValidateWriteSet_UpdateMatch verifies that no error is returned when
-// an update entity's pre-write version matches the current snapshot.
-func TestValidateWriteSet_UpdateMatch(t *testing.T) {
-	s := newTxState("t1")
-	s.RecordWrite("e1", 5)
-	current := map[string]int64{"e1": 5}
-	if err := s.ValidateWriteSet(current); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestValidateWriteSet_FreshInsertAbsent verifies that a fresh insert
-// (preWriteVersion 0) with no current entry returns no error.
-func TestValidateWriteSet_FreshInsertAbsent(t *testing.T) {
-	s := newTxState("t1")
-	s.RecordWrite("e1", 0)
-	current := map[string]int64{}
-	if err := s.ValidateWriteSet(current); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestValidateWriteSet_FreshInsertRaceLost verifies that a fresh insert
-// (preWriteVersion 0) fails when the current snapshot already has the entity.
-func TestValidateWriteSet_FreshInsertRaceLost(t *testing.T) {
-	s := newTxState("t1")
-	s.RecordWrite("e1", 0)
-	current := map[string]int64{"e1": 1}
-	err := s.ValidateWriteSet(current)
-	if err == nil {
-		t.Fatal("expected error for insert race, got nil")
-	}
-	if !strings.Contains(err.Error(), "e1") {
-		t.Errorf("error does not mention entity ID: %v", err)
-	}
-}
-
-// TestValidateWriteSet_UpdateVersionMismatch verifies that an update entity
-// whose pre-write version differs from current returns an error.
-func TestValidateWriteSet_UpdateVersionMismatch(t *testing.T) {
-	s := newTxState("t1")
-	s.RecordWrite("e1", 5)
-	current := map[string]int64{"e1": 6}
-	err := s.ValidateWriteSet(current)
-	if err == nil {
-		t.Fatal("expected error for version mismatch, got nil")
 	}
 	if !strings.Contains(err.Error(), "e1") {
 		t.Errorf("error does not mention entity ID: %v", err)
@@ -375,22 +275,6 @@ func TestRestoreSavepoint_Unknown(t *testing.T) {
 	err := s.RestoreSavepoint("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
-	}
-}
-
-// TestValidateWriteSet_UpdateDeletedByConcurrent verifies that an update
-// target (expected > 0) absent from the current snapshot — meaning a
-// concurrent committer deleted it — returns an error containing the entity ID.
-func TestValidateWriteSet_UpdateDeletedByConcurrent(t *testing.T) {
-	s := newTxState("t1")
-	s.RecordWrite("e1", 5) // update: pre-write version 5
-	current := map[string]int64{} // e1 absent — deleted by concurrent committer
-	err := s.ValidateWriteSet(current)
-	if err == nil {
-		t.Fatal("expected error for deleted entity, got nil")
-	}
-	if !strings.Contains(err.Error(), "e1") {
-		t.Errorf("error does not mention entity ID: %v", err)
 	}
 }
 

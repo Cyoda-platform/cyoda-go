@@ -16,8 +16,13 @@ import (
 // Invariants:
 //   - An entity ID appears in at most one of readSet/writeSet at any time.
 //   - readSet[id] = the version as first observed by a Get within this tx.
-//   - writeSet[id] = the pre-write version for an entity we wrote; 0 for
-//     a fresh insert.
+//   - writeSet[id] = the pre-write version for an entity we updated or deleted.
+//
+// writeSet is maintained for the readSet-disjoint invariant (RecordRead skips
+// entities in writeSet, keeping readSet correct) and for future use with
+// advisory locks / non-entity stores (tracked as #35). writeSet is NOT
+// validated at commit time in the current implementation — PostgreSQL's
+// native tuple-level DML locks catch write-write conflicts.
 //
 // See docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md
 // for the full semantic model.
@@ -89,26 +94,6 @@ func (s *txState) RecordWrite(id string, preWriteVersion int64) {
 	s.writeSet[id] = preWriteVersion
 }
 
-// SortedUnionIDs returns a sorted slice of all entity IDs appearing in
-// either readSet or writeSet. The sorted order provides a deterministic
-// lock-acquisition sequence for the commit-time validation phase.
-//
-// The readSet and writeSet are guaranteed disjoint by the RecordRead/RecordWrite
-// invariants, so no deduplication is needed.
-func (s *txState) SortedUnionIDs() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ids := make([]string, 0, len(s.readSet)+len(s.writeSet))
-	for id := range s.readSet {
-		ids = append(ids, id)
-	}
-	for id := range s.writeSet {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
 // SortedReadIDs returns a sorted slice of entity IDs in readSet only.
 // Used by Commit to restrict the FOR SHARE validation query to entities we
 // read but did not write in this transaction. Write-write conflicts are
@@ -138,30 +123,6 @@ func (s *txState) ValidateReadSet(current map[string]int64) error {
 		}
 		if got != expected {
 			return fmt.Errorf("read-set validation: entity %s version changed: expected %d, current %d", id, expected, got)
-		}
-	}
-	return nil
-}
-
-// ValidateWriteSet checks that every entity in writeSet is still at its
-// captured pre-write version (for updates/deletes) or absent from the DB
-// (for fresh inserts, pre-write version 0).
-func (s *txState) ValidateWriteSet(current map[string]int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, expected := range s.writeSet {
-		got, ok := current[id]
-		if expected == 0 {
-			if ok {
-				return fmt.Errorf("write-set validation: entity %s lost insert race — concurrent committer created it at version %d", id, got)
-			}
-			continue
-		}
-		if !ok {
-			return fmt.Errorf("write-set validation: entity %s deleted by concurrent committer (expected pre-write version %d)", id, expected)
-		}
-		if got != expected {
-			return fmt.Errorf("write-set validation: entity %s pre-write version changed: expected %d, current %d", id, expected, got)
 		}
 	}
 	return nil
