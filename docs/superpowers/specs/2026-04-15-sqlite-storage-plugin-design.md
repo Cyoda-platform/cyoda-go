@@ -11,32 +11,57 @@
 - **Who:** Developers running locally, small self-hosted deployments, containerized
   single-node production.
 - **Key constraints:**
-  - Single-node only — SQLite is embedded in the cyoda-go process.
+  - Single-node, single-process only — SQLite is embedded in the cyoda-go process.
+    Exclusive file lock (`flock`) enforced at startup; a second instance against the
+    same file fails fast. Required because the in-memory SSI engine (committedLog,
+    active transactions) is per-process — two processes sharing a file would have
+    independent SSI state and silently corrupt conflict detection.
   - Application-layer SSI (ported from memory plugin) — SQLite is the persistence
     layer, not the concurrency controller.
-  - No CGO — uses `ncruces/go-sqlite3` (WASM-based) for clean cross-compilation
-    and future `sqlite-vec` vector search support.
+  - No CGO — uses `ncruces/go-sqlite3` (WASM-based, ~2-3x slower than native C) for
+    clean cross-compilation and future `sqlite-vec` vector search support. The WASM
+    overhead is accepted for deploy simplicity and the sqlite-vec roadmap.
   - Tenant isolation is application-layer only (no RLS).
-- **Explicit non-goals:** Multi-node, vector search (future work), PostgreSQL search
-  pushdown conversion (issue #37, separate task).
+  - `flock` does not work on NFS — but SQLite itself is unreliable on NFS, so this
+    is already an implicit constraint of choosing SQLite.
+- **Explicit non-goals:** Multi-node, multi-process, vector search (future work),
+  PostgreSQL search pushdown conversion (issue #37, separate task).
 
 ## Decisions
 
 | # | Decision | Alternatives Considered | Rationale |
 |---|----------|------------------------|-----------|
 | 1 | Mirror memory plugin SSI architecture | Lean on SQLite native SERIALIZABLE; extract shared SSI module | SQLite has database-level write locking (zero write concurrency) — SSI is redundant at that level. Application-layer SSI gives behavioral parity with memory plugin. Shared module is premature until two consumers exist. |
-| 2 | `ncruces/go-sqlite3` driver | `modernc.org/sqlite` (pure Go); `mattn/go-sqlite3` (CGO) | No CGO (clean Docker/cross-compile). Official `sqlite-vec` WASM bindings exist for future vector search. `modernc.org/sqlite` cannot load C extensions — dead end for sqlite-vec. |
+| 2 | `ncruces/go-sqlite3` driver | `modernc.org/sqlite` (pure Go); `mattn/go-sqlite3` (CGO) | No CGO (clean Docker/cross-compile). Official `sqlite-vec` WASM bindings exist for future vector search. `modernc.org/sqlite` cannot load C extensions — dead end for sqlite-vec. ~2-3x WASM overhead accepted for deploy simplicity. |
 | 3 | golang-migrate with embedded SQL files | Auto-create tables on startup | Consistent with PostgreSQL plugin. Supports schema evolution across upgrades. |
-| 4 | Mirror PostgreSQL logical schema with SQLite optimizations | Exact mirror; fully divergent schema | Same table/column names reduce cognitive load. `STRICT`, `WITHOUT ROWID`, INTEGER timestamps give 15-25% space reduction and 15-30% faster point lookups with minimal divergence. |
-| 5 | TEXT for JSON columns | JSONB | Search pushdown uses `json_extract()` which works on TEXT. JSONB (SQLite 3.45.0+) offers 2-5x faster `json_extract()` but requires verifying `ncruces` bundles a recent enough SQLite. Start with TEXT; migrate to JSONB if version permits — transparent to application code. |
+| 4 | Mirror PostgreSQL logical schema with SQLite optimizations | Exact mirror; fully divergent schema | Same table/column names reduce cognitive load. `STRICT`, `WITHOUT ROWID` (on append-only tables — see note below), INTEGER timestamps give 15-25% space reduction and 15-30% faster point lookups with minimal divergence. |
+| 5 | JSONB via BLOB columns + `jsonb()` / `json()` | TEXT JSON | `ncruces/go-sqlite3` bundles SQLite 3.46+, so JSONB is available. 2-5x faster `json_extract()` on binary format. Plugin asserts `sqlite_version() >= 3.45.0` on startup. Readable views shipped alongside JSON-bearing tables for CLI inspection. |
 | 6 | Application-layer tenant isolation only | Separate DB per tenant | Memory plugin has the same trust model. Single-node embedded use case doesn't warrant physical isolation complexity. |
 | 7 | Search predicate pushdown with greedy dissection | In-memory filtering only (match current implementation) | Establishes the pattern/template for PostgreSQL conversion. Avoids shipping a known architectural gap. |
 | 8 | Generic `spi.Filter` representation | Import domain predicate types in SPI | Domain predicate syntax may change. Anti-corruption layer keeps the SPI stable. |
 | 9 | XDG default path with env var override | Working directory; hardcoded path | `$XDG_DATA_HOME/cyoda-go/cyoda.db` follows FreeDesktop standard for CLI processes. `CYODA_SQLITE_PATH` env var overrides for containers (`/var/lib/cyoda-go/cyoda.db`). |
+| 10 | Exclusive `flock` for entire process lifetime | flock around migration only; no locking | In-memory SSI state is per-process. Two processes sharing one file would have independent committedLogs, causing silent lost-update corruption. Whole-process flock is the only correct option. |
+| 11 | Case-insensitive operators post-filter in Go (Unicode-correct) | ASCII-only via SQL `COLLATE NOCASE` | SQLite `LOWER()` / `COLLATE NOCASE` only fold ASCII. Real-world data includes non-ASCII (É, ß, İ). Unicode correctness is the safe default; ASCII fast path is a future optimization. |
+| 12 | `WITHOUT ROWID` on append-only tables only | WITHOUT ROWID on all tables | `entity_versions` (append-only, UUID PK) benefits unambiguously. `entities` (high-UPSERT, large data BLOB) may suffer — WITHOUT ROWID rewrites the full clustered row on every update. Benchmark during implementation; use rowid for `entities` if UPSERT perf is worse. |
 
 ---
 
 ## Architecture
+
+### Exclusive Process Lock
+
+On startup, before opening the database:
+
+```go
+lock := flock.New(dbPath + ".lock")
+if !lock.TryLock() {
+    return fmt.Errorf("another cyoda-go instance is using %s", dbPath)
+}
+// Hold lock until process shutdown
+```
+
+This is a hard requirement, not optional safety. The in-memory SSI engine cannot
+be shared across processes.
 
 ### In-Memory vs SQLite Split
 
@@ -69,22 +94,63 @@ is fully recovered from SQLite.
 
 ### Transaction Lifecycle
 
+**Commit mutex:** A single `sync.Mutex` (`commitMu`) serializes the entire commit
+path, mirroring the memory plugin's `m.mu`. This is required for SSI correctness —
+without it, two commits could both validate against a stale committedLog and both
+succeed, missing a conflict.
+
+**Submit-time monotonicity:** Wall clocks can move backwards (NTP steps, VM
+pause/migrate, leap-second smearing). The commit section enforces monotonicity:
+
+```go
+submitTime := max(clock.Now().UnixMicro(), lastSubmitTime + 1)
+```
+
+`lastSubmitTime` is kept on the txmanager struct (no atomics needed — commitMu
+guards it). On startup, seeded from `SELECT MAX(submit_time) FROM entity_versions`.
+
+**Snapshot-time convention:** `committedLog` entries with
+`submitTime == snapshotTime` are **not** visible to the reader (strict inequality:
+a tx sees only entries with `submitTime < snapshotTime`). This matches the memory
+plugin's `!v.submitTime.After(snapshotTime)` convention.
+
 | Phase | Behavior |
 |---|---|
 | **Begin** | Capture `snapshotTime = clock.Now()`, allocate in-memory buffers (readSet, writeSet, buffer, deletes) |
-| **Read (in tx)** | Check buffer → `SELECT FROM entity_versions WHERE submit_time <= ?` at snapshot time. Record in readSet. |
+| **Read (in tx)** | Check deletes → check buffer → snapshot query (see below). Record in readSet. |
 | **Write (in tx)** | Add to in-memory buffer. Record in writeSet. |
-| **Commit: validate** | Walk in-memory committedLog — if any tx committed after our snapshotTime wrote an entity in our readSet or writeSet, return `spi.ErrConflict` |
-| **Commit: flush** | `BEGIN IMMEDIATE` SQLite transaction → `INSERT INTO entity_versions` + `UPSERT entities` for each buffered write/delete → record in committedLog → `COMMIT` |
+| **Commit** | Acquire `commitMu` → validate committedLog → capture monotonic `submitTime` → `BEGIN IMMEDIATE` → flush writes/deletes to SQLite → `COMMIT` → append to committedLog → prune → release `commitMu` |
 | **Rollback** | Discard in-memory buffers. Remove from active map. |
 | **Savepoint** | Deep-copy buffer/readSet/writeSet/deletes |
 | **RollbackToSavepoint** | Restore maps from snapshot |
 
-Commit flush uses `BEGIN IMMEDIATE` to acquire the write lock eagerly. SQLite's
-single-writer semantics align naturally with the SSI engine — committedLog validation
-happens in Go before acquiring the SQLite write lock, and the flush is atomic.
+**Snapshot read query** (used for both single-entity Get and GetAll):
 
-Non-transactional writes: direct INSERT/UPSERT under SQLite transaction, no SSI tracking.
+```sql
+SELECT entity_id, data, meta, version
+FROM entity_versions ev
+INNER JOIN (
+    SELECT entity_id, MAX(version) AS max_ver
+    FROM entity_versions
+    WHERE tenant_id = ? AND entity_id = ? AND submit_time < ?
+    GROUP BY entity_id
+) latest ON ev.entity_id = latest.entity_id
+       AND ev.version = latest.max_ver
+WHERE ev.tenant_id = ?
+  AND ev.change_type != 'DELETED';
+```
+
+For single-entity reads, the `entity_id = ?` filter is included in the subquery.
+For GetAll, it is omitted and a `model_name = ?` filter is added. This is the
+same query shape as the point-in-time search template — a single code path serves
+both.
+
+**Non-transactional writes:** Used by bootstrap (initial model/entity setup),
+audit trail appends, and search job persistence. These are direct INSERT/UPSERT
+under a SQLite transaction with no SSI tracking. They touch tables that are either
+write-only from the application perspective (audit, search jobs) or written once
+at startup (bootstrap). None of these tables are read by transactional entity
+operations, so there is no isolation concern.
 
 ### Clock
 
@@ -104,13 +170,13 @@ CREATE TABLE entities (
     model_name    TEXT NOT NULL,
     model_version TEXT NOT NULL,
     version       INTEGER NOT NULL,
-    data          TEXT NOT NULL,
-    meta          TEXT,
+    data          BLOB NOT NULL,
+    meta          BLOB,
     deleted       INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL,
     PRIMARY KEY (tenant_id, entity_id)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 
 CREATE TABLE entity_versions (
     tenant_id      TEXT NOT NULL,
@@ -118,8 +184,8 @@ CREATE TABLE entity_versions (
     model_name     TEXT NOT NULL,
     model_version  TEXT NOT NULL,
     version        INTEGER NOT NULL,
-    data           TEXT,
-    meta           TEXT,
+    data           BLOB,
+    meta           BLOB,
     change_type    TEXT NOT NULL,
     transaction_id TEXT NOT NULL,
     submit_time    INTEGER NOT NULL,
@@ -136,6 +202,35 @@ CREATE TABLE submit_times (
 Plus equivalent tables for `models`, `kv_store`, `messages`, `workflows`,
 `sm_audit_events`, `search_jobs`, `search_job_results` — mirroring PostgreSQL
 schema structure.
+
+**Note:** `entities` uses default rowid (no `WITHOUT ROWID`) because it is a
+high-UPSERT table with large BLOB payloads — clustered WITHOUT ROWID would
+rewrite the full row on every update. `entity_versions` uses `WITHOUT ROWID`
+because it is append-only. Benchmark during implementation and adjust if needed.
+
+### JSONB Storage
+
+JSON columns (`data`, `meta`) are stored as BLOB in SQLite's binary JSONB format.
+
+- **Writes:** All INSERT/UPSERT use `jsonb(?)` to convert JSON text to binary.
+- **Reads:** Queries returning data to application code wrap with `json(data)` to
+  convert back to text. `json_extract()` in pushdown auto-detects binary format.
+- **Startup:** Assert `sqlite_version() >= 3.45.0`; fail with clear error otherwise.
+- **CLI inspection:** Readable views shipped in the initial migration:
+
+```sql
+CREATE VIEW entities_readable AS
+SELECT tenant_id, entity_id, model_name, model_version, version,
+       json(data) AS data, json(meta) AS meta,
+       deleted, created_at, updated_at
+FROM entities;
+
+CREATE VIEW entity_versions_readable AS
+SELECT tenant_id, entity_id, model_name, model_version, version,
+       json(data) AS data, json(meta) AS meta,
+       change_type, transaction_id, submit_time, user_id
+FROM entity_versions;
+```
 
 ### Timestamps
 
@@ -160,10 +255,18 @@ CREATE INDEX idx_submit_times_ttl
 
 - No Row-Level Security (tenant isolation is application-layer `WHERE tenant_id = ?`)
 - `STRICT` enforces type affinity at write time
-- `WITHOUT ROWID` on all UUID-keyed tables — clustered B-tree, no hidden rowid
+- `WITHOUT ROWID` on append-only tables (entity_versions, submit_times) only
 - INTEGER timestamps (Unix microseconds) instead of `TIMESTAMPTZ`
 - TEXT for UUIDs instead of `UUID` type
-- TEXT for JSON instead of `JSONB` (may migrate to JSONB later)
+- BLOB with JSONB binary format instead of PostgreSQL `JSONB` (different binary
+  representations, same conceptual approach)
+
+### Retention
+
+- **entity_versions:** Unbounded. Having thousands of versions per entity is an
+  antipattern for this system; existing warning/error logging flags this.
+- **submit_times:** 1-hour TTL matching the memory plugin. Pruned at each commit
+  by deleting rows where `submit_time < now() - 1 hour`.
 
 ---
 
@@ -224,10 +327,10 @@ const (
     FilterINotEndsWith     FilterOp = "inot_ends_with"
 )
 
-type FieldSource int
+type FieldSource string
 const (
-    SourceData FieldSource = iota
-    SourceMeta
+    SourceData FieldSource = "data"
+    SourceMeta FieldSource = "meta"
 )
 ```
 
@@ -244,8 +347,20 @@ type SearchOptions struct {
     PointInTime  *time.Time
     Limit        int
     Offset       int
+    OrderBy      []OrderSpec
+}
+
+type OrderSpec struct {
+    Path   string      // JSON path or meta field
+    Source FieldSource
+    Desc   bool
 }
 ```
+
+`OrderBy` defaults to `[{Path: "entity_id", Source: SourceMeta}]` (ascending)
+when empty. The `Searcher` implementation translates to SQL `ORDER BY`; the
+SearchService fallback sorts in-memory. This is a hint — if a plugin cannot
+support the requested ordering, the SearchService fallback handles it.
 
 ### Translation Flow
 
@@ -273,6 +388,12 @@ The SearchService checks if the plugin's EntityStore implements `Searcher`:
 - If yes → delegate to plugin (SQL pushdown + internal post-filtering)
 - If no → fall back to `GetAll` + in-memory filtering (memory plugin unchanged)
 
+**In-transaction searches:** When a search is issued inside a transaction with
+buffered writes, pushdown is **not used**. The search falls back to GetAll (which
+already merges buffer + snapshot) + in-memory filtering. This avoids the hard
+problem of merging SQL results with in-memory buffer overlay. Pushdown is for
+read-only / cross-transaction searches only.
+
 ### Query Planner (Greedy Dissection)
 
 Inspired by the Cassandra plugin's `GreedyAndPlanner`. Simplified for SQLite
@@ -285,21 +406,39 @@ Inspired by the Cassandra plugin's `GreedyAndPlanner`. Simplified for SQLite
 
 | Filter node | Pushable? | SQL generation |
 |---|---|---|
-| `eq` | Yes | `json_extract(data, '$.path') = ?` |
-| `ne` | Yes | `json_extract(data, '$.path') != ?` |
-| `gt/lt/gte/lte` | Yes | `json_extract(data, '$.path') > ?` etc. |
-| `contains` | Yes | `json_extract(data, '$.path') LIKE '%' \|\| ? \|\| '%'` |
-| `starts_with` | Yes | `json_extract(data, '$.path') LIKE ? \|\| '%'` |
-| `ends_with` | Yes | `json_extract(data, '$.path') LIKE '%' \|\| ?` |
-| `like` | Yes | `json_extract(data, '$.path') LIKE ?` |
+| `eq` | Yes | `(json_extract(data, '$.path') IS NOT NULL AND json_extract(data, '$.path') = ?)` |
+| `ne` | Yes | `(json_extract(data, '$.path') IS NULL OR json_extract(data, '$.path') != ?)` |
+| `gt/lt/gte/lte` | Yes | `(json_extract(data, '$.path') IS NOT NULL AND json_extract(data, '$.path') > ?)` etc. |
+| `contains` | Yes | `instr(json_extract(data, '$.path'), ?) > 0` |
+| `starts_with` | Yes | `substr(json_extract(data, '$.path'), 1, length(?)) = ?` |
+| `ends_with` | Yes | `substr(json_extract(data, '$.path'), -length(?)) = ?` |
+| `like` | Yes | `json_extract(data, '$.path') LIKE ? ESCAPE '\'` |
 | `is_null` | Yes | `json_extract(data, '$.path') IS NULL` |
 | `not_null` | Yes | `json_extract(data, '$.path') IS NOT NULL` |
-| `between` | Yes | `json_extract(data, '$.path') BETWEEN ? AND ?` |
+| `between` | Yes | `(json_extract(data, '$.path') IS NOT NULL AND json_extract(data, '$.path') BETWEEN ? AND ?)` |
 | `and` | Partial | Push pushable children, collect rest as residual |
 | `or` | Only if all children pushable | Otherwise entire OR is residual |
 | `matches_regex` | No | SQLite has no native regex |
 | `ieq`, `icontains`, etc. | No | Unicode case folding needs Go |
 | `SourceMeta` fields | Yes | Direct column reference: `state = ?`, `created_at > ?` |
+
+**NULL/3VL handling:** SQL's three-valued logic differs from Go's in-memory filter.
+`json_extract(data, '$.missing') != 'x'` evaluates to NULL in SQL (filtered out by
+WHERE), but Go treats missing-field-not-equal-to-x as true. Pushed-down predicates
+wrap with `IS NOT NULL AND ...` guards (or `IS NULL OR ...` for negations) to match
+Go semantics. Conformance tests cover every operator × (present / missing / null
+literal) to verify parity with the memory plugin.
+
+**String operator safety:** `contains`, `starts_with`, `ends_with` use `instr()` /
+`substr()` instead of `LIKE` to avoid SQL injection via wildcard characters (`%`, `_`)
+in user input. Only the explicit `like` operator uses `LIKE`, with `ESCAPE '\'` and
+value preprocessing (escape `%`, `_`, `\` in the bound value).
+
+**JSON type coercion:** `json_extract()` returns the JSON value's native type.
+Comparisons like `json_extract(data, '$.n') = ?` with `?` bound as Go `int64`
+against a JSON `1.0` return false under SQLite's type affinity rules. The planner
+normalizes numeric filter values to `float64` for consistent comparison. Covered
+by fuzz tests.
 
 **Greedy AND strategy:** Extract all pushable conditions from AND groups into SQL.
 Non-pushable conditions become the residual filter applied in Go on the result set.
@@ -307,15 +446,16 @@ Non-pushable conditions become the residual filter applied in Go on the result s
 **Conservative OR strategy:** Only push down if ALL children are pushable. If any
 child is non-pushable, the entire OR becomes residual.
 
-**Post-filter flow:** If a residual filter exists, the plugin applies it in Go on
-the SQL result set. Pagination (LIMIT/OFFSET) is applied after post-filtering to
-ensure correct counts.
+### Pagination
 
-### Query Templates
+Two distinct query paths based on whether a residual filter exists:
+
+**Fully pushed (no residual):** LIMIT and OFFSET applied in SQL.
 
 ```sql
--- Current state search
-SELECT entity_id, data, meta, version, created_at, updated_at
+-- Current state search (fully pushed)
+SELECT entity_id, json(data) AS data, json(meta) AS meta, version,
+       created_at, updated_at
 FROM entities
 WHERE tenant_id = ?
   AND model_name = ?
@@ -324,22 +464,46 @@ WHERE tenant_id = ?
   AND (/* pushed-down filter tree */)
 ORDER BY entity_id
 LIMIT ? OFFSET ?;
+```
 
--- Point-in-time search
-SELECT ev.entity_id, ev.data, ev.meta, ev.version
+**Residual present (streaming path):** No LIMIT/OFFSET in SQL. Results streamed
+through Go post-filter, then paginated. A scan budget
+(`CYODA_SQLITE_SEARCH_SCAN_LIMIT`, default 100,000 rows) caps the number of rows
+examined. If the budget is exhausted before the requested page is filled, the plugin
+returns a distinguishable `ErrScanBudgetExhausted` error so callers know to tighten
+their filter.
+
+```sql
+-- Current state search (streaming, no LIMIT)
+SELECT entity_id, json(data) AS data, json(meta) AS meta, version,
+       created_at, updated_at
+FROM entities
+WHERE tenant_id = ?
+  AND model_name = ?
+  AND model_version = ?
+  AND NOT deleted
+  AND (/* pushed-down subset */)
+ORDER BY entity_id;
+```
+
+**Point-in-time search** (both paths):
+
+```sql
+SELECT ev.entity_id, json(ev.data) AS data, json(ev.meta) AS meta, ev.version
 FROM entity_versions ev
 INNER JOIN (
     SELECT entity_id, MAX(version) AS max_ver
     FROM entity_versions
-    WHERE tenant_id = ? AND submit_time <= ?
+    WHERE tenant_id = ? AND submit_time < ?
     GROUP BY entity_id
 ) latest ON ev.entity_id = latest.entity_id
        AND ev.version = latest.max_ver
 WHERE ev.tenant_id = ?
+  AND ev.model_name = ?
+  AND ev.model_version = ?
   AND ev.change_type != 'DELETED'
   AND (/* pushed-down filter tree */)
-ORDER BY ev.entity_id
-LIMIT ? OFFSET ?;
+ORDER BY ev.entity_id;
 ```
 
 ### Future: Generated Column Indexes
@@ -361,15 +525,18 @@ This is a future optimization — the baseline works without it.
 ### Environment Variables
 
 ```
-CYODA_SQLITE_PATH           Database file path
-                            Default: $XDG_DATA_HOME/cyoda-go/cyoda.db
-                            Container: /var/lib/cyoda-go/cyoda.db
+CYODA_SQLITE_PATH              Database file path
+                               Default: $XDG_DATA_HOME/cyoda-go/cyoda.db
+                               Container: /var/lib/cyoda-go/cyoda.db
 
-CYODA_SQLITE_AUTO_MIGRATE   Run migrations on startup (default: true)
+CYODA_SQLITE_AUTO_MIGRATE      Run migrations on startup (default: true)
 
-CYODA_SQLITE_BUSY_TIMEOUT   Wait time for write lock (default: 5s)
+CYODA_SQLITE_BUSY_TIMEOUT      Wait time for write lock (default: 5s)
 
-CYODA_SQLITE_CACHE_SIZE     Page cache in KiB (default: 64000 ≈ 64MB)
+CYODA_SQLITE_CACHE_SIZE        Page cache in KiB (default: 64000 ≈ 64MB)
+
+CYODA_SQLITE_SEARCH_SCAN_LIMIT Max rows examined per search with residual
+                               filter (default: 100000)
 ```
 
 ### Pragmas
@@ -382,8 +549,30 @@ PRAGMA synchronous = NORMAL;
 PRAGMA busy_timeout = 5000;
 PRAGMA cache_size = -64000;
 PRAGMA foreign_keys = ON;
-PRAGMA mmap_size = 268435456;   -- 256MB memory-mapped I/O
+PRAGMA mmap_size = 268435456;       -- 256MB memory-mapped I/O
+PRAGMA journal_size_limit = 67108864; -- cap .wal file at 64MB on idle
 ```
+
+Set at database creation time (before first table):
+
+```sql
+PRAGMA auto_vacuum = INCREMENTAL;
+```
+
+### WAL Management
+
+SQLite's default `wal_autocheckpoint = 1000` moves committed pages back to the
+main database file, but does not truncate the `.wal` file on disk. Under bursty
+write loads the WAL can balloon and stay large.
+
+- `journal_size_limit` caps idle WAL size at 64MB.
+- A background goroutine issues `PRAGMA wal_checkpoint(TRUNCATE)` periodically
+  (every 5 minutes) to reclaim space after write bursts.
+- A background goroutine issues `PRAGMA incremental_vacuum(1000)` periodically
+  to return free pages to the OS.
+- Long-running reader transactions prevent the checkpointer from advancing.
+  The plugin bounds read-transaction lifetime and forces rollback on shutdown
+  so a forgotten `Begin()` cannot silently pin the WAL.
 
 ### Plugin Registration
 
@@ -401,13 +590,26 @@ _ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 
 ---
 
+## Error Mapping
+
+| SQLite Error | SPI Error | Retry? | Notes |
+|---|---|---|---|
+| `SQLITE_BUSY` (after busy_timeout) | `spi.ErrConflict` | Yes | Write lock contention — should be rare with single-writer SSI |
+| SSI committedLog conflict | `spi.ErrConflict` | Yes | Application-layer first-committer-wins |
+| `SQLITE_FULL` | `spi.ErrInternal` | No | Disk full |
+| `SQLITE_CORRUPT` | `spi.ErrInternal` | No | Database corruption — log at ERROR with details |
+| `SQLITE_READONLY` | `spi.ErrInternal` | No | Filesystem permissions |
+| Constraint violation (UNIQUE) | `spi.ErrConflict` or `spi.ErrAlreadyExists` | Depends | Context-dependent |
+
+---
+
 ## File Structure
 
 ```
 plugins/sqlite/
 ├── plugin.go              # Registration, Plugin interface, ConfigVars
 ├── config.go              # Env var parsing, pragma config
-├── store_factory.go       # StoreFactory, DB connection, WAL setup
+├── store_factory.go       # StoreFactory, DB connection, WAL setup, flock
 ├── entity_store.go        # EntityStore + Searcher implementation
 ├── model_store.go         # ModelStore
 ├── kv_store.go            # KeyValueStore
@@ -418,7 +620,7 @@ plugins/sqlite/
 ├── txmanager.go           # SSI transaction manager (ported from memory)
 ├── clock.go               # Injectable clock
 ├── query_planner.go       # Filter → SQL WHERE + residual Filter
-├── migrate.go             # golang-migrate runner
+├── migrate.go             # golang-migrate runner (flock-protected)
 ├── migrations/
 │   └── 000001_initial_schema.up.sql
 │   └── 000001_initial_schema.down.sql
@@ -430,7 +632,7 @@ e2e/parity/sqlite/
 
 # SPI additions (cyoda-go-spi module)
 filter.go                  # Filter, FilterOp, FieldSource types
-searcher.go                # Searcher interface, SearchOptions
+searcher.go                # Searcher interface, SearchOptions, OrderSpec
 ```
 
 ---
@@ -448,6 +650,11 @@ residual filter.
 - Nested groups
 - `SourceMeta` maps to column references, not `json_extract`
 - Edge cases: empty filter, single-node, deeply nested
+
+**Property/fuzz suite:** Generate random Filter trees and assert that
+`SQL(filter) + residual(filter)` applied to a shared dataset produces identical
+results to `Go-only(filter)`. This catches LIKE-escaping bugs, 3VL mismatches,
+and type coercion edge cases.
 
 ### 2. SPI Conformance Tests (`conformance_test.go`)
 
@@ -471,6 +678,21 @@ Wraps `spitest.StoreFactoryConformance(t, harness)`:
 - Mixed push/post-filter returns same results as pure post-filter
 - Point-in-time search with version chains
 - Pagination correctness after post-filtering
+- Scan budget exhaustion returns `ErrScanBudgetExhausted`
+- NULL/missing field behavior matches memory plugin per operator
+- In-transaction search falls back to non-pushdown path
+
+### 5. Crash-Recovery Test
+
+- Start, write entities, `SIGKILL` the process
+- Restart, verify persisted state matches the last successful commit
+- No partial writes visible
+
+### 6. Concurrency Stress Test
+
+- N goroutines performing random reads/writes, half conflicting
+- Verify conflict rate, throughput, absence of lost writes
+- Run under race detector (`go test -race`)
 
 ---
 
@@ -479,10 +701,11 @@ Wraps `spitest.StoreFactoryConformance(t, harness)`:
 Beyond the `plugins/sqlite/` package, this work requires:
 
 1. **`cyoda-go-spi` module** — Add `Filter`, `FilterOp`, `FieldSource`, `Searcher`,
-   `SearchOptions` types. Requires a minor version bump (e.g., v0.4.0).
+   `SearchOptions`, `OrderSpec` types. Requires a minor version bump (e.g., v0.4.0).
 2. **`internal/domain/search/service.go`** — Modify `SearchService` to check if the
-   plugin's `EntityStore` implements `spi.Searcher` via type assertion. If yes,
-   delegate; if no, fall back to existing `GetAll` + in-memory filtering.
+   plugin's `EntityStore` implements `spi.Searcher` via type assertion. If yes and
+   not in a transaction, delegate; otherwise fall back to existing `GetAll` + in-memory
+   filtering. Add in-memory sort for `OrderBy` in the fallback path.
 3. **`internal/domain/search/`** — Add translation layer: domain `Condition` types →
    `spi.Filter`. This is where the anti-corruption boundary lives.
 4. **`cmd/cyoda-go/main.go`** — Add blank import for the sqlite plugin.
