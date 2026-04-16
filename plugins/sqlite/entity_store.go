@@ -797,6 +797,90 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 	return count, nil
 }
 
+// CountByState returns counts of non-deleted entities grouped by state for the
+// given model. See SPI godoc on EntityStore.CountByState for filter semantics.
+//
+// The state value is stored inside the meta BLOB as JSON; we extract it via
+// json_extract(meta, '$.state'). An indexed expression on this extraction is
+// a future optimization (out of scope for this issue).
+//
+// In-tx callers fall back to GetAll-then-count-in-Go to honour merged-view
+// snapshot semantics, matching the existing Count method's pattern.
+func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+	if states != nil && len(states) == 0 {
+		return map[string]int64{}, nil
+	}
+
+	tx := spi.GetTransaction(ctx)
+	if tx != nil {
+		// In-tx: use GetAll's merged-view logic (matches existing Count's in-tx fallback).
+		all, err := s.GetAll(ctx, modelRef)
+		if err != nil {
+			return nil, err
+		}
+		var filter map[string]struct{}
+		if states != nil {
+			filter = make(map[string]struct{}, len(states))
+			for _, st := range states {
+				filter[st] = struct{}{}
+			}
+		}
+		result := make(map[string]int64)
+		for _, e := range all {
+			st := e.Meta.State
+			if filter != nil {
+				if _, ok := filter[st]; !ok {
+					continue
+				}
+			}
+			result[st]++
+		}
+		return result, nil
+	}
+
+	// Non-transaction: aggregate at the database.
+	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+	q := `SELECT COALESCE(json_extract(meta, '$.state'), '') AS state, COUNT(*)
+	      FROM entities
+	      WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted`
+
+	if states != nil {
+		// Build IN (?, ?, ...) placeholder list. len(states) > 0 here (early-exit covered the empty case).
+		placeholders := make([]byte, 0, 2*len(states))
+		for i := range states {
+			if i > 0 {
+				placeholders = append(placeholders, ',')
+			}
+			placeholders = append(placeholders, '?')
+		}
+		q += ` AND json_extract(meta, '$.state') IN (` + string(placeholders) + `)`
+		for _, st := range states {
+			args = append(args, st)
+		}
+	}
+	q += ` GROUP BY state`
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("count entities by state: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int64)
+	for rows.Next() {
+		var st string
+		var n int64
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, fmt.Errorf("scan count by state: %w", err)
+		}
+		result[st] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate count by state: %w", err)
+	}
+	return result, nil
+}
+
 func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([]spi.EntityVersion, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
