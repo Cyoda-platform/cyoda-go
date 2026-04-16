@@ -1,0 +1,11 @@
+DROP VIEW IF EXISTS entity_versions_readable;
+DROP VIEW IF EXISTS entities_readable;
+DROP TABLE IF EXISTS submit_times;
+DROP TABLE IF EXISTS search_job_results;
+DROP TABLE IF EXISTS search_jobs;
+DROP TABLE IF EXISTS sm_audit_events;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS kv_store;
+DROP TABLE IF EXISTS models;
+DROP TABLE IF EXISTS entity_versions;
+DROP TABLE IF EXISTS entities;

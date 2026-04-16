@@ -4,4 +4,5 @@ use (
 	.
 	./plugins/memory
 	./plugins/postgres
+	./plugins/sqlite
 )

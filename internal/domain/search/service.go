@@ -65,12 +65,37 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 }
 
 // Search performs a synchronous entity search, returning matching entities.
+//
+// When the plugin's EntityStore implements spi.Searcher and there is no active
+// transaction, Search delegates to the plugin for SQL predicate pushdown.
+// Otherwise it falls back to GetAll + in-memory filtering.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
 	store, err := s.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
+	// Delegate to plugin Searcher when available and not in a transaction.
+	// In-transaction searches bypass pushdown because the search would miss
+	// buffered writes that haven't been flushed to the store yet.
+	tx := spi.GetTransaction(ctx)
+	if searcher, ok := store.(spi.Searcher); ok && tx == nil {
+		filter, translateErr := ConditionToFilter(cond)
+		if translateErr == nil {
+			return searcher.Search(ctx, filter, spi.SearchOptions{
+				ModelName:    modelRef.EntityName,
+				ModelVersion: modelRef.ModelVersion,
+				PointInTime:  opts.PointInTime,
+				Limit:        opts.Limit,
+				Offset:       opts.Offset,
+			})
+		}
+		// Fall through to in-memory filtering if translation fails.
+		slog.Debug("condition-to-filter translation failed, falling back to in-memory",
+			"pkg", "search", "error", translateErr)
+	}
+
+	// Fallback: GetAll + in-memory filtering.
 	var entities []*spi.Entity
 	if opts.PointInTime != nil {
 		entities, err = store.GetAllAsAt(ctx, modelRef, *opts.PointInTime)
