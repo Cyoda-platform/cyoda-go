@@ -43,6 +43,47 @@
 | 10 | Exclusive `flock` for entire process lifetime | flock around migration only; no locking | In-memory SSI state is per-process. Two processes sharing one file would have independent committedLogs, causing silent lost-update corruption. Whole-process flock is the only correct option. |
 | 11 | Case-insensitive operators post-filter in Go (Unicode-correct) | ASCII-only via SQL `COLLATE NOCASE` | SQLite `LOWER()` / `COLLATE NOCASE` only fold ASCII. Real-world data includes non-ASCII (É, ß, İ). Unicode correctness is the safe default; ASCII fast path is a future optimization. |
 | 12 | `WITHOUT ROWID` on append-only tables only | WITHOUT ROWID on all tables | `entity_versions` (append-only, UUID PK) benefits unambiguously. `entities` (high-UPSERT, large data BLOB) may suffer — WITHOUT ROWID rewrites the full clustered row on every update. Benchmark during implementation; use rowid for `entities` if UPSERT perf is worse. |
+| 13 | Align with memory plugin (single-process) | Align with PostgreSQL plugin (multi-process, shared file) | See "Alternative Considered: Multi-Process PostgreSQL Alignment" below. |
+
+### Alternative Considered: Multi-Process PostgreSQL Alignment
+
+SQLite's WAL mode supports multiple processes on the same database file (concurrent
+readers, single writer). This raised the question of whether the SQLite plugin should
+align with the PostgreSQL plugin's multi-node architecture instead of the memory
+plugin's single-process model — reusing SWIM gossip, transaction routing, and
+first-committer-wins validation. The two plugins would share most code, differing
+only in SQL dialect and connection management.
+
+**Why it was rejected:**
+
+1. **It creates a monolith.** PostgreSQL's value is client-server separation — the
+   database is an independent service, nodes connect over the network, different
+   failure domains. SQLite on a shared filesystem collapses all of that into one
+   machine, one volume, one failure domain. You get the operational complexity of
+   multi-node with none of the resilience benefits.
+
+2. **No write scaling.** SQLite allows only one writer at a time (database-level
+   lock). Multiple nodes queuing behind a single write lock is strictly worse than
+   one process writing directly. The multi-node infrastructure adds overhead without
+   throughput gain.
+
+3. **Filesystem constraints.** The shared file must be on a local filesystem —
+   SQLite's locking is unreliable on NFS and most network filesystems. This limits
+   multi-process deployments to same-host scenarios, undermining the point of
+   multi-node.
+
+4. **Limited fault tolerance.** If the writer crashes, surviving nodes can only
+   serve reads until a new writer acquires the lock. "Restart the process" achieves
+   the same recovery as a standby failover, more simply.
+
+5. **The plugins serve different architectural tiers.** SQLite's value proposition
+   is zero-ops, embedded, single-node simplicity. PostgreSQL's is multi-node,
+   client-server scalability. Forcing one into the other's shape compromises both.
+
+**Code sharing note:** The SQL generation layer (store implementations, query
+building) will have natural overlap between the two plugins. This is best addressed
+as a refactoring concern *after* both plugins exist and the actual duplication is
+visible — not by coupling their architectures prematurely.
 
 ---
 
