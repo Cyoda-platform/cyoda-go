@@ -28,6 +28,10 @@ builds:
 archives:
   - id: cyoda
     ids: [cyoda]
+    # Archive contents are flat at the top level (no wrapping subdir). scripts/install.sh
+    # relies on this shape when extracting the binary; pin it explicitly so a future
+    # GoReleaser default change doesn't silently break the installer.
+    wrap_in_directory: false
     format_overrides:
       - goos: windows
         formats: [zip]
@@ -53,6 +57,11 @@ nfpms:
 
 brews:
   - name: cyoda
+    # Skip tap upload on prerelease tags (v*-rc.*, v*-beta.*, v*-alpha.*) and on
+    # snapshot builds. Stable tags (v0.1.0) commit to the tap as usual. This
+    # keeps the tap showing only stable formulas — matches the :latest image-tag
+    # policy and the bump-chart-appversion prerelease filter.
+    skip_upload: auto
     repository:
       owner: cyoda-platform
       name: homebrew-cyoda-go
