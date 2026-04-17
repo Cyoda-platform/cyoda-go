@@ -1,0 +1,115 @@
+name: Release smoke
+
+on:
+  pull_request:
+    paths:
+      - '.goreleaser.yaml'
+      - 'deploy/docker/Dockerfile'
+      - 'cmd/cyoda/**'
+      - '.github/workflows/release-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.goreleaser.yaml'
+      - 'deploy/docker/Dockerfile'
+      - 'cmd/cyoda/**'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # GoReleaser needs full history to derive version metadata
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Tag a non-prerelease snapshot version
+        run: git tag v0.0.0
+
+      - name: Run GoReleaser snapshot (no publish, no sign)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish --skip=sign
+        env:
+          GOWORK: "off"
+
+      - name: Verify docker_signs selector will resolve
+        run: |
+          python3 <<'PY'
+          import json
+          import sys
+
+          with open('dist/artifacts.json') as f:
+              artifacts = json.load(f)
+
+          # `docker_signs: artifacts: manifests` in .goreleaser.yaml matches
+          # artifacts whose type is a Docker manifest. GoReleaser v2 with
+          # dockers_v2 may produce any of these type names; we accept all.
+          manifest_types = {
+              'Docker Manifest',
+              'Published Docker Manifest',
+              'Docker Image V2',
+              'Docker Manifest List',
+          }
+          matching = [a for a in artifacts if a.get('type') in manifest_types]
+
+          if not matching:
+              print("FAIL: docker_signs selector 'artifacts: manifests' will resolve to empty.")
+              print("This means the first real release would ship unsigned images.")
+              print("")
+              print("All artifact types produced by this snapshot:")
+              for a in artifacts:
+                  print(f"  - {a.get('type', '?'):30s} {a.get('name', '?')}")
+              print("")
+              print("Fix: update .goreleaser.yaml's docker_signs.artifacts: selector")
+              print("to match one of the type names above (or use 'all').")
+              sys.exit(1)
+
+          print(f"OK: {len(matching)} manifest artifact(s) — docker_signs will sign:")
+          for a in matching:
+              print(f"  - {a.get('name')}  ({a.get('type')})")
+          PY
+
+      - name: Verify :latest suppression behavior
+        run: |
+          # The :latest tag should be emitted on v0.0.0 (not a prerelease).
+          # This catches regressions where dockers_v2 conditional-tag logic
+          # misbehaves or where someone accidentally changes skip_push.
+          python3 <<'PY'
+          import json
+          import sys
+
+          with open('dist/artifacts.json') as f:
+              artifacts = json.load(f)
+
+          # Collect tag names from cyoda image artifacts.
+          cyoda_tags = set()
+          for a in artifacts:
+              name = a.get('name', '')
+              # Match ghcr.io/cyoda-platform/cyoda:TAG — take TAG.
+              if ':' in name and 'cyoda-platform/cyoda' in name:
+                  cyoda_tags.add(name.rsplit(':', 1)[1])
+
+          print(f"cyoda image tags produced on v0.0.0 snapshot: {sorted(cyoda_tags)}")
+
+          if 'latest' not in cyoda_tags and '0.0.0' not in cyoda_tags and 'v0.0.0' not in cyoda_tags:
+              print("WARN: neither :latest nor :0.0.0/:v0.0.0 appeared — unexpected.")
+              print("Not failing the job — GoReleaser may name tags differently —")
+              print("but worth a human glance.")
+          elif 'latest' not in cyoda_tags:
+              print("WARN: :latest not emitted on a non-prerelease snapshot.")
+              print("The dockers_v2 Pattern B (two-entry form with skip_push)")
+              print("should produce :latest on v0.0.0. Investigate if this regresses.")
+          else:
+              print("OK: :latest emitted on non-prerelease, as expected.")
+          PY

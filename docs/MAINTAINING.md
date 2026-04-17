@@ -171,7 +171,54 @@ Push a commit to `main` (or open a small PR) and confirm both the
 `test` and `per-module-hygiene` CI jobs pass. Don't push the release
 tag if CI is red.
 
-### 6. Cut the release
+### 6. Verify GoReleaser signing (one-time, before first release)
+
+The `dockers_v2` migration in `.goreleaser.yaml` changed the Docker-artifact
+pipeline. The `docker_signs: artifacts: manifests` selector was expected to
+still resolve against the new artifact types, but this was NOT empirically
+verified at migration time (Docker subshells were unavailable in the
+authoring environment). Before the first `v*` tag push, confirm the
+selector actually resolves:
+
+```bash
+# Clone to a scratch dir per the snapshot-testing gotcha section:
+tmp=$(mktemp -d) && git clone --local . "$tmp/cyoda-go"
+cd "$tmp/cyoda-go"
+git remote set-url origin https://github.com/cyoda-platform/cyoda-go.git
+git remote set-url --push origin NO_PUSH
+
+# Tag a non-prerelease snapshot:
+git tag v0.0.0
+
+# Run snapshot (no publish, no signing — just artifact generation):
+goreleaser release --snapshot --clean --skip=publish --skip=sign
+
+# Verify docker_signs' selector 'artifacts: manifests' will resolve:
+python3 -c "
+import json
+artifacts = json.load(open('dist/artifacts.json'))
+manifest_types = {'Docker Manifest', 'Published Docker Manifest', 'Docker Image V2', 'Docker Manifest List'}
+matching = [a for a in artifacts if a.get('type') in manifest_types]
+if not matching:
+    print('FAIL: docker_signs selector will resolve to empty.')
+    print('Artifact types produced:')
+    for a in artifacts:
+        print(f'  - {a.get(\"type\", \"?\"):30s} {a.get(\"name\", \"?\")}')
+    raise SystemExit(1)
+print(f'OK: {len(matching)} manifest artifact(s) — docker_signs will sign')
+"
+```
+
+If the assertion fails, the `docker_signs.artifacts:` selector needs to
+match one of the actual type names printed in the FAIL output. Update
+`.goreleaser.yaml`'s `docker_signs:` block with the correct selector
+(likely `Docker Manifest` or `all`) before pushing the release tag.
+
+The CI smoke-test job `release-smoke.yml` runs this check automatically
+on every PR touching `.goreleaser.yaml` or the Dockerfile — but this
+manual step stays in the checklist as a final pre-release confirmation.
+
+### 7. Cut the release
 
 ```bash
 git tag v0.1.0
@@ -191,7 +238,7 @@ verify:
 - `cyoda-platform/homebrew-cyoda-go` shows a new commit updating
   `Formula/cyoda.rb` to `v0.1.0`.
 
-### 7. (Optional) Smoke-test each install path
+### 8. (Optional) Smoke-test each install path
 
 ```bash
 # Homebrew (macOS or Linux):
