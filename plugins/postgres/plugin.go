@@ -38,6 +38,13 @@ func (p *plugin) NewFactory(
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
 
+	compatDB := openDB(pool)
+	compatErr := checkSchemaCompat(ctx, compatDB, cfg.AutoMigrate)
+	_ = compatDB.Close()
+	if compatErr != nil {
+		pool.Close()
+		return nil, compatErr
+	}
 	if cfg.AutoMigrate {
 		if err := runMigrations(ctx, pool); err != nil {
 			pool.Close()
