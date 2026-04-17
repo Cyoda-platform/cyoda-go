@@ -104,9 +104,10 @@ New subcommand. Writes a starter user config.
 
 Behavior:
 
-1. Compute the user config path for the host OS (per B2 step 2).
-2. If the file already exists and `--force` is not set: print `config already exists at <path> (use --force to overwrite)` and exit 0. **This exit-0-on-exists is deliberate** — it lets the Homebrew formula's `post_install` hook run `cyoda init` on every upgrade without spurious failures.
-3. Otherwise, compute the absolute per-OS sqlite path (via the same logic as the new `defaultDBPath()` from B1), ensure the parent directory exists (`os.MkdirAll` with `0700`), then write:
+1. Compute both the system config path and the user config path for the host OS (per B2 steps 1 and 2).
+2. **If any system config file already exists** at its host-OS path (`/etc/cyoda/cyoda.env` on Linux, `%ProgramData%\cyoda\cyoda.env` on Windows — macOS has no system path): print `system-wide cyoda config already present at <path>; no user config needed` and exit 0. This catches the case where a user installed via `.deb`/`.rpm` (system config) and later runs `cyoda init` by mistake, e.g., following a tutorial — we don't write a redundant user config that just duplicates the system setting. `--force` bypasses this check and always writes the user config anyway.
+3. **Else if the user config file already exists** at its host-OS path and `--force` is not set: print `config already exists at <path> (use --force to overwrite)` and exit 0.
+4. **Otherwise**, compute the absolute per-OS sqlite path (via the same logic as the new `defaultDBPath()` from B1), ensure the parent directory exists (`os.MkdirAll` with `0700`), then write:
 
    ```
    # cyoda user config — written by 'cyoda init'
@@ -135,6 +136,13 @@ Behavior:
 - **Everyday install after `brew tap cyoda-platform/cyoda-go`:** `brew install cyoda`.
 - **Formula generation:** GoReleaser's `brews:` stanza auto-commits an updated `cyoda.rb` formula to the tap repo on every non-prerelease `v*` release of the parent repo.
 - **Formula contents:** standard — downloads the darwin or linux archive (matching the runtime arch), verifies via GoReleaser-generated SHA256, installs the `cyoda` binary to the formula's `bin/`. Ships a `post_install` block that runs `cyoda init` automatically. Also ships a `caveats` block with the same information as documentation — but the `post_install` is the functional path, so users who skip the caveats text still get a working sqlite setup. The formula relies on `cyoda init` being idempotent (exit 0 if config exists) so reinstalls and upgrades don't fail.
+- **`brew audit --strict` risk.** `post_install` conventionally handles symlinks, file moves, and directory setup — not executing the newly installed binary. Some precedent exists (kubectl and helm run the binary at install time to generate completion scripts), but writing user config is further out, and `brew audit --strict` is opinionated in ways that don't always match expectations. Our tap is not homebrew-core (doesn't go through their CI), so a strict-audit failure isn't a release blocker — but we want the formula to pass `brew audit --strict` cleanly so any user who runs audit on our tap doesn't see red flags.
+
+  **Implementation plan runs `brew audit --strict` against the draft formula early**, before the first release. If it passes: ship the `post_install` as designed. **If it fails**, fall back in this order:
+  1. **Caveats-only path, with prominent formatting.** Remove the `post_install`; keep the caveats block; use a loud first-line marker (emphasis, leading separator) so the "run `cyoda init`" instruction survives a user skimming. Accept the UX cost that some users miss it and get the memory backend silently (at least their startup banner warns them auth is mock).
+  2. **Wrapper shell script in the formula's `bin/`.** Install the real binary as `libexec/cyoda`; install a shell wrapper at `bin/cyoda` that runs `cyoda init` if no config is present, then `exec`s the real binary. Ugly for `which cyoda` (it shows the wrapper) and breaks signal handling unless the wrapper uses `exec`. Last resort.
+
+  Not considered: making the binary itself write a config file on first run (binary becomes opinionated — conflicts with the shared spec's runtime-unopinionated principle).
 - **Name-collision caveat:** `brew install cyoda` after tapping resolves to our formula only if Homebrew core never ships a formula named `cyoda`. The name is specific enough that collision is unlikely, but if it ever happens users would need the long form (`brew install cyoda-platform/cyoda-go/cyoda`) again. Worth knowing; not a design constraint.
 - **One-time setup (manual, documented in the implementation plan):**
 
@@ -237,7 +245,7 @@ The implementation plan generated from this spec covers the desktop-layer work:
 4. Fix `plugins/sqlite/config.go:defaultDBPath()` to be OS-aware with updated `ConfigVars()` metadata. Tests cover both branches (Linux/macOS XDG path + Windows `%LocalAppData%`), gated by `runtime.GOOS` inside the test bodies rather than via build tags (TDD).
 5. Introduce a minimal subcommand router in `cmd/cyoda/main.go` (implementation plan picks stdlib-flag-based vs cobra and commits). Add `cyoda init` subcommand (TDD). Init writes an absolute, pre-resolved sqlite path in the commented-out `CYODA_SQLITE_PATH` line.
 6. Add `nfpms:` stanza to `.goreleaser.yaml` with unversioned `file_name_template` supporting `releases/latest/download/` README URLs.
-7. Add `brews:` stanza to `.goreleaser.yaml`. Formula ships a `post_install` block that runs `cyoda init` automatically (idempotent, relies on init's exit-0-on-exists contract).
+7. Add `brews:` stanza to `.goreleaser.yaml`. Formula ships a `post_install` block that runs `cyoda init` automatically (idempotent, relies on init's exit-0-on-exists contract). **Run `brew audit --strict` against the generated `cyoda.rb` locally before the first release**. If audit fails on the `post_install`, fall back per the P1 audit-risk section: caveats-only with prominent formatting first, wrapper-script as last resort.
 8. Write `scripts/install.sh`, including a CI shellcheck + smoke test. Installer treats a failing `cyoda init` as a warning, not a fatal error.
 9. Create the one-time GitHub setup: empty `cyoda-platform/homebrew-cyoda-go` repo; a `cyoda-platform` GitHub App with `contents: write` permission installed on that repo only; the App's ID and private key stored as `HOMEBREW_TAP_APP_ID` and `HOMEBREW_TAP_APP_KEY` Actions secrets. Release job uses `actions/create-github-app-token@v1` to mint short-lived tokens. No PAT involved. Documented step-by-step in the implementation plan for the maintainer.
 10. Update `README.md` (Install + Configuration sections, using `releases/latest/download/` URLs), `CONTRIBUTING.md`, and `.env.sqlite.example` pointers.
