@@ -40,6 +40,8 @@ func main() {
 			return
 		case "init":
 			os.Exit(runInit(os.Args[2:]))
+		case "health":
+			os.Exit(runHealth(os.Args[2:]))
 		}
 	}
 
@@ -247,6 +249,7 @@ func printHelp() {
 Usage:
   cyoda [flags]           Run the server with current config.
   cyoda init [--force]    Write a starter user config enabling sqlite.
+  cyoda health            Probe /readyz on the admin listener (exits 0 if ready).
   cyoda --help            Show this help.
 
 All configuration is via environment variables. Variables can be placed in .env
