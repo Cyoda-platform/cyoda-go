@@ -232,3 +232,20 @@ Delete the rc release afterwards if desired:
 ```bash
 gh release delete v0.1.0-rc.1 --cleanup-tag --yes
 ```
+
+## Gotcha: snapshot-testing from a local clone
+
+GoReleaser generates the Homebrew formula's `url` fields from the git
+`origin` remote. If you snapshot-test from a temp clone of a local path
+(`git clone --local ...`), `origin` will be the local filesystem path
+and the formula URLs come out garbled.
+
+Fix before running `goreleaser release --snapshot`:
+
+```bash
+cd /path/to/temp/clone
+git remote set-url origin https://github.com/cyoda-platform/cyoda-go.git
+```
+
+After that, the generated `dist/homebrew/cyoda.rb` will have correct
+download URLs and `brew audit --strict` can run against it meaningfully.
