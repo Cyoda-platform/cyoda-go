@@ -124,8 +124,14 @@ func inferDataType(v any) DataType {
 		}
 		return Long
 	case float64:
-		// JSON numbers decoded without UseNumber() arrive as float64;
-		// we treat them as numeric.
+		// Fallback for JSON numbers decoded WITHOUT UseNumber() (legacy paths)
+		// and for caller-constructed trees with hand-typed float64 values.
+		// Intentionally lossy: an integer-valued float64 (e.g. 2.0) is
+		// classified as Double here, while the same integer literal via
+		// UseNumber → json.Number("2") would be classified as Long. This
+		// asymmetry is harmless under isCompatible's numeric-vs-non-numeric
+		// signal and is preserved to avoid broadening the float64 branch's
+		// scope (which would also affect non-importer call sites).
 		return Double
 	case int:
 		return Integer
