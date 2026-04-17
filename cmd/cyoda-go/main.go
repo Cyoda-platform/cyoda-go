@@ -42,6 +42,7 @@ func main() {
 	cfg := app.DefaultConfig()
 	logging.Init(cfg.LogLevel)
 	printBanner(cfg)
+	printMockAuthWarningTo(os.Stdout, cfg)
 
 	if cfg.OTelEnabled {
 		nodeID := cfg.Cluster.NodeID
@@ -161,6 +162,33 @@ func printBannerTo(w io.Writer, cfg app.Config) {
 		cfg.HTTPPort, cfg.GRPC.Port, cfg.IAM.Mode, cfg.ContextPath, app.ProfileBanner())
 }
 
+// printMockAuthWarningTo prints a prominent multi-line warning when the
+// binary is about to serve requests without authentication. Silent
+// unless IAM mode is "mock". Respects CYODA_SUPPRESS_BANNER.
+func printMockAuthWarningTo(w io.Writer, cfg app.Config) {
+	if os.Getenv("CYODA_SUPPRESS_BANNER") == "true" {
+		return
+	}
+	if cfg.IAM.Mode != "mock" {
+		return
+	}
+	yellow := "\033[33m"
+	reset := "\033[0m"
+	if fi, err := os.Stdout.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		yellow = ""
+		reset = ""
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, yellow+"========================================================================"+reset)
+	fmt.Fprintln(w, yellow+"  WARNING: MOCK AUTH IS ACTIVE"+reset)
+	fmt.Fprintln(w, yellow+"  All requests are accepted without authentication."+reset)
+	fmt.Fprintln(w, yellow+"  This instance MUST NOT be exposed to untrusted networks."+reset)
+	fmt.Fprintln(w, yellow+"  Set CYODA_IAM_MODE=jwt and CYODA_JWT_SIGNING_KEY to enable real auth."+reset)
+	fmt.Fprintln(w, yellow+"  Suppress this banner with CYODA_SUPPRESS_BANNER=true (CI/tests only)."+reset)
+	fmt.Fprintln(w, yellow+"========================================================================"+reset)
+	fmt.Fprintln(w)
+}
+
 func printStorageHelp() {
 	fmt.Println("STORAGE")
 	fmt.Println("  CYODA_STORAGE_BACKEND              Active storage plugin (default: memory)")
@@ -222,7 +250,7 @@ SERVER
   CYODA_ERROR_RESPONSE_MODE    Error detail level: sanitized | verbose   (default: sanitized)
   CYODA_MAX_STATE_VISITS       Max visits per state in workflow cascade   (default: 10)
   CYODA_LOG_LEVEL              Log level: debug | info | warn | error    (default: info)
-  CYODA_SUPPRESS_BANNER        Silence startup banner                    (default: false)
+  CYODA_SUPPRESS_BANNER        Silence startup banner and mock-auth warn (default: false)
 
 `)
 	printStorageHelp()
