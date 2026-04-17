@@ -23,6 +23,13 @@ import (
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
 const maxEntityBodySize = 10 * 1024 * 1024
 
+// maxStatesFilterSize bounds the cardinality of the user-supplied ?states= query
+// parameter on stats-by-state endpoints. Without this cap, an oversized list would
+// reach SQL backends and either exceed driver parameter limits (SQLite's
+// SQLITE_MAX_VARIABLE_NUMBER, default 32766) or stress the planner with a giant
+// IN/ANY clause, surfacing as an opaque 5xx instead of a clean 4xx.
+const maxStatesFilterSize = 1000
+
 // deterministicModelID derives a stable UUID v5 from a ModelRef, matching the
 // model handler's deterministic ID generation.
 func deterministicModelID(ref spi.ModelRef) uuid.UUID {
@@ -201,6 +208,11 @@ func (h *Handler) GetEntityStatistics(w http.ResponseWriter, r *http.Request, pa
 }
 
 func (h *Handler) GetEntityStatisticsByState(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsByStateParams) {
+	if params.States != nil && len(*params.States) > maxStatesFilterSize {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
+		return
+	}
 	stats, err := h.GetStatisticsByState(r.Context(), params.States)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
@@ -222,6 +234,11 @@ func (h *Handler) GetEntityStatisticsByState(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) GetEntityStatisticsByStateForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.GetEntityStatisticsByStateForModelParams) {
+	if params.States != nil && len(*params.States) > maxStatesFilterSize {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
+		return
+	}
 	stats, err := h.GetStatisticsByStateForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.States)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))

@@ -77,6 +77,9 @@ func (s *failingEntityStore) Exists(_ context.Context, _ string) (bool, error) {
 func (s *failingEntityStore) Count(_ context.Context, _ spi.ModelRef) (int64, error) {
 	return 0, s.err
 }
+func (s *failingEntityStore) CountByState(_ context.Context, _ spi.ModelRef, _ []string) (map[string]int64, error) {
+	return nil, s.err
+}
 func (s *failingEntityStore) GetVersionHistory(_ context.Context, _ string) ([]spi.EntityVersion, error) {
 	return nil, s.err
 }

@@ -399,6 +399,23 @@ func TestEntityLifecycle_Statistics(t *testing.T) {
 	if !strings.Contains(stateBody, "CREATED") {
 		t.Error("state stats: expected CREATED state in response")
 	}
+	if !strings.Contains(stateBody, "APPROVED") {
+		t.Error("state stats: expected APPROVED state in response (one entity was approved)")
+	}
+
+	// State filter: request only CREATED — APPROVED must not appear.
+	filteredPath := fmt.Sprintf("/api/entity/stats/states/%s/%d?states=CREATED", model, 1)
+	filteredResp := doAuth(t, http.MethodGet, filteredPath, "")
+	filteredBody := readBody(t, filteredResp)
+	if filteredResp.StatusCode != http.StatusOK {
+		t.Fatalf("filtered state stats: expected 200, got %d: %s", filteredResp.StatusCode, filteredBody)
+	}
+	if !strings.Contains(filteredBody, "CREATED") {
+		t.Errorf("filtered state stats: expected CREATED in response, got %s", filteredBody)
+	}
+	if strings.Contains(filteredBody, "APPROVED") {
+		t.Errorf("filtered state stats: APPROVED must NOT appear when filter is CREATED only, got %s", filteredBody)
+	}
 }
 
 // --- Test 8.11: Collection create with 50 entities ---
