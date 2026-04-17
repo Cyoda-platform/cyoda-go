@@ -22,7 +22,7 @@ jobs:
       - name: Guard — chart directory must exist
         id: guard
         run: |
-          if [ ! -f deploy/helm/cyoda-go/Chart.yaml ]; then
+          if [ ! -f deploy/helm/cyoda/Chart.yaml ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Skipping appVersion bump — chart not yet present."
           else
@@ -40,7 +40,7 @@ jobs:
         if: steps.guard.outputs.skip == 'false'
         run: |
           set -euo pipefail
-          sed -i -E "s/^appVersion:.*/appVersion: \"${{ steps.ver.outputs.app_version }}\"/" deploy/helm/cyoda-go/Chart.yaml
+          sed -i -E "s/^appVersion:.*/appVersion: \"${{ steps.ver.outputs.app_version }}\"/" deploy/helm/cyoda/Chart.yaml
 
       - name: Open PR
         if: steps.guard.outputs.skip == 'false'
@@ -54,5 +54,5 @@ jobs:
           body: |
             Automated bump triggered by the release of `${{ github.ref_name }}`.
 
-            Review and merge, then cut a `cyoda-go-<chart-version>` tag to
+            Review and merge, then cut a `cyoda-<chart-version>` tag to
             publish a chart release pinned to this appVersion.

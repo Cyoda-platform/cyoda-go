@@ -47,7 +47,7 @@ if [[ "$NUM_NODES" -lt 1 || "$NUM_NODES" -gt 20 ]]; then
     exit 1
 fi
 
-log_info "Preparing cyoda-go cluster with $NUM_NODES node(s)"
+log_info "Preparing cyoda cluster with $NUM_NODES node(s)"
 
 # ── Secrets (generate once, persist to .env, reuse on restart) ────────
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -89,7 +89,7 @@ SEED_COUNT=$((NUM_NODES < 3 ? NUM_NODES : 3))
 SEED_LIST=""
 for i in $(seq 1 "$SEED_COUNT"); do
     [[ -n "$SEED_LIST" ]] && SEED_LIST+=","
-    SEED_LIST+="cyoda-go-node-${i}:${GOSSIP_PORT}"
+    SEED_LIST+="cyoda-node-${i}:${GOSSIP_PORT}"
 done
 
 # ── Generate nginx.conf ─────────────────────────────────────────────
@@ -119,12 +119,12 @@ http {
 
     client_max_body_size 16m;
 
-    # HTTP upstream for cyoda-go nodes
+    # HTTP upstream for cyoda nodes
     upstream minicyoda_http {
 NGINX_HEADER
 
     for i in $(seq 1 "$num_nodes"); do
-        echo "        server cyoda-go-node-${i}:${HTTP_PORT} max_fails=3 fail_timeout=30s;" >> "$nginx_conf"
+        echo "        server cyoda-node-${i}:${HTTP_PORT} max_fails=3 fail_timeout=30s;" >> "$nginx_conf"
     done
 
     cat >> "$nginx_conf" << 'NGINX_HTTP_FOOTER'
@@ -133,12 +133,12 @@ NGINX_HEADER
         keepalive_requests 10000;
     }
 
-    # gRPC upstream for cyoda-go nodes
+    # gRPC upstream for cyoda nodes
     upstream minicyoda_grpc {
 NGINX_HTTP_FOOTER
 
     for i in $(seq 1 "$num_nodes"); do
-        echo "        server cyoda-go-node-${i}:${GRPC_PORT} max_fails=3 fail_timeout=30s;" >> "$nginx_conf"
+        echo "        server cyoda-node-${i}:${GRPC_PORT} max_fails=3 fail_timeout=30s;" >> "$nginx_conf"
     done
 
     cat >> "$nginx_conf" << NGINX_FOOTER
@@ -280,7 +280,7 @@ COMPOSE_HEADER
 
     for i in $(seq 1 "$num_nodes"); do
         cat >> "$compose_file" << DEPENDS
-      cyoda-go-node-${i}:
+      cyoda-node-${i}:
         condition: service_started
 DEPENDS
     done
@@ -300,14 +300,14 @@ LB_FOOTER
     for i in $(seq 1 "$num_nodes"); do
         if [[ "$num_nodes" -gt 1 ]]; then
             cat >> "$compose_file" << NODE_CLUSTER
-  cyoda-go-node-${i}:
+  cyoda-node-${i}:
     <<: *minicyoda-common
     container_name: minicyoda-node${i}
     environment:
       <<: *minicyoda-env
       CYODA_CLUSTER_ENABLED: "true"
       CYODA_NODE_ID: "node-${i}"
-      CYODA_NODE_ADDR: "http://cyoda-go-node-${i}:${HTTP_PORT}"
+      CYODA_NODE_ADDR: "http://cyoda-node-${i}:${HTTP_PORT}"
       CYODA_GOSSIP_ADDR: "0.0.0.0:${GOSSIP_PORT}"
       CYODA_SEED_NODES: "${SEED_LIST}"
       CYODA_HMAC_SECRET: "${HMAC_SECRET}"
@@ -319,7 +319,7 @@ LB_FOOTER
 NODE_CLUSTER
         else
             cat >> "$compose_file" << NODE_SINGLE
-  cyoda-go-node-${i}:
+  cyoda-node-${i}:
     <<: *minicyoda-common
     container_name: minicyoda-node${i}
     environment:

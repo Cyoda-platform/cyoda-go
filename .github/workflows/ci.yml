@@ -22,7 +22,7 @@ jobs:
         run: go test -race ./...
 
       - name: Build
-        run: go build -o bin/cyoda-go ./cmd/cyoda-go
+        run: go build -o bin/cyoda ./cmd/cyoda
 
   # Hygiene: each module must be independently buildable with workspace mode off.
   # Ensures plugin modules' go.mod files declare all dependencies — the workspace

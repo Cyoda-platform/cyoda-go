@@ -24,8 +24,8 @@ services:
     volumes:
       - ../../scripts/grafana/provisioning/dashboards/default.yml:/otel-lgtm/grafana/conf/provisioning/dashboards/cyoda-go.yml:ro
 
-  cyoda-go:
-    image: ghcr.io/cyoda-platform/cyoda-go:latest
+  cyoda:
+    image: ghcr.io/cyoda-platform/cyoda:latest
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:9090:9090"

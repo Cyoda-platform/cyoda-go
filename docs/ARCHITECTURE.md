@@ -1134,7 +1134,7 @@ Warnings and errors are accumulated in the request context and propagated to the
 
 ## 9. Configuration Reference
 
-All values configurable via environment variables with the `CYODA_` prefix. Plugin-specific variables use the plugin's name as a secondary namespace (`CYODA_POSTGRES_*`, `CYODA_CASSANDRA_*`). `./cyoda-go --help` on any binary renders the variables for the plugins it ships with — the help text is generated at runtime from the registered plugins' `ConfigVars()`.
+All values configurable via environment variables with the `CYODA_` prefix. Plugin-specific variables use the plugin's name as a secondary namespace (`CYODA_POSTGRES_*`, `CYODA_CASSANDRA_*`). `./cyoda --help` on any binary renders the variables for the plugins it ships with — the help text is generated at runtime from the registered plugins' `ConfigVars()`.
 
 ### Server
 
@@ -1245,8 +1245,8 @@ The cassandra plugin has the largest config surface of any shipped plugin. Only 
 
 ```bash
 # Direct
-go build -o bin/cyoda-go ./cmd/cyoda-go
-./bin/cyoda-go
+go build -o bin/cyoda ./cmd/cyoda
+./bin/cyoda
 
 # Docker (with PostgreSQL)
 ./scripts/dev/run-docker-dev.sh

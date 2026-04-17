@@ -65,7 +65,7 @@ func main() {
 
 	a := app.New(cfg)
 
-	// Ignore SIGPIPE: when piped through tee (./bin/cyoda-go | tee log),
+	// Ignore SIGPIPE: when piped through tee (./bin/cyoda | tee log),
 	// Ctrl+C kills tee first, breaking the pipe. Go's default SIGPIPE behavior
 	// for stdout writes is to exit immediately — before our SIGINT handler can
 	// send LeaveGroup. Ignoring SIGPIPE lets the broken-pipe write fail silently
@@ -239,7 +239,7 @@ func printStorageHelp() {
 func printHelp() {
 	fmt.Print(`Cyoda-Go — Lightweight digital twin of the Cyoda platform
 
-Usage: cyoda-go [--help]
+Usage: cyoda [--help]
 
 All configuration is via environment variables. Variables can be placed in .env
 files and loaded automatically using profiles.
@@ -296,14 +296,14 @@ gRPC EXTERNALIZED PROCESSING
   CYODA_KEEPALIVE_TIMEOUT      Keep-alive timeout in seconds              (default: 30)
 
 QUICK START (mock mode, in-memory)
-  go run ./cmd/cyoda-go
+  go run ./cmd/cyoda
 
 QUICK START (with profiles)
   # Use the local profile (in-memory, mock auth, debug logging)
-  CYODA_PROFILES=local go run ./cmd/cyoda-go
+  CYODA_PROFILES=local go run ./cmd/cyoda
 
   # Combine profiles: postgres storage + observability
-  CYODA_PROFILES=postgres,otel go run ./cmd/cyoda-go
+  CYODA_PROFILES=postgres,otel go run ./cmd/cyoda
 
 QUICK START (jwt mode, PostgreSQL)
   # Generate a signing key
@@ -312,7 +312,7 @@ QUICK START (jwt mode, PostgreSQL)
   # Create .env.jwt with your settings, then:
   CYODA_PROFILES=postgres,jwt \
   CYODA_JWT_SIGNING_KEY="$(cat signing.pem)" \
-  go run ./cmd/cyoda-go
+  go run ./cmd/cyoda
 
   # Get a token:
   TOKEN=$(curl -s -X POST http://localhost:8080/api/oauth/token \

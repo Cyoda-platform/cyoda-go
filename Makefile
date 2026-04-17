@@ -20,17 +20,17 @@ dev-logs:              ## Tail service logs
 # --- Build & Run ---
 
 build:                 ## Build the binary
-	go build -o bin/cyoda-go ./cmd/cyoda-go
+	go build -o bin/cyoda ./cmd/cyoda
 
-dev-run: dev-up build  ## Start services + run cyoda-go with postgres KV
-	set -a && . .env.dev && set +a && ./bin/cyoda-go
+dev-run: dev-up build  ## Start services + run cyoda with postgres KV
+	set -a && . .env.dev && set +a && ./bin/cyoda
 
 # --- Docker image ---
 
 TAG        ?= dev
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-IMAGE      := cyoda-go
+IMAGE      := cyoda
 
 docker-build:          ## Build Docker image (TAG=dev)
 	docker build \
