@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -75,7 +74,6 @@ func TestCyodaHealth_ConnectionRefused(t *testing.T) {
 // altogether) would let Docker's HEALTHCHECK inherit a deadlock.
 func TestCyodaHealth_Timeout(t *testing.T) {
 	done := make(chan struct{})
-	t.Cleanup(func() { close(done) })
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Hold the connection open beyond the client's 2s timeout but respect
@@ -86,6 +84,7 @@ func TestCyodaHealth_Timeout(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	defer close(done) // registered after server.Close so it fires first (LIFO); unblocks the handler before server tries to drain.
 
 	t.Setenv("CYODA_ADMIN_PORT", portFromURL(t, server.URL))
 
@@ -120,5 +119,3 @@ func TestCyodaHealth_RespectsAdminPort(t *testing.T) {
 	}
 }
 
-// Ensure linter doesn't drop the errors import even if not referenced above.
-var _ = errors.Is
