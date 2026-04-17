@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,16 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 )
+
+// decodeJSONPreservingNumbers is the precision-preserving counterpart to
+// json.Unmarshal: numeric leaves arrive as json.Number rather than float64,
+// so callers can choose Int64()/Float64()/string preservation. Mirrors
+// importer.ParseJSON's UseNumber() behavior.
+func decodeJSONPreservingNumbers(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
+}
 
 // --- Input/Output types ---
 
@@ -119,7 +130,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	var parsedData any
 	switch input.Format {
 	case "JSON":
-		if err := json.Unmarshal(bodyBytes, &parsedData); err != nil {
+		if err := decodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON")
 		}
 	case "XML":
@@ -235,7 +246,7 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 
 	// Parse entity data to any for response
 	var data any
-	if err := json.Unmarshal(ent.Data, &data); err != nil {
+	if err := decodeJSONPreservingNumbers(ent.Data, &data); err != nil {
 		return nil, common.Internal("failed to parse entity data", err)
 	}
 
@@ -617,7 +628,7 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 	result := make([]EntityEnvelope, 0, len(page))
 	for _, ent := range page {
 		var data any
-		if err := json.Unmarshal(ent.Data, &data); err != nil {
+		if err := decodeJSONPreservingNumbers(ent.Data, &data); err != nil {
 			return nil, common.Internal("failed to parse entity data", err)
 		}
 
@@ -677,7 +688,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		// Parse payload
 		var parsedData any
 		payloadBytes := []byte(item.Payload)
-		if err := json.Unmarshal(payloadBytes, &parsedData); err != nil {
+		if err := decodeJSONPreservingNumbers(payloadBytes, &parsedData); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 				fmt.Sprintf("item %d: invalid JSON payload", i))
 		}
@@ -765,7 +776,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	var parsedData any
 	switch input.Format {
 	case "JSON":
-		if err := json.Unmarshal(bodyBytes, &parsedData); err != nil {
+		if err := decodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
 			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON")
 		}
 	case "XML":

@@ -418,6 +418,70 @@ func TestEntityLifecycle_Statistics(t *testing.T) {
 	}
 }
 
+// --- Precision: large-int round-trip through the postgres-backed stack ---
+
+// TestEntityLifecycle_PreservesLargeIntPrecision verifies that an integer
+// JSON field whose magnitude exceeds 2^53 round-trips through the full
+// postgres-backed HTTP stack without precision loss. Bare json.Unmarshal
+// would decode such an integer into a float64 and round it to the nearest
+// representable double; the precision-preserving path must keep the
+// literal exactly. Gate 2 coverage for the user-facing JSON-precision
+// behaviour change in this PR.
+func TestEntityLifecycle_PreservesLargeIntPrecision(t *testing.T) {
+	const model = "e2e-precision-bigint"
+
+	// Sample data must include the `id` field so the inferred schema
+	// accepts it on entity create (unknown fields are rejected).
+	sample := `{"id":1,"name":"sample","amount":50,"status":"new"}`
+	importPath := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/%d", model, 1)
+	if r := doAuth(t, http.MethodPost, importPath, sample); r.StatusCode != http.StatusOK {
+		t.Fatalf("import model: %d: %s", r.StatusCode, readBody(t, r))
+	}
+	lockPath := fmt.Sprintf("/api/model/%s/%d/lock", model, 1)
+	if r := doAuth(t, http.MethodPut, lockPath, ""); r.StatusCode != http.StatusOK {
+		t.Fatalf("lock model: %d: %s", r.StatusCode, readBody(t, r))
+	}
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1", "name": "precision-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
+				"CREATED": {}
+			}
+		}]
+	}`
+	status, body := importWorkflowE2E(t, model, 1, wf)
+	if status != http.StatusOK {
+		t.Fatalf("workflow import: %d: %s", status, body)
+	}
+
+	// 9007199254740993 == 2^53 + 1, the smallest positive integer that is
+	// not exactly representable as a float64. A precision-losing path
+	// rounds it to 9007199254740992 (an even neighbour).
+	const bigIDLiteral = "9007199254740993"
+	const losyNeighbour = "9007199254740992"
+
+	createPayload := `{"id":` + bigIDLiteral + `,"name":"big","amount":1,"status":"new"}`
+	entityID := createEntityE2E(t, model, 1, createPayload)
+
+	// Read the entity back via the entity API and assert against the raw
+	// body — the in-test getEntityData helper uses bare json.Unmarshal,
+	// which would itself round the literal and mask the bug. Substring
+	// assertions on the raw response body are the unambiguous check here.
+	resp := doAuth(t, http.MethodGet, fmt.Sprintf("/api/entity/%s", entityID), "")
+	respBody := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get entity: %d: %s", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(respBody, bigIDLiteral) {
+		t.Fatalf("precision lost: response body does not contain %q\nbody: %s", bigIDLiteral, respBody)
+	}
+	if strings.Contains(respBody, losyNeighbour) {
+		t.Fatalf("precision lost: response body contains float-rounded neighbour %q\nbody: %s", losyNeighbour, respBody)
+	}
+}
+
 // --- Test 8.11: Collection create with 50 entities ---
 
 func TestEntityLifecycle_CollectionCreate50(t *testing.T) {
