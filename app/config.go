@@ -21,6 +21,7 @@ type Config struct {
 	LogLevel           string
 	IAM                IAMConfig
 	GRPC               GRPCConfig
+	Admin              AdminConfig
 	Bootstrap          BootstrapConfig
 	StorageBackend     string
 	StartupTimeout     time.Duration
@@ -31,6 +32,11 @@ type Config struct {
 	// ExternalProcessing overrides the default gRPC processor dispatcher.
 	// Used in tests to inject a LocalProcessingService.
 	ExternalProcessing contract.ExternalProcessingService
+}
+
+type AdminConfig struct {
+	Port        int
+	BindAddress string
 }
 
 type GRPCConfig struct {
@@ -82,6 +88,10 @@ func DefaultConfig() Config {
 		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
+		Admin: AdminConfig{
+			Port:        envInt("CYODA_ADMIN_PORT", 9091),
+			BindAddress: envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
+		},
 		StartupTimeout:     envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
 			Mode:           envString("CYODA_IAM_MODE", "mock"),
