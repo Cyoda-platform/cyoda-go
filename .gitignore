@@ -54,6 +54,8 @@ Thumbs.db
 !.env.*.example
 !.env.example
 *.env
+# Packaging templates are not credentials — allow them explicitly.
+!scripts/packaging/*.env
 *.pem
 *.key
 credentials.json

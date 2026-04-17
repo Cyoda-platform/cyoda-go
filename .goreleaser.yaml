@@ -4,6 +4,8 @@
 
 version: 2
 
+project_name: cyoda
+
 before:
   hooks:
     - env GOWORK=off go mod download
@@ -32,6 +34,22 @@ archives:
     files:
       - LICENSE
       - README.md
+
+nfpms:
+  - id: cyoda
+    package_name: cyoda
+    vendor: Cyoda Platform
+    homepage: https://github.com/cyoda-platform/cyoda-go
+    maintainer: Cyoda Platform <noreply@cyoda.com>
+    description: Lightweight Go EDBMS — digital twin of the Cyoda platform.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    file_name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    contents:
+      - src: scripts/packaging/cyoda.env
+        dst: /etc/cyoda/cyoda.env
+        type: "config|noreplace"
 
 checksum:
   name_template: 'SHA256SUMS'
