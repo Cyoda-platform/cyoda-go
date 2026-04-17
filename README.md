@@ -73,7 +73,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8123/api/health
 ### In-Memory Mode (no dependencies, no auth)
 
 ```bash
-go run ./cmd/cyoda-go
+go run ./cmd/cyoda
 ```
 
 Starts on port **8080** (HTTP) and **9090** (gRPC) with mock auth (no tokens needed). All data lives in memory and is lost on restart. This is the simplest way to get started, but doesn't reflect production auth behavior.
@@ -131,7 +131,7 @@ Cyoda-Go's storage layer is a plugin system defined by the stable [`cyoda-go-spi
 
 | Backend | Default | Notes |
 |---------|---------|-------|
-| `memory` | ✓ | Zero configuration. In-process, ephemeral. Single-node only. The default so `go build && ./cyoda-go` just runs. |
+| `memory` | ✓ | Zero configuration. In-process, ephemeral. Single-node only. The default so `go build && ./cyoda` just runs. |
 | `sqlite` |   | Persistent, zero-ops embedded storage. Single-node, single-process. No external dependencies. Configure via `CYODA_SQLITE_*`. |
 | `postgres` |   | Durable, `SERIALIZABLE` isolation. Configure via `CYODA_POSTGRES_*`. Supports multi-node clusters (see cluster deployment guide). |
 
@@ -190,7 +190,7 @@ Cyoda-Go excels at transactional correctness and operational simplicity for smal
 
 ## Configuration
 
-All configuration is via environment variables with the `CYODA_` prefix. Run `cyoda-go --help` for the complete reference.
+All configuration is via environment variables with the `CYODA_` prefix. Run `cyoda --help` for the complete reference.
 
 ### Profiles
 
@@ -202,7 +202,7 @@ Profiles load `.env` files in order — later profiles override earlier ones. Ex
 
 ```bash
 # Combine profiles:
-CYODA_PROFILES=postgres,otel go run ./cmd/cyoda-go
+CYODA_PROFILES=postgres,otel go run ./cmd/cyoda
 ```
 
 The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYODA_PROFILES=local` by default.
@@ -273,7 +273,7 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 | `CYODA_OTEL_ENABLED` | `false` | Enable OpenTelemetry tracing and metrics |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP endpoint (standard OTel env var) |
 
-Enable via the `otel` profile: `CYODA_PROFILES=local,otel go run ./cmd/cyoda-go`. Copy `.env.otel.example` to `.env.otel` to customize.
+Enable via the `otel` profile: `CYODA_PROFILES=local,otel go run ./cmd/cyoda`. Copy `.env.otel.example` to `.env.otel` to customize.
 
 ### Admin / Observability Listener
 

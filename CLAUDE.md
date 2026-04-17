@@ -102,6 +102,6 @@ Review and security audit prevent defects reaching main.
 - Test (E2E only): `go test ./internal/e2e/... -v`
 - Coverage: `go test -coverprofile=coverage.out ./...`
 - Race detector: `go test -race ./...`
-- Build: `go build -o bin/cyoda-go ./cmd/cyoda-go`
+- Build: `go build -o bin/cyoda ./cmd/cyoda`
 - Tidy: `go mod tidy`
 - Vet: `go vet ./...`

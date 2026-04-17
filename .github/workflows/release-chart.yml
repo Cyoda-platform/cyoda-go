@@ -2,7 +2,7 @@ name: Release Helm chart
 
 on:
   push:
-    tags: ['cyoda-go-*']
+    tags: ['cyoda-*']
   workflow_dispatch:
 
 permissions:
@@ -19,10 +19,10 @@ jobs:
 
       - name: Guard — chart directory must exist
         run: |
-          if [ ! -f deploy/helm/cyoda-go/Chart.yaml ]; then
-            echo "ERROR: deploy/helm/cyoda-go/Chart.yaml not found."
+          if [ ! -f deploy/helm/cyoda/Chart.yaml ]; then
+            echo "ERROR: deploy/helm/cyoda/Chart.yaml not found."
             echo "The Helm chart skeleton must be created by the Helm per-target plan"
-            echo "before this workflow can succeed. Pushing a cyoda-go-* tag is a no-op"
+            echo "before this workflow can succeed. Pushing a cyoda-* tag is a no-op"
             echo "until that work lands."
             exit 1
           fi

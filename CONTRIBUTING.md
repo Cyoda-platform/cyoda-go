@@ -47,8 +47,8 @@ go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Clou
 
 | Command | Description |
 |---------|-------------|
-| `go run ./cmd/cyoda-go` | Run from source |
-| `go build -o bin/cyoda-go ./cmd/cyoda-go` | Build executable |
+| `go run ./cmd/cyoda` | Run from source |
+| `go build -o bin/cyoda ./cmd/cyoda` | Build executable |
 | `go test ./... -v` | Run all tests |
 | `go test -race ./...` | Run tests with race detector |
 | `go test -coverprofile=coverage.out ./...` | Test coverage |

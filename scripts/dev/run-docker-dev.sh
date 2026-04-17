@@ -55,7 +55,7 @@ case "$BACKEND" in
         ;;
 esac
 
-echo "Starting cyoda-go with backend: $BACKEND"
+echo "Starting cyoda with backend: $BACKEND"
 
 # Generate a fresh JWT signing key, base64-encode for single-line .env compatibility
 JWT_KEY_B64="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 | tr -d '\n')"
@@ -101,7 +101,7 @@ export CYODA_HTTP_PORT=8123
 export CYODA_GRPC_PORT=9123
 
 # Compose profile selects the postgres container; otel-backend and
-# cyoda-go services are always started.
+# cyoda services are always started.
 export COMPOSE_PROFILES="$BACKEND"
 
 docker compose --profile "$BACKEND" up --build "$@"

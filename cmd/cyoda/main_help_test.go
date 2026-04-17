@@ -10,11 +10,11 @@ import (
 // It builds the binary and runs --help; the storage section must list
 // registered plugins in sorted order and show CYODA_POSTGRES_URL as required.
 func TestHelp_StorageSection(t *testing.T) {
-	cmd := exec.Command("go", "run", "./cmd/cyoda-go", "--help")
+	cmd := exec.Command("go", "run", "./cmd/cyoda", "--help")
 	cmd.Dir = "../.."
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("go run cyoda-go --help: %v", err)
+		t.Fatalf("go run cyoda --help: %v", err)
 	}
 	s := string(out)
 	if !strings.Contains(s, "Available: memory, postgres") {

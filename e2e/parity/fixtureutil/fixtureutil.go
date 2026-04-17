@@ -43,15 +43,15 @@ var (
 	computeBuildErr   error
 )
 
-// BuildCyodaBinary builds the cyoda-go binary once per process and
+// BuildCyodaBinary builds the cyoda binary once per process and
 // returns the path. Thread-safe via sync.Once.
 func BuildCyodaBinary() (string, error) {
 	moduleRoot := FindModuleRoot()
 	cyodaBuildOnce.Do(func() {
-		cyodaBinaryPath, cyodaBuildErr = buildBinary(moduleRoot, "./cmd/cyoda-go", "cyoda-go")
+		cyodaBinaryPath, cyodaBuildErr = buildBinary(moduleRoot, "./cmd/cyoda", "cyoda")
 	})
 	if cyodaBuildErr != nil {
-		return "", fmt.Errorf("failed to build cyoda-go: %w", cyodaBuildErr)
+		return "", fmt.Errorf("failed to build cyoda: %w", cyodaBuildErr)
 	}
 	return cyodaBinaryPath, nil
 }
