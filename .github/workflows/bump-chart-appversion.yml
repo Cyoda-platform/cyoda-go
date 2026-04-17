@@ -1,0 +1,58 @@
+name: Bump chart appVersion
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Only for non-prerelease tags. Prereleases (v*-rc.*, v*-beta.*, v*-alpha.*,
+    # anything with a hyphen after the semver triple) don't bump appVersion.
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Guard — chart directory must exist
+        id: guard
+        run: |
+          if [ ! -f deploy/helm/cyoda-go/Chart.yaml ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping appVersion bump — chart not yet present."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute new appVersion
+        if: steps.guard.outputs.skip == 'false'
+        id: ver
+        run: |
+          APP_VERSION="${GITHUB_REF_NAME#v}"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update Chart.yaml
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^appVersion:.*/appVersion: \"${{ steps.ver.outputs.app_version }}\"/" deploy/helm/cyoda-go/Chart.yaml
+
+      - name: Open PR
+        if: steps.guard.outputs.skip == 'false'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: chore/bump-appversion-${{ steps.ver.outputs.app_version }}
+          base: main
+          commit-message: |
+            chore(chart): bump appVersion to ${{ steps.ver.outputs.app_version }}
+          title: "chore(chart): bump appVersion to ${{ steps.ver.outputs.app_version }}"
+          body: |
+            Automated bump triggered by the release of `${{ github.ref_name }}`.
+
+            Review and merge, then cut a `cyoda-go-<chart-version>` tag to
+            publish a chart release pinned to this appVersion.
