@@ -1,6 +1,7 @@
 package schema_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -118,5 +119,26 @@ func TestValidateNullCompatible(t *testing.T) {
 	errs := schema.Validate(model, map[string]any{"name": nil})
 	if len(errs) != 0 {
 		t.Errorf("null should be compatible with STRING: %v", errs)
+	}
+}
+
+// TestValidateJSONNumberAgainstNumeric — XML and JSON importers both
+// produce json.Number for numeric leaves (after issue #24 PR-2).
+// inferDataType must classify json.Number as numeric, otherwise
+// validation falsely rejects every numeric XML/JSON-imported field.
+func TestValidateJSONNumberAgainstNumeric(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("age", schema.NewLeafNode(schema.Integer))
+	model.SetChild("rate", schema.NewLeafNode(schema.Double))
+	model.SetChild("big", schema.NewLeafNode(schema.Long))
+
+	data := map[string]any{
+		"age":  json.Number("30"),
+		"rate": json.Number("3.14"),
+		"big":  json.Number("9007199254740993"), // > 2^53
+	}
+	errs := schema.Validate(model, data)
+	if len(errs) != 0 {
+		t.Errorf("json.Number should be compatible with numeric model types, got: %v", errs)
 	}
 }

@@ -99,14 +99,23 @@ func parseXMLElement(dec *xml.Decoder, start xml.StartElement) (any, error) {
 }
 
 func inferXMLValue(s string) any {
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return float64(i)
-	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
+	// Defer numeric coercion: keep numbers as json.Number so callers can
+	// choose Int64() vs Float64() vs string preservation. Mirrors
+	// ParseJSON's UseNumber() — XML and JSON imports produce structurally
+	// identical trees for numeric leaves.
+	if isJSONNumber(s) {
+		return json.Number(s)
 	}
 	if b, err := strconv.ParseBool(s); err == nil {
 		return b
 	}
 	return s
+}
+
+// isJSONNumber reports whether s is a valid JSON number per RFC 8259 §6.
+// Delegates to encoding/json so the validation rules stay aligned with the
+// authority that downstream code uses to round-trip the value.
+func isJSONNumber(s string) bool {
+	var n json.Number
+	return json.Unmarshal([]byte(s), &n) == nil
 }
