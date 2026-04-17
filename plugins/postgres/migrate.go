@@ -6,9 +6,11 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/golang-migrate/migrate/v4"
 	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -105,6 +107,75 @@ func dropSchema(pool *pgxpool.Pool) error {
 		return fmt.Errorf("dropSchema: %w", err)
 	}
 	return nil
+}
+
+// checkSchemaCompat enforces the schema-compatibility contract on startup:
+//   - schema newer than code → fatal, regardless of autoMigrate
+//   - schema older than code, autoMigrate=false → fatal
+//   - schema older than code, autoMigrate=true → caller proceeds with runMigrations
+//   - schema matches → proceed
+//   - dirty state → fatal, manual intervention required
+func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("schema compat: context cancelled: %w", err)
+	}
+	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
+	if err != nil {
+		return fmt.Errorf("schema compat: create driver: %w", err)
+	}
+	src, err := iofs.New(migrationFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("schema compat: open migration source: %w", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
+	if err != nil {
+		return fmt.Errorf("schema compat: create migrator: %w", err)
+	}
+
+	maxVersion, err := maxMigrationVersion(src)
+	if err != nil {
+		return fmt.Errorf("schema compat: scan embedded migrations: %w", err)
+	}
+
+	dbVersion, dirty, err := m.Version()
+	switch {
+	case errors.Is(err, migrate.ErrNilVersion):
+		dbVersion = 0 // fresh database — treat as older-than-code
+	case err != nil:
+		return fmt.Errorf("schema compat: read DB version: %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("schema compat: database migration state is dirty at version %d — manual intervention required", dbVersion)
+	}
+
+	switch {
+	case dbVersion > maxVersion:
+		return fmt.Errorf("schema compat: database schema version %d is newer than this binary's max migration version %d — refusing to start to avoid data corruption", dbVersion, maxVersion)
+	case dbVersion < maxVersion && !autoMigrate:
+		return fmt.Errorf("schema compat: database schema version %d is older than code (%d) and CYODA_POSTGRES_AUTO_MIGRATE=false — set CYODA_POSTGRES_AUTO_MIGRATE=true and restart, or apply migrations out-of-band", dbVersion, maxVersion)
+	}
+	return nil
+}
+
+// maxMigrationVersion walks the embedded migration source and returns
+// the highest version present.
+func maxMigrationVersion(src source.Driver) (uint, error) {
+	v, err := src.First()
+	if err != nil {
+		return 0, fmt.Errorf("first migration: %w", err)
+	}
+	max := v
+	for {
+		next, err := src.Next(max)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("next migration after %d: %w", max, err)
+		}
+		max = next
+	}
+	return max, nil
 }
 
 // migrateDown rolls back all applied migrations. Intentionally unexported —
