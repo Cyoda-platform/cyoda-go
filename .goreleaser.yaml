@@ -1,0 +1,90 @@
+# .goreleaser.yaml
+# Build configuration for cyoda-go releases. Triggered by the release.yml
+# workflow on v* tags.
+
+version: 2
+
+before:
+  hooks:
+    - env GOWORK=off go mod download
+    - env GOWORK=off go mod verify
+
+builds:
+  - id: cyoda-go
+    main: ./cmd/cyoda-go
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.buildDate={{.Date}}
+
+archives:
+  - id: cyoda-go
+    ids: [cyoda-go]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'SHA256SUMS'
+  algorithm: sha256
+
+dockers:
+  - image_templates:
+      - "ghcr.io/cyoda-platform/cyoda-go:{{ .Version }}-amd64"
+    use: buildx
+    goarch: amd64
+    dockerfile: deploy/docker/Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.source=https://github.com/cyoda-platform/cyoda-go"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .Commit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+  - image_templates:
+      - "ghcr.io/cyoda-platform/cyoda-go:{{ .Version }}-arm64"
+    use: buildx
+    goarch: arm64
+    dockerfile: deploy/docker/Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.source=https://github.com/cyoda-platform/cyoda-go"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .Commit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/cyoda-platform/cyoda-go:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/cyoda-platform/cyoda-go:{{ .Version }}-amd64"
+      - "ghcr.io/cyoda-platform/cyoda-go:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/cyoda-platform/cyoda-go:latest"
+    skip_push: '{{ .Prerelease }}'
+    image_templates:
+      - "ghcr.io/cyoda-platform/cyoda-go:{{ .Version }}-amd64"
+      - "ghcr.io/cyoda-platform/cyoda-go:{{ .Version }}-arm64"
+
+docker_signs:
+  - artifacts: manifests
+    cmd: cosign
+    args:
+      - "sign"
+      - "--yes"
+      - "${artifact}"
+
+sboms:
+  - artifacts: archive
+
+release:
+  prerelease: auto
+  draft: false
