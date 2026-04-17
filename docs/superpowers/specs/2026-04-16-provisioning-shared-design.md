@@ -83,11 +83,11 @@ Plus the gRPC listener on `CYODA_GRPC_PORT` (default `9090`).
 | `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete | Kubernetes `readinessProbe`, load balancer health |
 | `/metrics` | Prometheus pull endpoint | Prometheus scrape / `ServiceMonitor` |
 
-The admin listener is **unauthenticated by design**. Defaulting `CYODA_ADMIN_BIND_ADDRESS` to `127.0.0.1` ensures a bare desktop binary or `docker run ...` never exposes readiness/metrics to the network. Targets that need network exposure override this:
+The admin listener is **unauthenticated by design**. Defaulting `CYODA_ADMIN_BIND_ADDRESS` to `127.0.0.1` ensures a bare desktop binary or a raw `docker run ...` (no port mapping) never exposes readiness/metrics to the network. Targets that need the admin listener to be reachable from outside the process override this — and in every container case they must, because the container's `127.0.0.1` is in its own network namespace and is unreachable from host port mappings or from kubelet probes:
 
-- **Helm chart** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the pod (pod network is bounded, a ClusterIP-only `Service` handles exposure).
-- **Canonical compose** can map the admin port host-side as `127.0.0.1:9091:9091` without changing the bind address.
-- **Desktop binary** uses the default — the admin surface is reachable only from the same host.
+- **Helm chart** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the pod so kubelet probes and a ClusterIP-only admin `Service` can reach it. The pod network (bounded) and the ClusterIP-only `Service` are the exposure boundaries.
+- **Canonical compose** likewise sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the container and constrains the host-side port mapping to `127.0.0.1:9091:9091`. Docker's port mapping forwards to the container's network interface (not its loopback), so a container-internal `127.0.0.1` bind would leave the admin port unreachable even through the host mapping. The host-side `127.0.0.1:...` mapping is the network boundary.
+- **Desktop binary** uses the `127.0.0.1` default — the admin surface is reachable only from the same host, no override needed.
 
 OTLP push (existing) stays, orthogonal to `/metrics`. Pull and push are both supported; operators pick one or both.
 
@@ -226,6 +226,7 @@ Each per-target spec takes these as inputs and fills in the mechanics:
 Also out of scope:
 
 - **SPI versioning policy.** The `github.com/cyoda-platform/cyoda-go-spi` module's release cadence and compatibility guarantees are governed by its own repo's policy. A breaking SPI change forces synchronized plugin releases; this spec assumes the SPI's own policy handles that coordination and does not attempt to constrain it here.
+- **API-listener bind-address symmetry.** `CYODA_HTTP_PORT` and `CYODA_GRPC_PORT` have no matching `_BIND_ADDRESS` env vars — the API and gRPC listeners effectively bind `0.0.0.0`. That's the right default (the API is meant to be reached), but it leaves no knob for sidecar topologies where the API should only be reachable via a service-mesh proxy on the loopback interface. Symmetrizing the listener config (`CYODA_HTTP_BIND_ADDRESS`, `CYODA_GRPC_BIND_ADDRESS`) is a future ticket, not required for provisioning.
 
 ## Downstream implementation plan
 
@@ -236,7 +237,7 @@ The implementation plan generated from this spec covers the shared-layer work:
 3. Implement the schema-compatibility contract: fail fast on schema-newer-than-code, fail fast on schema-older + auto-migrate off (TDD).
 4. Introduce the target repo layout: `deploy/`, `examples/`, `scripts/dev/`.
 5. Execute the legacy cleanup moves and deletions (including sanitizing the relocated dev scripts).
-6. Add `.github/workflows/release.yml` (GoReleaser + multi-arch image + keyless cosign + SBOM on `v*` tags; prereleases don't move `:latest`).
+6. Add `.github/workflows/release.yml` (GoReleaser + multi-arch image + keyless cosign + SBOM on `v*` tags; prereleases don't move `:latest`). The workflow must set `GOWORK=off` when building so the release is pinned to `go.mod`-declared plugin versions rather than the local `go.work` overlay. Each plugin module (`plugins/memory`, `plugins/postgres`, `plugins/sqlite`) must have a released tag that the root `go.mod` pins to *before* the first app `v0.1.0` tag — otherwise the release build can't resolve reproducible versions for its dependencies. Cutting those plugin module tags is a prerequisite captured as an explicit pre-step in the implementation plan.
 7. Add `.github/workflows/release-chart.yml` using `helm/chart-releaser-action`, gated on the chart's existence.
 8. Delete `.github/workflows/docker-publish.yml`.
 9. Update `README.md`, `CONTRIBUTING.md`, `cmd/cyoda-go/main.go` `printHelp()` for new endpoints, new env vars (`CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_SUPPRESS_BANNER`), new port convention, and new layout. Additionally, close existing SQLite documentation gaps now that sqlite is elevated to a default:
