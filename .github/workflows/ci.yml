@@ -57,3 +57,12 @@ jobs:
         run: |
           GOWORK=off go build ./...
           GOWORK=off go vet ./...
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run shellcheck
+        run: shellcheck scripts/install.sh
