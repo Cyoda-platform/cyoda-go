@@ -67,6 +67,9 @@ func runMigrations(ctx context.Context, db *sql.DB) error {
 //   - schema matches → proceed
 //   - dirty state → fatal, manual intervention required
 func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("schema compat: context cancelled: %w", err)
+	}
 	driver, err := sqlitemigrate.WithInstance(db, &sqlitemigrate.Config{NoTxWrap: true})
 	if err != nil {
 		return fmt.Errorf("schema compat: create driver: %w", err)
@@ -97,9 +100,9 @@ func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error 
 	}
 
 	switch {
-	case uint(dbVersion) > maxVersion:
+	case dbVersion > maxVersion:
 		return fmt.Errorf("schema compat: database schema version %d is newer than this binary's max migration version %d — refusing to start to avoid data corruption", dbVersion, maxVersion)
-	case uint(dbVersion) < maxVersion && !autoMigrate:
+	case dbVersion < maxVersion && !autoMigrate:
 		return fmt.Errorf("schema compat: database schema version %d is older than code (%d) and CYODA_SQLITE_AUTO_MIGRATE=false — set CYODA_SQLITE_AUTO_MIGRATE=true and restart, or apply migrations out-of-band", dbVersion, maxVersion)
 	}
 	return nil
