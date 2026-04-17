@@ -91,7 +91,7 @@ system-wide default; preserved across upgrades). Replace `amd64` with
 To pin a specific version:
 
 ```bash
-wget https://github.com/cyoda-platform/cyoda-go/releases/download/v0.2.0/cyoda_0.2.0_linux_amd64.deb
+wget https://github.com/cyoda-platform/cyoda-go/releases/download/v0.2.0/cyoda_linux_amd64.deb
 ```
 
 ### Fedora or RHEL
@@ -202,8 +202,8 @@ The stock binary contains all three. A proprietary `cassandra` plugin ships in t
 
 ```bash
 CYODA_STORAGE_BACKEND=sqlite
-# Optional — defaults to $XDG_DATA_HOME/cyoda-go/cyoda.db
-CYODA_SQLITE_PATH=/var/lib/cyoda-go/cyoda.db
+# Optional — defaults to $XDG_DATA_HOME/cyoda/cyoda.db
+CYODA_SQLITE_PATH=/var/lib/cyoda/cyoda.db
 ```
 
 Data persists across restarts in a single file. WAL mode is enabled automatically. No external server required. The process acquires an exclusive file lock on startup — only one instance can use a given database file.
@@ -330,7 +330,7 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_SQLITE_PATH` | `$XDG_DATA_HOME/cyoda-go/cyoda.db` | Database file path |
+| `CYODA_SQLITE_PATH` | `$XDG_DATA_HOME/cyoda/cyoda.db` | Database file path |
 | `CYODA_SQLITE_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup |
 | `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for SQLite write lock |
 | `CYODA_SQLITE_CACHE_SIZE` | `64000` | Page cache in KiB |

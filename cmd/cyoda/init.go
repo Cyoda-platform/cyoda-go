@@ -28,10 +28,11 @@ func runInit(args []string) int {
 	// 1. If any system config file already exists, do nothing (unless --force).
 	for _, p := range app.SystemConfigPaths() {
 		if _, err := os.Stat(p); err == nil {
-			fmt.Printf("system-wide cyoda config already present at %s; no user config needed (use --force to write a user config anyway)\n", p)
 			if !*force {
+				fmt.Printf("system-wide cyoda config already present at %s; no user config needed (use --force to write a user config anyway)\n", p)
 				return 0
 			}
+			// --force was set; system config present is expected but we proceed to write the user config.
 		}
 	}
 

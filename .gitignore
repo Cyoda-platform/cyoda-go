@@ -63,7 +63,7 @@ secrets.yaml
 
 # Build artifacts
 bin/
-/cyoda-go
+/cyoda
 coverage.out
 
 .sandbox/
