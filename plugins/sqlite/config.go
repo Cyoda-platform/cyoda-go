@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -20,7 +21,7 @@ type config struct {
 // parseConfig reads CYODA_SQLITE_* env vars via the injected getenv.
 func parseConfig(getenv func(string) string) (config, error) {
 	cfg := config{
-		Path:            envStringFn(getenv, "CYODA_SQLITE_PATH", defaultDBPath()),
+		Path:            envStringFn(getenv, "CYODA_SQLITE_PATH", DefaultDBPath()),
 		AutoMigrate:     envBoolFn(getenv, "CYODA_SQLITE_AUTO_MIGRATE", true),
 		BusyTimeout:     envDurationFn(getenv, "CYODA_SQLITE_BUSY_TIMEOUT", 5*time.Second),
 		CacheSizeKiB:    envIntFn(getenv, "CYODA_SQLITE_CACHE_SIZE", 64000),
@@ -32,17 +33,37 @@ func parseConfig(getenv func(string) string) (config, error) {
 	return cfg, nil
 }
 
-// defaultDBPath returns $XDG_DATA_HOME/cyoda-go/cyoda.db per FreeDesktop spec.
-func defaultDBPath() string {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
+// DefaultDBPath returns the per-OS default path for the sqlite database
+// file. Linux and macOS share XDG semantics ($XDG_DATA_HOME/cyoda/cyoda.db,
+// fallback ~/.local/share/cyoda/cyoda.db). Windows uses %LocalAppData%\cyoda\
+// cyoda.db. Returns the literal "cyoda.db" (current directory) when the user
+// home directory cannot be determined.
+func DefaultDBPath() string {
+	return defaultDBPathResolved(runtime.GOOS, os.Getenv, os.UserHomeDir)
+}
+
+// defaultDBPathResolved is the testable implementation of DefaultDBPath.
+// Injecting goos, getenv, and home makes both OS branches reachable in
+// tests regardless of the host platform.
+func defaultDBPathResolved(goos string, getenv func(string) string, home func() (string, error)) string {
+	if goos == "windows" {
+		if local := getenv("LocalAppData"); local != "" {
+			return filepath.Join(local, "cyoda", "cyoda.db")
+		}
+		h, err := home()
 		if err != nil {
 			return "cyoda.db"
 		}
-		dataHome = filepath.Join(home, ".local", "share")
+		return filepath.Join(h, "AppData", "Local", "cyoda", "cyoda.db")
 	}
-	return filepath.Join(dataHome, "cyoda-go", "cyoda.db")
+	if xdg := getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "cyoda", "cyoda.db")
+	}
+	h, err := home()
+	if err != nil {
+		return "cyoda.db"
+	}
+	return filepath.Join(h, ".local", "share", "cyoda", "cyoda.db")
 }
 
 func envStringFn(getenv func(string) string, key, fallback string) string {

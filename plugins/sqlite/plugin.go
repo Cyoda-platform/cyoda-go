@@ -15,7 +15,7 @@ func (p *plugin) Name() string { return "sqlite" }
 
 func (p *plugin) ConfigVars() []spi.ConfigVar {
 	return []spi.ConfigVar{
-		{Name: "CYODA_SQLITE_PATH", Description: "Database file path", Default: "$XDG_DATA_HOME/cyoda-go/cyoda.db"},
+		{Name: "CYODA_SQLITE_PATH", Description: "Database file path", Default: "$XDG_DATA_HOME/cyoda/cyoda.db (Windows: %LocalAppData%\\cyoda\\cyoda.db)"},
 		{Name: "CYODA_SQLITE_AUTO_MIGRATE", Description: "Run embedded SQL migrations on startup", Default: "true"},
 		{Name: "CYODA_SQLITE_BUSY_TIMEOUT", Description: "Wait time for write lock", Default: "5s"},
 		{Name: "CYODA_SQLITE_CACHE_SIZE", Description: "Page cache in KiB", Default: "64000"},
