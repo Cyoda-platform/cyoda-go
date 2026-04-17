@@ -54,7 +54,7 @@ See [OVERVIEW.md](OVERVIEW.md) for the full architecture and feature details.
 ### Local Development (recommended)
 
 ```bash
-./cyoda-go.sh
+./scripts/dev/run-local.sh
 ```
 
 This runs Cyoda-Go with the `local` profile (`.env.local`): in-memory storage, JWT auth, debug logging on port **8123** (HTTP) and **9123** (gRPC). Copy `.env.local.example` to `.env.local` to customize.
@@ -86,15 +86,15 @@ curl http://localhost:8080/api/health
 ### Docker with PostgreSQL (single node)
 
 ```bash
-./cyoda-go-docker.sh
+./scripts/dev/run-docker-dev.sh
 ```
 
 This generates a `.env.docker` with a fresh JWT signing key and starts both Cyoda-Go and PostgreSQL via `docker compose`. Data is persisted to a Docker volume.
 
 ```bash
-# Get a token (credentials printed at startup):
+# Get a token (bootstrap secret is printed at startup):
 TOKEN=$(curl -s -X POST http://localhost:8123/api/oauth/token \
-  -u "m2m.user:78f647e3..." -d "grant_type=client_credentials" | jq -r .access_token)
+  -u "m2m.user:<secret-from-startup-log>" -d "grant_type=client_credentials" | jq -r .access_token)
 
 # Use it:
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8123/api/health
@@ -199,7 +199,7 @@ Profiles load `.env` files in order — later profiles override earlier ones. Ex
 CYODA_PROFILES=postgres,otel go run ./cmd/cyoda-go
 ```
 
-The `./cyoda-go.sh` script is a convenience wrapper that sets `CYODA_PROFILES=local` by default.
+The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYODA_PROFILES=local` by default.
 
 ### Server
 

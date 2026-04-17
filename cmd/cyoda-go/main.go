@@ -322,9 +322,9 @@ QUICK START (jwt mode, PostgreSQL)
   curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/entity/stats
 
 DOCKER
-  ./cyoda-go-docker.sh            Generate .env.docker and start with docker compose
+  ./scripts/dev/run-docker-dev.sh Generate .env.docker and start with docker compose
 
 SHELL SCRIPT
-  ./cyoda-go.sh                   Run locally with CYODA_PROFILES=local
+  ./scripts/dev/run-local.sh      Run locally with CYODA_PROFILES=local
 `)
 }
