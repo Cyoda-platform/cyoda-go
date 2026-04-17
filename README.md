@@ -49,6 +49,67 @@ See [OVERVIEW.md](OVERVIEW.md) for the full architecture and feature details.
 - **Docker** (optional, for PostgreSQL backend and container builds)
 - **PostgreSQL 17+** (required for PostgreSQL mode)
 
+## Install
+
+### macOS or Linux via Homebrew
+
+```bash
+brew install cyoda-platform/cyoda-go/cyoda
+```
+
+Or, if you tap first:
+
+```bash
+brew tap cyoda-platform/cyoda-go
+brew install cyoda
+```
+
+The formula automatically runs `cyoda init` after install, enabling
+sqlite persistence with data stored in `~/.local/share/cyoda/cyoda.db`.
+
+### Any Unix via curl
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/scripts/install.sh | sh
+```
+
+Installs to `~/.local/bin/cyoda` and runs `cyoda init`. Override the
+install directory with `CYODA_INSTALL_DIR=~/bin curl ... | sh`. Pin a
+specific version with `CYODA_VERSION=v0.2.0 curl ... | sh`.
+
+### Debian or Ubuntu
+
+```bash
+wget https://github.com/cyoda-platform/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
+sudo dpkg -i cyoda_linux_amd64.deb
+```
+
+Drops `/usr/bin/cyoda` and `/etc/cyoda/cyoda.env` (sqlite as the
+system-wide default; preserved across upgrades). Replace `amd64` with
+`arm64` for ARM hosts.
+
+To pin a specific version:
+
+```bash
+wget https://github.com/cyoda-platform/cyoda-go/releases/download/v0.2.0/cyoda_0.2.0_linux_amd64.deb
+```
+
+### Fedora or RHEL
+
+```bash
+wget https://github.com/cyoda-platform/cyoda-go/releases/latest/download/cyoda_linux_amd64.rpm
+sudo rpm -i cyoda_linux_amd64.rpm
+```
+
+### From source
+
+```bash
+go install github.com/cyoda-platform/cyoda-go/cmd/cyoda@latest
+```
+
+Uses the binary's compiled-in `memory` default. Set
+`CYODA_STORAGE_BACKEND=sqlite` or run `cyoda init` for persistence.
+
 ## Quick Start
 
 ### Local Development (recommended)
@@ -191,6 +252,31 @@ Cyoda-Go excels at transactional correctness and operational simplicity for smal
 ## Configuration
 
 All configuration is via environment variables with the `CYODA_` prefix. Run `cyoda --help` for the complete reference.
+
+### Config sources
+
+cyoda reads configuration from these sources, in increasing order of
+precedence (later overrides earlier):
+
+1. Compiled-in defaults (memory backend, port 8080, mock auth).
+2. System config file (Linux only): `/etc/cyoda/cyoda.env`. Dropped by
+   the `.deb`/`.rpm` package; survives upgrades. macOS has no system
+   config path; Homebrew users get user config instead.
+3. User config file (per-OS):
+   - Linux and macOS: `$XDG_CONFIG_HOME/cyoda/cyoda.env` → fallback
+     `~/.config/cyoda/cyoda.env`.
+   - Windows: `%AppData%\cyoda\cyoda.env`.
+
+   Written by `cyoda init`.
+4. `.env` and `.env.<profile>` in the current working directory
+   (profiles via `CYODA_PROFILES`). See [`.env.sqlite.example`](.env.sqlite.example),
+   [`.env.postgres.example`](.env.postgres.example),
+   [`.env.local.example`](.env.local.example),
+   [`.env.jwt.example`](.env.jwt.example).
+5. Shell environment variables (always win).
+
+Run `cyoda init` to write a starter user config with sqlite enabled.
+Run `cyoda --help` for the full env-var reference.
 
 ### Profiles
 
