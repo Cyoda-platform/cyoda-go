@@ -57,6 +57,17 @@ When `CYODA_IAM_MODE` is unset (or set explicitly to `mock`), the binary runs in
 
 The banner is emitted **unconditionally whenever mock mode is active** — whether mock was chosen by default or set explicitly. Opt-out is a dedicated flag: `CYODA_SUPPRESS_BANNER=true` silences it. Our own E2E fixtures set that flag to keep test output clean; production operators never set it.
 
+### `CYODA_REQUIRE_JWT` — hard guard for production deployments
+
+The mock-auth fallback is appropriate for evaluators on a desktop or a developer spinning up the reference compose. It is **actively dangerous for Helm deployments**, where a misconfigured production install could silently succeed without authentication regardless of how prominent the banner is.
+
+To close that hole, the binary honors `CYODA_REQUIRE_JWT`:
+
+- **`CYODA_REQUIRE_JWT=true`** — the binary refuses to start unless `CYODA_IAM_MODE=jwt` **and** the JWT signing key is present. No mock fallback, no banner, no startup in any degraded mode. Fatal error on missing/invalid config.
+- **`CYODA_REQUIRE_JWT` unset or `false`** — existing behavior. Mock fallback with banner when `CYODA_IAM_MODE` is absent.
+
+The canonical Helm chart's `values.yaml` sets `CYODA_REQUIRE_JWT=true` by default. Operators who genuinely want mock mode in a cluster (lab environments, CI) explicitly override it. Desktop and Docker provisioning layers leave it unset so the friendly fallback still applies to evaluators.
+
 ## Binary health and observability surface
 
 The binary exposes endpoints on two listeners:
@@ -90,6 +101,8 @@ The admin listener is **unauthenticated by design**. Defaulting `CYODA_ADMIN_BIN
 - **Desktop binary** uses the `127.0.0.1` default — the admin surface is reachable only from the same host, no override needed.
 
 OTLP push (existing) stays, orthogonal to `/metrics`. Pull and push are both supported; operators pick one or both.
+
+**Probe discipline — strict separation.** `/livez` must never check storage connectivity, external dependencies, or anything that can transiently fail. A liveness probe that flaps on a dropped database connection triggers a Kubernetes `SIGTERM` and pod restart, which is an anti-pattern: transient network blips to Postgres should not restart serving pods. `/livez` answers only "is this process still alive and its event loop responsive?" and should stay cheap and deterministic. All storage-reachability, migration-state, and bootstrap-complete checks go under `/readyz`, whose failure removes the pod from load-balancer rotation but does not trigger a restart. The code implementation must honor this split; regression on it produces production-visible stability bugs.
 
 Canonical compose and Helm chart are **minimal** — they do not bundle Grafana / Prometheus / Tempo. The current Grafana-bundled compose relocates to `examples/compose-with-observability/` as an explicit dev convenience.
 
@@ -199,6 +212,7 @@ scripts/
   ci.yml                         # unchanged
   release.yml                    # NEW: GoReleaser + multi-arch image + keyless cosign on v* tags
   release-chart.yml              # NEW: helm/chart-releaser-action on cyoda-go-* tags
+  bump-chart-appversion.yml      # NEW: opens PR bumping Chart.yaml appVersion on stable v* tags
 ```
 
 ## README badges
@@ -233,17 +247,20 @@ Also out of scope:
 The implementation plan generated from this spec covers the shared-layer work:
 
 1. Add `/livez`, `/readyz`, `/metrics` endpoints on a new admin listener separate from the API listener. Listener is governed by `CYODA_ADMIN_PORT` (default `9091`) and `CYODA_ADMIN_BIND_ADDRESS` (default `127.0.0.1` — safe for desktop/bare `docker run`) (TDD).
-2. Add `CYODA_SUPPRESS_BANNER` env var; emit mock-auth warning banner unconditionally in mock mode unless suppressed (TDD).
+2. Add `CYODA_SUPPRESS_BANNER` and `CYODA_REQUIRE_JWT` env vars. Emit the mock-auth warning banner unconditionally in mock mode unless suppressed. When `CYODA_REQUIRE_JWT=true`, binary refuses to start if JWT config is missing — no mock fallback, no banner, fatal error (TDD).
 3. Implement the schema-compatibility contract: fail fast on schema-newer-than-code, fail fast on schema-older + auto-migrate off (TDD).
 4. Introduce the target repo layout: `deploy/`, `examples/`, `scripts/dev/`.
 5. Execute the legacy cleanup moves and deletions (including sanitizing the relocated dev scripts).
 6. Add `.github/workflows/release.yml` (GoReleaser + multi-arch image + keyless cosign + SBOM on `v*` tags; prereleases don't move `:latest`). The workflow must set `GOWORK=off` when building so the release is pinned to `go.mod`-declared plugin versions rather than the local `go.work` overlay. Each plugin module (`plugins/memory`, `plugins/postgres`, `plugins/sqlite`) must have a released tag that the root `go.mod` pins to *before* the first app `v0.1.0` tag — otherwise the release build can't resolve reproducible versions for its dependencies. Cutting those plugin module tags is a prerequisite captured as an explicit pre-step in the implementation plan.
+
+   **Pre-flight check.** The release workflow runs `GOWORK=off go mod download` and `GOWORK=off go mod verify` before invoking GoReleaser. If any plugin dependency resolves to a pseudo-version, a `replace` directive, or a non-tagged SHA, the workflow fails fast with a clear error naming the offending module. This prevents an accidental root-repo tag from producing a release built against unreleased or stale plugin code.
 7. Add `.github/workflows/release-chart.yml` using `helm/chart-releaser-action`, gated on the chart's existence.
-8. Delete `.github/workflows/docker-publish.yml`.
-9. Update `README.md`, `CONTRIBUTING.md`, `cmd/cyoda-go/main.go` `printHelp()` for new endpoints, new env vars (`CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_SUPPRESS_BANNER`), new port convention, and new layout. Additionally, close existing SQLite documentation gaps now that sqlite is elevated to a default:
-   - Add **sqlite** as a first-class row in the README "Storage backends" table alongside memory and postgres.
-   - Add a **Configuration > SQLite** subsection in the README documenting `CYODA_SQLITE_PATH`, `CYODA_SQLITE_AUTO_MIGRATE`, `CYODA_SQLITE_BUSY_TIMEOUT`, `CYODA_SQLITE_CACHE_SIZE`, `CYODA_SQLITE_SEARCH_SCAN_LIMIT`.
-   - Add a **`.env.sqlite.example`** alongside the existing `.env.local.example` / `.env.postgres.example` / `.env.jwt.example` / `.env.otel.example` so "copy the example for your backend" works for sqlite too.
-10. Add README badges (five) in a final commit once the first release has produced artifacts.
+8. Add `.github/workflows/bump-chart-appversion.yml` — triggered when a stable (non-prerelease) `v*` tag is pushed, this workflow opens a PR updating `deploy/helm/cyoda-go/Chart.yaml`'s `appVersion` to the new app version. Keeps the decoupled tag streams in sync without manual edits. A human reviews and merges the PR (which becomes the trigger for the next chart tag when desired).
+9. Delete `.github/workflows/docker-publish.yml`.
+10. Update `README.md`, `CONTRIBUTING.md`, `cmd/cyoda-go/main.go` `printHelp()` for new endpoints, new env vars (`CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_SUPPRESS_BANNER`, `CYODA_REQUIRE_JWT`), new port convention, and new layout. Additionally, close existing SQLite documentation gaps now that sqlite is elevated to a default:
+    - Add **sqlite** as a first-class row in the README "Storage backends" table alongside memory and postgres.
+    - Add a **Configuration > SQLite** subsection in the README documenting `CYODA_SQLITE_PATH`, `CYODA_SQLITE_AUTO_MIGRATE`, `CYODA_SQLITE_BUSY_TIMEOUT`, `CYODA_SQLITE_CACHE_SIZE`, `CYODA_SQLITE_SEARCH_SCAN_LIMIT`.
+    - Add a **`.env.sqlite.example`** alongside the existing `.env.local.example` / `.env.postgres.example` / `.env.jwt.example` / `.env.otel.example` so "copy the example for your backend" works for sqlite too.
+11. Add README badges (five) in a final commit once the first release has produced artifacts.
 
 The per-target specs (desktop, Docker, Helm) are separate brainstorming cycles that consume this spec.
