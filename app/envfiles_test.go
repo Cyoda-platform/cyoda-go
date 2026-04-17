@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,6 +85,176 @@ func TestLoadEnvFiles_MissingFilesSkipped(t *testing.T) {
 
 	// Should not panic or error — missing files are silently skipped.
 	LoadEnvFiles()
+}
+
+func TestUserConfigPathResolved_LinuxWithXDG(t *testing.T) {
+	got := userConfigPathResolved("linux",
+		func(key string) string {
+			if key == "XDG_CONFIG_HOME" {
+				return "/tmp/cfg"
+			}
+			return ""
+		},
+		func() (string, error) { return "/home/u", nil },
+	)
+	want := filepath.Join("/tmp/cfg", "cyoda", "cyoda.env")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestUserConfigPathResolved_LinuxNoXDG(t *testing.T) {
+	got := userConfigPathResolved("linux",
+		func(key string) string { return "" },
+		func() (string, error) { return "/home/u", nil },
+	)
+	want := filepath.Join("/home/u", ".config", "cyoda", "cyoda.env")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestUserConfigPathResolved_macOS(t *testing.T) {
+	got := userConfigPathResolved("darwin",
+		func(key string) string { return "" },
+		func() (string, error) { return "/Users/u", nil },
+	)
+	want := filepath.Join("/Users/u", ".config", "cyoda", "cyoda.env")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestUserConfigPathResolved_WindowsWithAppData(t *testing.T) {
+	got := userConfigPathResolved("windows",
+		func(key string) string {
+			if key == "AppData" {
+				return `C:\Users\u\AppData\Roaming`
+			}
+			return ""
+		},
+		func() (string, error) { return `C:\Users\u`, nil },
+	)
+	want := filepath.Join(`C:\Users\u\AppData\Roaming`, "cyoda", "cyoda.env")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestUserConfigPathResolved_WindowsNoAppData(t *testing.T) {
+	got := userConfigPathResolved("windows",
+		func(key string) string { return "" },
+		func() (string, error) { return `C:\Users\u`, nil },
+	)
+	want := filepath.Join(`C:\Users\u`, "AppData", "Roaming", "cyoda", "cyoda.env")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestUserConfigPathResolved_HomeLookupFails(t *testing.T) {
+	got := userConfigPathResolved("linux",
+		func(key string) string { return "" },
+		func() (string, error) { return "", fmt.Errorf("no home") },
+	)
+	if got != "" {
+		t.Fatalf("expected empty path when home lookup fails, got %q", got)
+	}
+}
+
+func TestSystemConfigPathsResolved_Linux(t *testing.T) {
+	got := systemConfigPathsResolved("linux", func(key string) string { return "" })
+	if len(got) != 1 || got[0] != "/etc/cyoda/cyoda.env" {
+		t.Fatalf("got %v, want [/etc/cyoda/cyoda.env]", got)
+	}
+}
+
+func TestSystemConfigPathsResolved_macOSEmpty(t *testing.T) {
+	got := systemConfigPathsResolved("darwin", func(key string) string { return "" })
+	if len(got) != 0 {
+		t.Fatalf("got %v, want empty (macOS has no system config path)", got)
+	}
+}
+
+func TestSystemConfigPathsResolved_WindowsWithProgramData(t *testing.T) {
+	got := systemConfigPathsResolved("windows",
+		func(key string) string {
+			if key == "ProgramData" {
+				return `C:\ProgramData`
+			}
+			return ""
+		},
+	)
+	want := filepath.Join(`C:\ProgramData`, "cyoda", "cyoda.env")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("got %v want [%v]", got, want)
+	}
+}
+
+func TestSystemConfigPathsResolved_WindowsNoProgramData(t *testing.T) {
+	got := systemConfigPathsResolved("windows", func(key string) string { return "" })
+	if len(got) != 0 {
+		t.Fatalf("got %v, want empty when ProgramData unset", got)
+	}
+}
+
+func TestLoadEnvFiles_AutoloadsUserConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgDir := filepath.Join(tmp, "cyoda")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfgFile := filepath.Join(cfgDir, "cyoda.env")
+	if err := os.WriteFile(cfgFile, []byte("CYODA_TEST_AUTOLOAD=from-user-config\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point the OS-appropriate env var at the temp dir so both linux/darwin
+	// (XDG_CONFIG_HOME) and windows (AppData) branches resolve into tmp.
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("AppData", tmp)
+	// Prevent inherited system config from leaking into the test.
+	t.Setenv("ProgramData", filepath.Join(tmp, "no-such"))
+
+	os.Unsetenv("CYODA_TEST_AUTOLOAD")
+	t.Cleanup(func() { os.Unsetenv("CYODA_TEST_AUTOLOAD") })
+
+	wd := t.TempDir()
+	prev, _ := os.Getwd()
+	if err := os.Chdir(wd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	LoadEnvFiles()
+
+	if got := os.Getenv("CYODA_TEST_AUTOLOAD"); got != "from-user-config" {
+		t.Fatalf("expected CYODA_TEST_AUTOLOAD from user config, got %q", got)
+	}
+}
+
+func TestLoadEnvFiles_ShellEnvOverridesUserConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfgDir := filepath.Join(tmp, "cyoda")
+	_ = os.MkdirAll(cfgDir, 0755)
+	_ = os.WriteFile(filepath.Join(cfgDir, "cyoda.env"),
+		[]byte("CYODA_TEST_OVERRIDE=from-user-config\n"), 0644)
+
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("AppData", tmp)
+	t.Setenv("ProgramData", filepath.Join(tmp, "no-such"))
+	t.Setenv("CYODA_TEST_OVERRIDE", "from-shell")
+
+	wd := t.TempDir()
+	prev, _ := os.Getwd()
+	_ = os.Chdir(wd)
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	LoadEnvFiles()
+
+	if got := os.Getenv("CYODA_TEST_OVERRIDE"); got != "from-shell" {
+		t.Fatalf("shell env should win; got %q", got)
+	}
 }
 
 func TestSplitProfiles_Validation(t *testing.T) {
