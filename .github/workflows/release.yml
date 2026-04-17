@@ -81,6 +81,15 @@ jobs:
 
       - uses: anchore/sbom-action/download-syft@v0
 
+      - name: Generate Homebrew tap token
+        id: homebrew-tap-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HOMEBREW_TAP_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_KEY }}
+          owner: cyoda-platform
+          repositories: homebrew-cyoda-go
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
@@ -88,3 +97,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOWORK: "off"
+          HOMEBREW_TAP_TOKEN: ${{ steps.homebrew-tap-token.outputs.token }}
