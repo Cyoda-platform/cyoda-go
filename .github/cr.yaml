@@ -1,0 +1,2 @@
+# Configuration for helm/chart-releaser-action
+generate-release-notes: true

@@ -1,0 +1,42 @@
+name: Release Helm chart
+
+on:
+  push:
+    tags: ['cyoda-go-*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard — chart directory must exist
+        run: |
+          if [ ! -f deploy/helm/cyoda-go/Chart.yaml ]; then
+            echo "ERROR: deploy/helm/cyoda-go/Chart.yaml not found."
+            echo "The Helm chart skeleton must be created by the Helm per-target plan"
+            echo "before this workflow can succeed. Pushing a cyoda-go-* tag is a no-op"
+            echo "until that work lands."
+            exit 1
+          fi
+
+      - name: Configure git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - uses: azure/setup-helm@v4
+
+      - uses: helm/chart-releaser-action@v1
+        with:
+          charts_dir: deploy/helm
+          config: .github/cr.yaml
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
