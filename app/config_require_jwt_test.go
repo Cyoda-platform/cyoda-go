@@ -7,7 +7,6 @@ import (
 
 func TestDefaultConfig_RequireJWT_DefaultsFalse(t *testing.T) {
 	t.Setenv("CYODA_REQUIRE_JWT", "")
-	_ = t // silence if the setenv isn't honored as absent; ValidateIAM call below is the real gate
 	cfg := DefaultConfig()
 	if cfg.IAM.RequireJWT {
 		t.Fatalf("RequireJWT should default to false; got true")
