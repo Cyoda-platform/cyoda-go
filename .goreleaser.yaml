@@ -57,10 +57,11 @@ nfpms:
 
 brews:
   - name: cyoda
-    # Skip tap upload on prerelease tags (v*-rc.*, v*-beta.*, v*-alpha.*) and on
-    # snapshot builds. Stable tags (v0.1.0) commit to the tap as usual. This
-    # keeps the tap showing only stable formulas — matches the :latest image-tag
-    # policy and the bump-chart-appversion prerelease filter.
+    # Skip tap upload on prerelease tags (v*-rc.*, v*-beta.*, v*-alpha.*).
+    # Snapshots never upload regardless (snapshot mode short-circuits
+    # publishers). Stable tags (v0.1.0) commit to the tap as usual. Matches
+    # the :latest image-tag policy and the bump-chart-appversion prerelease
+    # filter.
     skip_upload: auto
     repository:
       owner: cyoda-platform
