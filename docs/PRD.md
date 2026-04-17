@@ -365,7 +365,7 @@ Processor callbacks (CRUD operations performed by the processor) carry the trans
 
 ```json
 {
-  "iss": "cyoda-go",
+  "iss": "cyoda",
   "sub": "<client_id>",
   "jti": "<unique_id>",
   "iat": 1711700000,

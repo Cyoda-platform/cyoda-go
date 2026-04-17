@@ -124,7 +124,7 @@ func GenerateJWTKeySet() (*JWTKeySet, error) {
 	return &JWTKeySet{
 		Key:    rsaKey,
 		Kid:    kid,
-		Issuer: "cyoda-go-test",
+		Issuer: "cyoda-test",
 		KeyPEM: keyPEM,
 	}, nil
 }

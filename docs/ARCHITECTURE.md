@@ -1191,7 +1191,7 @@ The cassandra plugin has the largest config surface of any shipped plugin. Only 
 |----------|---------|-------------|
 | `CYODA_IAM_MODE` | `mock` | `mock` (dev) or `jwt` (production) |
 | `CYODA_JWT_SIGNING_KEY` | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
-| `CYODA_JWT_ISSUER` | `cyoda-go` | JWT issuer claim |
+| `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token expiry in seconds |
 
 ### Bootstrap

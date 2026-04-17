@@ -23,8 +23,8 @@ func TestNewCloudEvent_ParseCloudEvent_RoundTrip(t *testing.T) {
 	if ce.Id == "" {
 		t.Error("expected non-empty ID")
 	}
-	if ce.Source != "cyoda-go" {
-		t.Errorf("expected source 'cyoda-go', got %q", ce.Source)
+	if ce.Source != "cyoda" {
+		t.Errorf("expected source 'cyoda', got %q", ce.Source)
 	}
 	if ce.SpecVersion != "1.0" {
 		t.Errorf("expected spec_version '1.0', got %q", ce.SpecVersion)

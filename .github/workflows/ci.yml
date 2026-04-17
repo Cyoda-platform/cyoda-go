@@ -41,7 +41,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build and vet cyoda-go (root) with GOWORK=off
+      - name: Build and vet cyoda (root) with GOWORK=off
         run: |
           GOWORK=off go build ./...
           GOWORK=off go vet ./...

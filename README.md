@@ -228,7 +228,7 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 | `CYODA_REQUIRE_JWT` | `false` | Set to `true` to make the binary refuse to start unless `CYODA_IAM_MODE=jwt` and `CYODA_JWT_SIGNING_KEY` are both set. The canonical Helm chart enables this by default; desktop and Docker leave it off so the mock-auth fallback still applies to evaluators. |
 | `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles granted to the default mock user. `ROLE_M2M` is required for the gRPC streaming endpoint; `ROLE_ADMIN` for admin HTTP endpoints. |
 | `CYODA_JWT_SIGNING_KEY` | — | RSA private key in PEM format. Required for `jwt` mode. |
-| `CYODA_JWT_ISSUER` | `cyoda-go` | JWT issuer claim |
+| `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token lifetime |
 
 ### Bootstrap (jwt mode)

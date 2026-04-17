@@ -98,7 +98,7 @@ func TestMain(m *testing.M) {
 	cfg.IAM = app.IAMConfig{
 		Mode:          "jwt",
 		JWTSigningKey: keyPEM,
-		JWTIssuer:     "cyoda-go-test",
+		JWTIssuer:     "cyoda-test",
 		JWTExpiry:     3600,
 	}
 	cfg.Bootstrap = app.BootstrapConfig{

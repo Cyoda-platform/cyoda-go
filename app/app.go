@@ -387,7 +387,7 @@ func New(cfg Config) *App {
 	// wildcard-conflict panics in overlapping /model/… paths.
 	apiHandler := genapi.HandlerFromMux(server, internalapi.NewChiMux())
 	if cfg.OTelEnabled {
-		apiHandler = otelhttp.NewMiddleware("cyoda-go")(apiHandler)
+		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
 	}
 	mux.Handle("/", middleware.Recovery(healthFlag)(
 		middleware.Auth(a.authService)(apiHandler),
