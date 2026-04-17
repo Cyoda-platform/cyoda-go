@@ -41,6 +41,12 @@ func main() {
 	app.LoadEnvFiles()
 	cfg := app.DefaultConfig()
 	logging.Init(cfg.LogLevel)
+
+	if err := app.ValidateIAM(cfg.IAM); err != nil {
+		slog.Error("IAM validation failed", "error", err)
+		os.Exit(1)
+	}
+
 	printBanner(cfg)
 	printMockAuthWarningTo(os.Stdout, cfg)
 
@@ -261,6 +267,7 @@ SERVER
 	printStorageHelp()
 	fmt.Print(`AUTHENTICATION (IAM)
   CYODA_IAM_MODE               Auth mode: mock | jwt                     (default: mock)
+  CYODA_REQUIRE_JWT            Refuse to start unless jwt mode + key set  (default: false)
 
   Mock mode (default):
     All requests authenticated as a configurable default user. No tokens needed.

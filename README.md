@@ -219,6 +219,7 @@ The `./cyoda-go.sh` script is a convenience wrapper that sets `CYODA_PROFILES=lo
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_IAM_MODE` | `mock` | `mock` (no auth) or `jwt` (OAuth 2.0 with JWT) |
+| `CYODA_REQUIRE_JWT` | `false` | Set to `true` to make the binary refuse to start unless `CYODA_IAM_MODE=jwt` and `CYODA_JWT_SIGNING_KEY` are both set. The canonical Helm chart enables this by default; desktop and Docker leave it off so the mock-auth fallback still applies to evaluators. |
 | `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles granted to the default mock user. `ROLE_M2M` is required for the gRPC streaming endpoint; `ROLE_ADMIN` for admin HTTP endpoints. |
 | `CYODA_JWT_SIGNING_KEY` | — | RSA private key in PEM format. Required for `jwt` mode. |
 | `CYODA_JWT_ISSUER` | `cyoda-go` | JWT issuer claim |

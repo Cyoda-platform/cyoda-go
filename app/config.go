@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -55,6 +56,7 @@ type IAMConfig struct {
 	JWTSigningKey  string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
 	JWTIssuer      string // JWT issuer claim (CYODA_JWT_ISSUER)
 	JWTExpiry      int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
+	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
 }
 
 type BootstrapConfig struct {
@@ -103,6 +105,7 @@ func DefaultConfig() Config {
 			JWTSigningKey:  envPEM("CYODA_JWT_SIGNING_KEY"),
 			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda-go"),
 			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
+			RequireJWT:     envBool("CYODA_REQUIRE_JWT", false),
 		},
 		Cluster: cluster.Config{
 			Enabled:                envBool("CYODA_CLUSTER_ENABLED", false),
@@ -220,4 +223,21 @@ func splitCSV(s string) []string {
 		}
 	}
 	return result
+}
+
+// ValidateIAM enforces the CYODA_REQUIRE_JWT contract: when set, the binary
+// refuses to run with mock auth or a missing signing key. Intended for
+// production provisioning (Helm) where silent mock-auth fallback would be
+// a security hazard. Callers must invoke this before wiring auth in New().
+func ValidateIAM(iam IAMConfig) error {
+	if !iam.RequireJWT {
+		return nil
+	}
+	if iam.Mode != "jwt" {
+		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
+	}
+	if iam.JWTSigningKey == "" {
+		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_JWT_SIGNING_KEY is empty")
+	}
+	return nil
 }
