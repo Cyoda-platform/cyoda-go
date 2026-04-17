@@ -95,42 +95,23 @@ checksum:
   name_template: 'SHA256SUMS'
   algorithm: sha256
 
-dockers:
-  - image_templates:
-      - "ghcr.io/cyoda-platform/cyoda:{{ .Version }}-amd64"
-    use: buildx
-    goarch: amd64
+dockers_v2:
+  - id: cyoda
+    images:
+      - ghcr.io/cyoda-platform/cyoda
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
     dockerfile: deploy/docker/Dockerfile
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.source=https://github.com/cyoda-platform/cyoda-go"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .Commit }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-  - image_templates:
-      - "ghcr.io/cyoda-platform/cyoda:{{ .Version }}-arm64"
-    use: buildx
-    goarch: arm64
-    dockerfile: deploy/docker/Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.source=https://github.com/cyoda-platform/cyoda-go"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .Commit }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-
-docker_manifests:
-  - name_template: "ghcr.io/cyoda-platform/cyoda:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/cyoda-platform/cyoda:{{ .Version }}-amd64"
-      - "ghcr.io/cyoda-platform/cyoda:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/cyoda-platform/cyoda:latest"
-    skip_push: '{{ .Prerelease }}'
-    image_templates:
-      - "ghcr.io/cyoda-platform/cyoda:{{ .Version }}-amd64"
-      - "ghcr.io/cyoda-platform/cyoda:{{ .Version }}-arm64"
+    labels:
+      org.opencontainers.image.source: https://github.com/cyoda-platform/cyoda-go
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .Commit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.licenses: Apache-2.0
 
 docker_signs:
   - artifacts: manifests
