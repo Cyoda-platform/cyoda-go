@@ -6,6 +6,10 @@ import (
 )
 
 func TestDefaultConfig_AdminDefaults(t *testing.T) {
+	// t.Setenv("") + os.Unsetenv: t.Setenv registers the restore-on-cleanup
+	// hook for the prior value, then Unsetenv makes the key genuinely absent
+	// so DefaultConfig hits its compiled-in fallback rather than an empty
+	// string inherited from the surrounding environment.
 	t.Setenv("CYODA_ADMIN_PORT", "")
 	_ = os.Unsetenv("CYODA_ADMIN_PORT")
 	t.Setenv("CYODA_ADMIN_BIND_ADDRESS", "")
