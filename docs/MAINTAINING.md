@@ -245,7 +245,12 @@ Fix before running `goreleaser release --snapshot`:
 ```bash
 cd /path/to/temp/clone
 git remote set-url origin https://github.com/cyoda-platform/cyoda-go.git
+# Also disable push from this temp clone so an absent-minded `git push`
+# doesn't accidentally shove a local branch to the real upstream:
+git remote set-url --push origin NO_PUSH
 ```
 
 After that, the generated `dist/homebrew/cyoda.rb` will have correct
 download URLs and `brew audit --strict` can run against it meaningfully.
+The `NO_PUSH` sentinel is an unroutable value — any `git push` from the
+temp clone fails cleanly rather than reaching GitHub.
