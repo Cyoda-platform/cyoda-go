@@ -65,4 +65,4 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
-        run: shellcheck scripts/install.sh
+        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh
