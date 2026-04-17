@@ -144,7 +144,10 @@ func printBannerTo(w io.Writer, cfg app.Config) {
 	reset := "\033[0m"
 
 	// Disable color if not a terminal
-	if fi, err := os.Stdout.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+	if f, ok := w.(*os.File); !ok {
+		teal = ""
+		reset = ""
+	} else if fi, err := f.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
 		teal = ""
 		reset = ""
 	}
@@ -162,9 +165,8 @@ func printBannerTo(w io.Writer, cfg app.Config) {
 		cfg.HTTPPort, cfg.GRPC.Port, cfg.IAM.Mode, cfg.ContextPath, app.ProfileBanner())
 }
 
-// printMockAuthWarningTo prints a prominent multi-line warning when the
-// binary is about to serve requests without authentication. Silent
-// unless IAM mode is "mock". Respects CYODA_SUPPRESS_BANNER.
+// printMockAuthWarningTo is silent unless IAM mode is "mock". Respects
+// CYODA_SUPPRESS_BANNER.
 func printMockAuthWarningTo(w io.Writer, cfg app.Config) {
 	if os.Getenv("CYODA_SUPPRESS_BANNER") == "true" {
 		return
@@ -174,7 +176,10 @@ func printMockAuthWarningTo(w io.Writer, cfg app.Config) {
 	}
 	yellow := "\033[33m"
 	reset := "\033[0m"
-	if fi, err := os.Stdout.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+	if f, ok := w.(*os.File); !ok {
+		yellow = ""
+		reset = ""
+	} else if fi, err := f.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
 		yellow = ""
 		reset = ""
 	}
@@ -250,7 +255,7 @@ SERVER
   CYODA_ERROR_RESPONSE_MODE    Error detail level: sanitized | verbose   (default: sanitized)
   CYODA_MAX_STATE_VISITS       Max visits per state in workflow cascade   (default: 10)
   CYODA_LOG_LEVEL              Log level: debug | info | warn | error    (default: info)
-  CYODA_SUPPRESS_BANNER        Silence startup banner and mock-auth warn (default: false)
+  CYODA_SUPPRESS_BANNER        Silence startup + mock-auth banners       (default: false)
 
 `)
 	printStorageHelp()
