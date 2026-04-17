@@ -84,3 +84,6 @@ go.work.sum
 
 # Git worktrees (isolated dev workspaces)
 .worktrees/
+
+# Docker build context staged by scripts/dev/run-docker-dev.sh
+/.buildctx/
