@@ -30,10 +30,21 @@ Per the shared spec, the **image itself is neutral about configuration** — no 
 
 ```dockerfile
 # syntax=docker/dockerfile:1
-FROM gcr.io/distroless/static
 
+# Stage a pre-chowned data directory. Distroless/static has no shell,
+# so we can't `RUN mkdir && chown` in the final image. This two-stage
+# pattern stages an empty /data owned by 65532:65532 in a temporary
+# image, then COPY-chowns it into the distroless image. The resulting
+# /var/lib/cyoda is then present with correct ownership, which Docker
+# will propagate to an empty named volume mounted on top of it on
+# first container start.
+FROM busybox:stable AS stage
+RUN mkdir -p /data && chown 65532:65532 /data
+
+FROM gcr.io/distroless/static
 ARG TARGETPLATFORM
 COPY $TARGETPLATFORM/cyoda /cyoda
+COPY --from=stage --chown=65532:65532 /data /var/lib/cyoda
 
 USER 65532:65532
 EXPOSE 8080 9090 9091
@@ -49,7 +60,14 @@ ENTRYPOINT ["/cyoda"]
 - **No CMD.** `ENTRYPOINT ["/cyoda"]` with no args means users can `docker run ... cyoda health`, `cyoda init --force`, `cyoda --help` without overriding entrypoint.
 - **No `HEALTHCHECK`.** Rationale in §3. Compose users get healthcheck via the compose file; k8s users define probes in the Deployment spec. The distroless Go-tool convention is no Dockerfile `HEALTHCHECK`; orchestrators own health policy.
 
-**Volume chown:** the `nonroot` user needs write access to `/var/lib/cyoda/`. Docker's named volumes inherit permissions from the first writer by default. When compose creates the volume fresh, the `cyoda` binary writes to it as UID 65532, and Docker records the ownership. Subsequent `compose up` runs inherit correctly. No Dockerfile `RUN chown` needed, no init container needed.
+**Volume chown — why the two-stage `busybox` pattern:** the `nonroot` user needs write access to `/var/lib/cyoda/`. Docker's behavior when mounting a named volume:
+
+- If the image's path **exists** with content, Docker copies that content into the empty volume on first mount, preserving ownership.
+- If the image's path **doesn't exist**, Docker creates the mount point as `root:root` — and the `nonroot` process gets `EACCES`.
+
+Distroless/static has no `/var/lib/cyoda/`. Without staging, the container starts as `nonroot` but the volume's mount point is `root:root`, and cyoda fails to open `cyoda.db`. The two-stage pattern above creates `/var/lib/cyoda/` in the image with `65532:65532` ownership, so the named volume inherits correct ownership on first mount.
+
+This is also why Dockerfile `RUN mkdir && chown` doesn't work in distroless: no shell, no `mkdir` binary. A multi-stage `COPY --from=stage` is the idiomatic workaround.
 
 ## 2. Canonical compose — `deploy/docker/compose.yaml`
 
@@ -65,6 +83,9 @@ services:
       CYODA_STORAGE_BACKEND: sqlite
       CYODA_SQLITE_PATH: /var/lib/cyoda/cyoda.db
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
+      # For production: uncomment to require real JWT auth at startup.
+      # CYODA_REQUIRE_JWT: "true"
+      # CYODA_JWT_SIGNING_KEY: ${CYODA_JWT_SIGNING_KEY:?set CYODA_JWT_SIGNING_KEY}
     volumes:
       - cyoda-data:/var/lib/cyoda
     # Adjust start_period for slower environments (Postgres migrations,
@@ -144,7 +165,7 @@ case "health":
                           Used by Dockerfile/compose/k8s health probes.
 ```
 
-**Why `/readyz`, not `/livez`:** Docker's `depends_on: service_healthy` semantic is "ready to accept requests" — which is exactly `/readyz`'s contract (storage reachable, migrations applied, bootstrap complete). `/livez` is "process alive, don't restart me"; it's useful for liveness probes but not what `compose up` gates on.
+**Why `/readyz`, not `/livez`:** the canonical compose is single-service, so `depends_on: service_healthy` doesn't apply here directly. But the rationale is `/readyz`'s semantic — "ready to accept requests" (storage reachable, migrations applied, bootstrap complete) — is what matters for user-assembled multi-service compose files where a downstream service gates on cyoda's readiness. `/livez` is "process alive, don't restart me"; it's the right probe for Kubernetes `livenessProbe` but not for `depends_on`. `cyoda health` optimizes for the cribbing use case.
 
 **Tests** follow the `init_test.go` pattern: `httptest.NewServer` stands up a fake admin listener and the test exercises each outcome.
 
@@ -153,7 +174,10 @@ case "health":
 | `TestCyodaHealth_Ready` | 200 OK | 0 |
 | `TestCyodaHealth_NotReady` | 503 Service Unavailable | 1 |
 | `TestCyodaHealth_ConnectionRefused` | (server not started) | 1 |
+| `TestCyodaHealth_Timeout` | handler sleeps 5s; client timeout is 2s | 1 |
 | `TestCyodaHealth_RespectsAdminPort` | 200 on a non-default port; env var set | 0 |
+
+The timeout test is load-bearing: a deadlocked readiness handler looks exactly like "server accepts connection then hangs forever" to the health client. The 2s client timeout is what keeps Docker's healthcheck from inheriting the deadlock; losing that test would let a regression in the timeout value go unnoticed.
 
 **What this subcommand does NOT do:** it does not attempt to diagnose the degraded-runtime cases (storage went down after cyoda is running, cluster membership lost, etc.). Those require richer readiness semantics that `ReadinessCheck()` doesn't yet implement. See the shared spec's note on the future SPI-level `Ready(ctx)` method.
 
@@ -165,6 +189,10 @@ Replaces the currently-guarded non-functional version. Stages a locally-built bi
 #!/bin/bash
 # Dev helper: builds cyoda from source, produces a local image, runs compose.
 # Contributors use this to test local changes in a container before they land.
+#
+# Build flags here (-ldflags="-s -w") are intentionally minimal — version
+# injection and release optimizations are owned by .goreleaser.yaml. The
+# :dev image tag makes it visually obvious this isn't a release build.
 set -eu
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -179,6 +207,8 @@ esac
 PLATFORM="linux/$ARCH"
 
 # Stage binary under .buildctx/$PLATFORM/cyoda for the dockers_v2 context.
+# NOTE: the root .dockerignore doesn't apply here — buildctx is the build
+# context root for this invocation, not the repo root.
 BUILDCTX=".buildctx"
 trap 'rm -rf "$BUILDCTX"' EXIT
 rm -rf "$BUILDCTX"
@@ -202,6 +232,12 @@ CYODA_IMAGE="$LOCAL_TAG" docker compose -f deploy/docker/compose.yaml up "$@"
 ```
 
 The `.buildctx` directory is gitignored (pattern `/.buildctx/` added to `.gitignore`). Cleanup is via `trap` so failures mid-run don't leave stale staging dirs.
+
+**`CYODA_IMAGE` override is a dev convention, not a public contract.** This env var exists solely so `run-docker-dev.sh` can point the canonical compose at a local image tag without editing the compose file. Users cribbing the compose into their own stack should just set `image:` directly — we don't promise `CYODA_IMAGE` as stable across releases.
+
+**Root `.dockerignore` is now a no-op for the release pipeline.** GoReleaser's `dockers_v2` uses the staged `$TARGETPLATFORM/` context (binary + nothing else), so the root `.dockerignore` affects only hypothetical `docker build .` from the repo root — which is no longer a supported path. Cleanup of the now-dead `.dockerignore` can happen in this PR or a follow-up; implementation plan picks.
+
+**Build-flag drift vs GoReleaser config** is a known minor concern: the `go build -ldflags="-s -w"` line here won't track version-injection flags that `.goreleaser.yaml` uses for release builds. For dev images the drift is acceptable (no version injection needed to iterate locally). If a future Makefile consolidation creates a single-source-of-truth build target, this script is the natural first caller.
 
 Flow:
 1. Cross-compile (honestly, same-arch compile since we're targeting linux-host-arch) a static binary via `go build`.
@@ -237,9 +273,15 @@ dockers_v2:
 
 - Single buildx invocation per image → native multi-arch manifest (no separate `docker_manifests:` assembly needed).
 - Artifacts under `$TARGETPLATFORM/` — which is exactly what the Dockerfile in §1 `COPY`s from.
-- `skip_push` on `:latest` for prereleases becomes inline: `{{ if not .Prerelease }}latest{{ end }}` produces the tag only when `Prerelease` is false, otherwise emits an empty string which `dockers_v2` skips.
 
-**The `docker_signs:` block** (keyless cosign on manifests) stays — it uses the same manifest target and doesn't change.
+**`:latest` suppression on prereleases — needs verification.** The old config used `skip_push: '{{ .Prerelease }}'` on the `:latest` manifest, which is a documented-safe pattern. The sample above uses `{{ if not .Prerelease }}latest{{ end }}` inside `tags:` — which, if GoReleaser emits the empty string as a literal tag, will fail at push time. Two fallback patterns to pick from during implementation, based on what `goreleaser release --snapshot` actually produces:
+
+1. If empty-tag suppression works: keep the single-entry form above.
+2. If not: split into two `dockers_v2` entries — one for `{{ .Version }}`, one for `latest` with an explicit `skip_push: "{{ .Prerelease }}"`.
+
+Implementation step (§9) runs `goreleaser release --snapshot --skip=publish` against both patterns and pins the one that works.
+
+**`docker_signs:` compatibility — also needs verification.** The existing config's `docker_signs:` block (keyless cosign on `artifacts: manifests`) is expected to continue working against `dockers_v2`-produced manifests, but the `dockers_v2` internal artifact pipeline differs from the old `dockers:` + `docker_manifests:` pair. The `artifacts: manifests` selector MAY resolve to a different set. Implementation step (§9) runs a snapshot with `cosign-installer` + `goreleaser release --snapshot --skip=publish` and confirms the signing step succeeds before the migration PR ships.
 
 **The existing `release.yml` "Dockerfile must exist" guard** continues to catch the case where someone pushes a `v*` tag before this spec's PR merges; after merge, the Dockerfile exists and the guard passes.
 
@@ -251,7 +293,8 @@ Extend the current placeholder to describe:
 - The env vars cyoda needs (for users cribbing into their own compose).
 - A pointer to `examples/compose-with-observability/` for Postgres + Grafana.
 - A pointer to `scripts/dev/run-docker-dev.sh` for contributors iterating on cyoda itself.
-- Security posture note: admin port unauthenticated-by-design; bound loopback-only by default; flip to `0.0.0.0:9091` only for network-reachable clusters and then add authentication upstream.
+- **A pointer to the Helm chart** for Kubernetes / production use. Compose is for development and evaluation; production orchestration (HA, TLS, network policy, PDB) is the Helm chart's territory per the shared spec. Make this steering explicit so users don't default to "just put compose on a prod host."
+- **Security posture note:** admin port unauthenticated-by-design; bound loopback-only by default; flip to `0.0.0.0:9091` only for network-reachable clusters and then add authentication upstream. Mock auth is the startup default; `CYODA_REQUIRE_JWT=true` is the production safety floor and users cribbing this compose into production must set it.
 
 ## 7. File changes summary
 
@@ -269,23 +312,28 @@ Extend the current placeholder to describe:
 
 ## 8. Out of scope for this spec
 
-- **Debug image variant** (e.g., `cyoda:debug` with shell + curl). Useful for in-container debugging; orthogonal to the canonical image's "minimal + non-root" posture. Can be a later addition.
+- **Debug image variant** (e.g., `cyoda:debug` with shell + curl). Useful for in-container debugging; orthogonal to the canonical image's "minimal + non-root" posture. Can be a later addition. If the Helm chart (future) documents `kubectl debug --image=...` workflows, it must supply the debug image reference itself — this spec ships only the production image.
+- **CI docker-compose smoke-test job.** §9 step 8 is a manual smoke test for this PR. No automated CI runs `docker compose up` → hit `/api/health` → teardown on every push. Gap is a real regression risk; a follow-up issue should track adding this as a CI job alongside the shellcheck job that already runs on `scripts/install.sh`. Not blocking for this PR.
 - **`docker build .` from a fresh clone without any staging.** Deliberate: the canonical Dockerfile is release-optimized (pre-built binary). Contributors wanting to iterate use `scripts/dev/run-docker-dev.sh`.
 - **Compose `profiles:` for sqlite vs postgres.** Canonical compose is sqlite-only to match the shared spec. `examples/compose-with-observability/` already covers the postgres recipe.
 - **Cosign-signed `install.sh`-style docker one-liner** (like `curl install.sh | sh` for Docker). `docker pull` already has its own trust chain (image registry + manifest signing via cosign, already in the release pipeline).
 - **Secrets management via Docker secrets.** Compose ships dev-safe defaults; production secrets handling is the Helm chart's concern (per the shared spec).
 - **Richer runtime readiness (storage-ping, cluster-membership checks).** Requires an SPI-level `StoreFactory.Ready(ctx)` method. Future enhancement; especially relevant for the cyoda-go-cassandra plugin (cluster-join latency) but out of scope here.
+- **Makefile build-target consolidation.** Would give `scripts/dev/run-docker-dev.sh` a single source of truth for build flags. Deferred; flag drift between the dev script and GoReleaser is acceptable for dev-only builds.
 
 ## 9. Downstream implementation plan
 
 The implementation plan generated from this spec covers:
 
-1. `cyoda health` subcommand: Go implementation, tests, subcommand dispatch, `printHelp` update (TDD).
-2. `deploy/docker/Dockerfile` creation.
-3. `deploy/docker/compose.yaml` creation with healthcheck block.
-4. `deploy/docker/README.md` extension.
+1. `cyoda health` subcommand: Go implementation, tests (including the timeout case), subcommand dispatch, `printHelp` update (TDD).
+2. `deploy/docker/Dockerfile` creation (two-stage with the busybox chown pattern).
+3. `deploy/docker/compose.yaml` creation with healthcheck block and commented `CYODA_REQUIRE_JWT` hint.
+4. `deploy/docker/README.md` extension (security posture, Helm cross-link, observability example pointer).
 5. `scripts/dev/run-docker-dev.sh` rewrite from guarded-non-functional to functional.
 6. `.gitignore` update for `/.buildctx/`.
-7. `.goreleaser.yaml` migration from `dockers:`/`docker_manifests:` to `dockers_v2:`.
-8. Smoke-test the full flow: `scripts/dev/run-docker-dev.sh` → compose up → `curl http://127.0.0.1:8080/api/health` returns 200, `docker ps` shows healthy.
-9. (Optional) Follow up by closing issue #52 once the `dockers_v2` migration merges.
+7. `.goreleaser.yaml` migration from `dockers:`/`docker_manifests:` to `dockers_v2:`. **Before committing the migration, run `goreleaser release --snapshot --skip=publish` against a staged `.buildctx/` to verify two behaviors specifically:**
+   - The `:latest` conditional-tag pattern (empty-tag suppression vs two-entry + `skip_push`). Pick the pattern that actually produces a valid release on a non-prerelease tag AND a prerelease tag.
+   - That `docker_signs:` (keyless cosign on `artifacts: manifests`) still binds to the `dockers_v2`-produced manifest set and successfully signs. If the signing step skips or fails because the artifact selector doesn't match, the `docker_signs:` config needs updating alongside.
+8. Smoke-test the full flow: `scripts/dev/run-docker-dev.sh` → compose up → `curl http://127.0.0.1:8080/api/health` returns 200, `docker ps` shows healthy. Additionally assert volume ownership is 65532 by running `docker compose exec cyoda /cyoda health` (works) and spot-checking via a debug container: `docker run --rm -v <compose-volume>:/data alpine stat -c '%u' /data` returns `65532`. This catches the named-volume-permissions issue at its natural surface.
+9. (Follow-up) Close issue #52 once the `dockers_v2` migration merges. Consider opening a new issue for CI docker-compose smoke testing (§8 out-of-scope).
+10. (Follow-up) Decide whether to delete the now-dead root `.dockerignore` in this PR or a tidy-up follow-up.
