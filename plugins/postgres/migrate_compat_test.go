@@ -25,20 +25,9 @@ func openDBForCompat(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
 	}
-	poolCfg.MaxConns = 5
-	poolCfg.MinConns = 0
-	poolCfg.HealthCheckPeriod = 24 * time.Hour
 
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
-	if err != nil {
-		t.Fatalf("create pool for compat test: %v", err)
-	}
-
-	db := stdlib.OpenDB(*pool.Config().ConnConfig)
-	t.Cleanup(func() {
-		_ = db.Close()
-		pool.Close()
-	})
+	db := stdlib.OpenDB(*poolCfg.ConnConfig)
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -114,6 +103,7 @@ func TestCheckSchemaCompat_SchemaMatches_Postgres(t *testing.T) {
 	}
 	poolCfg.MaxConns = 2
 	poolCfg.MinConns = 0
+	poolCfg.HealthCheckPeriod = 24 * time.Hour // long period to avoid background health-check racing pool.Close
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		t.Fatalf("create migration pool: %v", err)
