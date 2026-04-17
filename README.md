@@ -85,6 +85,12 @@ curl http://localhost:8080/api/health
 
 ### Docker with PostgreSQL (single node)
 
+> **Temporarily unavailable.** This path depends on `deploy/docker/Dockerfile` and
+> `deploy/docker/compose.yaml`, which are produced by the Docker per-target plan
+> (follow-up work). Until those artifacts land, use `./scripts/dev/run-local.sh`
+> (in-memory, no deps) or `examples/compose-with-observability/compose.yaml`
+> (PostgreSQL + Grafana stack) instead.
+
 ```bash
 ./scripts/dev/run-docker-dev.sh
 ```

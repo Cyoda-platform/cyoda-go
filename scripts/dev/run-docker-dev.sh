@@ -1,5 +1,31 @@
 #!/bin/bash
+# Dev helper for single-node Docker runs.
+# NOTE: currently non-functional — depends on Docker per-target artifacts that
+# are produced by follow-up work (deploy/docker/Dockerfile and
+# deploy/docker/compose.yaml).
 set -e
+
+# Guard: the canonical Dockerfile and compose that this dev helper depends
+# on are produced by the Docker per-target plan (follow-up work). Until
+# they land, this script is intentionally non-functional.
+if [ ! -f "$(dirname "$0")/../../deploy/docker/Dockerfile" ] || \
+   [ ! -f "$(dirname "$0")/../../deploy/docker/compose.yaml" ]; then
+    cat >&2 <<'EOF'
+scripts/dev/run-docker-dev.sh: not yet functional
+
+This dev helper depends on:
+  - deploy/docker/Dockerfile
+  - deploy/docker/compose.yaml
+
+Both are produced by the Docker per-target plan (follow-up work to
+the canonical provisioning shared-layer changes).
+
+For local development today, use:
+  - ./scripts/dev/run-local.sh                     (in-memory, no deps)
+  - examples/compose-with-observability/compose.yaml  (postgres + Grafana stack)
+EOF
+    exit 1
+fi
 
 # Multi-node cluster mode: delegate to scripts/multi-node-docker/
 for arg in "$@"; do
@@ -70,7 +96,7 @@ EOF
 
 echo "Generated .env.docker (backend=$BACKEND, fresh JWT signing key)"
 
-# Export ports for docker-compose.yml port mapping
+# Export ports for deploy/docker/compose.yaml port mapping
 export CYODA_HTTP_PORT=8123
 export CYODA_GRPC_PORT=9123
 
