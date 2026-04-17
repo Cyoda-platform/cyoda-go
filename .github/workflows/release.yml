@@ -23,8 +23,9 @@ jobs:
           go-version-file: go.mod
 
       # Pre-flight: verify that no plugin dependency resolves to a pseudo-version
-      # or unreleased SHA. Prevents an accidental root tag from producing a
-      # release built against unreleased plugin code.
+      # or an unreleased SHA, and that no replace directive is in effect.
+      # Either condition means the release build would use non-published code,
+      # which breaks reproducibility for downstream consumers.
       - name: Pre-flight — verify module dependencies
         run: |
           set -euo pipefail
@@ -32,8 +33,28 @@ jobs:
           GOWORK=off go mod verify
           echo "Plugin dependency versions pinned by go.mod:"
           GOWORK=off go list -m github.com/cyoda-platform/cyoda-go/plugins/... || true
-          if GOWORK=off go list -m all | grep -E "v0\.0\.0-[0-9]{14}-[0-9a-f]{12}"; then
-            echo "ERROR: pseudo-versions found in go.mod — all plugin deps must resolve to published tags"
+
+          # Reject pseudo-versions (all three forms defined by go help pseudo-versions):
+          #   1. vX.0.0-<date>-<sha>
+          #   2. vX.Y.Z-pre.0.<date>-<sha>
+          #   3. vX.Y.(Z+1)-0.<date>-<sha>
+          # Pattern: optional -<prerelease> segment, then -<14 digits>-<12 hex>.
+          if GOWORK=off go list -m all | grep -E '[[:space:]]v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?-[0-9]{14}-[0-9a-f]{12}'; then
+            echo ""
+            echo "ERROR: pseudo-version found in go.mod."
+            echo "All plugin dependencies must resolve to published git tags."
+            echo "Tag the plugin module, then run 'go get <module>@<tag>' in the root module and commit."
+            exit 1
+          fi
+
+          # Reject replace directives that would divert the build to local paths.
+          # Ignore commented-out lines.
+          if grep -nE '^[[:space:]]*replace[[:space:]]' go.mod | grep -v '^[[:space:]]*//'; then
+            echo ""
+            echo "ERROR: replace directive(s) found in go.mod."
+            echo "Release builds must use published modules only. Remove replaces with:"
+            echo "  go mod edit -dropreplace <module>"
+            echo "then 'go mod tidy' and commit before tagging."
             exit 1
           fi
 
