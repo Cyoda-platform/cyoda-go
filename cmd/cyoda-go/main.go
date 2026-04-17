@@ -207,7 +207,7 @@ PROFILES
 SERVER
   CYODA_HTTP_PORT              HTTP listen port                          (default: 8080)
   CYODA_GRPC_PORT              gRPC listen port                          (default: 9090)
-  CYODA_ADMIN_PORT             Admin listener port (/livez,/readyz,/metrics) (default: 9091)
+  CYODA_ADMIN_PORT             Admin port for health and metrics         (default: 9091)
   CYODA_ADMIN_BIND_ADDRESS     Admin listener bind address               (default: 127.0.0.1)
   CYODA_CONTEXT_PATH           Context path prefix for all routes        (default: /api)
   CYODA_ERROR_RESPONSE_MODE    Error detail level: sanitized | verbose   (default: sanitized)
