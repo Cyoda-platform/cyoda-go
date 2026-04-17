@@ -103,7 +103,7 @@ func DefaultConfig() Config {
 			MockTenantName: "Mock Tenant",
 			MockRoles:      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
 			JWTSigningKey:  envPEM("CYODA_JWT_SIGNING_KEY"),
-			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda-go"),
+			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda"),
 			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
 			RequireJWT:     envBool("CYODA_REQUIRE_JWT", false),
 		},

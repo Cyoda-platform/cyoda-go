@@ -77,7 +77,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
 
-	handler := auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, "cyoda-go", 3600)
+	handler := auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, "cyoda", 3600)
 
 	return &testTokenEnv{
 		keyStore:        keyStore,
@@ -168,8 +168,8 @@ func TestTokenClientCredentialsValid(t *testing.T) {
 	if parsed.Claims["sub"] != env.clientID {
 		t.Errorf("expected sub %q, got %v", env.clientID, parsed.Claims["sub"])
 	}
-	if parsed.Claims["iss"] != "cyoda-go" {
-		t.Errorf("expected iss cyoda-go, got %v", parsed.Claims["iss"])
+	if parsed.Claims["iss"] != "cyoda" {
+		t.Errorf("expected iss cyoda, got %v", parsed.Claims["iss"])
 	}
 	if parsed.Claims["caas_user_id"] != "user-123" {
 		t.Errorf("expected caas_user_id user-123, got %v", parsed.Claims["caas_user_id"])

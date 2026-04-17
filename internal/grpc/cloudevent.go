@@ -22,7 +22,7 @@ func NewCloudEvent(eventType string, payload any) (*cepb.CloudEvent, error) {
 
 	return &cepb.CloudEvent{
 		Id:          uuid.New().String(),
-		Source:      "cyoda-go",
+		Source:      "cyoda",
 		SpecVersion: "1.0",
 		Type:        eventType,
 		Data:        &cepb.CloudEvent_TextData{TextData: string(data)},

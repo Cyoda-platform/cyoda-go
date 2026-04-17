@@ -12,7 +12,7 @@ import (
 // AuthConfig holds configuration for the AuthService.
 type AuthConfig struct {
 	SigningKeyPEM   string          // PEM-encoded RSA private key
-	Issuer          string          // e.g., "cyoda-go"
+	Issuer          string          // e.g., "cyoda"
 	ExpirySeconds   int             // e.g., 3600
 	TrustedKeyStore TrustedKeyStore // optional: externally-provided persistent store; if nil, uses in-memory
 }

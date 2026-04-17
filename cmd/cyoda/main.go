@@ -55,7 +55,7 @@ func main() {
 		if nodeID == "" {
 			nodeID = "standalone"
 		}
-		shutdown, err := observability.Init(context.Background(), "cyoda-go", nodeID)
+		shutdown, err := observability.Init(context.Background(), "cyoda", nodeID)
 		if err != nil {
 			slog.Error("failed to initialize OTel", "error", err)
 			os.Exit(1)
@@ -275,7 +275,7 @@ SERVER
 
   JWT mode:
     CYODA_JWT_SIGNING_KEY      RSA private key (PEM). Required in jwt mode.
-    CYODA_JWT_ISSUER           JWT issuer claim                          (default: cyoda-go)
+    CYODA_JWT_ISSUER           JWT issuer claim                          (default: cyoda)
     CYODA_JWT_EXPIRY_SECONDS   Token lifetime in seconds                 (default: 3600)
 
 BOOTSTRAP (jwt mode only)

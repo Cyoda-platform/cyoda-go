@@ -34,7 +34,7 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 
 	svc, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: pemKey,
-		Issuer:        "cyoda-go",
+		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 	}
 
 	// Validate token using JWKSValidator pointed at our test server
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda-go", 5*time.Minute)
+	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
 	uc, err := validator.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Validate token: %v", err)
@@ -106,14 +106,14 @@ func TestAuthService_DeterministicKID(t *testing.T) {
 	sharedPEM := generateTestPEM(t)
 
 	svcA, err := auth.NewAuthService(auth.AuthConfig{
-		SigningKeyPEM: sharedPEM, Issuer: "cyoda-go", ExpirySeconds: 3600,
+		SigningKeyPEM: sharedPEM, Issuer: "cyoda", ExpirySeconds: 3600,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthService A: %v", err)
 	}
 
 	svcB, err := auth.NewAuthService(auth.AuthConfig{
-		SigningKeyPEM: sharedPEM, Issuer: "cyoda-go", ExpirySeconds: 3600,
+		SigningKeyPEM: sharedPEM, Issuer: "cyoda", ExpirySeconds: 3600,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthService B: %v", err)
@@ -141,7 +141,7 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	// Node A
 	svcA, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: sharedPEM,
-		Issuer:        "cyoda-go",
+		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
 	if err != nil {
@@ -153,7 +153,7 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	// Node B — same key, separate instance
 	svcB, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: sharedPEM,
-		Issuer:        "cyoda-go",
+		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 
 	// Validate the token issued by node A using node B's JWKS endpoint.
 	// This fails if KID is random per node (the original bug).
-	validatorB := auth.NewJWKSValidator(srvB.URL+"/.well-known/jwks.json", "cyoda-go", 5*time.Minute)
+	validatorB := auth.NewJWKSValidator(srvB.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
 	uc, err := validatorB.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Node B failed to validate token from node A: %v", err)
@@ -211,7 +211,7 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 
 	svc, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: pemKey,
-		Issuer:        "cyoda-go",
+		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
 	if err != nil {
@@ -288,7 +288,7 @@ func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {
 
 	svc, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: pemKey,
-		Issuer:        "cyoda-go",
+		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
 	if err != nil {
@@ -298,7 +298,7 @@ func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {
 	srv := httptest.NewServer(svc.Handler())
 	defer srv.Close()
 
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda-go", 5*time.Minute)
+	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
 	authenticator := auth.NewDelegatingAuthenticator(validator)
 
 	// Request without auth header
@@ -314,7 +314,7 @@ func TestIntegration_JWTMode_InvalidToken(t *testing.T) {
 
 	svc, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: pemKey,
-		Issuer:        "cyoda-go",
+		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
 	if err != nil {
@@ -324,7 +324,7 @@ func TestIntegration_JWTMode_InvalidToken(t *testing.T) {
 	srv := httptest.NewServer(svc.Handler())
 	defer srv.Close()
 
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda-go", 5*time.Minute)
+	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
 	authenticator := auth.NewDelegatingAuthenticator(validator)
 
 	// Request with invalid token

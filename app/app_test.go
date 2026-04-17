@@ -169,7 +169,7 @@ func jwtApp(t *testing.T) *app.App {
 	cfg.ContextPath = ""
 	cfg.IAM.Mode = "jwt"
 	cfg.IAM.JWTSigningKey = generateTestPEM(t)
-	cfg.IAM.JWTIssuer = "cyoda-go"
+	cfg.IAM.JWTIssuer = "cyoda"
 	cfg.IAM.JWTExpiry = 3600
 	cfg.Bootstrap.ClientID = "test-bootstrap"
 	cfg.Bootstrap.ClientSecret = "test-secret-that-is-long-enough-for-bcrypt"
