@@ -80,6 +80,11 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 		return nil, err
 	}
 
+	if err := checkSchemaCompat(ctx, db, cfg.AutoMigrate); err != nil {
+		db.Close()
+		_ = fl.Unlock()
+		return nil, err
+	}
 	if cfg.AutoMigrate {
 		if err := runMigrations(ctx, db); err != nil {
 			db.Close()
