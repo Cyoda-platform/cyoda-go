@@ -21,7 +21,7 @@ PLATFORM="linux/$ARCH"
 # Stage binary under .buildctx/$PLATFORM/cyoda for the dockers_v2 context.
 # NOTE: the root .dockerignore doesn't apply here — buildctx is the build
 # context root for this invocation, not the repo root.
-BUILDCTX=".buildctx"
+BUILDCTX="$PROJECT_ROOT/.buildctx"
 trap 'rm -rf "$BUILDCTX"' EXIT
 rm -rf "$BUILDCTX"
 mkdir -p "$BUILDCTX/$PLATFORM"
