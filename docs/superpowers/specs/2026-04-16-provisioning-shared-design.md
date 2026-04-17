@@ -14,7 +14,8 @@ This spec captures the decisions that apply across all three targets. Each per-t
 
 | Target | Persona | Priority |
 |---|---|---|
-| Desktop (prebuilt binaries + `go install`) | Evaluators, CLI users | 60-second start, no dependencies |
+| Desktop — **packaged install** (Homebrew / `.deb` / `.rpm` / `curl\|sh`) | Evaluators, CLI users | 60-second start, no dependencies, sqlite default |
+| Desktop — `go install` | Power users, Go developers | Bare binary; accepts the binary's compiled-in defaults (memory) |
 | Docker (image + reference compose) | Application developers | Repeatable local instance, volume persistence, easy opt-in to real auth |
 | Helm chart | Operators running production | HA, real secrets, observability hooks |
 
@@ -28,9 +29,11 @@ The Go binary and the Docker image stay **unopinionated about configuration**. A
 
 | Target | Storage backend | Auth | Data location |
 |---|---|---|---|
-| Desktop | `sqlite` (via packaging) | mock (with startup banner) if JWT unset | `$XDG_DATA_HOME/cyoda-go/` (falls back to `~/.local/share/cyoda-go/`) |
-| Docker | `sqlite` (via compose env / image `CMD` wrapper) | mock (with startup banner) if JWT unset | `/var/lib/cyoda-go` (volume mount target) |
+| Desktop (packaged) | `sqlite` (injected by packaging wrapper) | mock (with startup banner) if JWT unset | Per-OS convention; defined by desktop per-target spec |
+| Docker | `sqlite` (injected by reference compose env) | mock (with startup banner) if JWT unset | `/var/lib/cyoda-go` (volume mount target) |
 | Helm | `postgres` | mock (with startup banner) if JWT unset | N/A (Postgres-backed) |
+
+The Docker **image itself is neutral** — it does not bake `CYODA_STORAGE_BACKEND=sqlite` into its environment or CMD. A raw `docker run ghcr.io/cyoda-platform/cyoda-go` honors the binary's compiled-in defaults (memory). The sqlite default applies only when a user runs the **reference compose**, which sets the env var. This keeps the image consistent with the Runtime philosophy statement above.
 
 Helm bundles `bitnami/postgresql` as a subchart with `postgresql.enabled: true` **by default** so `helm install cyoda-go oci://...` works against stock values. The chart ships a `values-production.yaml` preset that sets `postgresql.enabled: false` and expects an externally-managed Postgres URL — this is the preset production operators layer on top.
 
@@ -67,7 +70,12 @@ The binary exposes endpoints on two listeners:
 
 Plus the gRPC listener on `CYODA_GRPC_PORT` (default `9090`).
 
-### Admin listener — `CYODA_ADMIN_PORT` (default `9091`)
+### Admin listener — `CYODA_ADMIN_BIND_ADDRESS` : `CYODA_ADMIN_PORT`
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `CYODA_ADMIN_BIND_ADDRESS` | `127.0.0.1` | Interface the admin listener binds to |
+| `CYODA_ADMIN_PORT` | `9091` | Port the admin listener binds to |
 
 | Endpoint | Purpose | Probe target |
 |---|---|---|
@@ -75,7 +83,11 @@ Plus the gRPC listener on `CYODA_GRPC_PORT` (default `9090`).
 | `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete | Kubernetes `readinessProbe`, load balancer health |
 | `/metrics` | Prometheus pull endpoint | Prometheus scrape / `ServiceMonitor` |
 
-The admin listener is **unauthenticated by design**. Operators must bind it to `localhost` or a cluster-internal network only — never expose it to untrusted traffic. The canonical Helm chart exposes a ClusterIP-only `Service` for the admin port; canonical compose binds it to `127.0.0.1`.
+The admin listener is **unauthenticated by design**. Defaulting `CYODA_ADMIN_BIND_ADDRESS` to `127.0.0.1` ensures a bare desktop binary or `docker run ...` never exposes readiness/metrics to the network. Targets that need network exposure override this:
+
+- **Helm chart** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the pod (pod network is bounded, a ClusterIP-only `Service` handles exposure).
+- **Canonical compose** can map the admin port host-side as `127.0.0.1:9091:9091` without changing the bind address.
+- **Desktop binary** uses the default — the admin surface is reachable only from the same host.
 
 OTLP push (existing) stays, orthogonal to `/metrics`. Pull and push are both supported; operators pick one or both.
 
@@ -89,24 +101,34 @@ One convention across all three canonical artifacts, for consistency:
 |---|---|---|
 | HTTP API | `CYODA_HTTP_PORT` | `8080` |
 | gRPC | `CYODA_GRPC_PORT` | `9090` |
-| Admin (health + metrics) | `CYODA_ADMIN_PORT` | `9091` |
+| Admin (health + metrics) port | `CYODA_ADMIN_PORT` | `9091` |
+| Admin listener bind address | `CYODA_ADMIN_BIND_ADDRESS` | `127.0.0.1` |
 
 The `8123`/`9123` ports currently used by the `local` profile and its helper scripts remain a **local-profile override only** — they do not leak into the canonical provisioning artifacts.
 
 ## Schema compatibility contract
 
-Shared across all deployment topologies. On startup the binary reads the on-disk schema version and compares it to the version its embedded migrations target:
+Applies to **durable storage backends only** (sqlite, postgres, and any future durable plugin). The memory backend has no persistent schema and is not subject to this contract.
+
+Shared across all durable-backend deployment topologies. On startup the binary reads the on-disk schema version and compares it to the version its embedded migrations target:
 
 - **Schema version matches** — proceed.
 - **Schema older than code**, `AUTO_MIGRATE=true` — migrate forward, then proceed.
-- **Schema older than code**, `AUTO_MIGRATE=false` — fail fast with a clear error message that points the operator at the migration procedure (Helm `Job`, or `cyoda-go migrate` CLI).
+- **Schema older than code**, `AUTO_MIGRATE=false` — fail fast with a clear error message directing the operator to either (a) set `AUTO_MIGRATE=true` and restart, or (b) run the out-of-band migration procedure defined by their provisioning target (for Helm: the pre-install / pre-upgrade `Job`).
 - **Schema newer than code** — fail fast unconditionally, regardless of `AUTO_MIGRATE`. This is what makes rolling downgrades / stale-binary-after-schema-change safe: the new pod gracefully refuses to serve against a schema it doesn't understand, rather than corrupting data.
 
 No polling, no waiting. Failing fast with a clear error is the entire contract. Each deployment target's own spec builds on this (Helm's pre-install `Job` disables auto-migrate on the main deployment and runs the migration out-of-band; desktop/Docker leave auto-migrate on).
 
+A dedicated migration entrypoint (e.g., a `cyoda-go migrate` subcommand) is **not introduced by this spec**. The Helm per-target spec decides how its migration `Job` invokes the binary — most likely by running the existing binary with `AUTO_MIGRATE=true` and a future `CYODA_MIGRATE_ONLY=true`-style flag that exits after migration. That decision is deferred.
+
 ## Release and publishing model
 
-**Decoupled versioning** — two independent tag streams. Versioning resets to `0.1.0` (app) and `0.1.0` (chart) — there is no prior history to preserve.
+**Decoupled versioning** — two independent tag streams. Both reset to `0.1.0`:
+
+- App tags at the repo root: `v0.1.0` onward. The only existing root-level tag stream is pre-public; no consumers depend on it.
+- Chart tags: `cyoda-go-0.1.0` onward. No prior chart has shipped.
+
+**Plugin module tags** (`plugins/memory/v0.1.0`, `plugins/postgres/v0.1.0`, and future `plugins/sqlite/v0.1.0`) are a separate stream governed by Go module semantics and the SPI's own versioning policy — they are **not reset** and **not controlled by this spec**. See the Out-of-Scope section.
 
 ### App tags (`v0.1.0`, `v0.2.0-rc.1`, …) — binary and image
 
@@ -209,7 +231,7 @@ Also out of scope:
 
 The implementation plan generated from this spec covers the shared-layer work:
 
-1. Add `/livez`, `/readyz`, `/metrics` endpoints on a new admin listener (`CYODA_ADMIN_PORT=9091`), separate from the API listener (TDD).
+1. Add `/livez`, `/readyz`, `/metrics` endpoints on a new admin listener separate from the API listener. Listener is governed by `CYODA_ADMIN_PORT` (default `9091`) and `CYODA_ADMIN_BIND_ADDRESS` (default `127.0.0.1` — safe for desktop/bare `docker run`) (TDD).
 2. Add `CYODA_SUPPRESS_BANNER` env var; emit mock-auth warning banner unconditionally in mock mode unless suppressed (TDD).
 3. Implement the schema-compatibility contract: fail fast on schema-newer-than-code, fail fast on schema-older + auto-migrate off (TDD).
 4. Introduce the target repo layout: `deploy/`, `examples/`, `scripts/dev/`.
@@ -217,7 +239,10 @@ The implementation plan generated from this spec covers the shared-layer work:
 6. Add `.github/workflows/release.yml` (GoReleaser + multi-arch image + keyless cosign + SBOM on `v*` tags; prereleases don't move `:latest`).
 7. Add `.github/workflows/release-chart.yml` using `helm/chart-releaser-action`, gated on the chart's existence.
 8. Delete `.github/workflows/docker-publish.yml`.
-9. Update `README.md`, `CONTRIBUTING.md`, `cmd/cyoda-go/main.go` `printHelp()` for new endpoints, new env vars (`CYODA_ADMIN_PORT`, `CYODA_SUPPRESS_BANNER`), new port convention, and new layout.
+9. Update `README.md`, `CONTRIBUTING.md`, `cmd/cyoda-go/main.go` `printHelp()` for new endpoints, new env vars (`CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_SUPPRESS_BANNER`), new port convention, and new layout. Additionally, close existing SQLite documentation gaps now that sqlite is elevated to a default:
+   - Add **sqlite** as a first-class row in the README "Storage backends" table alongside memory and postgres.
+   - Add a **Configuration > SQLite** subsection in the README documenting `CYODA_SQLITE_PATH`, `CYODA_SQLITE_AUTO_MIGRATE`, `CYODA_SQLITE_BUSY_TIMEOUT`, `CYODA_SQLITE_CACHE_SIZE`, `CYODA_SQLITE_SEARCH_SCAN_LIMIT`.
+   - Add a **`.env.sqlite.example`** alongside the existing `.env.local.example` / `.env.postgres.example` / `.env.jwt.example` / `.env.otel.example` so "copy the example for your backend" works for sqlite too.
 10. Add README badges (five) in a final commit once the first release has produced artifacts.
 
 The per-target specs (desktop, Docker, Helm) are separate brainstorming cycles that consume this spec.
