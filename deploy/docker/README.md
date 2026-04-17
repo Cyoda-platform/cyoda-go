@@ -47,6 +47,13 @@ Key elements to copy:
   single-host deployments. Flip to `0.0.0.0:9091` ONLY if your
   deployment has authentication upstream of cyoda (ingress, sidecar,
   service mesh).
+  Note: `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the container means
+  the admin port is reachable from any other service on the same
+  compose network. The loopback-only guarantee is the host-port
+  mapping (`127.0.0.1:9091:9091`), not the container-internal
+  binding. If you crib this fragment into a multi-service compose
+  stack, assume any sidecar can hit `/metrics` and `/readyz`
+  without auth.
 - **Mock auth is the startup default.** `CYODA_IAM_MODE=mock` accepts
   all requests. For production, set `CYODA_REQUIRE_JWT=true` AND
   provide `CYODA_JWT_SIGNING_KEY` (multi-line PEM:

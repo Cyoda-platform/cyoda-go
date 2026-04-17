@@ -95,7 +95,7 @@ func TestCyodaHealth_Timeout(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("expected exit 1 (timeout → not ready); got %d", code)
 	}
-	if elapsed > 4*time.Second {
+	if elapsed > 2500*time.Millisecond {
 		t.Fatalf("runHealth should time out within ~2s; took %v", elapsed)
 	}
 }
