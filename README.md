@@ -269,6 +269,33 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 
 Enable via the `otel` profile: `CYODA_PROFILES=local,otel go run ./cmd/cyoda-go`. Copy `.env.otel.example` to `.env.otel` to customize.
 
+### Admin / Observability Listener
+
+The admin listener binds to `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default `127.0.0.1:9091`) and exposes the following endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `/livez` | Liveness — process responsiveness only; does not check storage. Use this for Kubernetes `livenessProbe`. |
+| `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete. Use for `readinessProbe` and load-balancer health gates. |
+| `/metrics` | Prometheus pull endpoint. Scrape with a standard Prometheus scrape config. |
+
+**The admin listener is unauthenticated by design.** It must only be bound to a trusted network interface:
+- Desktop: leave `CYODA_ADMIN_BIND_ADDRESS` at its default `127.0.0.1` (loopback only).
+- Kubernetes: set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` and rely on the pod network for isolation — the port is not exposed through any `Service` visible externally.
+- Docker Compose: map the port as `127.0.0.1:9091:9091` so it is only reachable from the host.
+
+The existing `/api/health` on the main API listener is retained for backwards compatibility.
+
+### Security
+
+**Production safety floor — `CYODA_REQUIRE_JWT=true`**
+
+Set `CYODA_REQUIRE_JWT=true` to make the binary refuse to start unless `CYODA_IAM_MODE=jwt` and `CYODA_JWT_SIGNING_KEY` are both set. This prevents accidentally deploying with mock auth enabled. The canonical Helm chart enables this by default. Desktop and Docker leave it off so the mock-auth fallback still applies to evaluators.
+
+**Mock-auth warning banner**
+
+When running in `CYODA_IAM_MODE=mock`, the binary emits a prominent warning banner at startup to remind operators that all requests are unauthenticated. `CYODA_SUPPRESS_BANNER=true` silences this banner — it is intended only for CI/test harnesses where the warning is noise. Never set `CYODA_SUPPRESS_BANNER=true` in production: operators need to see the banner to know the security posture of the running instance.
+
 ### Admin Endpoints
 
 #### Log Level (`/api/admin/log-level`)

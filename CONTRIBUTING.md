@@ -65,6 +65,10 @@ No external web frameworks. No DI frameworks. No ORM.
 | `github.com/jackc/pgx/v5` | PostgreSQL driver (only loaded when postgres backend is active) |
 | `google.golang.org/grpc` | gRPC server for externalized processor/criteria dispatch |
 
+## Provisioning Artifacts
+
+Canonical provisioning artifacts (Helm chart, Docker Compose files) live under `deploy/`. Developer convenience scripts (local run, Docker dev setup) live under `scripts/dev/`. For the design rationale and structure of the shared provisioning layer, see [`docs/superpowers/specs/2026-04-16-provisioning-shared-design.md`](docs/superpowers/specs/2026-04-16-provisioning-shared-design.md).
+
 ## Developer Setup
 
 1. [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) with [superpowers](https://github.com/obra/superpowers)
