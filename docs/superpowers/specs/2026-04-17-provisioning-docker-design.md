@@ -39,9 +39,9 @@ Per the shared spec, the **image itself is neutral about configuration** — no 
 # propagates to an empty named volume mounted on top of it on first
 # container start.
 #
-# busybox is pinned to a specific version tag — Docker Hub's busybox
-# does NOT publish a `stable` tag. Bump intentionally; the stage is
-# discarded post-build so image size is irrelevant.
+# busybox pinned to a specific version for release-pipeline
+# reproducibility. Bump intentionally; the stage is discarded post-build
+# so image size is irrelevant.
 FROM busybox:1.37 AS stage
 RUN mkdir -p /data && chown 65532:65532 /data
 
