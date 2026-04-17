@@ -1,8 +1,10 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +22,7 @@ func TestHandler_Livez_Returns200(t *testing.T) {
 
 func TestHandler_Readyz_Unready(t *testing.T) {
 	h := NewHandler(Options{
-		Readiness: func() error { return errNotReady },
+		Readiness: func() error { return errors.New("not ready") },
 	})
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -48,13 +50,8 @@ func TestHandler_Metrics_ReturnsPrometheusFormat(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("metrics: got %d, want 200", w.Code)
 	}
-	if ct := w.Header().Get("Content-Type"); ct == "" {
-		t.Fatalf("metrics: missing Content-Type")
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/plain") && !strings.HasPrefix(ct, "application/openmetrics-text") {
+		t.Fatalf("metrics: Content-Type %q is not a Prometheus exposition format", ct)
 	}
 }
-
-var errNotReady = &readyErr{msg: "not ready"}
-
-type readyErr struct{ msg string }
-
-func (e *readyErr) Error() string { return e.msg }
