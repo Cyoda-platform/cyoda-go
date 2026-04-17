@@ -29,7 +29,17 @@ require() {
         fi
     done
 }
-require curl tar sha256sum
+require curl tar
+# Probe for GNU coreutils sha256sum first (Linux), fall back to macOS's /usr/bin/shasum.
+# At least one must be present.
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256_check() { sha256sum -c -; }
+elif command -v shasum >/dev/null 2>&1; then
+    sha256_check() { shasum -a 256 -c -; }
+else
+    err "need sha256sum (Linux) or shasum (macOS) to verify checksums"
+    exit 1
+fi
 
 detect_os() {
     os=$(uname -s)
@@ -95,7 +105,7 @@ main() {
     fi
 
     info "Verifying checksum"
-    if ! (cd "$tmp" && grep " $archive\$" SHA256SUMS | sha256sum -c -); then
+    if ! (cd "$tmp" && grep " $archive\$" SHA256SUMS | sha256_check); then
         err "SHA256 verification failed for $archive"
         exit 1
     fi

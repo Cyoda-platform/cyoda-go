@@ -6,7 +6,6 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -38,11 +37,6 @@ func runMigrations(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("create migrator: %w", err)
 	}
-	defer func() {
-		if sErr, dErr := m.Close(); sErr != nil || dErr != nil {
-			slog.Warn("migrate close returned errors", "sourceErr", sErr, "driverErr", dErr)
-		}
-	}()
 
 	done := make(chan error, 1)
 	go func() {
@@ -88,11 +82,6 @@ func checkSchemaCompat(ctx context.Context, db *sql.DB, autoMigrate bool) error 
 	if err != nil {
 		return fmt.Errorf("schema compat: create migrator: %w", err)
 	}
-	defer func() {
-		if sErr, dErr := m.Close(); sErr != nil || dErr != nil {
-			slog.Warn("migrate close returned errors", "sourceErr", sErr, "driverErr", dErr)
-		}
-	}()
 
 	maxVersion, err := maxMigrationVersion(src)
 	if err != nil {
