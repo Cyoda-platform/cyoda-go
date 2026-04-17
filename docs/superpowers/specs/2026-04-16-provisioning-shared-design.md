@@ -4,6 +4,8 @@
 **Date:** 2026-04-16 (revised 2026-04-17)
 **Scope:** Cross-target concerns shared by the three per-target provisioning designs (desktop, Docker, Helm). Per-target mechanics are deferred to their own specs.
 
+> **Supersession on artifact names (2026-04-17):** the desktop per-target spec at `docs/superpowers/specs/2026-04-17-provisioning-desktop-design.md` narrows the user-facing artifact name from `cyoda-go` to `cyoda` — binary, container image, Helm chart, `.deb`/`.rpm` package, Homebrew formula. The repo name, Go module path, plugin module paths, and `CYODA_*` env-var prefix are unchanged. Read every reference to `cyoda-go` below as `cyoda` where the context is a user-facing artifact; references to the Go module path or the GitHub repo stay as written. The rename lands on PR #44 before merge.
+
 ## Motivation
 
 cyoda-go is open source and ships three first-party storage plugins (`memory`, `sqlite`, `postgres`). Today the repo has dev-era artifacts (root `Dockerfile`, `docker-compose.yml`, ad-hoc shell scripts) and a Nexus-only image publishing pipeline. There are no public release artifacts, no Helm chart, and no README badges. The purpose of this work is to produce canonical provisioning flows for three audiences — evaluators (desktop), application developers (Docker), and operators (Helm) — and to clean up dev-era artifacts that now confuse rather than help.
