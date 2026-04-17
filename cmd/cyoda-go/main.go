@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -130,6 +131,14 @@ func main() {
 }
 
 func printBanner(cfg app.Config) {
+	printBannerTo(os.Stdout, cfg)
+}
+
+func printBannerTo(w io.Writer, cfg app.Config) {
+	if os.Getenv("CYODA_SUPPRESS_BANNER") == "true" {
+		return
+	}
+
 	teal := "\033[38;5;80m"
 	reset := "\033[0m"
 
@@ -139,16 +148,16 @@ func printBanner(cfg app.Config) {
 		reset = ""
 	}
 
-	fmt.Printf("%s", teal)
-	fmt.Println(`   ██████╗██╗   ██╗ ██████╗ ██████╗  █████╗`)
-	fmt.Println(`  ██╔════╝╚██╗ ██╔╝██╔═══██╗██╔══██╗██╔══██╗`)
-	fmt.Println(`  ██║      ╚████╔╝ ██║   ██║██║  ██║███████║`)
-	fmt.Println(`  ██║       ╚██╔╝  ██║   ██║██║  ██║██╔══██║`)
-	fmt.Println(`  ╚██████╗   ██║   ╚██████╔╝██████╔╝██║  ██║`)
-	fmt.Println(`   ╚═════╝   ╚═╝    ╚═════╝ ╚═════╝ ╚═╝  ╚═╝`)
-	fmt.Printf("%s", reset)
-	fmt.Printf("  Cyoda-Go %s (%s) built %s\n", version, commit, buildDate)
-	fmt.Printf("  HTTP :%d | gRPC :%d | IAM %s | Path %s | Profiles %s\n\n",
+	fmt.Fprintf(w, "%s", teal)
+	fmt.Fprintln(w, `   ██████╗██╗   ██╗ ██████╗ ██████╗  █████╗`)
+	fmt.Fprintln(w, `  ██╔════╝╚██╗ ██╔╝██╔═══██╗██╔══██╗██╔══██╗`)
+	fmt.Fprintln(w, `  ██║      ╚████╔╝ ██║   ██║██║  ██║███████║`)
+	fmt.Fprintln(w, `  ██║       ╚██╔╝  ██║   ██║██║  ██║██╔══██║`)
+	fmt.Fprintln(w, `  ╚██████╗   ██║   ╚██████╔╝██████╔╝██║  ██║`)
+	fmt.Fprintln(w, `   ╚═════╝   ╚═╝    ╚═════╝ ╚═════╝ ╚═╝  ╚═╝`)
+	fmt.Fprintf(w, "%s", reset)
+	fmt.Fprintf(w, "  Cyoda-Go %s (%s) built %s\n", version, commit, buildDate)
+	fmt.Fprintf(w, "  HTTP :%d | gRPC :%d | IAM %s | Path %s | Profiles %s\n\n",
 		cfg.HTTPPort, cfg.GRPC.Port, cfg.IAM.Mode, cfg.ContextPath, app.ProfileBanner())
 }
 
@@ -213,6 +222,7 @@ SERVER
   CYODA_ERROR_RESPONSE_MODE    Error detail level: sanitized | verbose   (default: sanitized)
   CYODA_MAX_STATE_VISITS       Max visits per state in workflow cascade   (default: 10)
   CYODA_LOG_LEVEL              Log level: debug | info | warn | error    (default: info)
+  CYODA_SUPPRESS_BANNER        Silence startup banner                    (default: false)
 
 `)
 	printStorageHelp()
