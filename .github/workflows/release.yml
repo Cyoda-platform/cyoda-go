@@ -92,7 +92,10 @@ jobs:
 
       - uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          # Pin to latest v2.x.y. Accepts patches and minor features; blocks
+          # v3 breaking changes from silently breaking the release pipeline.
+          # Bump intentionally when a new major warrants validation.
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
