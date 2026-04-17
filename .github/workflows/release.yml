@@ -37,6 +37,15 @@ jobs:
             exit 1
           fi
 
+      - name: Guard — Dockerfile must exist
+        run: |
+          if [ ! -f deploy/docker/Dockerfile ]; then
+            echo "ERROR: deploy/docker/Dockerfile not found."
+            echo "The canonical Dockerfile is produced by the Docker per-target plan."
+            echo "A v* release tag cannot be built until that artifact lands. Aborting."
+            exit 1
+          fi
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
