@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -362,5 +363,77 @@ func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
 	}
 	if string(num) != bigIDLiteral {
 		t.Fatalf("precision lost on update: expected id=%q, got %q", bigIDLiteral, string(num))
+	}
+}
+
+// TestCollectionCreate_PreservesLargeIntPrecision verifies that the
+// dedicated collection-create path (POST /entity/{format} with an array
+// of {model, payload} items) preserves integer literals >2^53 exactly.
+// Spec Section 6.4: this exercises the CreateEntityCollection JSON-array
+// parsing path (service.go decodeJSONPreservingNumbers call), which is
+// distinct from the single-create path covered by
+// TestCreateEntity_PreservesLargeIntPrecision.
+func TestCollectionCreate_PreservesLargeIntPrecision(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "PrecisionCollection", 1, `{"id":1,"name":"x"}`)
+
+	// 9007199254740993 == 2^53 + 1, the smallest positive integer that is
+	// not exactly representable as a float64. The first item carries the
+	// precision-witness id; the second item is a plain small-int control.
+	const bigIDLiteral = "9007199254740993"
+	body := `[
+		{"model":{"name":"PrecisionCollection","version":1},"payload":"{\"id\":` + bigIDLiteral + `,\"name\":\"big\"}"},
+		{"model":{"name":"PrecisionCollection","version":1},"payload":"{\"id\":2,\"name\":\"small\"}"}
+	]`
+
+	resp, err := http.Post(srv.URL+"/entity/JSON", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("create collection request failed: %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	respBody := readBody(t, resp)
+
+	var results []map[string]any
+	if err := json.Unmarshal(respBody, &results); err != nil {
+		t.Fatalf("failed to parse create collection response: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result envelope, got %d", len(results))
+	}
+	entityIDs, ok := results[0]["entityIds"].([]any)
+	if !ok || len(entityIDs) != 2 {
+		t.Fatalf("expected 2 entity IDs, got %v", results[0]["entityIds"])
+	}
+	bigEntityID, ok := entityIDs[0].(string)
+	if !ok || bigEntityID == "" {
+		t.Fatalf("expected non-empty entityId for big-id item, got %v", entityIDs[0])
+	}
+
+	// Read back the first item and assert exact literal preservation.
+	getResp := doGetEntity(t, srv.URL, bigEntityID)
+	expectStatus(t, getResp, http.StatusOK)
+	getBody := readBody(t, getResp)
+
+	var envelope map[string]any
+	decodeJSONResponseUseNumber(t, getBody, &envelope)
+
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data to be an object, got %T", envelope["data"])
+	}
+	idVal := data["id"]
+	num, ok := idVal.(json.Number)
+	if !ok {
+		t.Fatalf("expected id to decode as json.Number, got %T (value=%v)", idVal, idVal)
+	}
+	if string(num) != bigIDLiteral {
+		t.Fatalf("precision lost in collection-create: expected id=%q, got %q", bigIDLiteral, string(num))
+	}
+	gotInt, err := num.Int64()
+	if err != nil {
+		t.Fatalf("Int64() failed on preserved literal: %v", err)
+	}
+	if gotInt != int64(9007199254740993) {
+		t.Fatalf("expected int64=9007199254740993, got %d", gotInt)
 	}
 }
