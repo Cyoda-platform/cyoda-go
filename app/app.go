@@ -440,6 +440,19 @@ func New(cfg Config) *App {
 
 func (a *App) Handler() http.Handler { return a.handler }
 
+// ReadinessCheck returns nil when the instance is ready to serve external
+// traffic. Called synchronously by the /readyz admin endpoint on every
+// probe — keep it cheap. By the time New() returns, the plugin factory
+// has successfully opened connections and applied migrations (per the
+// existing startup sequence), so a non-nil storeFactory is a sufficient
+// readiness signal until the SPI gains a dedicated Ping method.
+func (a *App) ReadinessCheck() error {
+	if a.storeFactory == nil {
+		return fmt.Errorf("storage not initialized")
+	}
+	return nil
+}
+
 func (a *App) StoreFactory() spi.StoreFactory             { return a.storeFactory }
 func (a *App) TransactionManager() spi.TransactionManager { return a.transactionManager }
 func (a *App) AuthenticationService() contract.AuthenticationService {

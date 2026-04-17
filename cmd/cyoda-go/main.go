@@ -14,6 +14,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/admin"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 
@@ -91,6 +92,21 @@ func main() {
 		}
 	}()
 
+	// Start admin listener (unauthenticated — bind address controls exposure).
+	adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.BindAddress, cfg.Admin.Port)
+	adminServer := &http.Server{
+		Addr: adminAddr,
+		Handler: admin.NewHandler(admin.Options{
+			Readiness: a.ReadinessCheck,
+		}),
+	}
+	go func() {
+		slog.Info("admin server starting", "addr", adminAddr)
+		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("admin server failed", "error", err)
+		}
+	}()
+
 	// Block until signal received.
 	sig := <-sigCh
 	slog.Info("received signal, starting graceful shutdown", "signal", sig)
@@ -100,6 +116,9 @@ func main() {
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		slog.Error("HTTP server shutdown failed", "error", err)
+	}
+	if err := adminServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("admin server shutdown failed", "error", err)
 	}
 
 	// Close app — releases backend resources (e.g. database pool).
@@ -188,6 +207,8 @@ PROFILES
 SERVER
   CYODA_HTTP_PORT              HTTP listen port                          (default: 8080)
   CYODA_GRPC_PORT              gRPC listen port                          (default: 9090)
+  CYODA_ADMIN_PORT             Admin listener port (/livez,/readyz,/metrics) (default: 9091)
+  CYODA_ADMIN_BIND_ADDRESS     Admin listener bind address               (default: 127.0.0.1)
   CYODA_CONTEXT_PATH           Context path prefix for all routes        (default: /api)
   CYODA_ERROR_RESPONSE_MODE    Error detail level: sanitized | verbose   (default: sanitized)
   CYODA_MAX_STATE_VISITS       Max visits per state in workflow cascade   (default: 10)

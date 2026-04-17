@@ -207,6 +207,8 @@ The `./cyoda-go.sh` script is a convenience wrapper that sets `CYODA_PROFILES=lo
 |----------|---------|-------------|
 | `CYODA_HTTP_PORT` | `8080` | HTTP listen port |
 | `CYODA_GRPC_PORT` | `9090` | gRPC listen port |
+| `CYODA_ADMIN_PORT` | `9091` | Admin listener port (`/livez`, `/readyz`, `/metrics`) |
+| `CYODA_ADMIN_BIND_ADDRESS` | `127.0.0.1` | Admin listener bind address (loopback by default; set to `0.0.0.0` in containers) |
 | `CYODA_CONTEXT_PATH` | `/api` | URL prefix for all routes |
 | `CYODA_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `CYODA_ERROR_RESPONSE_MODE` | `sanitized` | Error detail: `sanitized` (production) or `verbose` (development) |
