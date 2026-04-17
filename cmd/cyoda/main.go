@@ -33,9 +33,14 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
-		printHelp()
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--help", "-h":
+			printHelp()
+			return
+		case "init":
+			os.Exit(runInit(os.Args[2:]))
+		}
 	}
 
 	app.LoadEnvFiles()
@@ -239,7 +244,10 @@ func printStorageHelp() {
 func printHelp() {
 	fmt.Print(`Cyoda-Go — Lightweight digital twin of the Cyoda platform
 
-Usage: cyoda [--help]
+Usage:
+  cyoda [flags]           Run the server with current config.
+  cyoda init [--force]    Write a starter user config enabling sqlite.
+  cyoda --help            Show this help.
 
 All configuration is via environment variables. Variables can be placed in .env
 files and loaded automatically using profiles.
