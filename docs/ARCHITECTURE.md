@@ -1249,7 +1249,7 @@ go build -o bin/cyoda-go ./cmd/cyoda-go
 ./bin/cyoda-go
 
 # Docker (with PostgreSQL)
-./cyoda-go-docker.sh
+./scripts/dev/run-docker-dev.sh
 ```
 
 The Docker script generates a fresh JWT signing key, writes `.env.docker`, and runs `docker compose up`. PostgreSQL is started as a sidecar container.
@@ -1258,7 +1258,7 @@ The Docker script generates a fresh JWT signing key, writes `.env.docker`, and r
 
 ```bash
 # Start a 3-node cluster with nginx load balancer
-./cyoda-go-docker.sh --nodes 3
+./scripts/dev/run-docker-dev.sh --nodes 3
 ```
 
 Architecture:

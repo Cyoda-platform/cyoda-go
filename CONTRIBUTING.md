@@ -52,7 +52,7 @@ go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Clou
 | `go test ./... -v` | Run all tests |
 | `go test -race ./...` | Run tests with race detector |
 | `go test -coverprofile=coverage.out ./...` | Test coverage |
-| `./cyoda-go-docker.sh` | Start with Docker + PostgreSQL |
+| `./scripts/dev/run-docker-dev.sh` | Start with Docker + PostgreSQL |
 
 ## Dependencies
 
