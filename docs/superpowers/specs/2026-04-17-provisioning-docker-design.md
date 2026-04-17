@@ -36,13 +36,22 @@ Per the shared spec, the **image itself is neutral about configuration** — no 
 # pattern stages an empty /data owned by 65532:65532 in a temporary
 # image, then COPY-chowns it into the distroless image. The resulting
 # /var/lib/cyoda is then present with correct ownership, which Docker
-# will propagate to an empty named volume mounted on top of it on
-# first container start.
-FROM busybox:stable AS stage
+# propagates to an empty named volume mounted on top of it on first
+# container start.
+#
+# busybox is pinned to a specific version tag — Docker Hub's busybox
+# does NOT publish a `stable` tag. Bump intentionally; the stage is
+# discarded post-build so image size is irrelevant.
+FROM busybox:1.37 AS stage
 RUN mkdir -p /data && chown 65532:65532 /data
 
 FROM gcr.io/distroless/static
 ARG TARGETPLATFORM
+
+# Binary path /cyoda is referenced by:
+#   - deploy/docker/compose.yaml healthcheck ("/cyoda health")
+#   - the ENTRYPOINT below
+# Keep these in sync if the binary ever moves.
 COPY $TARGETPLATFORM/cyoda /cyoda
 COPY --from=stage --chown=65532:65532 /data /var/lib/cyoda
 
@@ -57,7 +66,7 @@ ENTRYPOINT ["/cyoda"]
 - **Base:** `gcr.io/distroless/static` — ~2MB, CA bundle + tzdata included, no shell, no package manager. Runs our `CGO_ENABLED=0` static Go binary. Industry-standard for distroless Go tools (kubectl, helm, cert-manager, cosign).
 - **Pre-built binary only.** The Dockerfile expects `$TARGETPLATFORM/cyoda` to be present in the build context, which is what GoReleaser's `dockers_v2` provides. Contributors iterating on cyoda use `scripts/dev/run-docker-dev.sh` (§4), which stages a locally-built binary into this context shape.
 - **Non-root.** `USER 65532:65532` is distroless's built-in `nonroot` user. No filesystem writes inside the image; data goes to the mounted volume at `/var/lib/cyoda/`.
-- **No CMD.** `ENTRYPOINT ["/cyoda"]` with no args means users can `docker run ... cyoda health`, `cyoda init --force`, `cyoda --help` without overriding entrypoint.
+- **No CMD.** `ENTRYPOINT ["/cyoda"]` with no args means any trailing argument on `docker run IMAGE <args>` is passed as the subcommand: `docker run IMAGE health`, `docker run IMAGE init --force`, `docker run IMAGE --help`. No need to override entrypoint.
 - **No `HEALTHCHECK`.** Rationale in §3. Compose users get healthcheck via the compose file; k8s users define probes in the Deployment spec. The distroless Go-tool convention is no Dockerfile `HEALTHCHECK`; orchestrators own health policy.
 
 **Volume chown — why the two-stage `busybox` pattern:** the `nonroot` user needs write access to `/var/lib/cyoda/`. Docker's behavior when mounting a named volume:
@@ -83,9 +92,11 @@ services:
       CYODA_STORAGE_BACKEND: sqlite
       CYODA_SQLITE_PATH: /var/lib/cyoda/cyoda.db
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
-      # For production: uncomment to require real JWT auth at startup.
+      # For production: uncomment BOTH lines below and set CYODA_JWT_SIGNING_KEY
+      # in your shell before `docker compose up`.
+      # Multi-line PEM: `export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"`
       # CYODA_REQUIRE_JWT: "true"
-      # CYODA_JWT_SIGNING_KEY: ${CYODA_JWT_SIGNING_KEY:?set CYODA_JWT_SIGNING_KEY}
+      # CYODA_JWT_SIGNING_KEY: ${CYODA_JWT_SIGNING_KEY:?set CYODA_JWT_SIGNING_KEY before compose up}
     volumes:
       - cyoda-data:/var/lib/cyoda
     # Adjust start_period for slower environments (Postgres migrations,
@@ -220,9 +231,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
 
 LOCAL_TAG="ghcr.io/cyoda-platform/cyoda:dev"
 echo "Building image $LOCAL_TAG..."
+# BuildKit auto-injects TARGETPLATFORM from --platform, so no --build-arg needed
+# for the Dockerfile's `COPY $TARGETPLATFORM/cyoda /cyoda` line.
 docker buildx build --load \
     --platform "$PLATFORM" \
-    --build-arg TARGETPLATFORM="$PLATFORM" \
     -t "$LOCAL_TAG" \
     -f deploy/docker/Dockerfile \
     "$BUILDCTX"
@@ -320,6 +332,7 @@ Extend the current placeholder to describe:
 - **Secrets management via Docker secrets.** Compose ships dev-safe defaults; production secrets handling is the Helm chart's concern (per the shared spec).
 - **Richer runtime readiness (storage-ping, cluster-membership checks).** Requires an SPI-level `StoreFactory.Ready(ctx)` method. Future enhancement; especially relevant for the cyoda-go-cassandra plugin (cluster-join latency) but out of scope here.
 - **Makefile build-target consolidation.** Would give `scripts/dev/run-docker-dev.sh` a single source of truth for build flags. Deferred; flag drift between the dev script and GoReleaser is acceptable for dev-only builds.
+- **`_FILE` env-var suffix convention for secrets.** Common Docker/Kubernetes pattern: `CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/key.pem` instead of inlining a multi-line PEM into the environment. The binary currently reads `CYODA_JWT_SIGNING_KEY` directly. Adding `_FILE` support is a small enhancement that would make Docker Compose secrets and Kubernetes mounted Secrets clean to wire — worth a follow-up issue. Not blocking for this PR; users can still use `export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"` today.
 
 ## 9. Downstream implementation plan
 
