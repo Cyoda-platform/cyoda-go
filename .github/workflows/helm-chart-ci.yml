@@ -246,6 +246,29 @@ jobs:
           kubernetes_version: v1.31.0
           wait: 120s
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build cyoda image from branch and load into kind
+        # The chart's appVersion points at a concrete released binary
+        # tag (e.g. ghcr.io/cyoda-platform/cyoda:0.1.0) that may not yet
+        # exist for an in-progress PR. Build the image from the PR's
+        # source tree and load it into the kind node, then override
+        # image.repository + image.pullPolicy during ct install so the
+        # chart pulls the freshly-built image rather than the unreleased
+        # registry tag.
+        run: |
+          mkdir -p /tmp/cyoda-build/linux/amd64
+          GOOS=linux GOARCH=amd64 go build -o /tmp/cyoda-build/linux/amd64/cyoda ./cmd/cyoda
+          docker build \
+            --build-arg TARGETPLATFORM=linux/amd64 \
+            -f deploy/docker/Dockerfile \
+            -t cyoda-ci:test \
+            /tmp/cyoda-build
+          kind load docker-image cyoda-ci:test --name cyoda-chart-ci
+
       - name: Install Envoy Gateway (bundles Gateway API v1.2 CRDs)
         run: |
           # Envoy Gateway v1.2 bundles the Gateway API CRDs it needs
@@ -315,6 +338,9 @@ jobs:
               --helm-extra-set-args \
                 "--set=postgres.existingSecret=test-dsn \
                  --set=jwt.existingSecret=test-jwt \
+                 --set=image.repository=cyoda-ci \
+                 --set=image.tag=test \
+                 --set=image.pullPolicy=Never \
                  --set=gateway.parentRefs[0].name=test-gateway \
                  --set=gateway.http.hostnames[0]=cyoda.ci \
                  --set=gateway.grpc.hostnames[0]=grpc.cyoda.ci"
