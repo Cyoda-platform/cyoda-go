@@ -121,3 +121,116 @@ jobs:
             exit 1
           fi
           echo "PASS: guard fired as expected."
+
+  helm-install-smoke:
+    name: ct install on kind
+    needs: helm-lint-and-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Set up kind cluster
+        uses: helm/kind-action@v1
+        with:
+          version: v0.24.0
+          cluster_name: cyoda-chart-ci
+          kubernetes_version: v1.31.0
+          wait: 120s
+
+      - name: Install Gateway API v1.2 CRDs
+        run: |
+          kubectl apply -f \
+            https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+          kubectl wait --for=condition=established crd/gateways.gateway.networking.k8s.io --timeout=60s
+
+      - name: Install Envoy Gateway
+        run: |
+          helm install eg oci://docker.io/envoyproxy/gateway-helm \
+            --version v1.2.0 \
+            -n envoy-gateway-system \
+            --create-namespace \
+            --wait --timeout 5m
+
+      - name: Start Postgres sidecar
+        run: |
+          kubectl create namespace cyoda
+          kubectl -n cyoda run pg \
+            --image=postgres:16-alpine \
+            --env=POSTGRES_PASSWORD=test \
+            --env=POSTGRES_DB=cyoda \
+            --env=POSTGRES_USER=cyoda \
+            --port=5432
+          kubectl -n cyoda expose pod pg --port=5432
+          kubectl -n cyoda wait --for=condition=ready pod/pg --timeout=120s
+
+      - name: Generate ephemeral JWT signing key
+        run: |
+          openssl genrsa -out /tmp/test-jwt.pem 2048
+
+      - name: Create test Secrets in cyoda namespace
+        run: |
+          kubectl -n cyoda create secret generic test-dsn \
+            --from-literal=dsn='postgres://cyoda:test@pg:5432/cyoda?sslmode=disable'
+          kubectl -n cyoda create secret generic test-jwt \
+            --from-file=signing-key.pem=/tmp/test-jwt.pem
+
+      - name: Create Gateway for CI
+        run: |
+          kubectl apply -n cyoda -f - <<'EOF'
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          metadata:
+            name: test-gateway
+          spec:
+            gatewayClassName: envoy-gateway
+            listeners:
+              - name: http
+                port: 80
+                protocol: HTTP
+                allowedRoutes:
+                  namespaces:
+                    from: Same
+          EOF
+
+      - name: chart-testing install
+        run: |
+          docker run --rm \
+            --network host \
+            -v "$HOME/.kube":/root/.kube \
+            -v "$(pwd)":/workspace \
+            -w /workspace \
+            quay.io/helmpack/chart-testing:v3.11.0 \
+            ct install \
+              --config .github/ct.yaml \
+              --namespace cyoda \
+              --helm-extra-set-args \
+                "--set=postgres.existingSecret=test-dsn \
+                 --set=jwt.existingSecret=test-jwt \
+                 --set=gateway.parentRefs[0].name=test-gateway \
+                 --set=gateway.http.hostnames[0]=cyoda.ci \
+                 --set=gateway.grpc.hostnames[0]=grpc.cyoda.ci"
+
+      - name: Smoke test /readyz via port-forward
+        run: |
+          kubectl -n cyoda port-forward svc/cyoda 9091:metrics &
+          PF_PID=$!
+          trap "kill $PF_PID" EXIT
+          sleep 3
+          curl -fsS --max-time 5 http://localhost:9091/readyz
+
+      - name: helm test cyoda
+        # The migration Job runs as a pre-install hook and completes before
+        # helm install returns, so no explicit job wait is needed here.
+        run: helm test cyoda -n cyoda
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n cyoda get all
+          kubectl -n cyoda describe pods
+          kubectl -n cyoda logs -l app.kubernetes.io/name=cyoda --all-containers --tail=200 || true
+          kubectl -n cyoda logs -l app.kubernetes.io/component=migrate --all-containers --tail=200 || true
