@@ -261,7 +261,11 @@ jobs:
         # registry tag.
         run: |
           mkdir -p /tmp/cyoda-build/linux/amd64
-          GOOS=linux GOARCH=amd64 go build -o /tmp/cyoda-build/linux/amd64/cyoda ./cmd/cyoda
+          # CGO_ENABLED=0 for a statically-linked binary — matches the
+          # desktop/release build and is required for gcr.io/distroless/static
+          # (no dynamic loader, no glibc).
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o /tmp/cyoda-build/linux/amd64/cyoda ./cmd/cyoda
           docker build \
             --build-arg TARGETPLATFORM=linux/amd64 \
             -f deploy/docker/Dockerfile \
