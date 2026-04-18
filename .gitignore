@@ -87,3 +87,4 @@ go.work.sum
 
 # Docker build context staged by scripts/dev/run-docker-dev.sh
 /.buildctx/
+.worktree-scratch/
