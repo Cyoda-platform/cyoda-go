@@ -20,9 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v4.3.1
         with:
-          version: v3.16.2
+          version: v4.1.4
 
       - name: Install kubeconform
         run: |
@@ -147,16 +147,13 @@ jobs:
             echo "$output"
             exit 1
           fi
-          # Helm 3's gojsonschema emits dotted "postgres.existingSecret"
-          # whereas Helm 4's validator emits JSON Pointer "/postgres/existingSecret".
-          # Accept both.
-          if ! echo "$output" | grep -qE "postgres[./]existingSecret"; then
-            echo "FAIL: expected error to name postgres.existingSecret; got:"
+          if ! echo "$output" | grep -q "/postgres/existingSecret"; then
+            echo "FAIL: expected error to name /postgres/existingSecret; got:"
             echo "$output"
             exit 1
           fi
-          if ! echo "$output" | grep -qE "jwt[./]existingSecret"; then
-            echo "FAIL: expected error to name jwt.existingSecret; got:"
+          if ! echo "$output" | grep -q "/jwt/existingSecret"; then
+            echo "FAIL: expected error to name /jwt/existingSecret; got:"
             echo "$output"
             exit 1
           fi
@@ -190,9 +187,8 @@ jobs:
             echo "$output"
             exit 1
           fi
-          # Helm 3 dotted vs. Helm 4 JSON Pointer — accept both.
-          if ! echo "$output" | grep -qE "ingress[./]enabled"; then
-            echo "FAIL: expected error to name ingress.enabled; got:"
+          if ! echo "$output" | grep -q "/ingress/enabled"; then
+            echo "FAIL: expected error to name /ingress/enabled; got:"
             echo "$output"
             exit 1
           fi
@@ -205,12 +201,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v4.3.1
         with:
-          version: v3.16.2
+          version: v4.1.4
 
       - name: Set up kind cluster
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@v1.14.0
         with:
           version: v0.24.0
           cluster_name: cyoda-chart-ci
@@ -279,7 +275,7 @@ jobs:
             -v "$HOME/.kube":/root/.kube \
             -v "$(pwd)":/workspace \
             -w /workspace \
-            quay.io/helmpack/chart-testing:v3.11.0 \
+            quay.io/helmpack/chart-testing:v3.14.0 \
             ct install \
               --config .github/ct.yaml \
               --namespace cyoda \

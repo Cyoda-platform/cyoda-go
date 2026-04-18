@@ -941,7 +941,7 @@ touch `deploy/helm/**` or the workflow file itself; also runs on pushes to
 
 **Job `helm-lint-and-validate` steps:**
 
-1. Checkout, install Helm v3.16.
+1. Checkout, install Helm v4.1.x.
 2. Install `kubeconform` v0.6.7.
 3. `helm lint deploy/helm/cyoda`.
 4. `helm template cyoda deploy/helm/cyoda` with **three overlays**, each

@@ -11,6 +11,8 @@ on each binary release.
 
 ### Prerequisites
 
+- Helm v4.1+ recommended (chart is `apiVersion: v2` and also installs
+  cleanly from Helm v3.16+).
 - Kubernetes 1.31+ (Gateway API CRDs required if using `gateway.enabled=true`).
 - An existing Postgres instance reachable from the cluster, with a
   dedicated database and role for cyoda.

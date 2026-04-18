@@ -6,7 +6,7 @@
 
 **Architecture:** Gateway API first-class routing (HTTPRoute + GRPCRoute, parentRefs into an operator-provided shared Gateway), StatefulSet always (cluster-mode always on, HMAC auto-generated via lookup with a GitOps-safety guard), projected-volume secret mounting via `_FILE` env vars, migration run in a pre-install/pre-upgrade Helm hook Job. Postgres-only backend; zero chart dependencies. Chart publishes to GitHub Pages via `helm/chart-releaser-action` on `cyoda-*` tags. See `docs/superpowers/specs/2026-04-17-provisioning-helm-design.md` for the design rationale and `docs/superpowers/specs/2026-04-16-provisioning-shared-design.md` for shared foundations.
 
-**Tech Stack:** Go 1.26+, `log/slog`, Helm v3.16+, Kubernetes 1.31+, Gateway API v1.2, `hashicorp/memberlist`, `kubeconform`, `chart-testing` (`ct`), `helm/chart-releaser-action`, `kind` + Envoy Gateway for CI.
+**Tech Stack:** Go 1.26+, `log/slog`, Helm v4.1+ (GA 2025-11-12; v2 chart schema is the stable Helm-3/4 chart format so the chart itself is produced against Helm 3 or 4 transparently), Kubernetes 1.31+, Gateway API v1.2, `hashicorp/memberlist`, `kubeconform`, `chart-testing` (`ct`), `helm/chart-releaser-action`, `kind` + Envoy Gateway for CI.
 
 ---
 
@@ -33,7 +33,7 @@ Before starting Task 1, verify:
 - Working tree is clean: `git status` shows only untracked `.worktrees/`.
 - Go toolchain installed: `go version` reports 1.26 or newer.
 - Docker Desktop or equivalent running (needed for E2E tests that use testcontainers and for the local kind-based chart install smoke test).
-- `helm` v3.16+ installed locally (verify: `helm version --short`).
+- `helm` v4.1+ installed locally (verify: `helm version --short`). Helm 3 clients also work — the chart is `apiVersion: v2` which is the stable Helm-3/4 chart schema — but CI runs v4.1.x and all local verification commands below assume v4.
 - `kubectl` installed locally for manual verification steps.
 
 If any is missing, install before proceeding — tests in this plan assume they work.
@@ -3197,7 +3197,7 @@ Spec reference: design §7 "Layer 2 — `ct install` on kind".
             -v "$HOME/.kube":/root/.kube \
             -v "$(pwd)":/workspace \
             -w /workspace \
-            quay.io/helmpack/chart-testing:v3.11.0 \
+            quay.io/helmpack/chart-testing:v3.14.0 \
             ct install \
               --config .github/ct.yaml \
               --namespace cyoda \
