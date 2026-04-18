@@ -1,0 +1,64 @@
+cyoda v{{ .Chart.AppVersion }} installed into namespace {{ .Release.Namespace }}.
+
+Routing:
+{{- if .Values.gateway.enabled }}
+  Gateway API is enabled. Routes created:
+    HTTPRoute:  {{ join ", " .Values.gateway.http.hostnames }}
+    GRPCRoute:  {{ join ", " .Values.gateway.grpc.hostnames }}
+  Ensure the parent Gateway has listeners that accept these hostnames.
+{{- else if .Values.ingress.enabled }}
+  Ingress is enabled (transitional path — prefer gateway.enabled=true).
+    HTTP  Ingress: {{ .Values.ingress.http.host }}
+    gRPC  Ingress: {{ .Values.ingress.grpc.host }}
+{{- else }}
+  No external routing configured. In-cluster access via Service
+  {{ include "cyoda.fullname" . }} on port 8080 (http) / 9090 (grpc).
+{{- end }}
+
+Credentials (retrieve chart-managed secrets):
+{{- if not .Values.cluster.hmacSecret.existingSecret }}
+  kubectl get secret {{ include "cyoda.hmacSecretName" . }} -n {{ .Release.Namespace }} \
+    -o jsonpath='{.data.{{ .Values.cluster.hmacSecret.existingSecretKey }}}' | base64 -d
+{{- end }}
+{{- if not .Values.monitoring.metricsBearer.existingSecret }}
+  kubectl get secret {{ include "cyoda.metricsBearerSecretName" . }} -n {{ .Release.Namespace }} \
+    -o jsonpath='{.data.{{ .Values.monitoring.metricsBearer.existingSecretKey }}}' | base64 -d
+{{- end }}
+{{- if and .Values.bootstrap.clientId (not .Values.bootstrap.clientSecret.existingSecret) }}
+  kubectl get secret {{ include "cyoda.bootstrapSecretName" . }} -n {{ .Release.Namespace }} \
+    -o jsonpath='{.data.{{ .Values.bootstrap.clientSecret.existingSecretKey }}}' | base64 -d
+{{- end }}
+
+/metrics auth:
+  The chart forces CYODA_METRICS_REQUIRE_AUTH=true — /metrics on port
+  9091 requires `Authorization: Bearer <token>`. Manual scrape test:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cyoda.fullname" . }} 9091:metrics &
+    BEARER=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "cyoda.metricsBearerSecretName" . }} \
+      -o jsonpath='{.data.{{ .Values.monitoring.metricsBearer.existingSecretKey }}}' | base64 -d)
+    curl -H "Authorization: Bearer $BEARER" http://localhost:9091/metrics | head
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+  Prometheus scrapes via the rendered ServiceMonitor, which references
+  Secret {{ include "cyoda.metricsBearerSecretName" . }} via bearerTokenSecret — no
+  operator wiring needed.
+{{- end }}
+
+Smoke test:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+WARNING: do not set any chart-managed env via extraEnv — the chart sets
+these and Kubernetes rejects duplicate env entries. This includes the
+credentials and the cluster identity / tuning vars:
+  CYODA_POSTGRES_URL / CYODA_POSTGRES_URL_FILE
+  CYODA_JWT_SIGNING_KEY / CYODA_JWT_SIGNING_KEY_FILE
+  CYODA_HMAC_SECRET / CYODA_HMAC_SECRET_FILE
+  CYODA_BOOTSTRAP_CLIENT_SECRET / CYODA_BOOTSTRAP_CLIENT_SECRET_FILE
+  CYODA_METRICS_BEARER / CYODA_METRICS_BEARER_FILE
+  CYODA_METRICS_REQUIRE_AUTH
+  CYODA_ADMIN_BIND_ADDRESS, CYODA_ADMIN_PORT
+  CYODA_NODE_ID, CYODA_NODE_ADDR, CYODA_GOSSIP_ADDR, CYODA_SEED_NODES
+  CYODA_STORAGE_BACKEND, CYODA_POSTGRES_AUTO_MIGRATE
+  CYODA_IAM_MODE, CYODA_REQUIRE_JWT
+
+To override credentials, change the referenced existingSecret — do not
+add an extraEnv entry. extraEnv is for operator-owned additions like
+OTel config, feature flags, and custom app env.

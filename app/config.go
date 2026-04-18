@@ -38,6 +38,15 @@ type Config struct {
 type AdminConfig struct {
 	Port        int
 	BindAddress string
+	// MetricsRequireAuth (CYODA_METRICS_REQUIRE_AUTH) makes bearer auth
+	// on /metrics mandatory at startup. Coupled predicate with
+	// MetricsBearerToken — startup fails if required but token is empty.
+	// Default false; the Helm chart sets it true.
+	MetricsRequireAuth bool
+	// MetricsBearerToken (CYODA_METRICS_BEARER, with _FILE suffix
+	// support) is the static Bearer token required on GET /metrics when
+	// non-empty. /livez and /readyz stay unauth regardless.
+	MetricsBearerToken string
 }
 
 type GRPCConfig struct {
@@ -68,6 +77,14 @@ type BootstrapConfig struct {
 }
 
 func DefaultConfig() Config {
+	// Resolve credential env vars first; _FILE paths take precedence over
+	// the plain var when both are set. mustResolveSecretEnv panics if the
+	// _FILE path is set but unreadable — that is a fatal startup misconfiguration.
+	jwtSigningKey := envPEMFromSecret("CYODA_JWT_SIGNING_KEY")
+	hmacSecret := envHexFromSecret("CYODA_HMAC_SECRET")
+	bootstrapClientSecret := mustResolveSecretEnv("CYODA_BOOTSTRAP_CLIENT_SECRET")
+	metricsBearerToken := mustResolveSecretEnv("CYODA_METRICS_BEARER")
+
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
 		ContextPath:       envString("CYODA_CONTEXT_PATH", "/api"),
@@ -81,7 +98,7 @@ func DefaultConfig() Config {
 		},
 		Bootstrap: BootstrapConfig{
 			ClientID:     envString("CYODA_BOOTSTRAP_CLIENT_ID", ""),
-			ClientSecret: envString("CYODA_BOOTSTRAP_CLIENT_SECRET", ""),
+			ClientSecret: bootstrapClientSecret,
 			TenantID:     envString("CYODA_BOOTSTRAP_TENANT_ID", "default-tenant"),
 			UserID:       envString("CYODA_BOOTSTRAP_USER_ID", "admin"),
 			Roles:        envString("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M"),
@@ -91,8 +108,10 @@ func DefaultConfig() Config {
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
 		Admin: AdminConfig{
-			Port:        envInt("CYODA_ADMIN_PORT", 9091),
-			BindAddress: envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
+			Port:               envInt("CYODA_ADMIN_PORT", 9091),
+			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
+			MetricsRequireAuth: envBool("CYODA_METRICS_REQUIRE_AUTH", false),
+			MetricsBearerToken: metricsBearerToken,
 		},
 		StartupTimeout:     envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
@@ -102,7 +121,7 @@ func DefaultConfig() Config {
 			MockTenantID:   "mock-tenant",
 			MockTenantName: "Mock Tenant",
 			MockRoles:      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			JWTSigningKey:  envPEM("CYODA_JWT_SIGNING_KEY"),
+			JWTSigningKey:  jwtSigningKey,
 			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda"),
 			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
 			RequireJWT:     envBool("CYODA_REQUIRE_JWT", false),
@@ -118,11 +137,44 @@ func DefaultConfig() Config {
 			TxReapInterval:         envDuration("CYODA_TX_REAP_INTERVAL", 10*time.Second),
 			ProxyTimeout:           envDuration("CYODA_PROXY_TIMEOUT", 30*time.Second),
 			OutcomeTTL:             envDuration("CYODA_TX_OUTCOME_TTL", 5*time.Minute),
-			HMACSecret:             envHex("CYODA_HMAC_SECRET"),
+			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
 			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
 		},
 	}
+}
+
+// envPEMFromSecret resolves the raw value for a PEM credential via
+// mustResolveSecretEnv (honouring <name>_FILE), then normalises it:
+// if the value starts with "-----BEGIN" it is used as-is; otherwise it
+// is treated as base64-encoded PEM (single-line friendly for .env files
+// and docker env_file).
+func envPEMFromSecret(key string) string {
+	v := mustResolveSecretEnv(key)
+	if v == "" || strings.HasPrefix(v, "-----BEGIN") {
+		return v
+	}
+	decoded, err := base64.StdEncoding.DecodeString(v)
+	if err != nil {
+		return v // not base64, return as-is
+	}
+	return string(decoded)
+}
+
+// envHexFromSecret resolves the raw value for a hex credential via
+// mustResolveSecretEnv (honouring <name>_FILE), then decodes hex.
+// Falls back to raw bytes if the value is not valid hex.
+func envHexFromSecret(key string) []byte {
+	v := mustResolveSecretEnv(key)
+	if v == "" {
+		return nil
+	}
+	b, err := hex.DecodeString(v)
+	if err != nil {
+		// Fall back to raw bytes if not valid hex
+		return []byte(v)
+	}
+	return b
 }
 
 func envString(key, fallback string) string {
@@ -141,21 +193,6 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
-// envPEM reads a PEM key from an environment variable. If the value starts with
-// "-----BEGIN", it is used as-is. Otherwise it is treated as base64-encoded PEM
-// (single-line friendly for .env files and docker env_file).
-func envPEM(key string) string {
-	v := os.Getenv(key)
-	if v == "" || strings.HasPrefix(v, "-----BEGIN") {
-		return v
-	}
-	decoded, err := base64.StdEncoding.DecodeString(v)
-	if err != nil {
-		return v // not base64, return as-is
-	}
-	return string(decoded)
-}
-
 func envBool(key string, fallback bool) bool {
 	if v, ok := os.LookupEnv(key); ok {
 		if b, err := strconv.ParseBool(v); err == nil {
@@ -172,19 +209,6 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
-}
-
-func envHex(key string) []byte {
-	v := envString(key, "")
-	if v == "" {
-		return nil
-	}
-	b, err := hex.DecodeString(v)
-	if err != nil {
-		// Fall back to raw bytes if not valid hex
-		return []byte(v)
-	}
-	return b
 }
 
 // mockRolesFromEnv parses CYODA_IAM_MOCK_ROLES and falls back to the

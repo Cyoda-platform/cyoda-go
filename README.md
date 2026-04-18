@@ -121,9 +121,9 @@ Uses the binary's compiled-in `memory` default. Set
 This runs Cyoda-Go with the `local` profile (`.env.local`): in-memory storage, JWT auth, debug logging on port **8123** (HTTP) and **9123** (gRPC). Copy `.env.local.example` to `.env.local` to customize.
 
 ```bash
-# Get a token (bootstrap credentials are printed at startup):
+# Get a token (set CYODA_BOOTSTRAP_CLIENT_ID and CYODA_BOOTSTRAP_CLIENT_SECRET in .env.local):
 TOKEN=$(curl -s -X POST http://localhost:8123/api/oauth/token \
-  -u "m2m.user:<secret-from-startup-log>" \
+  -u "$CYODA_BOOTSTRAP_CLIENT_ID:$CYODA_BOOTSTRAP_CLIENT_SECRET" \
   -d "grant_type=client_credentials" | jq -r .access_token)
 
 # Use it:
@@ -159,9 +159,9 @@ curl http://localhost:8080/api/health
 This generates a `.env.docker` with a fresh JWT signing key and starts both Cyoda-Go and PostgreSQL via `docker compose`. Data is persisted to a Docker volume.
 
 ```bash
-# Get a token (bootstrap secret is printed at startup):
+# Get a token (set CYODA_BOOTSTRAP_CLIENT_ID and CYODA_BOOTSTRAP_CLIENT_SECRET before starting):
 TOKEN=$(curl -s -X POST http://localhost:8123/api/oauth/token \
-  -u "m2m.user:<secret-from-startup-log>" -d "grant_type=client_credentials" | jq -r .access_token)
+  -u "$CYODA_BOOTSTRAP_CLIENT_ID:$CYODA_BOOTSTRAP_CLIENT_SECRET" -d "grant_type=client_credentials" | jq -r .access_token)
 
 # Use it:
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8123/api/health
@@ -275,6 +275,12 @@ precedence (later overrides earlier):
    [`.env.jwt.example`](.env.jwt.example).
 5. Shell environment variables (always win).
 
+### Subcommands
+
+- `cyoda init` — write a sqlite user config file (desktop use)
+- `cyoda health` — probe `/readyz` and exit 0 ready / 1 otherwise (Docker HEALTHCHECK)
+- `cyoda migrate` — run schema migrations for the configured backend and exit
+
 Run `cyoda init` to write a starter user config with sqlite enabled.
 Run `cyoda --help` for the full env-var reference.
 
@@ -317,12 +323,31 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token lifetime |
 
+### Credential env vars: `_FILE` suffix support
+
+The five credential env vars — `CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`,
+`CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET`, `CYODA_METRICS_BEARER` — accept a `_FILE`
+variant that reads the value from the file at the given path:
+
+```bash
+# Equivalent:
+export CYODA_JWT_SIGNING_KEY="$(cat /path/to/key.pem)"
+export CYODA_JWT_SIGNING_KEY_FILE=/path/to/key.pem
+```
+
+`_FILE` takes precedence when both are set. Trailing whitespace is stripped
+from file contents — safe for both DSN strings and multi-line PEM keys.
+
+This is the canonical Docker/Kubernetes pattern (postgres, mysql, redis,
+keycloak all use it) and is how the Helm chart wires credentials from
+Secrets to the pod without exposing them in `env` output.
+
 ### Bootstrap (jwt mode)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_BOOTSTRAP_CLIENT_ID` | — | Creates an M2M client at startup. Solves the chicken-and-egg of needing a token to create tokens. |
-| `CYODA_BOOTSTRAP_CLIENT_SECRET` | *(generated)* | Fixed secret, or omit to auto-generate |
+| `CYODA_BOOTSTRAP_CLIENT_ID` | `""` | Bootstrap M2M client ID. Coupled with `CYODA_BOOTSTRAP_CLIENT_SECRET` in jwt mode: both set (bootstrap client created at startup) or both empty (no bootstrap client). Half-configured states are rejected at startup. Ignored in mock mode. |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET` | `""` | Bootstrap M2M client secret. See `CYODA_BOOTSTRAP_CLIENT_ID` for the coupling rule. Ignored in mock mode. |
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for the bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 
@@ -367,14 +392,20 @@ The admin listener binds to `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default
 
 | Endpoint | Description |
 |----------|-------------|
-| `/livez` | Liveness — process responsiveness only; does not check storage. Use this for Kubernetes `livenessProbe`. |
-| `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete. Use for `readinessProbe` and load-balancer health gates. |
-| `/metrics` | Prometheus pull endpoint. Scrape with a standard Prometheus scrape config. |
+| `/livez` | Liveness — process responsiveness only; does not check storage. Use this for Kubernetes `livenessProbe`. Always unauthenticated. |
+| `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete. Use for `readinessProbe` and load-balancer health gates. Always unauthenticated. |
+| `/metrics` | Prometheus pull endpoint. **Optionally requires a Bearer token** — set `CYODA_METRICS_BEARER` (or `_FILE`) to enable; see below. |
 
-**The admin listener is unauthenticated by design.** It must only be bound to a trusted network interface:
-- Desktop: leave `CYODA_ADMIN_BIND_ADDRESS` at its default `127.0.0.1` (loopback only).
-- Kubernetes: set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` and rely on the pod network for isolation — the port is not exposed through any `Service` visible externally.
-- Docker Compose: map the port as `127.0.0.1:9091:9091` so it is only reachable from the host.
+**Probe endpoints (`/livez`, `/readyz`) are unauthenticated by design** — kubelet probes carry no bearer. `/metrics` is also unauthenticated by default so desktop and Docker workflows work without friction, but operators deploying to shared clusters should enable Bearer-token auth on it:
+
+- `CYODA_METRICS_BEARER` (or `_FILE`) — static token; when non-empty, `GET /metrics` requires `Authorization: Bearer <token>`. Constant-time compared.
+- `CYODA_METRICS_REQUIRE_AUTH=true` — coupled predicate; refuses to start if set while the bearer is empty. Protects against "I thought I turned it on" misconfigurations.
+- The canonical Helm chart enables this end-to-end: a chart-managed Secret holds the token, the StatefulSet mounts it via the `_FILE` pattern, and the `ServiceMonitor` references it via `bearerTokenSecret` so Prometheus scrapes authenticate automatically.
+
+Bind-address remains the outer boundary:
+- Desktop: leave `CYODA_ADMIN_BIND_ADDRESS` at its default `127.0.0.1` (loopback only); no bearer needed.
+- Kubernetes: bind to `0.0.0.0` (kubelet + Prometheus reach the pod-facing interface) and enable the bearer; the Helm chart does both.
+- Docker Compose: map the port as `127.0.0.1:9091:9091` so it is only reachable from the host; no bearer needed.
 
 The existing `/api/health` on the main API listener is retained for backwards compatibility.
 

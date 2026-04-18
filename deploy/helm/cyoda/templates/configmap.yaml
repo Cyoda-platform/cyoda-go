@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cyoda.fullname" . }}-env
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+  # The migrate Job is a pre-install/pre-upgrade Helm hook and reads
+  # its environment from this ConfigMap via envFrom. Helm runs hooks
+  # before normal chart resources, so without a matching hook
+  # annotation the Job pod spawns with CreateContainerConfigError
+  # ("configmap cyoda-env not found"). Same pre-install,pre-upgrade +
+  # hook-weight -10 pattern applied to the ServiceAccount for the
+  # same reason — both must exist before the Job (default weight 0).
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  # Port and listener configuration — chart-managed, not operator-tunable
+  # (the chart's security model depends on these defaults).
+  CYODA_HTTP_PORT: "8080"
+  CYODA_GRPC_PORT: "9090"
+  CYODA_ADMIN_PORT: "9091"
+  # Bind to all pod interfaces so kubelet probes and ServiceMonitor
+  # scraping can reach the listener. /livez and /readyz remain
+  # unauthenticated (kubelet has no bearer); /metrics is bearer-gated
+  # via CYODA_METRICS_REQUIRE_AUTH=true below. Defense in depth
+  # alongside the default-on NetworkPolicy.
+  CYODA_ADMIN_BIND_ADDRESS: "0.0.0.0"
+  # Force the coupled-predicate validator to refuse startup if the
+  # chart-managed bearer Secret is missing — belt-and-braces against
+  # accidental misconfiguration at the values level.
+  CYODA_METRICS_REQUIRE_AUTH: "true"
+
+  # IAM — production floor: require JWT, refuse to start if not configured.
+  CYODA_IAM_MODE: jwt
+  CYODA_REQUIRE_JWT: "true"
+
+  # Storage — postgres only for Helm; migration runs in the Job, not the pod.
+  CYODA_STORAGE_BACKEND: postgres
+  CYODA_POSTGRES_AUTO_MIGRATE: "false"
+
+  # Cluster mode is always on (matches chart docs). At replicas=1 the
+  # binary runs as a "cluster of one" (internal/cluster/registry/gossip.go:100).
+  CYODA_CLUSTER_ENABLED: "true"
+  {{- /*
+    Seed list = every pod's stable DNS name based on .Values.replicas.
+    The binary's filterSelf compares seed strings against its bindAddr —
+    which in Kubernetes is 0.0.0.0 (not the pod DNS) — so the string-level
+    comparison never matches and pod-0 would stay isolated if it were the
+    only seed. Listing every pod means every pod has real peers and joins
+    cleanly. On rolling restart at replicas=N, every pod picks up the
+    current ConfigMap and joins the surviving N-1 peers.
+  */}}
+  {{- $fullname := include "cyoda.fullname" . }}
+  {{- $seeds := list }}
+  {{- range $i, $_ := until (int .Values.replicas) }}
+  {{- $seeds = append $seeds (printf "%s-%d.%s-headless.%s.svc.cluster.local:7946" $fullname $i $fullname $.Release.Namespace) }}
+  {{- end }}
+  CYODA_SEED_NODES: {{ $seeds | join "," | quote }}
+
+  # Logging + JWT claims.
+  CYODA_LOG_LEVEL: {{ .Values.logLevel | quote }}
+  CYODA_JWT_ISSUER: {{ .Values.jwt.issuer | quote }}
+  CYODA_JWT_EXPIRY_SECONDS: {{ .Values.jwt.expirySeconds | quote }}
+
+  # Bootstrap identity.
+  {{- if .Values.bootstrap.clientId }}
+  CYODA_BOOTSTRAP_CLIENT_ID: {{ .Values.bootstrap.clientId | quote }}
+  {{- end }}
+  CYODA_BOOTSTRAP_TENANT_ID: {{ .Values.bootstrap.tenantId | quote }}
+  CYODA_BOOTSTRAP_USER_ID: {{ .Values.bootstrap.userId | quote }}
+  CYODA_BOOTSTRAP_ROLES: {{ .Values.bootstrap.roles | quote }}

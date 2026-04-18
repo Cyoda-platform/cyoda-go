@@ -1,0 +1,1122 @@
+# Provisioning: Helm Chart — Design
+
+**Status:** draft · **Date:** 2026-04-17 · **Target:** Kubernetes deployment via Helm
+
+**Depends on:** [2026-04-16-provisioning-shared-design.md](./2026-04-16-provisioning-shared-design.md) (shared foundations — binary behavior, schema-compatibility contract, secret hygiene, production floors)
+
+**Sibling specs:** desktop (shipped PR #45), docker (shipped PR #54)
+
+---
+
+## 1. Scope and goals
+
+This deliverable produces the Helm chart operators use to run cyoda-go on
+Kubernetes, plus the small binary-side changes the chart requires, plus the CI
+that validates the chart on every PR.
+
+### In scope
+
+1. **Helm chart** at `deploy/helm/cyoda/` — production-ready v0.1.0 chart that a
+   cluster operator can install with `helm install cyoda cyoda/cyoda -f values.yaml`
+   and get a working single-replica-or-multi-replica cyoda-go backed by an
+   external Postgres, fronted by Gateway API (default) or a still-maintained
+   Ingress controller (transitional).
+2. **Binary-side changes** folded in under Gate 6 (resolve, don't defer):
+   - New `cyoda migrate` subcommand that runs schema migrations and exits.
+   - `_FILE` suffix support for every credential-shaped env var
+     (`CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`, `CYODA_HMAC_SECRET`,
+     `CYODA_BOOTSTRAP_CLIENT_SECRET`). Reads value from the file named by
+     `<VAR>_FILE` when the plain `<VAR>` is unset; `_FILE` wins if both are set.
+   - Removal of the stdout-print-on-generate behavior for
+     `CYODA_BOOTSTRAP_CLIENT_SECRET`. Coupled-predicate validation: in
+     `jwt` mode, `CYODA_BOOTSTRAP_CLIENT_ID` and
+     `CYODA_BOOTSTRAP_CLIENT_SECRET` must be coupled (both set, or both
+     empty); half-configured states are rejected at startup with a clear
+     error that names both vars. The bootstrap M2M client is only created
+     when `CYODA_BOOTSTRAP_CLIENT_ID` is non-empty (app.go:186 call site);
+     a secret without an ID would be silently ignored, so we reject it.
+     In `mock` mode both are ignored.
+3. **Chart CI** at `.github/workflows/helm-chart-ci.yml` with two layers:
+   - Layer 1 (every chart-affecting PR): `helm lint`, `helm template` with
+     multiple values overlays, `kubeconform` against Kubernetes 1.31 + Gateway
+     API 1.2 schemas.
+   - Layer 2 (chart-affecting PRs + `main`): `ct install` on a kind cluster
+     with a Postgres sidecar and Envoy Gateway, smoke test on `/readyz`.
+4. **Ingress-port NetworkPolicy template**, default ON
+   (`networkPolicy.enabled=true`) as defense-in-depth alongside the
+   bearer-gated `/metrics`. Restricts admin-port ingress to
+   operator-declared namespaces (default: namespace labelled
+   `kubernetes.io/metadata.name: monitoring`) and gossip-port ingress
+   to the chart's own pods. Operators on non-enforcing CNIs should
+   explicitly set `networkPolicy.enabled=false` to avoid a silent
+   no-op policy.
+5. **Activation of the two pre-stub release workflows** that already live in
+   the repo:
+   - `release-chart.yml` — triggered by `cyoda-*` tags, uses
+     `helm/chart-releaser-action@v1` to publish the chart to the `gh-pages`
+     branch as a Helm repository (served at
+     `https://cyoda-platform.github.io/cyoda-go`).
+   - `bump-chart-appversion.yml` — triggered by binary `v*` release tags
+     (non-prerelease), opens a PR bumping `Chart.yaml` `appVersion` to match.
+
+### Out of scope (filed as follow-up issues — see §8)
+
+- Layer 3 CI: multi-replica cluster-mode install with gossip coordination.
+- `helm upgrade` migration-path testing (requires two chart versions).
+- Ingress2Gateway-based migration guide for operators.
+- Gateway API `PolicyAttachment` patterns (rate limiting, auth filters).
+- Chart v0.2+ optional features (HPA, PodMonitor alternative,
+  external-secrets-operator integration, fine-grained egress NetworkPolicy).
+
+### Non-goals
+
+- Bundled Postgres as a chart subchart. This was considered (an earlier brainstorm
+  iteration landed on "Bitnami postgresql subchart, disabled by default") and
+  then rejected: the chart's operator audience operates Kubernetes clusters and
+  has a Postgres story of their own; the Bitnami ecosystem's 2025-2026
+  licensing turbulence adds dependency-tracking cost; and the "I just want to
+  try it" path is already served by `docker compose up` (shipped in PR #54).
+  **The chart has zero `Chart.yaml` dependencies.**
+- sqlite and memory storage backends in Helm. The ConfigMap hardcodes
+  `CYODA_STORAGE_BACKEND=postgres`; no user-facing knob to override.
+  sqlite-in-a-pod needs a PVC, breaks cluster mode, and defeats the chart's
+  value proposition; those workloads are served by the desktop binary or
+  Docker compose.
+- Chart-managed TLS certificates. Operators use cert-manager (or equivalent)
+  and reference generated certs via `tls.secretName` in the routing config.
+- Chart-rendered `Gateway` resource. Operators are expected to run a shared
+  platform Gateway; the chart renders only `HTTPRoute` and `GRPCRoute` that
+  `parentRefs` into it. Rendering a per-app Gateway is an anti-pattern that
+  creates N LoadBalancers for N apps.
+
+---
+
+## 2. Directory layout
+
+```
+deploy/helm/cyoda/
+├── Chart.yaml                  # name=cyoda, version=0.1.0, appVersion pinned to a concrete binary tag
+├── values.yaml                 # documented values; sane defaults
+├── values.schema.json          # JSON Schema — helm 3 native validation
+├── README.md                   # operator-facing; Gateway API reference topology; secret setup; upgrade/rollback notes
+├── .helmignore
+└── templates/
+    ├── _helpers.tpl            # cyoda.fullname, cyoda.labels, cyoda.selectorLabels, cyoda.serviceAccountName, cyoda.hmacSecretName, cyoda.bootstrapSecretName
+    ├── NOTES.txt               # post-install: configured hostnames, how to retrieve generated secrets, next steps
+    ├── serviceaccount.yaml     # dedicated SA, automountServiceAccountToken=false
+    ├── statefulset.yaml        # the cyoda workload — always StatefulSet (see §3)
+    ├── service.yaml            # ClusterIP "cyoda" with named ports: http, grpc, metrics
+    ├── service-headless.yaml   # headless "cyoda-headless" for gossip peer discovery
+    ├── configmap.yaml          # non-secret env (ports, IAM mode, backend=postgres, etc.)
+    ├── secret-hmac.yaml        # rendered only when NOT using existingSecret; lookup-based auto-gen
+    ├── secret-bootstrap.yaml   # same pattern, for CYODA_BOOTSTRAP_CLIENT_SECRET
+    ├── pdb.yaml                # rendered when replicas > 1
+    ├── job-migrate.yaml        # pre-install + pre-upgrade hook; runs `cyoda migrate`
+    ├── servicemonitor.yaml     # rendered when monitoring.serviceMonitor.enabled=true
+    ├── networkpolicy.yaml      # rendered when networkPolicy.enabled=true (default on)
+    ├── gateway-httproute.yaml  # rendered when gateway.enabled=true
+    ├── gateway-grpcroute.yaml  # same
+    ├── ingress-http.yaml       # rendered when ingress.enabled=true (transitional path)
+    ├── ingress-grpc.yaml       # same; annotations seeded with nginx-ingress backend-protocol=GRPC
+    └── tests/
+        └── test-readyz.yaml    # `helm test cyoda` hook: curl /readyz via port-forward-style pod
+```
+
+### Principles enforced by the layout
+
+- **One resource kind per template file**, named for the kind. Matches
+  Bitnami/Grafana/Loki convention. Readers find things by filename.
+- **`values.schema.json` validates invariants at render time.** helm 3+
+  validates values against the schema before template rendering, so bad inputs
+  fail with a clear error rather than rendering silently-broken manifests.
+  The schema enforces:
+  - `gateway.enabled && ingress.enabled` → rejected (they conflict on routing).
+  - `gateway.enabled` requires: `len(gateway.parentRefs) >= 1`,
+    `len(gateway.http.hostnames) >= 1`, `len(gateway.grpc.hostnames) >= 1`.
+    Empty hostnames on an `HTTPRoute`/`GRPCRoute` inherit from the parent
+    Gateway's listeners, which is ambiguous on a shared Gateway carrying
+    multiple apps — enforce explicit hostnames to avoid accidental
+    route-conflict.
+  - `ingress.enabled && (ingress.http.host == "" || ingress.grpc.host == "")` → rejected.
+  - `replicas >= 1`.
+  - `postgres.existingSecret` and `jwt.existingSecret` are required non-empty strings.
+  - `extraEnv[]` items must match `{name: string, value: string}` OR
+    `{name: string, valueFrom: object}`. Open-ended env injection with
+    shape validation — operators can inject `OTEL_*` plain-value vars and
+    `valueFrom.secretKeyRef` entries (e.g., OTel auth headers) alike.
+
+There is no `storage.backend` values knob. The ConfigMap hardcodes
+`CYODA_STORAGE_BACKEND=postgres` unconditionally. Operators who want
+sqlite/memory are not the Helm chart's audience (they have the desktop
+binary or Docker compose). Adding a values knob for it is a footgun
+(sqlite-in-a-pod needs a PVC; memory backend is process-local).
+- **`_helpers.tpl` holds all shared template logic.** Individual templates stay
+  focused on their one resource.
+
+---
+
+## 3. Workload and networking
+
+### StatefulSet (always)
+
+The chart renders the cyoda workload as a StatefulSet regardless of replica
+count. Reasons:
+
+- **Stable network identity.** `metadata.name` of each pod is predictable
+  (`cyoda-0`, `cyoda-1`, ...), which lets the chart derive
+  `CYODA_NODE_ID` from the pod name via the Downward API — no operator
+  config needed, works at any replica count.
+- **No workload-kind flip on scale-up.** `helm upgrade` cannot cleanly
+  transition a Deployment → StatefulSet (the kind field is immutable on the
+  resource path). Locking StatefulSet always means scaling from 1 → N is a
+  values change, not a chart-breaking migration.
+- **No operational penalty at `replicas: 1`.** StatefulSet-with-one-replica
+  is a well-established pattern (Grafana, Gitea, single-node Postgres
+  operators). Empty `volumeClaimTemplates` means it behaves identically to a
+  Deployment from the operator's point of view.
+
+### Cluster mode always on
+
+There is no `cluster.enabled` flag. The chart wires cluster mode
+unconditionally because:
+
+- Binary already supports a single-member cluster path (see
+  `internal/cluster/registry/gossip.go` — logs "no seeds configured,
+  proceeding as cluster of one"). Cluster-of-one is a first-class runtime
+  mode.
+- The only friction `cluster.enabled=false` ever saved was "operator doesn't
+  need to provide an HMAC secret." The chart auto-generates the HMAC secret
+  via `lookup` (see §4), so that friction is gone.
+- **Scaling is a one-flag change:** `helm upgrade --set replicas=3`. No mode
+  flip, no second flag, no values coordination. The StatefulSet rolls; new
+  pods discover each other via the headless service; `gossip.go` transitions
+  from "cluster of 1" to "cluster of 3".
+
+### Pod specification
+
+Key elements (condensed — full YAML lives in the implementation plan):
+
+- **Security context** (pod + container):
+  - `runAsNonRoot: true`, `runAsUser: 65532`, `fsGroup: 65532` (distroless
+    `nonroot` UID). This depends on the shipped image using
+    `gcr.io/distroless/static:nonroot` (or an equivalent UID-65532 base) —
+    documented as an invariant in the Docker per-target spec at
+    `docs/superpowers/specs/2026-04-17-provisioning-docker-design.md`. If
+    the image base changes, both specs need a coordinated update.
+  - `readOnlyRootFilesystem: true`. cyoda writes nothing to local disk when
+    backed by Postgres.
+  - `allowPrivilegeEscalation: false`, `capabilities: { drop: [ALL] }`,
+    `seccompProfile: { type: RuntimeDefault }`. Pod Security "restricted"
+    profile compliant.
+- **ServiceAccount:** dedicated `cyoda` SA per install, no RBAC bindings
+  (cyoda doesn't talk to the kube API). `automountServiceAccountToken: false`
+  on the pod — defense in depth against a stolen pod-local token.
+- **Ports on the container:** `http:8080`, `grpc:9090`, `metrics:9091`,
+  `gossip:7946`.
+- **Downward API env:** `CYODA_NODE_ID` from `metadata.name`,
+  `POD_NAMESPACE` from `metadata.namespace`, used to compute
+  `CYODA_NODE_ADDR` = `http://$(CYODA_NODE_ID).cyoda-headless.$(POD_NAMESPACE).svc.cluster.local:9090`.
+- **Config env:** `CYODA_STORAGE_BACKEND=postgres`, `CYODA_IAM_MODE=jwt`,
+  `CYODA_REQUIRE_JWT=true`, `CYODA_POSTGRES_AUTO_MIGRATE=false`
+  (migrations run in the Job, not the pod), `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0`
+  (necessary for ServiceMonitor scraping from the `monitoring` namespace).
+- **Credential env (all `_FILE`-form):** `CYODA_POSTGRES_URL_FILE`,
+  `CYODA_JWT_SIGNING_KEY_FILE`, `CYODA_HMAC_SECRET_FILE`,
+  `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`. All four point at
+  `/etc/cyoda/secrets/<name>`.
+- **`extraEnv`:** open-ended operator env injection. Typical use: OTel
+  (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, etc.), feature flags.
+  The chart does not render an OTel-specific schema; operators wire OTel
+  through `extraEnv`.
+- **Probes:** `livenessProbe` on `/livez`, `readinessProbe` on `/readyz`,
+  both on the `metrics` port (admin listener). `initialDelaySeconds: 10/5`,
+  `periodSeconds: 10/5`, conservative defaults.
+- **Volumes:**
+  - `secrets` (`projected`, `defaultMode: 0400`): mounts all four
+    credentials at `/etc/cyoda/secrets/` in a single volume. Each source
+    references the appropriate Secret (operator-provided for DSN/JWT,
+    chart-managed for HMAC/bootstrap) and projects into the expected
+    filename.
+  - `tmp` (`emptyDir: {}`): mounted at `/tmp`. Safety net for any Go stdlib
+    call that uses `os.TempDir()`.
+- **Resources:** defaults `requests: {cpu: 100m, memory: 256Mi}`,
+  `limits: {cpu: 1000m, memory: 512Mi}`. Operators override via
+  `resources` in values.
+- **`volumeClaimTemplates: []`** — intentionally empty.
+
+### Services
+
+- **`cyoda`** (ClusterIP): single Service, three named ports.
+  `http:8080 → containerPort http`, `grpc:9090 → containerPort grpc`,
+  `metrics:9091 → containerPort metrics`. Selector matches the StatefulSet
+  pod labels. This is the industry convention (Grafana, Prometheus, Loki,
+  Tempo, Elasticsearch, Keycloak, MinIO all do this); separating the admin
+  port into its own Service is reserved for specialized namespace-scoped
+  NetworkPolicy patterns and was considered and rejected.
+- **`cyoda-headless`** (ClusterIP, `clusterIP: None`): two ports, both on
+  `7946`, one per protocol —
+  `gossip-tcp: 7946/TCP` and `gossip-udp: 7946/UDP`. `hashicorp/memberlist`
+  (used by `internal/cluster/registry/gossip.go`) speaks SWIM-style UDP
+  probes plus TCP full-state exchange on the same port; a Service declaring
+  only TCP silently breaks gossip state convergence.
+  `publishNotReadyAddresses: true` so peers discover each other before
+  readiness passes — necessary to bootstrap a cluster (otherwise a
+  cluster-of-3 never reaches ready because pods can't find peers until
+  they're ready, and they can't be ready until they find peers).
+
+### Routing — Gateway API by default, Ingress transitional
+
+**Context.** The Kubernetes SIG-Network `ingress-nginx` project entered
+retirement in March 2026 — no further releases, bugfixes, or security
+patches. The community successor is the Gateway API
+(`gateway.networking.k8s.io`), GA since Kubernetes 1.31, with first-class
+`HTTPRoute` and `GRPCRoute` resources. All three major implementations
+(Envoy Gateway, Contour, Cilium) support `GRPCRoute` in production. SIG
+Network released Ingress2Gateway 1.0 in March 2026 as the migration
+assistant.
+
+**Chart decision.** Gateway API is the default path; Ingress is a
+transitional compatibility affordance.
+
+- **`gateway.enabled=true`** (default): chart renders one `HTTPRoute` and
+  one `GRPCRoute`, each `parentRefs`-ing into an operator-provided shared
+  Gateway. `gateway.parentRefs` is required (list of Gateway references).
+  `gateway.http.hostnames` and `gateway.grpc.hostnames` scope the routes.
+  Chart does **not** render a `Gateway` resource (see Non-goals).
+- **`ingress.enabled=true`** (off by default, transitional): chart renders
+  two `Ingress` resources, one per protocol. The gRPC Ingress pre-seeds
+  `annotations: { "nginx.ingress.kubernetes.io/backend-protocol": "GRPC" }`;
+  operators on other controllers (Traefik, Kong, HAProxy) override.
+  Separate hostnames per protocol (standard for dual-protocol deployments).
+- **Mutually exclusive.** `values.schema.json` rejects both-enabled; if the
+  schema is bypassed somehow, a chart `fail` template catches it.
+
+**Reference topology documented in the chart README:**
+
+```
+          ┌─────────────────────────┐
+          │  Cloudflare tunnel /    │
+          │  external origin        │
+          └────────────┬────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  Gateway (platform ns)  │
+          │  envoy-gateway / etc.   │
+          └──┬───────────────────┬──┘
+             │ HTTPRoute         │ GRPCRoute
+             │                   │
+       ┌─────▼─────┐       ┌─────▼─────┐
+       │ Service   │       │ Service   │
+       │ cyoda:    │       │ cyoda:    │
+       │ http      │       │ grpc      │
+       └─────┬─────┘       └─────┬─────┘
+             │                   │
+             └──────────┬────────┘
+                        │
+                   ┌────▼────┐
+                   │ cyoda   │
+                   │ pod(s)  │
+                   └─────────┘
+```
+
+The README also documents the legacy Ingress topology for operators
+mid-migration, with a pointer to Ingress2Gateway 1.0 for migration tooling.
+
+### NetworkPolicy (default ON)
+
+The admin listener binds `0.0.0.0:9091` so kubelet probes and Prometheus
+scrapes can reach it; `/metrics` is bearer-gated at the application
+layer (§Observability below). NetworkPolicy is the second line of
+defense: even with the bearer enforced, keeping the scrape surface
+namespace-scoped means a token leak doesn't expose `/metrics` across
+the whole cluster, and gossip-port ingress is locked to chart-managed
+pods.
+
+Default `networkPolicy.enabled=true` with a pre-populated
+`metricsFromNamespaces` pointing at a namespace labelled
+`kubernetes.io/metadata.name: monitoring` (the kube-prometheus-stack
+default). Operators on a non-enforcing CNI (kindnet, default EKS with
+no secondary CNI, etc.) should set `enabled=false` explicitly to avoid
+false-sense-of-security — the rendered policy is a no-op there, and
+making the "my cluster doesn't enforce NetworkPolicy" choice explicit
+is safer than a silent default.
+
+When enabled:
+
+- **Ingress to the `metrics` port (9091) is restricted** to namespaces
+  declared via `networkPolicy.metricsFromNamespaces` — a list of
+  `namespaceSelector` entries. The default is
+  `[{matchLabels: {kubernetes.io/metadata.name: monitoring}}]`.
+- **Ingress to `http` (8080) and `grpc` (9090) is not restricted** — the
+  Gateway/Ingress layer is the boundary for application traffic.
+- **Ingress to `gossip` (7946, both protocols) is restricted to pods
+  matching the cyoda selector** — peer-to-peer traffic from the chart's
+  own StatefulSet, nothing else.
+- **Egress is not restricted** — cyoda needs reachability to Postgres and
+  (via extraEnv) any OTel collector the operator wires in. Fine-grained
+  egress is a v0.2 concern.
+
+### Observability
+
+- **Probes:** liveness `/livez`, readiness `/readyz`, both on
+  `containerPort metrics` (9091). Unconditional, unauthenticated (kubelet
+  probes have no way to present a bearer).
+- **`/metrics` requires a Bearer token** on the Helm target. The chart
+  sets `CYODA_METRICS_REQUIRE_AUTH=true` in the ConfigMap and mounts the
+  token via the fifth projected-volume secret (see §4). Constant-time
+  compared on the binary side. This closes the "any in-cluster pod can
+  scrape cardinality-revealing labels" exposure that the default
+  `0.0.0.0` admin-bind otherwise opens — defense in depth alongside the
+  default-on NetworkPolicy.
+- **ServiceMonitor** (`monitoring.serviceMonitor.enabled=true`): renders a
+  `monitoring.coreos.com/v1 ServiceMonitor` selecting port `metrics` on the
+  `cyoda` Service, with a `bearerTokenSecret` block referencing the same
+  chart-managed scrape-credential Secret the pod reads from. Prometheus
+  Operator mounts the token and the scrape config uses it — end-to-end
+  authenticated scrape with no operator wiring needed. Operators add
+  selector labels via `monitoring.serviceMonitor.labels` so the
+  Prometheus operator's `serviceMonitorSelector` picks it up.
+- **Tracing / OTel:** delegated to `extraEnv`. No chart-owned OTel schema —
+  the OTel spec evolves fast, and an open env injection is both simpler and
+  more forward-compatible.
+
+---
+
+## 4. Configuration and secret management
+
+### Five credentials
+
+| Credential | Source | Default projected-volume key | Env consumed |
+|---|---|---|---|
+| `CYODA_POSTGRES_URL` | operator `existingSecret` (required) | `dsn` | `CYODA_POSTGRES_URL_FILE` |
+| `CYODA_JWT_SIGNING_KEY` | operator `existingSecret` (required) | `signing-key.pem` | `CYODA_JWT_SIGNING_KEY_FILE` |
+| `CYODA_HMAC_SECRET` | operator `existingSecret` OR chart-generated | `secret` | `CYODA_HMAC_SECRET_FILE` |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET` | operator `existingSecret` OR chart-generated — rendered only when `bootstrap.clientId` is set | `secret` | `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` |
+| `CYODA_METRICS_BEARER` | operator `existingSecret` OR chart-generated | `bearer` | `CYODA_METRICS_BEARER_FILE` |
+
+The metrics bearer is always rendered on the Helm target (the chart
+forces `CYODA_METRICS_REQUIRE_AUTH=true`, and the coupled-predicate
+validator would refuse to start without the token). The same projected
+volume that carries the other four credentials grows a fifth source.
+The `ServiceMonitor` template references this Secret via
+`bearerTokenSecret` so the same credential flows to Prometheus's scrape
+config without operator handwiring.
+
+Each `existingSecret` has a paired `existingSecretKey` values knob so
+operators can declare which key in their Secret carries the value — defaults
+shown in the table. An operator who stored the DSN under a key called
+`postgres-url` sets `postgres.existingSecretKey=postgres-url` and the
+projected volume picks it up without renaming the Secret.
+
+### `_FILE` suffix support in the binary
+
+A small config-loader change in the `app` package: a helper
+`resolveSecretEnv(name string) string` that returns the value of the named
+env var, OR reads `<name>_FILE` as a path and returns that file's contents
+(with trailing whitespace trimmed — `TrimRight(data, "\n\r ")` is safe for
+both DSN strings and multi-line PEM keys). Applied at the four credential
+config sites; no other env vars get `_FILE` treatment (non-secrets don't
+need it).
+
+Precedence: `<name>_FILE` wins if both are set. Documented. Tested.
+
+**`extraEnv` collision guidance.** The StatefulSet sets
+`CYODA_POSTGRES_URL_FILE`, `CYODA_JWT_SIGNING_KEY_FILE`,
+`CYODA_HMAC_SECRET_FILE`, and `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`
+directly on the container. An operator who also sets one of these via
+`extraEnv` (perhaps thinking they're overriding the path) hits a
+duplicate-env-name rejection from the Kubernetes API at
+`helm install`/`upgrade` time, which surfaces as an opaque error. The
+chart README and `NOTES.txt` both call out explicitly: **do not set any
+`CYODA_*_FILE` or `CYODA_POSTGRES_URL` / `CYODA_JWT_SIGNING_KEY` /
+`CYODA_HMAC_SECRET` / `CYODA_BOOTSTRAP_CLIENT_SECRET` via `extraEnv`.**
+Those four credentials flow through the projected-volume path driven by
+`existingSecret`; override them by changing the referenced Secret, not by
+adding an env entry.
+
+Failure modes:
+
+- `<name>_FILE` set, file unreadable → fail fast with a clear error. No
+  silent fallthrough to empty.
+- `<name>_FILE` set to a file whose contents are empty (after trimming) →
+  treated as unset. The normal downstream validation (e.g. "DSN required")
+  reports the real problem.
+
+### Auto-generation pattern for chart-managed Secrets
+
+Used for `CYODA_HMAC_SECRET` and `CYODA_BOOTSTRAP_CLIENT_SECRET`. The
+template logic, with an explicit GitOps-safety guard:
+
+```yaml
+# templates/secret-hmac.yaml
+{{- if not .Values.cluster.hmacSecret.existingSecret }}
+{{- $name := printf "%s-hmac" (include "cyoda.fullname" .) }}
+{{- $key  := .Values.cluster.hmacSecret.existingSecretKey }}
+{{- $existing := (lookup "v1" "Secret" .Release.Namespace $name) }}
+{{- if not $existing }}
+  {{- /* Secret doesn't exist. Verify we have live cluster access before
+         generating — otherwise we'd re-randomize on every render (Argo CD
+         default path, helm template, --dry-run) and cause continuous
+         drift + mid-lifetime HMAC rotation, which breaks the gossip
+         encryption key AND the inter-node HTTP dispatch auth. */ -}}
+  {{- $ns := (lookup "v1" "Namespace" "" .Release.Namespace) }}
+  {{- if not $ns }}
+    {{- fail "cluster.hmacSecret.existingSecret is required when the chart is rendered without live cluster access (helm template, Argo CD, --dry-run, or a namespace that does not yet exist — e.g. first-time 'helm install --create-namespace'). Fix: either (a) kubectl create namespace <ns> before running helm install; (b) pre-create the HMAC Secret and set cluster.hmacSecret.existingSecret; or (c) use an operator-managed GitOps path with external-secrets-operator. See the chart README > 'Using with GitOps'." }}
+  {{- end }}
+{{- end }}
+{{- $value := "" }}
+{{- if $existing }}
+{{- $value = index $existing.data $key }}
+{{- else }}
+{{- $value = randAlphaNum 48 | b64enc }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels: {{- include "cyoda.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{ $key }}: {{ $value | quote }}
+{{- end }}
+```
+
+The chart-managed path honors `existingSecretKey` symmetrically: whatever
+key the operator declared (default `secret`) is both what the generated
+Secret writes to AND what the pod's projected volume reads from. This
+keeps "value is written and read under the same key" as an invariant
+regardless of which subset of `existingSecret` / `existingSecretKey` the
+operator sets. If we hardcoded `secret:` here, an operator who set
+`existingSecretKey: myhmac` without `existingSecret` would get a pod that
+fails to mount — the chart would write to key `secret` but the volume
+would read key `myhmac`.
+
+**GitOps safety guard (the critical bit).** `lookup` returns nil when the
+chart is rendered without live cluster access (Argo CD's default path runs
+`helm template`; also `helm template`, `--dry-run`, and some CI scenarios).
+Without the guard, the template would take the `else` branch on every
+reconcile and generate a fresh `randAlphaNum`, which the GitOps controller
+would then apply, silently rotating the Secret. For HMAC this breaks both
+gossip encryption AND inter-node HTTP dispatch auth
+(`internal/cluster/dispatch/forwarder.go`) mid-cluster-lifetime — a
+correctness bug, not just an ergonomic annoyance.
+
+The guard uses a second `lookup` on the namespace as a live-cluster
+detector. If the namespace lookup returns empty, we're either in a render
+mode without live access OR installing into a namespace that doesn't
+exist yet (`helm install --create-namespace` case). Both cases require
+the operator to either (a) pre-create the namespace and retry, or (b)
+provide `existingSecret`. The chart fails with a clear, actionable message.
+
+Bitnami charts and several other mature charts have the same silent-drift
+bug without this guard; the guard isn't standard but is necessary for
+correctness in GitOps-heavy environments, which is most operator clusters
+in 2026.
+
+**Properties (once past the guard):**
+
+- **First install (live cluster, Secret doesn't yet exist):** `randAlphaNum 48`
+  generates a new value → Secret is created. 48 chars of alphanumeric at
+  ~5.95 bits per char ≈ 285 bits of entropy; well above what either HMAC
+  or the bootstrap client secret needs.
+- **Subsequent upgrades (Secret exists):** `lookup` finds the existing
+  Secret → reuses its value → Secret stays stable.
+- **`helm uninstall`:** chart-managed Secrets are deleted along with the
+  rest of the release. Reinstalling generates fresh values. Operators who
+  want stability across uninstall+install use `existingSecret`. (No
+  `helm.sh/resource-policy: keep` on either secret — see "Secret retention
+  semantics" below.)
+
+**Secret retention semantics.** Neither chart-managed Secret uses
+`resource-policy: keep`, deliberately:
+
+- For **HMAC**: the secret isn't bound to persisted state. It encrypts
+  gossip messages and authenticates inter-node HTTP forwards — both are
+  live-cluster operations. When `helm uninstall` removes all pods, no
+  cluster members exist to carry state forward. Reinstall produces a fresh
+  HMAC and a fresh cluster; Postgres data is external and unaffected. The
+  earlier rationale for `keep` (avoiding "lockout from previously-written
+  data") doesn't apply because the data lives in Postgres, not in anything
+  the HMAC signs.
+- For **bootstrap client secret**: this is app-level M2M auth. Operators
+  may be deliberately rotating credentials away. `helm uninstall && helm
+  install` with `keep` would resurrect a credential the operator rotated
+  out, which is surprising in the wrong direction.
+- For **both**: the right semantic is "chart-managed = lifecycle-bound to
+  the release." Operators who want cross-uninstall stability use
+  `existingSecret`; operators who want fresh secrets on reinstall let the
+  chart manage them. Clean, symmetric mental model.
+
+**Bootstrap tightening (binary side) — coupled predicate.** The existing
+binary behavior of auto-generating `CYODA_BOOTSTRAP_CLIENT_SECRET` when
+unset and printing it to stdout is removed. Rationale: in a Kubernetes
+pod, that stdout print goes into log aggregation (a small but real
+secret leak), and the "generated-once, printed-once" UX is lost on
+rolling restarts anyway.
+
+New validation semantics, grounded in the binary's actual call graph
+(`app/app.go:186` creates the bootstrap M2M client only when
+`CYODA_BOOTSTRAP_CLIENT_ID != ""`; the secret is consumed only inside
+that gate):
+
+- **In `mock` mode:** both vars ignored.
+- **In `jwt` mode, both empty:** legitimate. Operator authenticates via
+  JWKS / external signing keys; no bootstrap M2M client is created.
+- **In `jwt` mode, both set:** legitimate. Bootstrap M2M client created
+  at startup.
+- **In `jwt` mode, ID set but secret unset:** rejected. Would fail
+  client creation.
+- **In `jwt` mode, secret set but ID unset:** rejected. Secret would be
+  silently ignored; loud rejection surfaces the misconfiguration.
+
+The error message names both vars so operators know which one to fix.
+Laptop users who want bootstrap set both explicitly in their `.env`;
+laptop users who don't need bootstrap leave both empty and still start
+cleanly. Chart users get the bootstrap Secret auto-generated only when
+they set `bootstrap.clientId` (see below).
+
+**Chart behavior — bootstrap is opt-in.** The chart defaults
+`bootstrap.clientId = ""` and consequently does NOT render a bootstrap
+Secret or the `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` env. Operators who
+want a bootstrap M2M client set `bootstrap.clientId` to a value
+(commonly `"cyoda-bootstrap"`); the chart then either auto-generates a
+secret (via the `lookup`+GitOps-guard pattern) or uses the operator's
+`bootstrap.clientSecret.existingSecret`. Matches the opt-in pattern
+used elsewhere (ServiceMonitor, NetworkPolicy, Ingress): security-
+sensitive features are explicit.
+
+### ConfigMap / Secret split
+
+Non-secret env vars go in a single ConfigMap referenced from the pod spec
+via `envFrom: [{ configMapRef: { name: <fullname>-env } }]`. Sensitive
+values never touch a ConfigMap; non-sensitive values never touch a Secret.
+
+Example ConfigMap contents:
+
+```yaml
+CYODA_HTTP_PORT: "8080"
+CYODA_GRPC_PORT: "9090"
+CYODA_ADMIN_PORT: "9091"
+CYODA_ADMIN_BIND_ADDRESS: "0.0.0.0"
+CYODA_IAM_MODE: "jwt"
+CYODA_REQUIRE_JWT: "true"
+CYODA_STORAGE_BACKEND: "postgres"
+CYODA_POSTGRES_AUTO_MIGRATE: "false"
+CYODA_LOG_LEVEL: {{ .Values.logLevel | quote }}
+CYODA_JWT_ISSUER: {{ .Values.jwt.issuer | quote }}
+CYODA_JWT_EXPIRY_SECONDS: {{ .Values.jwt.expirySeconds | quote }}
+CYODA_BOOTSTRAP_CLIENT_ID: {{ .Values.bootstrap.clientId | quote }}
+CYODA_BOOTSTRAP_TENANT_ID: {{ .Values.bootstrap.tenantId | quote }}
+CYODA_BOOTSTRAP_USER_ID: {{ .Values.bootstrap.userId | quote }}
+CYODA_BOOTSTRAP_ROLES: {{ .Values.bootstrap.roles | quote }}
+```
+
+### values.yaml — top-level shape
+
+```yaml
+replicas: 1
+logLevel: info
+
+image:
+  repository: ghcr.io/cyoda-platform/cyoda
+  tag: ""                            # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []                 # e.g. [{name: ghcr-pull-secret}] for air-gapped or mirrored registries
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 1000m, memory: 512Mi }
+
+postgres:
+  existingSecret: ""                 # REQUIRED
+  existingSecretKey: dsn             # key in the Secret that holds the DSN
+
+jwt:
+  existingSecret: ""                 # REQUIRED
+  existingSecretKey: signing-key.pem # key in the Secret that holds the PEM
+  issuer: cyoda
+  expirySeconds: 3600
+
+cluster:
+  hmacSecret:
+    existingSecret: ""               # OPTIONAL — chart auto-generates if unset (with GitOps-safety guard; see §4)
+    existingSecretKey: secret        # key in the Secret (applies to either operator-provided or chart-managed)
+
+bootstrap:
+  # Bootstrap M2M client is opt-in. The binary creates it only when
+  # clientId is non-empty; the secret is ONLY consulted inside that gate.
+  # Coupled predicate: both set OR both empty; any half-configured state
+  # is rejected at startup with a clear error.
+  clientId: ""                       # default empty — no bootstrap client
+  clientSecret:
+    existingSecret: ""               # ignored when clientId is empty; chart auto-generates if clientId is set and this is empty (with GitOps-safety guard)
+    existingSecretKey: secret
+  tenantId: default-tenant
+  userId: admin
+  roles: "ROLE_ADMIN,ROLE_M2M"
+
+extraEnv: []                         # each entry is {name, value} OR {name, valueFrom} — schema-enforced shape (see §2)
+
+service:
+  type: ClusterIP                    # only ClusterIP supported; Gateway/Ingress is the external path
+
+gateway:
+  enabled: true
+  parentRefs: []                     # REQUIRED when enabled — list of Gateway references (minItems: 1 via schema)
+  http:
+    hostnames: []                    # REQUIRED when gateway.enabled=true (minItems: 1 via schema)
+  grpc:
+    hostnames: []                    # REQUIRED when gateway.enabled=true (minItems: 1 via schema)
+
+ingress:
+  enabled: false
+  className: ""
+  http:
+    host: ""
+    paths: [{ path: /, pathType: Prefix }]
+    annotations: {}
+    tls: []
+  grpc:
+    host: ""
+    paths: [{ path: /, pathType: Prefix }]
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: GRPC
+    tls: []
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+networkPolicy:
+  enabled: false                     # when true, restricts admin-port ingress to labelled namespaces (see §3)
+  metricsFromNamespaces: []          # e.g. [{matchLabels: {kubernetes.io/metadata.name: monitoring}}]
+
+migrate:
+  activeDeadlineSeconds: 600
+  backoffLimit: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+podDisruptionBudget:
+  enabled: true                      # rendered only when replicas > 1
+  minAvailable: 1
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+```
+
+---
+
+## 5. Migration flow
+
+Three moving pieces, one end-to-end flow.
+
+### Binary — `cyoda migrate` subcommand
+
+New file `cmd/cyoda/migrate.go`, new dispatch case in `cmd/cyoda/main.go`:
+
+```go
+// main.go
+case "migrate":
+    os.Exit(runMigrate(os.Args[2:]))
+```
+
+`runMigrate` behavior:
+
+- Parses `--timeout` flag (default 5 min) for the migration run.
+- Loads the exact same env config the server does (via the same config loader
+  — including the new `_FILE` suffix resolution from §4). No config
+  duplication.
+- Selects the backend based on `CYODA_STORAGE_BACKEND`. Memory and sqlite
+  backends have no migrations; subcommand exits 0 with an info log. Postgres
+  backend runs its migration logic.
+- **Forward-only, idempotent.** Running twice is a no-op the second time
+  (existing `applyMigrations` semantics in the Postgres plugin check
+  `schema_version`).
+- **Respects the schema-compatibility contract.** If DB schema is newer than
+  code (downgrade rollback scenario), exits non-zero with the same error the
+  server would produce. The migrate subcommand never silently allows a
+  state where "migrations ran but they were backward migrations".
+- **Exits cleanly.** No lingering goroutines, no admin listener, no
+  background loops. Short-lived process.
+- **Logs at info:** "migrations applied: N → M; duration: Xs".
+
+Tested via `cmd/cyoda/migrate_test.go`:
+
+- Unit: memory/sqlite backends no-op exit 0.
+- E2E: against testcontainers Postgres — migrates a fresh DB; re-running is
+  a no-op; artificially-advanced schema version triggers the compat refusal.
+
+### Chart — migration Job
+
+`templates/job-migrate.yaml` renders a Helm hook Job:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "cyoda.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels: {{- include "cyoda.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: cyoda
+      automountServiceAccountToken: false
+      securityContext: { /* same hardening as the main StatefulSet pod */ }
+      containers:
+      - name: migrate
+        image: ghcr.io/cyoda-platform/cyoda:{{ .Chart.AppVersion }}
+        command: [/cyoda, migrate]
+        envFrom: [{ configMapRef: { name: {{ include "cyoda.fullname" . }}-env } }]
+        env:
+        - name: CYODA_POSTGRES_URL_FILE
+          value: /etc/cyoda/secrets/postgres-dsn
+        volumeMounts:
+        - name: secrets
+          mountPath: /etc/cyoda/secrets
+          readOnly: true
+        resources: { /* .Values.migrate.resources */ }
+      volumes:
+      - name: secrets
+        projected:
+          defaultMode: 0400
+          sources:
+          - secret:
+              name: {{ .Values.postgres.existingSecret }}
+              items: [{ key: dsn, path: postgres-dsn }]
+```
+
+**Properties:**
+
+- **Unique per revision** (`{{ .Release.Revision }}` in the name) — Helm
+  revision numbers increment on every upgrade, so Job object names never
+  collide.
+- **`hook-delete-policy: before-hook-creation,hook-succeeded`** — successful
+  Jobs clean up (no `kubectl get jobs` pile-up); failed Jobs are retained
+  for `kubectl logs` postmortem.
+- **Only mounts the DSN.** Principle of least privilege — the migration
+  step doesn't need JWT keys, HMAC, or the bootstrap client secret.
+- **Same hardened pod spec** as the main StatefulSet (non-root,
+  `readOnlyRootFilesystem`, all capabilities dropped).
+- **`backoffLimit: 2`, `activeDeadlineSeconds: 600` (10 min)** defaults.
+  Operators running large migrations override via
+  `migrate.activeDeadlineSeconds`.
+
+### End-to-end rollout
+
+`helm upgrade cyoda cyoda/cyoda --version 0.2.0` (new chart ships with a
+new `appVersion` whose image includes a schema change):
+
+1. Helm renders manifests, including the new
+   `cyoda-migrate-<new-revision>` Job.
+2. Helm creates the Job. Job pod pulls the new image, runs `cyoda migrate`,
+   applies missing migrations, exits 0.
+3. Helm sees Job success; applies the StatefulSet update.
+4. StatefulSet rolls pods. Each new pod starts with `AUTO_MIGRATE=false`
+   and its schema-compat check passes because migrations already ran.
+5. Rolling completes. Old pods terminate. Release succeeds.
+
+### Failure modes
+
+- **Migration fails (new schema has a bug):** Job exits non-zero after
+  `backoffLimit` retries → `helm upgrade` fails → Helm's rollback logic
+  restores the prior release's values → StatefulSet untouched → old pods
+  keep serving. Operator `kubectl logs job/cyoda-migrate-<rev>` diagnoses.
+- **Migration takes longer than `activeDeadlineSeconds`:** Job killed →
+  same as failure path. Surfaces "this migration is slow" loudly.
+- **Schema newer than code (downgrade):** `cyoda migrate` refuses (by
+  design) → Job fails → `helm upgrade` fails → old release stays in place.
+
+### Rollback and downgrade explicitly out of scope
+
+cyoda-go Postgres migrations are forward-only. An operator trying to
+downgrade the chart to an older `appVersion` that expects an older schema
+will hit: migrate Job refuses → `helm upgrade` fails → old release
+preserved. If they force past that (e.g. `helm rollback`), the old binaries
+will hit the schema-compat refusal on startup and crash-loop. **Recovery
+requires a DB restore from backup.** Chart README documents this explicitly;
+it's not something the Helm layer can or should fix. This matches the
+shared-spec fail-closed contract.
+
+---
+
+## 6. Release mechanics
+
+Two GitHub Actions workflows, both currently pre-stubs in the repo, start
+doing real work when this deliverable lands.
+
+### `release-chart.yml` — publish chart
+
+**Trigger:** tag push matching `cyoda-*` (e.g. `cyoda-0.1.0`).
+
+**Steps:**
+
+1. Checkout at the tag.
+2. **Verify GitHub Pages is configured** via
+   `gh api repos/${{github.repository}}/pages` — fails fast with a clear
+   message if Pages isn't enabled on the repo. First-release workflow
+   failures where Pages was never configured (tag pushed, `gh-pages`
+   populated, but `index.yaml` is 404) are a common foot-gun; this check
+   surfaces the misconfiguration at release time rather than after an
+   operator reports the 404.
+3. Verify `deploy/helm/cyoda/Chart.yaml` exists (fails the release
+   otherwise — already scaffolded).
+4. Verify `Chart.yaml` `version:` matches the tag suffix
+   (`cyoda-0.2.0` requires `version: 0.2.0`). Prevents mis-tagged
+   releases.
+5. `helm lint deploy/helm/cyoda`.
+6. `helm template` + `kubeconform` (same checks as CI's layer 1 — see §7).
+7. `helm/chart-releaser-action@v1` packages the chart and publishes to the
+   `gh-pages` branch as a Helm repository
+   (`index.yaml` + `<name>-<version>.tgz`).
+8. The .tgz is also uploaded to the GitHub Release matching the tag, so
+   `helm pull` against the Release asset works as an alternative.
+
+**Pre-release prerequisite (documented in `MAINTAINING.md`):** Before the
+first `cyoda-*` tag, the repo maintainer must enable GitHub Pages in the
+repo settings with source "Deploy from a branch" and branch
+`gh-pages:/(root)`. This is a one-time step. The workflow's step-2 check
+above catches the case where this is skipped.
+
+**Published URL:** `https://cyoda-platform.github.io/cyoda-go` (GitHub
+Pages, served from the `gh-pages` branch).
+
+### `bump-chart-appversion.yml` — keep appVersion aligned with binary
+
+**Trigger:** tag push matching `v*` non-prerelease (e.g. `v0.2.0`, not
+`v0.2.0-rc.1`).
+
+**Steps:**
+
+1. Checkout `main` in a new branch `chore/bump-chart-appversion-<version>`.
+2. Use `mikefarah/yq` action to update the `appVersion` field in
+   `deploy/helm/cyoda/Chart.yaml`:
+   `yq eval '.appVersion = strenv(VERSION)' -i deploy/helm/cyoda/Chart.yaml`.
+   `sed` was considered and rejected — brittle against YAML quoting
+   variations and multi-doc files. `yq` is a standard GitHub Actions step
+   and eliminates a class of silent misedits.
+3. Does NOT touch chart `version:` — that's an independent semver (chart
+   changes ≠ app changes).
+4. Opens a PR against `main` with a description referencing the binary
+   release notes.
+5. Does NOT auto-merge. A human reviews and decides whether the appVersion
+   bump warrants a chart release (if so, they also bump chart `version` in
+   the same PR and tag the chart after merge).
+
+This separation — binary releases and chart releases are independent tag
+series with their own semver — is the standard pattern
+(ingress-nginx, Grafana, cert-manager all do this). Chart bug fixes ship
+without binary bumps; binary bumps ship without chart changes.
+
+### Chart versioning — v0.1.0 start
+
+- **Chart version:** `0.1.0`. First published chart. Going forward:
+  - Patch (`0.1.1`): template bugfix, no values schema changes.
+  - Minor (`0.2.0`): additive values schema change, new optional feature.
+  - Major (`1.0.0`): commit to stable values schema; breaking changes
+    require a major.
+- **appVersion:** concrete binary tag at chart-ship time. Tracks the binary
+  via `bump-chart-appversion.yml` PRs.
+
+### Operator consumption
+
+```bash
+# Add the repo
+helm repo add cyoda https://cyoda-platform.github.io/cyoda-go
+helm repo update
+
+# Install
+helm install cyoda cyoda/cyoda -f my-values.yaml
+
+# Pin to a specific chart version
+helm install cyoda cyoda/cyoda --version 0.1.0 -f my-values.yaml
+
+# Upgrade (migration Job runs automatically pre-upgrade)
+helm upgrade cyoda cyoda/cyoda --version 0.2.0 -f my-values.yaml
+```
+
+OCI-based chart publishing (to `ghcr.io`) was considered and rejected for
+v0.1: `helm search repo` doesn't work against OCI registries, and
+chart-releaser is the more-traveled path that most mainstream charts still
+use. OCI publishing is a future-version consideration, not a current need.
+
+---
+
+## 7. Testing and CI
+
+### Layer 1 — lint + template + validate (every chart-affecting PR)
+
+New workflow `.github/workflows/helm-chart-ci.yml`. Triggered on PRs that
+touch `deploy/helm/**` or the workflow file itself; also runs on pushes to
+`main`.
+
+**Job `helm-lint-and-validate` steps:**
+
+1. Checkout, install Helm v4.1.x.
+2. Install `kubeconform` v0.6.7.
+3. `helm lint deploy/helm/cyoda`.
+4. `helm template cyoda deploy/helm/cyoda` with **three overlays**, each
+   piped into `kubeconform -strict -kubernetes-version 1.31.0` with
+   Gateway API 1.2 schemas:
+   - Default (single replica, Gateway API enabled).
+   - Ingress-mode override (`gateway.enabled=false`, `ingress.enabled=true`).
+   - Three-replica cluster-mode (`replicas=3`, Gateway enabled).
+5. Every overlay provides fixture secrets via `--set postgres.existingSecret=test-dsn`
+   and `--set jwt.existingSecret=test-jwt` (the Secret objects don't need to
+   exist at template-time; we're only rendering, not installing).
+
+Runtime: ~30 seconds. Catches template syntax errors, missing-required-values
+failures, invalid Kubernetes object schemas, Gateway API schema violations.
+
+### Layer 2 — `ct install` on kind (chart-affecting PRs + main)
+
+**Job `helm-install-smoke` steps** (runs after layer 1 passes):
+
+1. Checkout.
+2. `helm/kind-action@v1` creates a kind cluster, Kubernetes v1.31.0.
+3. Install Gateway API v1.2 CRDs from the upstream manifest.
+4. Install Envoy Gateway via its official Helm chart (one-liner; ~60s
+   wait). Chosen as the reference Gateway implementation for CI because it
+   has full `HTTPRoute`/`GRPCRoute` support with no known scale caveats.
+5. Create a Postgres sidecar pod (postgres:16-alpine) with a fixed
+   password and `cyoda` database.
+6. Generate fixture material at CI-runtime and create Secrets:
+   - Generate an ephemeral RSA private key with `openssl genrsa -out
+     /tmp/test-jwt.pem 2048`. The key lives only for the CI job — no
+     committed private key in the repo.
+   - `test-dsn` Secret containing the Postgres DSN against the sidecar.
+   - `test-jwt` Secret containing the generated key under
+     `signing-key.pem`.
+7. `helm/chart-testing-action@v2` `ct install` — installs the chart, waits
+   for `--timeout 5m`, uninstalls, re-installs (exercises the
+   `lookup`-based chart-managed Secret pattern on re-install).
+8. Port-forward the `cyoda` Service's `metrics` port; `curl -fsS
+   http://localhost:9091/readyz` to confirm end-to-end readiness.
+9. `helm test cyoda` — runs the chart's own `test-readyz` hook pod, which
+   curls `/readyz` via in-cluster DNS.
+
+Runtime: ~2.5 minutes. Catches real install failures the layer-1 schema
+check can't see: Secret-wiring mismatches, probe path misses, migration Job
+failures, `envFrom` references that don't resolve, Gateway API schema
+issues `kubeconform` misses.
+
+### Out of layer 2 — followed up explicitly
+
+- **Upgrade testing.** Requires two chart versions with a schema diff.
+  Filed as §8-F2.
+- **Multi-replica cluster-mode gossip coordination.** Requires substantial
+  extra infra (3-pod wait, gossip peer-count assertion via logs or admin
+  endpoint). Filed as §8-F1.
+
+### Test fixtures
+
+- **No committed private keys.** The CI job generates an ephemeral RSA key
+  inline via `openssl genrsa` at runtime. No `test-jwt.pem` or equivalent
+  lives in the repo — this avoids the "committed dev-key that might end up
+  in a non-CI context" concern raised in the security rules.
+- `.github/ct.yaml` — chart-testing config:
+  ```yaml
+  chart-dirs: [deploy/helm]
+  charts: [cyoda]
+  validate-maintainers: false
+  helm-extra-args: "--wait --timeout 5m"
+  target-branch: main
+  ```
+
+### Integration with existing CI
+
+- Existing `ci.yml` (Go tests) — no change.
+- Existing `per-module-hygiene` job (plugin submodule builds) — no change.
+- New `helm-chart-ci.yml` runs independently, does not block non-chart PRs.
+- `release-chart.yml` and `bump-chart-appversion.yml` pre-stubs become
+  operative once chart files land.
+
+---
+
+## 8. Deferrals
+
+The v0.1 drop resolved what was resolvable. The only deferral is the
+one that is physically blocked by needing a second shipped chart
+version.
+
+| ID | Title | Reason deferred | Acceptance criteria |
+|---|---|---|---|
+| F2 | `helm upgrade` migration-path testing | Needs two chart versions with a schema diff; impossible at v0.1 in isolation. Lands alongside the first v0.2 that ships with a DB migration. | CI installs v0.1.0, upgrades to v0.2.0 (or whichever new version ships the first schema change), verifies migration Job ran and new pods serve traffic. Tracked against the v0.2 cycle, not filed as a follow-up issue. |
+
+Resolved in this deliverable (previously listed as §8 follow-ups):
+
+- **`_FILE` suffix support for credentials** — closed by §4 + §1 binary changes.
+- **Multi-replica cluster-mode CI** (was F1) — Layer 2 CI now scales
+  the release to `replicas=3`, waits for all three pods to reach Ready,
+  and asserts the `gossip.go` "joined cluster" log line reports
+  `members=3` on every pod.
+- **Ingress2Gateway migration guide** (was F3) — shipped as the
+  "Migrating from ingress-nginx" section in `deploy/helm/cyoda/README.md`.
+- **Gateway API PolicyAttachment patterns** (was F4) — shipped as the
+  "Gateway API policy attachments" section in the chart README, with
+  controller-specific pointers (Envoy Gateway, Cilium, Contour). The
+  chart still does not render policy objects (controller-specific).
+- **HPA** (first increment of F5) — shipped as `templates/hpa.yaml`
+  with `autoscaling` values block, default off.
+- **`/metrics` authentication** (was PR-#60 review finding I-4 /
+  issue #61) — shipped as bearer-gated `/metrics` on the binary side
+  with a fifth chart-managed Secret, `ServiceMonitor bearerTokenSecret`
+  wiring, and an end-to-end CI smoke step.
+- **NetworkPolicy default-on** — flipped from opt-in to opt-out with a
+  default `metricsFromNamespaces` of `monitoring`. Defense in depth
+  alongside metrics auth.
+
+Out of scope for this chart track (other tracks, other PRs):
+
+- Plugin submodule test-coverage aggregator (existing issue #46) —
+  unrelated to chart/provisioning.
+- Non-HPA v0.2 optional features (PodMonitor alternative,
+  external-secrets-operator integration, fine-grained egress
+  NetworkPolicy) — each becomes its own chart-version deliverable
+  when demand surfaces.
+
+---
+
+## 9. Summary of decisions
+
+For quick cross-reference against the clarifying-question trail:
+
+| Area | Decision |
+|---|---|
+| Migration mode | New `cyoda migrate` subcommand |
+| DB subchart | None. Chart has zero dependencies. DSN required via `existingSecret`. |
+| DSN secret wiring | `existingSecret` only; never plaintext in values |
+| JWT key wiring | `existingSecret`, required. `_FILE` suffix convention applied uniformly. |
+| `_FILE` suffix scope | All four credential-shaped env vars. Single `resolveSecretEnv` helper. |
+| Migration Job hooks | `pre-install,pre-upgrade`, blocking. 10-min default `activeDeadlineSeconds`. |
+| Workload kind | StatefulSet always. Cluster mode always on. Scale via `replicas` alone. |
+| HMAC secret | Auto-generated via `lookup` + `randAlphaNum 48` with GitOps-safety guard, or operator `existingSecret`. No `resource-policy: keep`. |
+| Bootstrap client secret | Same auto-gen pattern with the same guard. Binary: stdout-print removed; jwt mode requires it. No `resource-policy: keep`. |
+| GitOps safety | `lookup`-based auto-gen guarded by a namespace-lookup check; chart fails with a clear message when rendered without live cluster access, forcing operators to use `existingSecret`. |
+| Secret key names | Every `existingSecret` has a paired `existingSecretKey` values knob so operators declare their key name. |
+| Service shape | Single ClusterIP `cyoda` with named ports `http/grpc/metrics` + headless `cyoda-headless` for gossip |
+| Routing | Gateway API default (`HTTPRoute` + `GRPCRoute`, parentRefs required); Ingress transitional |
+| Gateway resource rendering | No. Shared platform Gateway expected; chart renders only routes. |
+| Observability | Unconditional probes + optional ServiceMonitor + open `extraEnv` for OTel |
+| Pod security | Non-root 65532, readOnlyRootFilesystem, all caps dropped, seccomp RuntimeDefault, SA token not mounted |
+| NetworkPolicy | Optional template, off by default. When enabled, restricts metrics-port ingress to operator-declared namespaces and gossip-port ingress to the chart's own pods. |
+| imagePullSecrets | Top-level values knob wired into pod spec; supports air-gapped/mirrored registries. |
+| extraEnv shape | Schema-constrained to `{name, value}` or `{name, valueFrom}`; supports injecting `secretKeyRef` entries (OTel auth headers, etc.). |
+| Storage backend | Postgres only. ConfigMap hardcodes it; no user-facing values knob. |
+| Persistence | None. `volumeClaimTemplates: []`. |
+| Chart publishing | `helm/chart-releaser-action` → GitHub Pages |
+| CI | Layers 1 (every PR) + 2 (chart-affecting PRs + main). Layer 3 filed as F1. |

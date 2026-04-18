@@ -1,0 +1,178 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cyoda.fullname" . }}
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "cyoda.fullname" . }}-headless
+  {{- /* When autoscaling is on, the HPA owns the replica count; omit
+         .spec.replicas so `helm upgrade --reuse-values` doesn't keep
+         resetting it back to .Values.replicas on every reconcile. */}}
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  # Pods start in parallel rather than strictly ordered — cyoda's cluster
+  # mode handles peer discovery via gossip; we don't need the 0-then-1-then-2
+  # ordering that StatefulSet provides by default.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "cyoda.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cyoda.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "cyoda.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cyoda
+          image: {{ include "cyoda.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 9090
+              protocol: TCP
+            - name: metrics
+              containerPort: 9091
+              protocol: TCP
+            - name: gossip-tcp
+              containerPort: 7946
+              protocol: TCP
+            - name: gossip-udp
+              containerPort: 7946
+              protocol: UDP
+          env:
+            # Cluster identity (downward API)
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CYODA_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CYODA_NODE_ADDR
+              value: "http://$(CYODA_NODE_ID).{{ include "cyoda.fullname" . }}-headless.$(POD_NAMESPACE).svc.cluster.local:9090"
+            - name: CYODA_GOSSIP_ADDR
+              value: "0.0.0.0:7946"
+            # Credentials via _FILE suffix (projected-volume mount)
+            - name: CYODA_POSTGRES_URL_FILE
+              value: /etc/cyoda/secrets/postgres-dsn
+            - name: CYODA_JWT_SIGNING_KEY_FILE
+              value: /etc/cyoda/secrets/jwt-signing-key.pem
+            - name: CYODA_HMAC_SECRET_FILE
+              value: /etc/cyoda/secrets/hmac-secret
+            - name: CYODA_METRICS_BEARER_FILE
+              value: /etc/cyoda/secrets/metrics-bearer
+            {{- if .Values.bootstrap.clientId }}
+            - name: CYODA_BOOTSTRAP_CLIENT_SECRET_FILE
+              value: /etc/cyoda/secrets/bootstrap-client-secret
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "cyoda.fullname" . }}-env
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: secrets
+              mountPath: /etc/cyoda/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: secrets
+          projected:
+            defaultMode: 0400
+            sources:
+              - secret:
+                  name: {{ .Values.postgres.existingSecret }}
+                  items:
+                    - key: {{ .Values.postgres.existingSecretKey }}
+                      path: postgres-dsn
+              - secret:
+                  name: {{ .Values.jwt.existingSecret }}
+                  items:
+                    - key: {{ .Values.jwt.existingSecretKey }}
+                      path: jwt-signing-key.pem
+              - secret:
+                  name: {{ include "cyoda.hmacSecretName" . }}
+                  items:
+                    - key: {{ .Values.cluster.hmacSecret.existingSecretKey }}
+                      path: hmac-secret
+              - secret:
+                  name: {{ include "cyoda.metricsBearerSecretName" . }}
+                  items:
+                    - key: {{ .Values.monitoring.metricsBearer.existingSecretKey }}
+                      path: metrics-bearer
+              {{- if .Values.bootstrap.clientId }}
+              - secret:
+                  name: {{ include "cyoda.bootstrapSecretName" . }}
+                  items:
+                    - key: {{ .Values.bootstrap.clientSecret.existingSecretKey }}
+                      path: bootstrap-client-secret
+              {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  # volumeClaimTemplates intentionally empty — cyoda is stateless when
+  # backed by Postgres (state lives in the database, not the pod).

@@ -55,6 +55,9 @@ nfpms:
         dst: /etc/cyoda/cyoda.env
         type: "config|noreplace"
 
+# Intentionally using `brews:` despite deprecation warning.
+# cyoda is a CLI (not a .app), supports Linux Homebrew, and relies on
+# formula post_install hooks. Revisit if GoReleaser v3 removes `brews:`.
 brews:
   - name: cyoda
     # Skip tap upload on prerelease tags (v*-rc.*, v*-beta.*, v*-alpha.*).
@@ -117,7 +120,10 @@ dockers_v2:
       - ghcr.io/cyoda-platform/cyoda
     tags:
       - latest
-    skip_push: "{{ .Prerelease }}"
+    # `:latest` tracks stable releases only — skip for prereleases.
+    # In goreleaser v2 the dockers_v2 equivalent of v1's skip_push is
+    # `disable` (truthy template string disables the whole image).
+    disable: "{{ .Prerelease }}"
     platforms:
       - linux/amd64
       - linux/arm64
@@ -130,7 +136,14 @@ dockers_v2:
       org.opencontainers.image.licenses: Apache-2.0
 
 docker_signs:
-  - artifacts: manifests
+  # `dockers_v2` produces per-arch `Docker Image` artifacts (one per
+  # platform — linux/amd64, linux/arm64, ...). There is no separate
+  # `docker_manifests:` block and the v2 publish path assembles the
+  # multi-arch manifest list transparently from those per-arch images.
+  # Sign the images themselves: cosign signs each per-arch digest,
+  # multi-arch pulls resolve to a signed image, and the snapshot smoke
+  # can verify the signer's selector resolves non-empty.
+  - artifacts: images
     cmd: cosign
     args:
       - "sign"

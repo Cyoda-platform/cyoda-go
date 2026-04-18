@@ -21,7 +21,7 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0   # GoReleaser needs full history to derive version metadata
 
@@ -35,11 +35,17 @@ jobs:
       - name: Tag a non-prerelease snapshot version
         run: git tag v0.0.0
 
-      - name: Run GoReleaser snapshot (no publish, no sign)
+      - name: Run GoReleaser snapshot (no publish, no sign, no sbom)
+        # Skipping sbom here avoids a dependency on anchore/sbom-action
+        # at snapshot-verify time (its syft download has been flaky).
+        # SBOM config is exercised on the real release path where syft
+        # is installed via the release workflow's own step — config
+        # bugs there surface at the first real release, which is
+        # acceptable given SBOM config rarely changes.
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --snapshot --clean --skip=publish --skip=sign
+          args: release --snapshot --clean --skip=publish --skip=sign --skip=sbom
         env:
           GOWORK: "off"
 
@@ -52,19 +58,14 @@ jobs:
           with open('dist/artifacts.json') as f:
               artifacts = json.load(f)
 
-          # `docker_signs: artifacts: manifests` in .goreleaser.yaml matches
-          # artifacts whose type is a Docker manifest. GoReleaser v2 with
-          # dockers_v2 may produce any of these type names; we accept all.
-          manifest_types = {
-              'Docker Manifest',
-              'Published Docker Manifest',
-              'Docker Image V2',
-              'Docker Manifest List',
-          }
-          matching = [a for a in artifacts if a.get('type') in manifest_types]
+          # `docker_signs: artifacts: images` in .goreleaser.yaml matches
+          # the per-arch "Docker Image" artifacts that dockers_v2 produces
+          # (one per platform). We expect at least two (amd64 + arm64) per
+          # cyoda image id — so 4 total across the two ids (cyoda, cyoda-latest).
+          signable = [a for a in artifacts if a.get('type') == 'Docker Image']
 
-          if not matching:
-              print("FAIL: docker_signs selector 'artifacts: manifests' will resolve to empty.")
+          if not signable:
+              print("FAIL: docker_signs selector 'artifacts: images' will resolve to empty.")
               print("This means the first real release would ship unsigned images.")
               print("")
               print("All artifact types produced by this snapshot:")
@@ -75,8 +76,8 @@ jobs:
               print("to match one of the type names above (or use 'all').")
               sys.exit(1)
 
-          print(f"OK: {len(matching)} manifest artifact(s) — docker_signs will sign:")
-          for a in matching:
+          print(f"OK: {len(signable)} Docker Image artifact(s) — docker_signs will sign:")
+          for a in signable:
               print(f"  - {a.get('name')}  ({a.get('type')})")
           PY
 

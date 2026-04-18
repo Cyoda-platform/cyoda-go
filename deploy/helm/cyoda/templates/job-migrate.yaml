@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "cyoda.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "cyoda.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "cyoda.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "cyoda.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          command: [/cyoda, migrate]
+          env:
+            - name: CYODA_POSTGRES_URL_FILE
+              value: /etc/cyoda/secrets/postgres-dsn
+          envFrom:
+            - configMapRef:
+                name: {{ include "cyoda.fullname" . }}-env
+          volumeMounts:
+            - name: secrets
+              mountPath: /etc/cyoda/secrets
+              readOnly: true
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+      volumes:
+        # Only mounts the DSN — migration doesn't need JWT/HMAC/bootstrap.
+        # Principle of least privilege.
+        - name: secrets
+          projected:
+            defaultMode: 0400
+            sources:
+              - secret:
+                  name: {{ .Values.postgres.existingSecret }}
+                  items:
+                    - key: {{ .Values.postgres.existingSecretKey }}
+                      path: postgres-dsn

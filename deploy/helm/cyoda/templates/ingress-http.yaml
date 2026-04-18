@@ -1,0 +1,33 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cyoda.fullname" . }}-http
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+  {{- with .Values.ingress.http.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.http.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.http.host | quote }}
+      http:
+        paths:
+          {{- range .Values.ingress.http.paths }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "cyoda.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

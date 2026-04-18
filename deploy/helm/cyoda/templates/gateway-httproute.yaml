@@ -1,0 +1,24 @@
+{{- if .Values.gateway.enabled }}
+{{- if .Values.ingress.enabled }}
+{{- fail "gateway.enabled and ingress.enabled are mutually exclusive — pick one." }}
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "cyoda.fullname" . }}-http
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.gateway.parentRefs | nindent 4 }}
+  hostnames:
+    {{- toYaml .Values.gateway.http.hostnames | nindent 4 }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "cyoda.fullname" . }}
+          port: 8080
+{{- end }}

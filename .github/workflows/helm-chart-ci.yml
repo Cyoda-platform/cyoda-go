@@ -1,0 +1,426 @@
+name: Helm chart CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/helm-chart-ci.yml'
+      - '.github/ct.yaml'
+  pull_request:
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/helm-chart-ci.yml'
+      - '.github/ct.yaml'
+
+jobs:
+  helm-lint-and-validate:
+    name: Lint, template, kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: azure/setup-helm@v5.0.0
+        with:
+          version: v4.1.4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+
+      - name: helm lint
+        # Chart requires operator-provided existingSecret values (no sensible
+        # defaults for Secret names); lint with placeholders that satisfy the
+        # schema's minLength:1 constraint.
+        run: |
+          helm lint deploy/helm/cyoda \
+            --set postgres.existingSecret=lint-placeholder \
+            --set jwt.existingSecret=lint-placeholder \
+            --set cluster.hmacSecret.existingSecret=lint-placeholder \
+            --set monitoring.metricsBearer.existingSecret=lint-placeholder
+
+      - name: helm template — default (Gateway API, replicas=1)
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.parentRefs[0].namespace=gateway-system \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            > /tmp/default.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.31.0-standalone-strict/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json' \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
+            /tmp/default.yaml
+
+      - name: helm template — ingress mode
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.enabled=false \
+            --set ingress.enabled=true \
+            --set ingress.className=nginx \
+            --set ingress.http.host=cyoda.example.com \
+            --set ingress.grpc.host=grpc.cyoda.example.com \
+            > /tmp/ingress.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
+            /tmp/ingress.yaml
+
+      - name: helm template — 3-replica cluster mode
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set replicas=3 \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            > /tmp/replicas3.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
+            /tmp/replicas3.yaml
+          # Must render a PDB at replicas=3.
+          grep -q "kind: PodDisruptionBudget" /tmp/replicas3.yaml
+
+      - name: helm template — monitoring + networkPolicy
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set networkPolicy.enabled=true \
+            --set 'networkPolicy.metricsFromNamespaces[0].matchLabels.kubernetes\.io/metadata\.name=monitoring' \
+            > /tmp/monitoring.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
+            /tmp/monitoring.yaml
+          grep -q "kind: ServiceMonitor" /tmp/monitoring.yaml
+          grep -q "kind: NetworkPolicy" /tmp/monitoring.yaml
+
+      - name: helm template — GitOps safety guard fires on HMAC
+        run: |
+          # Without cluster.hmacSecret.existingSecret AND without live
+          # cluster access (helm template), the HMAC guard must fire.
+          # (We pre-set monitoring.metricsBearer.existingSecret so the
+          # metrics-bearer guard doesn't short-circuit this check.)
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set monitoring.metricsBearer.existingSecret=test-mb \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            2>&1)
+          set -e
+          if ! echo "$output" | grep -q "cluster.hmacSecret.existingSecret is required"; then
+            echo "FAIL: expected HMAC GitOps-safety guard to fire; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: HMAC guard fired as expected."
+
+      - name: helm template — GitOps safety guard fires on metrics bearer
+        run: |
+          # Same shape for the metrics-bearer guard: no existingSecret
+          # and no live cluster access.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            2>&1)
+          set -e
+          if ! echo "$output" | grep -q "monitoring.metricsBearer.existingSecret is required"; then
+            echo "FAIL: expected metrics-bearer GitOps-safety guard to fire; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: metrics-bearer guard fired as expected."
+
+      - name: helm template — schema rejects empty postgres/jwt existingSecret
+        run: |
+          # Regression guard: empty existingSecret must fail schema validation
+          # (not silently render a StatefulSet that mounts a Secret named "").
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of empty existingSecret; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/postgres/existingSecret"; then
+            echo "FAIL: expected error to name /postgres/existingSecret; got:"
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/jwt/existingSecret"; then
+            echo "FAIL: expected error to name /jwt/existingSecret; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected empty existingSecret."
+
+      - name: helm template — schema rejects gateway+ingress both enabled
+        run: |
+          # Regression guard: the schema (not just a template fail) must
+          # reject gateway.enabled=true with ingress.enabled=true.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set ingress.enabled=true \
+            --set ingress.http.host=cyoda.example.com \
+            --set ingress.grpc.host=grpc.cyoda.example.com \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of gateway+ingress; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "schema"; then
+            echo "FAIL: expected schema-level error, got template-level fail:"
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/ingress/enabled"; then
+            echo "FAIL: expected error to name /ingress/enabled; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected gateway+ingress both-enabled."
+
+  helm-install-smoke:
+    name: ct install on kind
+    needs: helm-lint-and-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: azure/setup-helm@v5.0.0
+        with:
+          version: v4.1.4
+
+      - name: Set up kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          version: v0.24.0
+          cluster_name: cyoda-chart-ci
+          kubernetes_version: v1.31.0
+          wait: 120s
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build cyoda image from branch and load into kind
+        # The chart's appVersion points at a concrete released binary
+        # tag (e.g. ghcr.io/cyoda-platform/cyoda:0.1.0) that may not yet
+        # exist for an in-progress PR. Build the image from the PR's
+        # source tree and load it into the kind node, then override
+        # image.repository + image.pullPolicy during ct install so the
+        # chart pulls the freshly-built image rather than the unreleased
+        # registry tag.
+        run: |
+          mkdir -p /tmp/cyoda-build/linux/amd64
+          # CGO_ENABLED=0 for a statically-linked binary — matches the
+          # desktop/release build and is required for gcr.io/distroless/static
+          # (no dynamic loader, no glibc).
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o /tmp/cyoda-build/linux/amd64/cyoda ./cmd/cyoda
+          docker build \
+            --build-arg TARGETPLATFORM=linux/amd64 \
+            -f deploy/docker/Dockerfile \
+            -t cyoda-ci:test \
+            /tmp/cyoda-build
+          kind load docker-image cyoda-ci:test --name cyoda-chart-ci
+
+      - name: Install Envoy Gateway (bundles Gateway API v1.2 CRDs)
+        run: |
+          # Envoy Gateway v1.2 bundles the Gateway API CRDs it needs
+          # (crds/gatewayapi-crds.yaml inside its Helm chart). Letting
+          # the chart install them avoids FieldManager conflicts that
+          # a separate pre-install step introduces.
+          helm install eg oci://docker.io/envoyproxy/gateway-helm \
+            --version v1.2.0 \
+            -n envoy-gateway-system \
+            --create-namespace \
+            --wait --timeout 5m
+          kubectl wait --for=condition=established \
+            crd/gateways.gateway.networking.k8s.io --timeout=60s
+
+      - name: Start Postgres sidecar
+        run: |
+          kubectl create namespace cyoda
+          kubectl -n cyoda run pg \
+            --image=postgres:16-alpine \
+            --env=POSTGRES_PASSWORD=test \
+            --env=POSTGRES_DB=cyoda \
+            --env=POSTGRES_USER=cyoda \
+            --port=5432
+          kubectl -n cyoda expose pod pg --port=5432
+          kubectl -n cyoda wait --for=condition=ready pod/pg --timeout=120s
+
+      - name: Generate ephemeral JWT signing key
+        run: |
+          openssl genrsa -out /tmp/test-jwt.pem 2048
+
+      - name: Create test Secrets in cyoda namespace
+        run: |
+          kubectl -n cyoda create secret generic test-dsn \
+            --from-literal=dsn='postgres://cyoda:test@pg:5432/cyoda?sslmode=disable'
+          kubectl -n cyoda create secret generic test-jwt \
+            --from-file=signing-key.pem=/tmp/test-jwt.pem
+
+      - name: Create Gateway for CI
+        run: |
+          kubectl apply -n cyoda -f - <<'EOF'
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          metadata:
+            name: test-gateway
+          spec:
+            gatewayClassName: envoy-gateway
+            listeners:
+              - name: http
+                port: 80
+                protocol: HTTP
+                allowedRoutes:
+                  namespaces:
+                    from: Same
+          EOF
+
+      - name: helm install cyoda
+        # Fixed release name "cyoda" so every downstream step can target
+        # svc/cyoda, secret/cyoda-metrics-bearer, pod/cyoda-0, etc. by
+        # a stable name. ct install was considered and rejected for this
+        # use case — its random release names are designed for multi-chart
+        # parallel testing, not the single-chart deep-verification pattern
+        # we need here (Layer 1 already lints and template-renders across
+        # overlays).
+        #
+        # NetworkPolicy disabled in CI: the default-on NP restricts :9091
+        # ingress to the monitoring namespace and would block the chart's
+        # own helm-test hook (which runs in the release's namespace).
+        # Real operators keep it on. Layer 1's monitoring+networkPolicy
+        # overlay already validates the rendered NP YAML.
+        run: |
+          helm install cyoda deploy/helm/cyoda \
+            --namespace cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set image.repository=cyoda-ci \
+            --set image.tag=test \
+            --set image.pullPolicy=Never \
+            --set networkPolicy.enabled=false \
+            --set 'gateway.parentRefs[0].name=test-gateway' \
+            --set 'gateway.http.hostnames[0]=cyoda.ci' \
+            --set 'gateway.grpc.hostnames[0]=grpc.cyoda.ci' \
+            --wait --timeout 5m
+
+      - name: Smoke test /readyz via port-forward
+        run: |
+          kubectl -n cyoda port-forward svc/cyoda 9091:metrics &
+          PF_PID=$!
+          trap "kill $PF_PID" EXIT
+          sleep 3
+          curl -fsS --max-time 5 http://localhost:9091/readyz
+
+      - name: Smoke test /metrics auth (401 without, 200 with bearer)
+        run: |
+          kubectl -n cyoda port-forward svc/cyoda 9091:metrics &
+          PF_PID=$!
+          trap "kill $PF_PID" EXIT
+          sleep 3
+          # Unauthenticated: expect 401.
+          status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+            http://localhost:9091/metrics)
+          if [ "$status" != "401" ]; then
+            echo "FAIL: /metrics without bearer should return 401; got $status"
+            exit 1
+          fi
+          # Read the chart-managed bearer from the Kubernetes Secret and
+          # present it. /metrics should return 200.
+          bearer=$(kubectl -n cyoda get secret cyoda-metrics-bearer \
+            -o jsonpath='{.data.bearer}' | base64 -d)
+          status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+            -H "Authorization: Bearer $bearer" \
+            http://localhost:9091/metrics)
+          if [ "$status" != "200" ]; then
+            echo "FAIL: /metrics with correct bearer should return 200; got $status"
+            exit 1
+          fi
+          echo "PASS: /metrics is bearer-gated end-to-end."
+
+      - name: helm test cyoda
+        # The migration Job runs as a pre-install hook and completes before
+        # helm install returns, so no explicit job wait is needed here.
+        run: helm test cyoda -n cyoda
+
+      - name: Scale to 3 replicas and verify all pods become Ready
+        run: |
+          # Scale up and assert all three pods reach Ready. Readiness
+          # probes /readyz which checks the storage factory is
+          # initialised — so 3 Ready pods ≡ 3 working storage paths
+          # + gossip-started nodes with memberlist listeners up.
+          #
+          # A stronger "all three pods see each other as cluster peers"
+          # assertion would require a cluster-members HTTP endpoint we
+          # could query by ordinal; the existing "joined cluster" log
+          # is a one-shot startup snapshot that isn't reliably
+          # observable across restart/scale patterns. Adding a proper
+          # members query endpoint is tracked as a separate deliverable.
+          helm upgrade cyoda deploy/helm/cyoda \
+            -n cyoda --reuse-values --set replicas=3 \
+            --wait --timeout 5m
+          kubectl -n cyoda rollout status statefulset/cyoda --timeout=5m
+          for i in 0 1 2; do
+            kubectl -n cyoda wait --for=condition=ready pod/cyoda-$i --timeout=120s
+          done
+          echo "PASS: 3 replicas Ready (readiness probes /readyz on each)."
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n cyoda get all
+          kubectl -n cyoda describe pods
+          kubectl -n cyoda logs -l app.kubernetes.io/name=cyoda --all-containers --tail=200 || true
+          kubectl -n cyoda logs -l app.kubernetes.io/component=migrate --all-containers --tail=200 || true

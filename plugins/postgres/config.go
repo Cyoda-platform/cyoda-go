@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,9 +21,15 @@ type config struct {
 }
 
 // parseConfig reads CYODA_POSTGRES_* env vars via the injected getenv.
+// For CYODA_POSTGRES_URL, the _FILE suffix pattern is supported: if
+// CYODA_POSTGRES_URL_FILE is set it takes precedence over CYODA_POSTGRES_URL.
 func parseConfig(getenv func(string) string) (config, error) {
+	url, err := resolveSecretWith(getenv, "CYODA_POSTGRES_URL")
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
-		URL:             getenv("CYODA_POSTGRES_URL"),
+		URL:             url,
 		MaxConns:        int32(envInt(getenv, "CYODA_POSTGRES_MAX_CONNS", 25)),
 		MinConns:        int32(envInt(getenv, "CYODA_POSTGRES_MIN_CONNS", 5)),
 		MaxConnIdleTime: envDuration(getenv, "CYODA_POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute),
@@ -31,6 +39,25 @@ func parseConfig(getenv func(string) string) (config, error) {
 		return cfg, fmt.Errorf("CYODA_POSTGRES_URL is required")
 	}
 	return cfg, nil
+}
+
+// Mirrors app.ResolveSecretEnv (separate go.mod; keep behavior in sync).
+//
+// resolveSecretWith honours the _FILE suffix pattern using the injected getenv
+// for the var name lookup, and os.ReadFile for the actual file read.
+//
+// Precedence: <name>_FILE wins if both are set. Trailing whitespace is trimmed.
+// Returns an error if _FILE is set but the file cannot be read.
+func resolveSecretWith(getenv func(string) string, name string) (string, error) {
+	fileVar := name + "_FILE"
+	if path := getenv(fileVar); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("failed to read %s=%q: %w", fileVar, path, err)
+		}
+		return strings.TrimRight(string(data), " \t\n\r"), nil
+	}
+	return getenv(name), nil
 }
 
 func envInt(getenv func(string) string, key string, dflt int) int {

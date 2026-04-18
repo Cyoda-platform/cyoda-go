@@ -73,6 +73,54 @@ func Migrate(pool *pgxpool.Pool) error {
 	return runMigrations(context.Background(), pool)
 }
 
+// RunMigrateWithDSN is the entry point for the `cyoda migrate` subcommand.
+// It opens a connection pool from dsn, enforces the schema-compatibility
+// contract (refuses when DB is newer than code), applies any pending
+// migrations, and closes the pool before returning. The caller supplies
+// a context for timeout/cancellation control.
+//
+// Returns a descriptive error when:
+//   - dsn is empty
+//   - the pool cannot be opened or pinged
+//   - the schema is newer than this binary's embedded migrations
+//   - the migration state is dirty (manual intervention required)
+//   - any migration step fails
+func RunMigrateWithDSN(ctx context.Context, dsn string) error {
+	if dsn == "" {
+		return fmt.Errorf("CYODA_POSTGRES_URL required for postgres migrations")
+	}
+
+	poolCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("parse postgres DSN: %w", err)
+	}
+	// Minimal pool for a short-lived migrate process: no idle connections,
+	// no background health-check goroutines.
+	poolCfg.MaxConns = 2
+	poolCfg.MinConns = 0
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		return fmt.Errorf("open postgres pool: %w", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		return fmt.Errorf("ping postgres: %w", err)
+	}
+
+	// Enforce the schema-compatibility contract before applying anything.
+	// autoMigrate=true here: we are the migration process.
+	compatDB := openDB(pool)
+	compatErr := checkSchemaCompat(ctx, compatDB, true)
+	_ = compatDB.Close()
+	if compatErr != nil {
+		return compatErr
+	}
+
+	return runMigrations(ctx, pool)
+}
+
 // dropSchema drops all application tables and the migration tracking table by
 // running DROP SCHEMA CASCADE + CREATE SCHEMA. This is faster and more robust
 // than MigrateDown for test cleanup because MigrateDown can fail when test

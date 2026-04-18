@@ -1,0 +1,25 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "cyoda.fullname" . }}
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "cyoda.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      path: /metrics
+      # Prometheus-operator reads the Bearer token from the named Secret
+      # in the chart's namespace and attaches it to the scrape request.
+      # Matches the bearer the pod enforces via CYODA_METRICS_BEARER_FILE.
+      bearerTokenSecret:
+        name: {{ include "cyoda.metricsBearerSecretName" . }}
+        key: {{ .Values.monitoring.metricsBearer.existingSecretKey }}
+{{- end }}
