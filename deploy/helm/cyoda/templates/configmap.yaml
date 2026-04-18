@@ -4,6 +4,17 @@ metadata:
   name: {{ include "cyoda.fullname" . }}-env
   labels:
     {{- include "cyoda.labels" . | nindent 4 }}
+  # The migrate Job is a pre-install/pre-upgrade Helm hook and reads
+  # its environment from this ConfigMap via envFrom. Helm runs hooks
+  # before normal chart resources, so without a matching hook
+  # annotation the Job pod spawns with CreateContainerConfigError
+  # ("configmap cyoda-env not found"). Same pre-install,pre-upgrade +
+  # hook-weight -10 pattern applied to the ServiceAccount for the
+  # same reason — both must exist before the Job (default weight 0).
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
 data:
   # Port and listener configuration — chart-managed, not operator-tunable
   # (the chart's security model depends on these defaults).
