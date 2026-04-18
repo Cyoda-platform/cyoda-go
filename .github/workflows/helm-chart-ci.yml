@@ -147,13 +147,16 @@ jobs:
             echo "$output"
             exit 1
           fi
-          if ! echo "$output" | grep -q "/postgres/existingSecret"; then
-            echo "FAIL: expected error to name /postgres/existingSecret; got:"
+          # Helm 3's gojsonschema emits dotted "postgres.existingSecret"
+          # whereas Helm 4's validator emits JSON Pointer "/postgres/existingSecret".
+          # Accept both.
+          if ! echo "$output" | grep -qE "postgres[./]existingSecret"; then
+            echo "FAIL: expected error to name postgres.existingSecret; got:"
             echo "$output"
             exit 1
           fi
-          if ! echo "$output" | grep -q "/jwt/existingSecret"; then
-            echo "FAIL: expected error to name /jwt/existingSecret; got:"
+          if ! echo "$output" | grep -qE "jwt[./]existingSecret"; then
+            echo "FAIL: expected error to name jwt.existingSecret; got:"
             echo "$output"
             exit 1
           fi
@@ -187,8 +190,9 @@ jobs:
             echo "$output"
             exit 1
           fi
-          if ! echo "$output" | grep -q "/ingress/enabled"; then
-            echo "FAIL: expected error to name /ingress/enabled; got:"
+          # Helm 3 dotted vs. Helm 4 JSON Pointer — accept both.
+          if ! echo "$output" | grep -qE "ingress[./]enabled"; then
+            echo "FAIL: expected error to name ingress.enabled; got:"
             echo "$output"
             exit 1
           fi
