@@ -397,35 +397,32 @@ jobs:
 
       - name: Scale to 3 replicas and verify cluster mode converges
         run: |
-          # Scale up to three replicas.
+          # gossip.go's "joined cluster" log is a one-shot snapshot at
+          # startup; it reports the member count at that moment and is
+          # never re-emitted. The only way to observe "all three pods
+          # see 3 members" via this signal is for all three pods to
+          # start into an already-sized replicas=3 StatefulSet. Scale
+          # down to zero first so the subsequent scale-up starts every
+          # ordinal fresh into a three-node configuration (each pod
+          # picks up the ConfigMap with the full 3-seed list, joins
+          # the others, and stability-window-logs members=3).
           helm upgrade cyoda deploy/helm/cyoda \
-            -n cyoda --reuse-values \
-            --set replicas=3 \
+            -n cyoda --reuse-values --set replicas=0 \
+            --wait --timeout 2m
+          helm upgrade cyoda deploy/helm/cyoda \
+            -n cyoda --reuse-values --set replicas=3 \
             --wait --timeout 5m
           kubectl -n cyoda rollout status statefulset/cyoda --timeout=5m
           for i in 0 1 2; do
             kubectl -n cyoda wait --for=condition=ready pod/cyoda-$i --timeout=120s
           done
 
-          # gossip.go's "joined cluster" log line fires ONCE at startup
-          # with memberlist.NumMembers() at that moment — it is not
-          # updated as peers join later. cyoda-0 was started by the
-          # initial install and logged members=1; scale-up pods see 2
-          # or 3 peers depending on race. To observe a uniform "all
-          # three see 3 members" state we rolling-restart after scale-up
-          # so every pod comes up into an already-converged cluster and
-          # logs members=3 during its stability window.
-          kubectl -n cyoda rollout restart statefulset/cyoda
-          kubectl -n cyoda rollout status statefulset/cyoda --timeout=5m
-          for i in 0 1 2; do
-            kubectl -n cyoda wait --for=condition=ready pod/cyoda-$i --timeout=120s
-          done
-          # Give the stability window (2s default) room to elapse and the
-          # startup log line to flush.
+          # Give the stability window (2s default) room to elapse and
+          # the one-shot startup log to flush for all three pods.
           sleep 5
           for i in 0 1 2; do
             if ! kubectl -n cyoda logs cyoda-$i | grep -q '"members":3'; then
-              echo "FAIL: pod cyoda-$i did not report members=3 after rolling restart; recent logs:"
+              echo "FAIL: pod cyoda-$i did not report members=3; recent logs:"
               kubectl -n cyoda logs cyoda-$i --tail=60
               exit 1
             fi
