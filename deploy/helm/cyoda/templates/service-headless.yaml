@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cyoda.fullname" . }}-headless
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  # Required so peers discover each other before readiness passes —
+  # otherwise a cluster-of-N never reaches ready because pods can't
+  # find peers until ready, and can't be ready until they find peers.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "cyoda.selectorLabels" . | nindent 4 }}
+  ports:
+    # memberlist uses BOTH TCP (state exchange) and UDP (SWIM probes)
+    # on the same port. Service must declare both protocols.
+    - name: gossip-tcp
+      port: 7946
+      targetPort: gossip-tcp
+      protocol: TCP
+    - name: gossip-udp
+      port: 7946
+      targetPort: gossip-udp
+      protocol: UDP
