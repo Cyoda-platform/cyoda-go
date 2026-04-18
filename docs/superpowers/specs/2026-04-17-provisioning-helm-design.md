@@ -28,8 +28,14 @@ that validates the chart on every PR.
      `CYODA_BOOTSTRAP_CLIENT_SECRET`). Reads value from the file named by
      `<VAR>_FILE` when the plain `<VAR>` is unset; `_FILE` wins if both are set.
    - Removal of the stdout-print-on-generate behavior for
-     `CYODA_BOOTSTRAP_CLIENT_SECRET`. In `jwt` mode, the env var is now
-     required; startup fails fast if unset. In `mock` mode, ignored.
+     `CYODA_BOOTSTRAP_CLIENT_SECRET`. Coupled-predicate validation: in
+     `jwt` mode, `CYODA_BOOTSTRAP_CLIENT_ID` and
+     `CYODA_BOOTSTRAP_CLIENT_SECRET` must be coupled (both set, or both
+     empty); half-configured states are rejected at startup with a clear
+     error that names both vars. The bootstrap M2M client is only created
+     when `CYODA_BOOTSTRAP_CLIENT_ID` is non-empty (app.go:186 call site);
+     a secret without an ID would be silently ignored, so we reject it.
+     In `mock` mode both are ignored.
 3. **Chart CI** at `.github/workflows/helm-chart-ci.yml` with two layers:
    - Layer 1 (every chart-affecting PR): `helm lint`, `helm template` with
      multiple values overlays, `kubeconform` against Kubernetes 1.31 + Gateway
@@ -369,7 +375,7 @@ the CNI prerequisite.
 | `CYODA_POSTGRES_URL` | operator `existingSecret` (required) | `dsn` | `CYODA_POSTGRES_URL_FILE` |
 | `CYODA_JWT_SIGNING_KEY` | operator `existingSecret` (required) | `signing-key.pem` | `CYODA_JWT_SIGNING_KEY_FILE` |
 | `CYODA_HMAC_SECRET` | operator `existingSecret` OR chart-generated | `secret` | `CYODA_HMAC_SECRET_FILE` |
-| `CYODA_BOOTSTRAP_CLIENT_SECRET` | operator `existingSecret` OR chart-generated | `secret` | `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET` | operator `existingSecret` OR chart-generated — rendered only when `bootstrap.clientId` is set | `secret` | `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` |
 
 Each `existingSecret` has a paired `existingSecretKey` values knob so
 operators can declare which key in their Secret carries the value — defaults
@@ -516,15 +522,43 @@ in 2026.
   `existingSecret`; operators who want fresh secrets on reinstall let the
   chart manage them. Clean, symmetric mental model.
 
-**Bootstrap secret tightening (binary side).** The existing binary behavior
-of auto-generating `CYODA_BOOTSTRAP_CLIENT_SECRET` when unset and printing
-it to stdout is removed. Rationale: in a Kubernetes pod, that stdout print
-goes into log aggregation (a small but real secret leak), and the
-"generated-once, printed-once" UX is lost on rolling restarts anyway. New
-behavior: in `jwt` mode, `CYODA_BOOTSTRAP_CLIENT_SECRET` is required
-(startup fails fast if unset); in `mock` mode, ignored. Laptop users either
-set it explicitly in their `.env` file or run `mock` mode. Chart users get
-it via auto-generated Secret.
+**Bootstrap tightening (binary side) — coupled predicate.** The existing
+binary behavior of auto-generating `CYODA_BOOTSTRAP_CLIENT_SECRET` when
+unset and printing it to stdout is removed. Rationale: in a Kubernetes
+pod, that stdout print goes into log aggregation (a small but real
+secret leak), and the "generated-once, printed-once" UX is lost on
+rolling restarts anyway.
+
+New validation semantics, grounded in the binary's actual call graph
+(`app/app.go:186` creates the bootstrap M2M client only when
+`CYODA_BOOTSTRAP_CLIENT_ID != ""`; the secret is consumed only inside
+that gate):
+
+- **In `mock` mode:** both vars ignored.
+- **In `jwt` mode, both empty:** legitimate. Operator authenticates via
+  JWKS / external signing keys; no bootstrap M2M client is created.
+- **In `jwt` mode, both set:** legitimate. Bootstrap M2M client created
+  at startup.
+- **In `jwt` mode, ID set but secret unset:** rejected. Would fail
+  client creation.
+- **In `jwt` mode, secret set but ID unset:** rejected. Secret would be
+  silently ignored; loud rejection surfaces the misconfiguration.
+
+The error message names both vars so operators know which one to fix.
+Laptop users who want bootstrap set both explicitly in their `.env`;
+laptop users who don't need bootstrap leave both empty and still start
+cleanly. Chart users get the bootstrap Secret auto-generated only when
+they set `bootstrap.clientId` (see below).
+
+**Chart behavior — bootstrap is opt-in.** The chart defaults
+`bootstrap.clientId = ""` and consequently does NOT render a bootstrap
+Secret or the `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` env. Operators who
+want a bootstrap M2M client set `bootstrap.clientId` to a value
+(commonly `"cyoda-bootstrap"`); the chart then either auto-generates a
+secret (via the `lookup`+GitOps-guard pattern) or uses the operator's
+`bootstrap.clientSecret.existingSecret`. Matches the opt-in pattern
+used elsewhere (ServiceMonitor, NetworkPolicy, Ingress): security-
+sensitive features are explicit.
 
 ### ConfigMap / Secret split
 
@@ -585,10 +619,14 @@ cluster:
     existingSecretKey: secret        # key in the Secret (applies to either operator-provided or chart-managed)
 
 bootstrap:
+  # Bootstrap M2M client is opt-in. The binary creates it only when
+  # clientId is non-empty; the secret is ONLY consulted inside that gate.
+  # Coupled predicate: both set OR both empty; any half-configured state
+  # is rejected at startup with a clear error.
+  clientId: ""                       # default empty — no bootstrap client
   clientSecret:
-    existingSecret: ""               # OPTIONAL — chart auto-generates if unset (with GitOps-safety guard)
+    existingSecret: ""               # ignored when clientId is empty; chart auto-generates if clientId is set and this is empty (with GitOps-safety guard)
     existingSecretKey: secret
-  clientId: ""                       # auto-generated by binary if empty (existing behavior; no stdout print in k8s)
   tenantId: default-tenant
   userId: admin
   roles: "ROLE_ADMIN,ROLE_M2M"
