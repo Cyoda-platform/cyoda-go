@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cyoda.fullname" . }}-env
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+data:
+  # Port and listener configuration — chart-managed, not operator-tunable
+  # (the chart's security model depends on these defaults).
+  CYODA_HTTP_PORT: "8080"
+  CYODA_GRPC_PORT: "9090"
+  CYODA_ADMIN_PORT: "9091"
+  # Bind to all pod interfaces so ServiceMonitor scraping reaches /metrics.
+  # Pod is bounded by NetworkPolicy (optional) and by not having routable
+  # external egress; the admin listener is unauthenticated by design.
+  CYODA_ADMIN_BIND_ADDRESS: "0.0.0.0"
+
+  # IAM — production floor: require JWT, refuse to start if not configured.
+  CYODA_IAM_MODE: jwt
+  CYODA_REQUIRE_JWT: "true"
+
+  # Storage — postgres only for Helm; migration runs in the Job, not the pod.
+  CYODA_STORAGE_BACKEND: postgres
+  CYODA_POSTGRES_AUTO_MIGRATE: "false"
+
+  # Logging + JWT claims.
+  CYODA_LOG_LEVEL: {{ .Values.logLevel | quote }}
+  CYODA_JWT_ISSUER: {{ .Values.jwt.issuer | quote }}
+  CYODA_JWT_EXPIRY_SECONDS: {{ .Values.jwt.expirySeconds | quote }}
+
+  # Bootstrap identity.
+  {{- if .Values.bootstrap.clientId }}
+  CYODA_BOOTSTRAP_CLIENT_ID: {{ .Values.bootstrap.clientId | quote }}
+  {{- end }}
+  CYODA_BOOTSTRAP_TENANT_ID: {{ .Values.bootstrap.tenantId | quote }}
+  CYODA_BOOTSTRAP_USER_ID: {{ .Values.bootstrap.userId | quote }}
+  CYODA_BOOTSTRAP_ROLES: {{ .Values.bootstrap.roles | quote }}
