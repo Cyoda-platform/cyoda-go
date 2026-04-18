@@ -1,0 +1,159 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"testing"
+	"time"
+
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+// TestRunMigrate_MemoryBackendNoOp confirms the memory backend exits 0.
+func TestRunMigrate_MemoryBackendNoOp(t *testing.T) {
+	t.Setenv("CYODA_STORAGE_BACKEND", "memory")
+
+	code := runMigrate(nil)
+	if code != 0 {
+		t.Errorf("memory backend migrate should exit 0; got %d", code)
+	}
+}
+
+// TestRunMigrate_UnknownFlagRejected verifies argument parsing errors
+// produce non-zero exit.
+func TestRunMigrate_UnknownFlagRejected(t *testing.T) {
+	code := runMigrate([]string{"--notaflag"})
+	if code == 0 {
+		t.Error("unknown flag should cause non-zero exit")
+	}
+}
+
+// TestRunMigrate_TimeoutFlagParsed verifies --timeout is honored.
+func TestRunMigrate_TimeoutFlagParsed(t *testing.T) {
+	cfg, err := parseMigrateArgs([]string{"--timeout", "10m"})
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if cfg.Timeout.String() != "10m0s" {
+		t.Errorf("want timeout 10m, got %s", cfg.Timeout)
+	}
+}
+
+// TestRunMigrate_MissingPostgresDSN confirms a clear error when the
+// postgres backend is selected but no DSN is provided.
+func TestRunMigrate_MissingPostgresDSN(t *testing.T) {
+	t.Setenv("CYODA_STORAGE_BACKEND", "postgres")
+	t.Setenv("CYODA_POSTGRES_URL", "")
+	t.Setenv("CYODA_POSTGRES_URL_FILE", "")
+
+	code := runMigrate(nil)
+	if code == 0 {
+		t.Error("missing DSN should cause non-zero exit")
+	}
+}
+
+// TestRunMigrate_SQLiteBackendNoOp confirms the sqlite backend exits 0.
+func TestRunMigrate_SQLiteBackendNoOp(t *testing.T) {
+	t.Setenv("CYODA_STORAGE_BACKEND", "sqlite")
+
+	code := runMigrate(nil)
+	if code != 0 {
+		t.Errorf("sqlite backend migrate should exit 0; got %d", code)
+	}
+}
+
+// TestRunMigrate_UnknownBackend confirms an unknown backend exits non-zero.
+func TestRunMigrate_UnknownBackend(t *testing.T) {
+	t.Setenv("CYODA_STORAGE_BACKEND", "cassandra")
+
+	code := runMigrate(nil)
+	if code == 0 {
+		t.Error("unknown backend should cause non-zero exit")
+	}
+}
+
+// TestRunMigrate_IntegrationPostgres covers end-to-end: first call
+// applies migrations; second call is idempotent; schema-newer-than-code
+// refuses. Requires Docker (testcontainers).
+func TestRunMigrate_IntegrationPostgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test; run without -short")
+	}
+
+	dsn := startTestPostgres(t)
+
+	// First run: applies migrations, exits 0.
+	t.Setenv("CYODA_STORAGE_BACKEND", "postgres")
+	t.Setenv("CYODA_POSTGRES_URL", dsn)
+	t.Setenv("CYODA_POSTGRES_URL_FILE", "")
+
+	code := runMigrate(nil)
+	if code != 0 {
+		t.Fatalf("first migrate run should succeed; got exit code %d", code)
+	}
+
+	// Second run: idempotent, exits 0.
+	code = runMigrate(nil)
+	if code != 0 {
+		t.Fatalf("second migrate run (idempotent) should succeed; got exit code %d", code)
+	}
+
+	// Schema-newer-than-code: inject a large version number, expect refusal.
+	advanceSchemaVersion(t, dsn, 999999)
+	code = runMigrate(nil)
+	if code == 0 {
+		t.Error("migrate with schema newer than code should exit non-zero")
+	}
+}
+
+// startTestPostgres boots a Postgres testcontainer and returns its DSN.
+// It registers cleanup on the test.
+func startTestPostgres(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+
+	pgContainer, err := tcpostgres.Run(ctx,
+		"postgres:17-alpine",
+		tcpostgres.WithDatabase("cyoda_migrate_test"),
+		tcpostgres.WithUsername("testuser"),
+		tcpostgres.WithPassword("testpass"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = pgContainer.Terminate(ctx)
+	})
+
+	dsn, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("get connection string: %v", err)
+	}
+	return dsn
+}
+
+// advanceSchemaVersion sets the schema_migrations table to a given version
+// to simulate "DB schema newer than code" scenarios.
+func advanceSchemaVersion(t *testing.T, dsn string, version int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, fmt.Sprintf(
+		`DELETE FROM schema_migrations; INSERT INTO schema_migrations (version, dirty) VALUES (%d, false)`,
+		version,
+	))
+	if err != nil {
+		t.Fatalf("advance schema version: %v", err)
+	}
+}

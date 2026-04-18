@@ -42,6 +42,8 @@ func main() {
 			os.Exit(runInit(os.Args[2:]))
 		case "health":
 			os.Exit(runHealth(os.Args[2:]))
+		case "migrate":
+			os.Exit(runMigrate(os.Args[2:]))
 		}
 	}
 
