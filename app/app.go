@@ -61,6 +61,14 @@ type App struct {
 }
 
 func New(cfg Config) *App {
+	// Validate and normalise bootstrap config before any auth wiring.
+	validatedCfg, err := validateBootstrapConfig(&cfg)
+	if err != nil {
+		slog.Error("invalid bootstrap configuration", "pkg", "app", "err", err)
+		os.Exit(1)
+	}
+	cfg = *validatedCfg
+
 	a := &App{config: cfg}
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
@@ -172,51 +180,29 @@ func New(cfg Config) *App {
 		validator := auth.NewJWKSValidator(jwksURL, authSvc.Issuer(), 5*time.Minute)
 		a.authService = auth.NewDelegatingAuthenticator(validator)
 
-		// Bootstrap M2M client if configured
+		// Bootstrap M2M client if configured.
+		// validateBootstrapConfig (called above) guarantees ClientSecret is non-empty
+		// when ClientID is set in jwt mode.
 		if cfg.Bootstrap.ClientID != "" {
 			roles := strings.Split(cfg.Bootstrap.Roles, ",")
 			for i := range roles {
 				roles[i] = strings.TrimSpace(roles[i])
 			}
-			secret := cfg.Bootstrap.ClientSecret
-			if secret != "" {
-				// Use provided secret
-				err := authSvc.M2MClientStore().CreateWithSecret(
-					cfg.Bootstrap.ClientID,
-					cfg.Bootstrap.TenantID,
-					cfg.Bootstrap.UserID,
-					secret,
-					roles,
-				)
-				if err != nil {
-					panic(fmt.Sprintf("failed to create bootstrap M2M client: %v", err))
-				}
-			} else {
-				// Generate random secret
-				var err error
-				secret, err = authSvc.M2MClientStore().Create(
-					cfg.Bootstrap.ClientID,
-					cfg.Bootstrap.TenantID,
-					cfg.Bootstrap.UserID,
-					roles,
-				)
-				if err != nil {
-					panic(fmt.Sprintf("failed to create bootstrap M2M client: %v", err))
-				}
+			if err := authSvc.M2MClientStore().CreateWithSecret(
+				cfg.Bootstrap.ClientID,
+				cfg.Bootstrap.TenantID,
+				cfg.Bootstrap.UserID,
+				cfg.Bootstrap.ClientSecret,
+				roles,
+			); err != nil {
+				panic(fmt.Sprintf("failed to create bootstrap M2M client: %v", err))
 			}
-			maskedSecret := secret
-			if len(maskedSecret) > 8 {
-				maskedSecret = maskedSecret[:8] + "..."
-			}
-			slog.Info("bootstrap M2M client created",
+			slog.Info("bootstrap M2M client registered",
+				"pkg", "app",
 				"clientId", cfg.Bootstrap.ClientID,
 				"tenantId", cfg.Bootstrap.TenantID,
 				"roles", roles,
 			)
-			fmt.Fprintf(os.Stderr, "  Client Secret: %s (shown once, store securely)\n", maskedSecret)
-			fmt.Fprintf(os.Stderr, "  Get token: curl -s -X POST http://localhost:%d/%s/oauth/token \\\n", cfg.HTTPPort, strings.TrimLeft(cfg.ContextPath, "/"))
-			fmt.Fprintf(os.Stderr, "    -u \"%s:%s\" \\\n", cfg.Bootstrap.ClientID, maskedSecret)
-			fmt.Fprintf(os.Stderr, "    -d \"grant_type=client_credentials\"\n\n")
 		}
 	} else {
 		defaultUser := &spi.UserContext{
@@ -504,6 +490,31 @@ func (a *App) Shutdown() {
 			slog.Warn("failed to close store factory", "pkg", "app", "err", err)
 		}
 	}
+}
+
+// validateBootstrapConfig enforces bootstrap-secret policy:
+//   - jwt mode: CYODA_BOOTSTRAP_CLIENT_SECRET is required (fatal startup error
+//     if unset); the Helm chart always provides it via a Kubernetes Secret, so
+//     auto-generation is never needed in a deployment context.
+//   - mock mode: the secret is irrelevant; zero it to prevent accidental use.
+//
+// Returns a new Config with the policy applied, or an error the caller must
+// surface as a fatal startup failure.
+func validateBootstrapConfig(cfg *Config) (*Config, error) {
+	out := *cfg
+	if cfg.IAM.Mode != "jwt" {
+		// Mock (or any non-jwt) mode: bootstrap secret has no effect; zero it.
+		out.Bootstrap.ClientSecret = ""
+		return &out, nil
+	}
+	// jwt mode: secret is always required to prevent silent no-op bootstraps
+	// and to make missing-secret misconfigurations visible at startup.
+	if cfg.Bootstrap.ClientSecret == "" {
+		return nil, fmt.Errorf(
+			"CYODA_BOOTSTRAP_CLIENT_SECRET is required when CYODA_IAM_MODE=jwt; " +
+				"set it explicitly (e.g. via a Kubernetes Secret) or switch to CYODA_IAM_MODE=mock")
+	}
+	return &out, nil
 }
 
 // validateClusterConfig fails fast on missing/invalid cluster settings.
