@@ -1,0 +1,39 @@
+cyoda v{{ .Chart.AppVersion }} installed into namespace {{ .Release.Namespace }}.
+
+Routing:
+{{- if .Values.gateway.enabled }}
+  Gateway API is enabled. Routes created:
+    HTTPRoute:  {{ join ", " .Values.gateway.http.hostnames }}
+    GRPCRoute:  {{ join ", " .Values.gateway.grpc.hostnames }}
+  Ensure the parent Gateway has listeners that accept these hostnames.
+{{- else if .Values.ingress.enabled }}
+  Ingress is enabled (transitional path — prefer gateway.enabled=true).
+    HTTP  Ingress: {{ .Values.ingress.http.host }}
+    gRPC  Ingress: {{ .Values.ingress.grpc.host }}
+{{- else }}
+  No external routing configured. In-cluster access via Service
+  {{ include "cyoda.fullname" . }} on port 8080 (http) / 9090 (grpc).
+{{- end }}
+
+Credentials (retrieve chart-managed secrets):
+{{- if not .Values.cluster.hmacSecret.existingSecret }}
+  kubectl get secret {{ include "cyoda.hmacSecretName" . }} -n {{ .Release.Namespace }} \
+    -o jsonpath='{.data.{{ .Values.cluster.hmacSecret.existingSecretKey }}}' | base64 -d
+{{- end }}
+{{- if and .Values.bootstrap.clientId (not .Values.bootstrap.clientSecret.existingSecret) }}
+  kubectl get secret {{ include "cyoda.bootstrapSecretName" . }} -n {{ .Release.Namespace }} \
+    -o jsonpath='{.data.{{ .Values.bootstrap.clientSecret.existingSecretKey }}}' | base64 -d
+{{- end }}
+
+Smoke test:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+WARNING: do not set the following env vars via extraEnv — the chart
+already sets them and Kubernetes rejects duplicates:
+  CYODA_POSTGRES_URL / CYODA_POSTGRES_URL_FILE
+  CYODA_JWT_SIGNING_KEY / CYODA_JWT_SIGNING_KEY_FILE
+  CYODA_HMAC_SECRET / CYODA_HMAC_SECRET_FILE
+  CYODA_BOOTSTRAP_CLIENT_SECRET / CYODA_BOOTSTRAP_CLIENT_SECRET_FILE
+
+To override any of the four credentials, change the referenced
+existingSecret — do not add an extraEnv entry.
