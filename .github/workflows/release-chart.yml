@@ -1,42 +1,91 @@
-name: Release Helm chart
+name: Release chart
 
 on:
   push:
-    tags: ['cyoda-*']
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  packages: write
+    tags:
+      - 'cyoda-*'
 
 jobs:
-  release-chart:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Guard — chart directory must exist
+      - name: Verify chart directory exists
         run: |
           if [ ! -f deploy/helm/cyoda/Chart.yaml ]; then
-            echo "ERROR: deploy/helm/cyoda/Chart.yaml not found."
-            echo "The Helm chart skeleton must be created by the Helm per-target plan"
-            echo "before this workflow can succeed. Pushing a cyoda-* tag is a no-op"
-            echo "until that work lands."
+            echo "::error::deploy/helm/cyoda/Chart.yaml not present; cannot release chart at tag ${GITHUB_REF}"
             exit 1
           fi
 
-      - name: Configure git
+      - name: Verify Chart.yaml version matches tag
         run: |
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+          TAG_VERSION="${GITHUB_REF#refs/tags/cyoda-}"
+          CHART_VERSION=$(yq eval '.version' deploy/helm/cyoda/Chart.yaml)
+          if [ "$TAG_VERSION" != "$CHART_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match Chart.yaml version ($CHART_VERSION)."
+            exit 1
+          fi
+
+      - name: Verify GitHub Pages is configured
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # gh api returns 404 if Pages has never been enabled on the repo.
+          # First-release foot-gun: tag pushed, gh-pages populated, but
+          # nothing is served. Catch it at release time.
+          if ! gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+            cat <<'EOF'
+          ::error::GitHub Pages is not configured for this repo.
+          Enable Pages before the first release:
+            Repo Settings → Pages → Source: "Deploy from a branch"
+            Branch: gh-pages / (root)
+          See MAINTAINING.md.
+          EOF
+            exit 1
+          fi
 
       - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
 
-      - uses: helm/chart-releaser-action@v1
+      - name: Install kubeconform
+        run: |
+          curl -sSL \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: helm lint
+        run: helm lint deploy/helm/cyoda
+
+      - name: helm template + kubeconform
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=x \
+            --set jwt.existingSecret=x \
+            --set cluster.hmacSecret.existingSecret=x \
+            --set 'gateway.parentRefs[0].name=x' \
+            --set 'gateway.http.hostnames[0]=x' \
+            --set 'gateway.grpc.hostnames[0]=x' \
+          | kubeconform -strict -kubernetes-version 1.31.0 \
+              -skip HTTPRoute,GRPCRoute
+
+      - name: Configure Git for chart-releaser
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.6.0
         with:
           charts_dir: deploy/helm
-          config: .github/cr.yaml
+          skip_existing: false
+          mark_as_latest: true
         env:
-          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
