@@ -117,7 +117,10 @@ dockers_v2:
       - ghcr.io/cyoda-platform/cyoda
     tags:
       - latest
-    skip_push: "{{ .Prerelease }}"
+    # `:latest` tracks stable releases only — skip for prereleases.
+    # In goreleaser v2 the dockers_v2 equivalent of v1's skip_push is
+    # `disable` (truthy template string disables the whole image).
+    disable: "{{ .Prerelease }}"
     platforms:
       - linux/amd64
       - linux/arm64
