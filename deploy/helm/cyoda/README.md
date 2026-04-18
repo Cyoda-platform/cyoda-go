@@ -219,6 +219,57 @@ store (Vault, AWS Secrets Manager, etc.) into the Secret names.
 until you've migrated to Gateway API. For migration tooling, see
 [Ingress2Gateway 1.0](https://kubernetes.io/blog/2026/03/20/ingress2gateway-1-0-release/).
 
+Suggested migration path:
+
+1. **Start on this chart with `ingress.enabled=true`.** The rendered
+   `Ingress` objects carry the `nginx.ingress.kubernetes.io/backend-protocol: GRPC`
+   annotation on the gRPC path so ingress-nginx-compatible controllers
+   still route correctly.
+2. **Install a Gateway API implementation** in a platform namespace
+   (Envoy Gateway, Contour, or Cilium — all three ship production-ready
+   `HTTPRoute` + `GRPCRoute` support).
+3. **Run Ingress2Gateway** against the chart's rendered Ingress objects
+   to produce equivalent `HTTPRoute` + `GRPCRoute` skeletons. Treat the
+   output as a hint — the chart's own Gateway API templates render the
+   canonical shape, so once you have a Gateway in place you flip the
+   chart's values:
+
+   ```bash
+   helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
+     --set ingress.enabled=false \
+     --set gateway.enabled=true \
+     --set 'gateway.parentRefs[0].name=platform-gateway' \
+     --set 'gateway.parentRefs[0].namespace=gateway-system' \
+     --set gateway.http.hostnames[0]=cyoda.example.com \
+     --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com
+   ```
+
+4. **Delete the old ingress-nginx controller deployment** once cutover
+   is stable. The transitional `Ingress` templates in this chart can be
+   retired from a future chart major.
+
+## Gateway API policy attachments (rate limiting, auth, WAF)
+
+Gateway API 1.2 exposes per-controller policy attachments rather than
+cross-controller annotations. The chart renders only `HTTPRoute` and
+`GRPCRoute` — policy objects are deliberately operator-owned because
+their shape and semantics differ by implementation. Reference pointers:
+
+- **Envoy Gateway:** `BackendTrafficPolicy` for rate limiting, retries,
+  timeouts; `SecurityPolicy` for JWT authn, OIDC, CORS, IP allow-list.
+  Attach via `targetRefs` pointing at this chart's HTTPRoute/GRPCRoute.
+  See [Envoy Gateway docs](https://gateway.envoyproxy.io/docs/tasks/).
+- **Cilium Gateway:** `CiliumEnvoyConfig` for advanced per-route
+  Envoy config; L7 policy can also ride `CiliumNetworkPolicy`.
+- **Contour:** `HTTPProxy` (Contour's predecessor CRD) is orthogonal;
+  for Gateway API policies, attach `BackendTLSPolicy` directly to the
+  chart-rendered HTTPRoute.
+
+These are out of scope for the chart because a rendered
+`BackendTrafficPolicy` that targets a wrong controller's CRD would be
+silently inert — worse than no rendering. Operators add their own
+policies in the namespace alongside the chart-rendered routes.
+
 ## Values reference
 
 See [`values.yaml`](./values.yaml). Every key is documented inline.

@@ -138,6 +138,17 @@
         }
       }
     },
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minReplicas": {"type": "integer", "minimum": 1},
+        "maxReplicas": {"type": "integer", "minimum": 1},
+        "targetCPUUtilizationPercentage": {"type": "integer", "minimum": 1, "maximum": 100},
+        "targetMemoryUtilizationPercentage": {"type": "integer", "minimum": 1, "maximum": 100},
+        "behavior": {"type": "object"}
+      }
+    },
     "monitoring": {
       "type": "object",
       "properties": {

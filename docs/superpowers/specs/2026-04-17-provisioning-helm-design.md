@@ -1047,24 +1047,47 @@ issues `kubeconform` misses.
 
 ---
 
-## 8. Follow-up issues
+## 8. Deferrals
 
-Filed as GitHub issues on PR merge. These are deferred with clear reasons —
-never buried as TODOs in code.
+The v0.1 drop resolved what was resolvable. The only deferral is the
+one that is physically blocked by needing a second shipped chart
+version.
 
 | ID | Title | Reason deferred | Acceptance criteria |
 |---|---|---|---|
-| F1 | Layer 3 CI: multi-replica cluster-mode install with gossip coordination | Requires substantial extra test infrastructure; value is real but independent from the v0.1 baseline | CI job installs chart at `replicas=3, gateway.enabled=true`, verifies 3 pods reach Ready, verifies `gossip.go` logs "cluster of 3", tears down cleanly. Runs on main + nightly. |
-| F2 | `helm upgrade` migration-path testing | Needs two chart versions with a schema diff; impossible at v0.1 in isolation | When v0.2 ships with a schema change, add CI: install v0.1.0, upgrade to v0.2.0, verify migration Job ran and new pods serve traffic. |
-| F3 | Ingress2Gateway migration guide | Operator-facing documentation deliverable, not chart code | `deploy/helm/cyoda/docs/migrating-from-ingress.md` walks `ingress.enabled=true` → `gateway.enabled=true` via Ingress2Gateway 1.0. |
-| F4 | Gateway API PolicyAttachment patterns (rate limiting, auth filters) | Specific to each operator's Gateway controller; not chart-universal | Document recommended `BackendTrafficPolicy` / `SecurityPolicy` overlays for Envoy Gateway; do not render from chart. |
-| F5 | Chart v0.2+ optional features | Not needed for the v0.1 baseline; each is a separable increment | Each feature (HPA, PodMonitor alternative, external-secrets-operator integration, fine-grained egress NetworkPolicy) becomes its own minor chart version with its own values schema addition and tests. |
+| F2 | `helm upgrade` migration-path testing | Needs two chart versions with a schema diff; impossible at v0.1 in isolation. Lands alongside the first v0.2 that ships with a DB migration. | CI installs v0.1.0, upgrades to v0.2.0 (or whichever new version ships the first schema change), verifies migration Job ran and new pods serve traffic. Tracked against the v0.2 cycle, not filed as a follow-up issue. |
 
-Picked up by this deliverable from existing context:
+Resolved in this deliverable (previously listed as §8 follow-ups):
 
-- `_FILE` suffix support for credentials — closed by §4 + §1 binary changes.
-- Plugin submodule test coverage aggregator (existing issue #46) — not
-  touched by this deliverable; stays open.
+- **`_FILE` suffix support for credentials** — closed by §4 + §1 binary changes.
+- **Multi-replica cluster-mode CI** (was F1) — Layer 2 CI now scales
+  the release to `replicas=3`, waits for all three pods to reach Ready,
+  and asserts the `gossip.go` "joined cluster" log line reports
+  `members=3` on every pod.
+- **Ingress2Gateway migration guide** (was F3) — shipped as the
+  "Migrating from ingress-nginx" section in `deploy/helm/cyoda/README.md`.
+- **Gateway API PolicyAttachment patterns** (was F4) — shipped as the
+  "Gateway API policy attachments" section in the chart README, with
+  controller-specific pointers (Envoy Gateway, Cilium, Contour). The
+  chart still does not render policy objects (controller-specific).
+- **HPA** (first increment of F5) — shipped as `templates/hpa.yaml`
+  with `autoscaling` values block, default off.
+- **`/metrics` authentication** (was PR-#60 review finding I-4 /
+  issue #61) — shipped as bearer-gated `/metrics` on the binary side
+  with a fifth chart-managed Secret, `ServiceMonitor bearerTokenSecret`
+  wiring, and an end-to-end CI smoke step.
+- **NetworkPolicy default-on** — flipped from opt-in to opt-out with a
+  default `metricsFromNamespaces` of `monitoring`. Defense in depth
+  alongside metrics auth.
+
+Out of scope for this chart track (other tracks, other PRs):
+
+- Plugin submodule test-coverage aggregator (existing issue #46) —
+  unrelated to chart/provisioning.
+- Non-HPA v0.2 optional features (PodMonitor alternative,
+  external-secrets-operator integration, fine-grained egress
+  NetworkPolicy) — each becomes its own chart-version deliverable
+  when demand surfaces.
 
 ---
 

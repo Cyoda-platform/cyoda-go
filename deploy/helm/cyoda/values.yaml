@@ -141,6 +141,24 @@ networkPolicy:
     - matchLabels:
         kubernetes.io/metadata.name: monitoring
 
+# -- HorizontalPodAutoscaler for the StatefulSet. Cluster mode handles
+# replica-count changes organically — new pod identities (cyoda-0, -1, …)
+# are discovered via the headless Service and gossip convergence. Scale
+# down is graceful as long as pods drain in-flight work before SIGTERM.
+# Disabled by default; operators opt in with autoscaling.enabled=true.
+# If enabled, the manual `replicas` value becomes the initial scale —
+# the HPA then takes over and `replicas` is managed by the controller.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+  # -- autoscaling/v2 behavior block for stabilization windows and
+  # scale-up/scale-down policies. See
+  # https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#configurable-scaling-behavior
+  behavior: {}
+
 migrate:
   activeDeadlineSeconds: 600
   backoffLimit: 2

@@ -83,7 +83,7 @@ jobs:
             --set 'gateway.http.hostnames[0]=x' \
             --set 'gateway.grpc.hostnames[0]=x' \
           | kubeconform -strict -kubernetes-version 1.31.0 \
-              -skip HTTPRoute,GRPCRoute
+              -skip HTTPRoute,GRPCRoute,ServiceMonitor
 
       - name: Configure Git for chart-releaser
         run: |

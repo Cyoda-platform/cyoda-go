@@ -58,7 +58,7 @@ jobs:
           kubeconform -strict -kubernetes-version 1.31.0 \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.31.0-standalone-strict/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json' \
-            -skip HTTPRoute,GRPCRoute \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
             /tmp/default.yaml
 
       - name: helm template — ingress mode
@@ -74,7 +74,9 @@ jobs:
             --set ingress.http.host=cyoda.example.com \
             --set ingress.grpc.host=grpc.cyoda.example.com \
             > /tmp/ingress.yaml
-          kubeconform -strict -kubernetes-version 1.31.0 /tmp/ingress.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
+            /tmp/ingress.yaml
 
       - name: helm template — 3-replica cluster mode
         run: |
@@ -89,7 +91,7 @@ jobs:
             --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
             > /tmp/replicas3.yaml
           kubeconform -strict -kubernetes-version 1.31.0 \
-            -skip HTTPRoute,GRPCRoute \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
             /tmp/replicas3.yaml
           # Must render a PDB at replicas=3.
           grep -q "kind: PodDisruptionBudget" /tmp/replicas3.yaml
@@ -331,6 +333,35 @@ jobs:
         # The migration Job runs as a pre-install hook and completes before
         # helm install returns, so no explicit job wait is needed here.
         run: helm test cyoda -n cyoda
+
+      - name: Scale to 3 replicas and verify cluster mode converges
+        run: |
+          # Exercise cluster-mode gossip convergence end-to-end: upgrade
+          # the release to replicas=3, wait for all pods to reach Ready,
+          # and grep the gossip log line that reports final member count.
+          # kind uses kindnet which does not enforce NetworkPolicy, so
+          # the default-on NP is a no-op here; cluster connectivity is
+          # via the headless Service and 7946 TCP+UDP on the same pod.
+          helm upgrade cyoda deploy/helm/cyoda \
+            -n cyoda --reuse-values \
+            --set replicas=3 \
+            --wait --timeout 5m
+          kubectl -n cyoda rollout status statefulset/cyoda --timeout=5m
+          # All three ordinals Ready.
+          for i in 0 1 2; do
+            kubectl -n cyoda wait --for=condition=ready pod/cyoda-$i --timeout=120s
+          done
+          # Each pod should log "joined cluster" with members=3 once
+          # StabilityWindow elapses.
+          sleep 5
+          for i in 0 1 2; do
+            if ! kubectl -n cyoda logs cyoda-$i | grep -q '"members":3'; then
+              echo "FAIL: pod cyoda-$i did not report members=3; recent logs:"
+              kubectl -n cyoda logs cyoda-$i --tail=60
+              exit 1
+            fi
+          done
+          echo "PASS: 3-node cluster converged."
 
       - name: Collect diagnostics on failure
         if: failure()
