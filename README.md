@@ -313,16 +313,29 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 | `CYODA_IAM_MODE` | `mock` | `mock` (no auth) or `jwt` (OAuth 2.0 with JWT) |
 | `CYODA_REQUIRE_JWT` | `false` | Set to `true` to make the binary refuse to start unless `CYODA_IAM_MODE=jwt` and `CYODA_JWT_SIGNING_KEY` are both set. The canonical Helm chart enables this by default; desktop and Docker leave it off so the mock-auth fallback still applies to evaluators. |
 | `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles granted to the default mock user. `ROLE_M2M` is required for the gRPC streaming endpoint; `ROLE_ADMIN` for admin HTTP endpoints. |
-| `CYODA_JWT_SIGNING_KEY` | — | RSA private key in PEM format. Required for `jwt` mode. |
+| `CYODA_JWT_SIGNING_KEY` | — | RSA private key in PEM format. Required for `jwt` mode. Also accepts `CYODA_JWT_SIGNING_KEY_FILE` (path to file; takes precedence). |
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token lifetime |
+
+### Secret file pattern (`_FILE` suffix)
+
+For credentials, a companion `<VAR>_FILE` env var is supported. When set, the binary reads the secret from the file at that path instead of the plain var. `_FILE` takes precedence when both are set. Trailing whitespace is stripped from file contents (safe for DSN strings and multi-line PEM keys). Supported vars:
+
+| `_FILE` variant | Plain var |
+|-----------------|-----------|
+| `CYODA_JWT_SIGNING_KEY_FILE` | `CYODA_JWT_SIGNING_KEY` |
+| `CYODA_HMAC_SECRET_FILE` | `CYODA_HMAC_SECRET` |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` | `CYODA_BOOTSTRAP_CLIENT_SECRET` |
+| `CYODA_POSTGRES_URL_FILE` | `CYODA_POSTGRES_URL` |
+
+This is the canonical Docker/Kubernetes pattern for passing secrets via projected volumes without exposing them in `env` output.
 
 ### Bootstrap (jwt mode)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_BOOTSTRAP_CLIENT_ID` | — | Creates an M2M client at startup. Solves the chicken-and-egg of needing a token to create tokens. |
-| `CYODA_BOOTSTRAP_CLIENT_SECRET` | *(generated)* | Fixed secret, or omit to auto-generate |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET` | *(generated)* | Fixed secret, or omit to auto-generate. Also accepts `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`. |
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for the bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 
@@ -340,7 +353,7 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_POSTGRES_URL` | — | Connection string. Required when any store uses `postgres`. |
+| `CYODA_POSTGRES_URL` | — | Connection string. Required when any store uses `postgres`. Also accepts `CYODA_POSTGRES_URL_FILE`. |
 | `CYODA_POSTGRES_MAX_CONNS` | `25` | Connection pool maximum |
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | Connection pool minimum |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run schema migrations on startup |

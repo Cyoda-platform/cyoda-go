@@ -68,6 +68,13 @@ type BootstrapConfig struct {
 }
 
 func DefaultConfig() Config {
+	// Resolve credential env vars first; _FILE paths take precedence over
+	// the plain var when both are set. mustResolveSecretEnv panics if the
+	// _FILE path is set but unreadable — that is a fatal startup misconfiguration.
+	jwtSigningKey := envPEMFromSecret("CYODA_JWT_SIGNING_KEY")
+	hmacSecret := envHexFromSecret("CYODA_HMAC_SECRET")
+	bootstrapClientSecret := mustResolveSecretEnv("CYODA_BOOTSTRAP_CLIENT_SECRET")
+
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
 		ContextPath:       envString("CYODA_CONTEXT_PATH", "/api"),
@@ -81,7 +88,7 @@ func DefaultConfig() Config {
 		},
 		Bootstrap: BootstrapConfig{
 			ClientID:     envString("CYODA_BOOTSTRAP_CLIENT_ID", ""),
-			ClientSecret: envString("CYODA_BOOTSTRAP_CLIENT_SECRET", ""),
+			ClientSecret: bootstrapClientSecret,
 			TenantID:     envString("CYODA_BOOTSTRAP_TENANT_ID", "default-tenant"),
 			UserID:       envString("CYODA_BOOTSTRAP_USER_ID", "admin"),
 			Roles:        envString("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M"),
@@ -102,7 +109,7 @@ func DefaultConfig() Config {
 			MockTenantID:   "mock-tenant",
 			MockTenantName: "Mock Tenant",
 			MockRoles:      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			JWTSigningKey:  envPEM("CYODA_JWT_SIGNING_KEY"),
+			JWTSigningKey:  jwtSigningKey,
 			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda"),
 			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
 			RequireJWT:     envBool("CYODA_REQUIRE_JWT", false),
@@ -118,11 +125,42 @@ func DefaultConfig() Config {
 			TxReapInterval:         envDuration("CYODA_TX_REAP_INTERVAL", 10*time.Second),
 			ProxyTimeout:           envDuration("CYODA_PROXY_TIMEOUT", 30*time.Second),
 			OutcomeTTL:             envDuration("CYODA_TX_OUTCOME_TTL", 5*time.Minute),
-			HMACSecret:             envHex("CYODA_HMAC_SECRET"),
+			HMACSecret:             hmacSecret,
 			DispatchWaitTimeout:    envDuration("CYODA_DISPATCH_WAIT_TIMEOUT", 5*time.Second),
 			DispatchForwardTimeout: envDuration("CYODA_DISPATCH_FORWARD_TIMEOUT", 30*time.Second),
 		},
 	}
+}
+
+// envPEMFromSecret resolves the raw value for a PEM credential via
+// mustResolveSecretEnv (honouring <name>_FILE), then normalises it
+// exactly as envPEM does (base64 → raw PEM, or passthrough).
+func envPEMFromSecret(key string) string {
+	v := mustResolveSecretEnv(key)
+	if v == "" || strings.HasPrefix(v, "-----BEGIN") {
+		return v
+	}
+	decoded, err := base64.StdEncoding.DecodeString(v)
+	if err != nil {
+		return v // not base64, return as-is
+	}
+	return string(decoded)
+}
+
+// envHexFromSecret resolves the raw value for a hex credential via
+// mustResolveSecretEnv (honouring <name>_FILE), then decodes hex
+// exactly as envHex does.
+func envHexFromSecret(key string) []byte {
+	v := mustResolveSecretEnv(key)
+	if v == "" {
+		return nil
+	}
+	b, err := hex.DecodeString(v)
+	if err != nil {
+		// Fall back to raw bytes if not valid hex
+		return []byte(v)
+	}
+	return b
 }
 
 func envString(key, fallback string) string {

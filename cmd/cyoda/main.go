@@ -287,14 +287,23 @@ SERVER
 
   JWT mode:
     CYODA_JWT_SIGNING_KEY      RSA private key (PEM). Required in jwt mode.
+    CYODA_JWT_SIGNING_KEY_FILE Path to a file containing the PEM key (takes precedence over the plain var).
     CYODA_JWT_ISSUER           JWT issuer claim                          (default: cyoda)
     CYODA_JWT_EXPIRY_SECONDS   Token lifetime in seconds                 (default: 3600)
+
+SECRET FILE PATTERN
+  For credentials, a companion <VAR>_FILE env var is supported. When set, the binary reads the
+  secret from the file at that path instead of the plain var. _FILE takes precedence when both
+  are set. Trailing whitespace is stripped. Supported vars:
+    CYODA_JWT_SIGNING_KEY_FILE, CYODA_HMAC_SECRET_FILE,
+    CYODA_BOOTSTRAP_CLIENT_SECRET_FILE, CYODA_POSTGRES_URL_FILE
 
 BOOTSTRAP (jwt mode only)
   CYODA_BOOTSTRAP_CLIENT_ID    If set, creates an M2M client at startup and prints the secret.
                                     Solves the chicken-and-egg problem of needing a token to create tokens.
   CYODA_BOOTSTRAP_CLIENT_SECRET  Fixed secret for the bootstrap client. If omitted, a random secret
                                     is generated and printed at startup.
+  CYODA_BOOTSTRAP_CLIENT_SECRET_FILE  Path to a file containing the bootstrap client secret.
   CYODA_BOOTSTRAP_TENANT_ID    Tenant for the bootstrap client            (default: default-tenant)
   CYODA_BOOTSTRAP_USER_ID      User ID for the bootstrap client           (default: admin)
   CYODA_BOOTSTRAP_ROLES        Comma-separated roles                      (default: ROLE_ADMIN,ROLE_M2M)
