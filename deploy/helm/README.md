@@ -1,7 +1,11 @@
-# Canonical Helm chart
+# cyoda Helm charts
 
-Chart for running cyoda-go in Kubernetes. This directory's contents
-(chart skeleton, `Chart.yaml`, `values.yaml`, templates, and
-`values-production.yaml`) are filled in by the Helm per-target spec
-(follow-up work). The shared design lives in
-`docs/superpowers/specs/2026-04-16-provisioning-shared-design.md`.
+| Chart | Version | AppVersion | Purpose |
+|-------|---------|------------|---------|
+| [cyoda/](./cyoda/) | 0.1.0 | 0.1.0 | Production Helm deployment |
+
+See the per-chart `README.md` for operator documentation, values schema,
+and upgrade notes.
+
+For the overall provisioning design, see
+`docs/superpowers/specs/2026-04-17-provisioning-helm-design.md`.

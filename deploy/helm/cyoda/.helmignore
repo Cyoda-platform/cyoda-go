@@ -1,0 +1,18 @@
+# Patterns to ignore when packaging the chart.
+.DS_Store
+.git/
+.gitignore
+.idea/
+.vscode/
+.project
+.tox/
+*.tmproj
+*.orig
+*.rej
+*.swp
+*.bak
+*~
+
+# Do not ship test fixtures in release tarballs
+test/
+tests/fixtures/

@@ -1,0 +1,24 @@
+apiVersion: v2
+name: cyoda
+description: |
+  cyoda-go: a lightweight, multi-node Go digital twin of the Cyoda platform.
+  This chart ships a production-ready Helm deployment backed by an external
+  Postgres, fronted by Gateway API (default) or a still-maintained Ingress
+  controller (transitional).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"  # bump-chart-appversion.yml syncs this to the binary
+kubeVersion: ">=1.31.0"
+keywords:
+  - cyoda
+  - digital-twin
+  - workflow
+home: https://github.com/cyoda-platform/cyoda-go
+sources:
+  - https://github.com/cyoda-platform/cyoda-go
+maintainers:
+  - name: Cyoda Platform
+    url: https://github.com/cyoda-platform
+annotations:
+  artifacthub.io/changes: |
+    - Initial chart release

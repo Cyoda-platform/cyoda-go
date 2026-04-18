@@ -1,0 +1,149 @@
+# Default values for cyoda.
+# See the README and docs/superpowers/specs/2026-04-17-provisioning-helm-design.md
+# for the rationale behind every section.
+
+# -- Number of cyoda pods. Scale up with `--set replicas=3`.
+# Cluster mode is always on; at replicas=1 it runs as a "cluster of one"
+# (see internal/cluster/registry/gossip.go).
+replicas: 1
+
+# -- Log level (debug, info, warn, error).
+logLevel: info
+
+image:
+  repository: ghcr.io/cyoda-platform/cyoda
+  # -- Image tag. Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# -- imagePullSecrets for air-gapped or mirrored registries.
+# Example: [{name: ghcr-pull-secret}]
+imagePullSecrets: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+# -- Postgres DSN via operator-managed Secret. REQUIRED.
+# The Secret must have a key (default "dsn") whose value is the full
+# connection string: postgres://user:pass@host:5432/db?sslmode=require
+postgres:
+  existingSecret: ""
+  existingSecretKey: dsn
+
+# -- JWT signing key via operator-managed Secret. REQUIRED.
+# The Secret must have a key (default "signing-key.pem") whose value is
+# the full PEM-encoded RSA private key.
+jwt:
+  existingSecret: ""
+  existingSecretKey: signing-key.pem
+  issuer: cyoda
+  expirySeconds: 3600
+
+cluster:
+  # -- HMAC secret used for gossip encryption AND inter-node HTTP dispatch
+  # auth. Chart auto-generates via Helm lookup on first install if
+  # existingSecret is unset; GitOps controllers (Argo CD) MUST provide
+  # existingSecret — see README > "Using with GitOps".
+  hmacSecret:
+    existingSecret: ""
+    existingSecretKey: secret
+
+bootstrap:
+  # -- Bootstrap M2M client is OPT-IN. When clientId is empty, the
+  # chart renders no bootstrap Secret and the pod runs with no
+  # bootstrap M2M credential — the binary starts cleanly in jwt mode
+  # via its coupled predicate (both-empty is legitimate). Set clientId
+  # to enable bootstrap; the chart will auto-generate the secret via
+  # the lookup+GitOps-safety pattern, or use clientSecret.existingSecret
+  # if operator-provided.
+  clientId: ""
+  clientSecret:
+    existingSecret: ""
+    existingSecretKey: secret
+  tenantId: default-tenant
+  userId: admin
+  roles: "ROLE_ADMIN,ROLE_M2M"
+
+# -- Arbitrary additional env vars. Each entry is {name, value} OR
+# {name, valueFrom}. Use this for OTel configuration, feature flags, etc.
+# DO NOT set CYODA_*_FILE or the four credential env vars via this knob —
+# they are set by the chart and duplicates are rejected by Kubernetes.
+extraEnv: []
+
+service:
+  type: ClusterIP
+
+# -- Gateway API routing (recommended, default ON).
+# Chart renders HTTPRoute + GRPCRoute that parentRef into an
+# operator-provided Gateway. Chart does NOT render the Gateway itself.
+gateway:
+  enabled: true
+  parentRefs: []    # REQUIRED when enabled; list of parent Gateway refs
+  http:
+    hostnames: []
+  grpc:
+    hostnames: []
+
+# -- Ingress routing (transitional; ingress-nginx retired March 2026).
+# Prefer gateway.enabled=true unless you're mid-migration.
+ingress:
+  enabled: false
+  className: ""
+  http:
+    host: ""
+    paths:
+      - path: /
+        pathType: Prefix
+    annotations: {}
+    tls: []
+  grpc:
+    host: ""
+    paths:
+      - path: /
+        pathType: Prefix
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: GRPC
+    tls: []
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+# -- Optional NetworkPolicy. Restricts admin-port ingress to declared
+# namespaces (e.g., the Prometheus namespace) and gossip-port ingress
+# to chart-managed pods. Requires a CNI that enforces NetworkPolicy.
+networkPolicy:
+  enabled: false
+  metricsFromNamespaces: []
+
+migrate:
+  activeDeadlineSeconds: 600
+  backoffLimit: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+podDisruptionBudget:
+  enabled: true    # rendered only when replicas > 1
+  minAvailable: 1
+
+serviceAccount:
+  create: true
+  name: ""          # defaults to fullname
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+nameOverride: ""
+fullnameOverride: ""
