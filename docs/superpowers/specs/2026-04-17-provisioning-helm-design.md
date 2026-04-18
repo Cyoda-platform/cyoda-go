@@ -427,7 +427,7 @@ replicas: 1
 logLevel: info
 
 image:
-  repository: ghcr.io/cyoda-platform/cyoda-go
+  repository: ghcr.io/cyoda-platform/cyoda
   tag: ""                            # defaults to .Chart.AppVersion when empty
   pullPolicy: IfNotPresent
 
@@ -574,7 +574,7 @@ spec:
       securityContext: { /* same hardening as the main StatefulSet pod */ }
       containers:
       - name: migrate
-        image: ghcr.io/cyoda-platform/cyoda-go:{{ .Chart.AppVersion }}
+        image: ghcr.io/cyoda-platform/cyoda:{{ .Chart.AppVersion }}
         command: [/cyoda, migrate]
         envFrom: [{ configMapRef: { name: {{ include "cyoda.fullname" . }}-env } }]
         env:

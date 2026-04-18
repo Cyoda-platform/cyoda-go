@@ -1,10 +1,22 @@
 # Canonical provisioning for cyoda-go — shared design
 
 **Status:** Accepted
-**Date:** 2026-04-16 (revised 2026-04-17)
+**Date:** 2026-04-16 (revised 2026-04-17 — desktop artifact-name rename; 2026-04-17 — helm brainstorm supersessions)
 **Scope:** Cross-target concerns shared by the three per-target provisioning designs (desktop, Docker, Helm). Per-target mechanics are deferred to their own specs.
 
-> **Supersession on artifact names (2026-04-17):** the desktop per-target spec at `docs/superpowers/specs/2026-04-17-provisioning-desktop-design.md` narrows the user-facing artifact name from `cyoda-go` to `cyoda` — binary, container image, Helm chart, `.deb`/`.rpm` package, Homebrew formula. The repo name, Go module path, plugin module paths, and `CYODA_*` env-var prefix are unchanged. Read every reference to `cyoda-go` below as `cyoda` where the context is a user-facing artifact; references to the Go module path or the GitHub repo stay as written. The rename lands on PR #44 before merge.
+> **Supersession on artifact names (2026-04-17):** the desktop per-target spec at `docs/superpowers/specs/2026-04-17-provisioning-desktop-design.md` narrows the user-facing artifact name from `cyoda-go` to `cyoda` — binary, container image, Helm chart, `.deb`/`.rpm` package, Homebrew formula. The repo name, Go module path, plugin module paths, and `CYODA_*` env-var prefix are unchanged. Read every reference to `cyoda-go` below as `cyoda` where the context is a user-facing artifact; references to the Go module path or the GitHub repo stay as written. The rename landed on PR #44.
+
+> **Supersessions from the Helm per-target brainstorm (2026-04-17):** the Helm per-target spec at `docs/superpowers/specs/2026-04-17-provisioning-helm-design.md` supersedes the following shared-spec content. Read the helm spec as the current source of truth where it conflicts with the text below:
+>
+> - **§"Per-target defaults" — bundled Postgres subchart.** The shared spec says "Helm bundles `bitnami/postgresql` as a subchart with `postgresql.enabled: true` **by default**" and mentions a `values-production.yaml` preset. **Replaced:** the Helm chart ships **no subchart dependency**. DSN is required via an operator-provided `existingSecret`. The chart `values.yaml` is singular (no `values-production.yaml` sibling). Rationale in the helm spec's Non-goals section — chief among them Bitnami's 2025-2026 licensing turbulence and the fact that the "I just want to try it" path is already served by `docker compose up`.
+>
+> - **§"Secrets and auth" — bootstrap client secret stdout print.** The shared spec says the binary "auto-generates this when `CYODA_BOOTSTRAP_CLIENT_SECRET` is unset, and prints the generated value to stdout exactly once at startup" and marks this "preserved as-is". **Replaced:** the stdout print is removed (in a k8s pod it leaks into log aggregation; the "printed once" UX is lost on restart anyway). New behavior: in `jwt` mode, `CYODA_BOOTSTRAP_CLIENT_SECRET` is required (startup fails fast if unset); in `mock` mode, ignored. The Helm chart auto-generates a Secret via `lookup` on first install; laptop users set the env explicitly in `.env`, or run `mock` mode.
+>
+> - **§"Schema compatibility contract" — migration entrypoint.** The shared spec defers the decision: "A dedicated migration entrypoint (e.g., a `cyoda-go migrate` subcommand) is **not introduced by this spec**. The Helm per-target spec decides..." **Resolved:** the Helm per-target spec introduces a new `cyoda migrate` subcommand (matches the existing `init`/`health` pattern) invoked from the chart's pre-install + pre-upgrade Helm hook Job. Not a `CYODA_MIGRATE_ONLY` env flag.
+>
+> - **§"Chart tags" and §"Target repo layout" — paths post-rename.** After PR #44's artifact rename, chart directory is `deploy/helm/cyoda/` (not `deploy/helm/cyoda-go/`), chart tags match `cyoda-*` (not `cyoda-go-*`), and the `cmd/` directory referenced in step 10 of the downstream plan is `cmd/cyoda/` (not `cmd/cyoda-go/`).
+>
+> - **§"Secrets and auth" — credential env-var forms.** All four credential-shaped env vars (`CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`, `CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET`) gain `_FILE`-suffix variants in the binary (`<VAR>_FILE` reads the value from a file path; `_FILE` wins if both are set). This is the canonical Docker/Kubernetes pattern used by postgres, mysql, redis, etc. It's a binary-side change folded into the Helm deliverable under Gate 6.
 
 ## Motivation
 
