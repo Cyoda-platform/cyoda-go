@@ -325,8 +325,8 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 
 ### Credential env vars: `_FILE` suffix support
 
-The four credential env vars — `CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`,
-`CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET` — accept a `_FILE`
+The five credential env vars — `CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`,
+`CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET`, `CYODA_METRICS_BEARER` — accept a `_FILE`
 variant that reads the value from the file at the given path:
 
 ```bash
@@ -392,14 +392,20 @@ The admin listener binds to `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default
 
 | Endpoint | Description |
 |----------|-------------|
-| `/livez` | Liveness — process responsiveness only; does not check storage. Use this for Kubernetes `livenessProbe`. |
-| `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete. Use for `readinessProbe` and load-balancer health gates. |
-| `/metrics` | Prometheus pull endpoint. Scrape with a standard Prometheus scrape config. |
+| `/livez` | Liveness — process responsiveness only; does not check storage. Use this for Kubernetes `livenessProbe`. Always unauthenticated. |
+| `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete. Use for `readinessProbe` and load-balancer health gates. Always unauthenticated. |
+| `/metrics` | Prometheus pull endpoint. **Optionally requires a Bearer token** — set `CYODA_METRICS_BEARER` (or `_FILE`) to enable; see below. |
 
-**The admin listener is unauthenticated by design.** It must only be bound to a trusted network interface:
-- Desktop: leave `CYODA_ADMIN_BIND_ADDRESS` at its default `127.0.0.1` (loopback only).
-- Kubernetes: set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` and rely on the pod network for isolation — the port is not exposed through any `Service` visible externally.
-- Docker Compose: map the port as `127.0.0.1:9091:9091` so it is only reachable from the host.
+**Probe endpoints (`/livez`, `/readyz`) are unauthenticated by design** — kubelet probes carry no bearer. `/metrics` is also unauthenticated by default so desktop and Docker workflows work without friction, but operators deploying to shared clusters should enable Bearer-token auth on it:
+
+- `CYODA_METRICS_BEARER` (or `_FILE`) — static token; when non-empty, `GET /metrics` requires `Authorization: Bearer <token>`. Constant-time compared.
+- `CYODA_METRICS_REQUIRE_AUTH=true` — coupled predicate; refuses to start if set while the bearer is empty. Protects against "I thought I turned it on" misconfigurations.
+- The canonical Helm chart enables this end-to-end: a chart-managed Secret holds the token, the StatefulSet mounts it via the `_FILE` pattern, and the `ServiceMonitor` references it via `bearerTokenFile` so Prometheus scrapes authenticate automatically.
+
+Bind-address remains the outer boundary:
+- Desktop: leave `CYODA_ADMIN_BIND_ADDRESS` at its default `127.0.0.1` (loopback only); no bearer needed.
+- Kubernetes: bind to `0.0.0.0` (kubelet + Prometheus reach the pod-facing interface) and enable the bearer; the Helm chart does both.
+- Docker Compose: map the port as `127.0.0.1:9091:9091` so it is only reachable from the host; no bearer needed.
 
 The existing `/api/health` on the main API listener is retained for backwards compatibility.
 

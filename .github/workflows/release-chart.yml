@@ -67,6 +67,7 @@ jobs:
             --set postgres.existingSecret=x \
             --set jwt.existingSecret=x \
             --set cluster.hmacSecret.existingSecret=x \
+            --set monitoring.metricsBearer.existingSecret=x \
             --set 'gateway.parentRefs[0].name=x' \
             --set 'gateway.http.hostnames[0]=x' \
             --set 'gateway.grpc.hostnames[0]=x'
@@ -77,6 +78,7 @@ jobs:
             --set postgres.existingSecret=x \
             --set jwt.existingSecret=x \
             --set cluster.hmacSecret.existingSecret=x \
+            --set monitoring.metricsBearer.existingSecret=x \
             --set 'gateway.parentRefs[0].name=x' \
             --set 'gateway.http.hostnames[0]=x' \
             --set 'gateway.grpc.hostnames[0]=x' \

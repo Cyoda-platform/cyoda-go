@@ -65,6 +65,33 @@ helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
 The chart auto-generates the secret (or use
 `bootstrap.clientSecret.existingSecret` for GitOps).
 
+### Metrics scraping and `/metrics` authentication
+
+The chart ships with `CYODA_METRICS_REQUIRE_AUTH=true` so the admin
+listener's `/metrics` endpoint requires `Authorization: Bearer <token>`.
+`/livez` and `/readyz` remain unauthenticated (kubelet probes can't
+carry bearers). The chart auto-generates the bearer token as a
+Kubernetes Secret on first install (or pass
+`monitoring.metricsBearer.existingSecret` to manage it yourself).
+
+When `monitoring.serviceMonitor.enabled=true`, the rendered
+`ServiceMonitor` references the same Secret via `bearerTokenSecret` so
+Prometheus Operator scrapes authenticate transparently with no
+operator wiring. To hand-scrape for a smoke check:
+
+```bash
+kubectl -n cyoda port-forward svc/cyoda 9091:metrics &
+BEARER=$(kubectl -n cyoda get secret cyoda-metrics-bearer \
+  -o jsonpath='{.data.bearer}' | base64 -d)
+curl -H "Authorization: Bearer $BEARER" http://localhost:9091/metrics | head
+```
+
+Rotation: delete the Kubernetes Secret and `helm upgrade` — the chart's
+`lookup`+GitOps-guard pattern will generate a fresh token. Or pre-manage
+the Secret via `existingSecret` and rotate it on your own schedule;
+both the pod (via `_FILE`) and Prometheus (via `bearerTokenSecret`)
+re-read automatically within one scrape interval.
+
 ### Scale to 3 replicas (cluster mode)
 
 ```bash
@@ -87,23 +114,29 @@ reconcile, breaking gossip encryption and inter-node HTTP dispatch auth.
 The chart catches this at render time and fails with an actionable
 error message. To fix:
 
-**Option A: pre-create the Secrets and pass `existingSecret`:**
+**Option A: pre-create the Secrets and pass `existingSecret`.**
+Do this for every chart-managed Secret you want to keep stable across
+GitOps reconciles — HMAC, the metrics bearer, and (if you set
+`bootstrap.clientId`) the bootstrap client secret.
 
 ```bash
 kubectl -n cyoda create secret generic cyoda-hmac \
   --from-literal=secret=$(openssl rand -hex 32)
+kubectl -n cyoda create secret generic cyoda-metrics-bearer \
+  --from-literal=bearer=$(openssl rand -base64 36)
 ```
 
 ```yaml
 cluster:
   hmacSecret:
     existingSecret: cyoda-hmac
+monitoring:
+  metricsBearer:
+    existingSecret: cyoda-metrics-bearer
 ```
 
-If bootstrap is also enabled (`bootstrap.clientId` is set), the
-`bootstrap.clientSecret.existingSecret` escape hatch is only relevant
-when the bootstrap M2M client is active — omit it when
-`bootstrap.clientId=""`.
+If you also need the bootstrap M2M client (`bootstrap.clientId` set),
+pre-create that Secret too:
 
 ```bash
 kubectl -n cyoda create secret generic cyoda-bootstrap \

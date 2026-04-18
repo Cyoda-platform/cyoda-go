@@ -138,7 +138,26 @@
         }
       }
     },
-    "monitoring": {"type": "object"},
+    "monitoring": {
+      "type": "object",
+      "properties": {
+        "metricsBearer": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {"type": "string"},
+            "existingSecretKey": {"type": "string", "minLength": 1}
+          }
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "interval": {"type": "string"},
+            "labels": {"type": "object"}
+          }
+        }
+      }
+    },
     "networkPolicy": {"type": "object"},
     "migrate": {"type": "object"},
     "podDisruptionBudget": {"type": "object"},

@@ -78,6 +78,17 @@ Chart-managed bootstrap client Secret name.
 {{- end }}
 
 {{/*
+Chart-managed metrics bearer-token Secret name.
+*/}}
+{{- define "cyoda.metricsBearerSecretName" -}}
+{{- if .Values.monitoring.metricsBearer.existingSecret -}}
+{{ .Values.monitoring.metricsBearer.existingSecret }}
+{{- else -}}
+{{ printf "%s-metrics-bearer" (include "cyoda.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{/*
 Image reference: falls back to .Chart.AppVersion if image.tag is unset.
 */}}
 {{- define "cyoda.image" -}}

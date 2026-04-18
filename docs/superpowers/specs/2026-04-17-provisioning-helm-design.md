@@ -354,10 +354,21 @@ the CNI prerequisite.
 ### Observability
 
 - **Probes:** liveness `/livez`, readiness `/readyz`, both on
-  `containerPort metrics` (9091). Unconditional.
+  `containerPort metrics` (9091). Unconditional, unauthenticated (kubelet
+  probes have no way to present a bearer).
+- **`/metrics` requires a Bearer token** on the Helm target. The chart
+  sets `CYODA_METRICS_REQUIRE_AUTH=true` in the ConfigMap and mounts the
+  token via the fifth projected-volume secret (see §4). Constant-time
+  compared on the binary side. This closes the "any in-cluster pod can
+  scrape cardinality-revealing labels" exposure that the default
+  `0.0.0.0` admin-bind otherwise opens — defense in depth alongside the
+  default-on NetworkPolicy.
 - **ServiceMonitor** (`monitoring.serviceMonitor.enabled=true`): renders a
   `monitoring.coreos.com/v1 ServiceMonitor` selecting port `metrics` on the
-  `cyoda` Service. Standard kube-prometheus-stack pattern. Operators add
+  `cyoda` Service, with a `bearerTokenSecret` block referencing the same
+  chart-managed scrape-credential Secret the pod reads from. Prometheus
+  Operator mounts the token and the scrape config uses it — end-to-end
+  authenticated scrape with no operator wiring needed. Operators add
   selector labels via `monitoring.serviceMonitor.labels` so the
   Prometheus operator's `serviceMonitorSelector` picks it up.
 - **Tracing / OTel:** delegated to `extraEnv`. No chart-owned OTel schema —
@@ -368,7 +379,7 @@ the CNI prerequisite.
 
 ## 4. Configuration and secret management
 
-### Four credentials
+### Five credentials
 
 | Credential | Source | Default projected-volume key | Env consumed |
 |---|---|---|---|
@@ -376,6 +387,15 @@ the CNI prerequisite.
 | `CYODA_JWT_SIGNING_KEY` | operator `existingSecret` (required) | `signing-key.pem` | `CYODA_JWT_SIGNING_KEY_FILE` |
 | `CYODA_HMAC_SECRET` | operator `existingSecret` OR chart-generated | `secret` | `CYODA_HMAC_SECRET_FILE` |
 | `CYODA_BOOTSTRAP_CLIENT_SECRET` | operator `existingSecret` OR chart-generated — rendered only when `bootstrap.clientId` is set | `secret` | `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` |
+| `CYODA_METRICS_BEARER` | operator `existingSecret` OR chart-generated | `bearer` | `CYODA_METRICS_BEARER_FILE` |
+
+The metrics bearer is always rendered on the Helm target (the chart
+forces `CYODA_METRICS_REQUIRE_AUTH=true`, and the coupled-predicate
+validator would refuse to start without the token). The same projected
+volume that carries the other four credentials grows a fifth source.
+The `ServiceMonitor` template references this Secret via
+`bearerTokenSecret` so the same credential flows to Prometheus's scrape
+config without operator handwiring.
 
 Each `existingSecret` has a paired `existingSecretKey` values knob so
 operators can declare which key in their Secret carries the value — defaults

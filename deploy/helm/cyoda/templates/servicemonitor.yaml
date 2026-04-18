@@ -16,4 +16,10 @@ spec:
     - port: metrics
       interval: {{ .Values.monitoring.serviceMonitor.interval }}
       path: /metrics
+      # Prometheus-operator reads the Bearer token from the named Secret
+      # in the chart's namespace and attaches it to the scrape request.
+      # Matches the bearer the pod enforces via CYODA_METRICS_BEARER_FILE.
+      bearerTokenSecret:
+        name: {{ include "cyoda.metricsBearerSecretName" . }}
+        key: {{ .Values.monitoring.metricsBearer.existingSecretKey }}
 {{- end }}

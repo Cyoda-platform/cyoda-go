@@ -87,6 +87,8 @@ spec:
               value: /etc/cyoda/secrets/jwt-signing-key.pem
             - name: CYODA_HMAC_SECRET_FILE
               value: /etc/cyoda/secrets/hmac-secret
+            - name: CYODA_METRICS_BEARER_FILE
+              value: /etc/cyoda/secrets/metrics-bearer
             {{- if .Values.bootstrap.clientId }}
             - name: CYODA_BOOTSTRAP_CLIENT_SECRET_FILE
               value: /etc/cyoda/secrets/bootstrap-client-secret
@@ -141,6 +143,11 @@ spec:
                   items:
                     - key: {{ .Values.cluster.hmacSecret.existingSecretKey }}
                       path: hmac-secret
+              - secret:
+                  name: {{ include "cyoda.metricsBearerSecretName" . }}
+                  items:
+                    - key: {{ .Values.monitoring.metricsBearer.existingSecretKey }}
+                      path: metrics-bearer
               {{- if .Values.bootstrap.clientId }}
               - secret:
                   name: {{ include "cyoda.bootstrapSecretName" . }}

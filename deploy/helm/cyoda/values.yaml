@@ -111,6 +111,14 @@ ingress:
     tls: []
 
 monitoring:
+  # -- Bearer token authenticating /metrics scrapes. The chart forces
+  # CYODA_METRICS_REQUIRE_AUTH=true on the Helm target; without a
+  # credential the binary refuses to start. Chart auto-generates on
+  # first install via the GitOps-safety-guard lookup pattern, or use
+  # existingSecret to manage the credential yourself.
+  metricsBearer:
+    existingSecret: ""
+    existingSecretKey: bearer
   serviceMonitor:
     enabled: false
     interval: 30s

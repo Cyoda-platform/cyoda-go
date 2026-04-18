@@ -69,6 +69,14 @@ func New(cfg Config) *App {
 	}
 	cfg = *validatedCfg
 
+	// Metrics-auth coupled predicate: if CYODA_METRICS_REQUIRE_AUTH=true
+	// the bearer must be set. Refuse to start rather than silently drop
+	// auth for operators who thought they'd enabled it.
+	if err := validateMetricsAuth(&cfg); err != nil {
+		slog.Error("invalid metrics auth configuration", "pkg", "app", "err", err)
+		os.Exit(1)
+	}
+
 	a := &App{config: cfg}
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
@@ -525,6 +533,23 @@ func validateBootstrapConfig(cfg *Config) (*Config, error) {
 		return nil, fmt.Errorf(
 			"CYODA_BOOTSTRAP_CLIENT_ID is required when CYODA_BOOTSTRAP_CLIENT_SECRET is set in jwt mode (secret would otherwise be unused)")
 	}
+}
+
+// validateMetricsAuth enforces the coupled predicate on metrics-endpoint
+// authentication. CYODA_METRICS_REQUIRE_AUTH=true together with an empty
+// CYODA_METRICS_BEARER is an operator misconfiguration — they asked for
+// auth but did not provide a credential, and silently leaving /metrics
+// open in that case is strictly worse than refusing to start (they would
+// ship a shared-cluster deployment thinking scrape was authenticated).
+// In all other cases the token itself drives the behaviour: non-empty
+// token enables auth on /metrics, empty token leaves it unauthenticated
+// (the desktop/docker default).
+func validateMetricsAuth(cfg *Config) error {
+	if cfg.Admin.MetricsRequireAuth && cfg.Admin.MetricsBearerToken == "" {
+		return fmt.Errorf(
+			"CYODA_METRICS_BEARER (or _FILE) is required when CYODA_METRICS_REQUIRE_AUTH=true")
+	}
+	return nil
 }
 
 // validateClusterConfig fails fast on missing/invalid cluster settings.

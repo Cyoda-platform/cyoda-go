@@ -109,12 +109,15 @@ func main() {
 		}
 	}()
 
-	// Start admin listener (unauthenticated — bind address controls exposure).
+	// Start admin listener. /livez and /readyz are unauth (kubelet has
+	// no bearer); /metrics can optionally be bearer-gated via
+	// CYODA_METRICS_BEARER — wired here from the validated config.
 	adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.BindAddress, cfg.Admin.Port)
 	adminServer := &http.Server{
 		Addr: adminAddr,
 		Handler: admin.NewHandler(admin.Options{
-			Readiness: a.ReadinessCheck,
+			Readiness:          a.ReadinessCheck,
+			MetricsBearerToken: cfg.Admin.MetricsBearerToken,
 		}),
 	}
 	go func() {
@@ -283,6 +286,14 @@ SERVER
   CYODA_GRPC_PORT              gRPC listen port                          (default: 9090)
   CYODA_ADMIN_PORT             Admin port for health and metrics         (default: 9091)
   CYODA_ADMIN_BIND_ADDRESS     Admin listener bind address               (default: 127.0.0.1)
+  CYODA_METRICS_REQUIRE_AUTH   Require Bearer auth on /metrics           (default: false)
+                                    Coupled with CYODA_METRICS_BEARER — startup fails
+                                    if required but no bearer is set. /livez and /readyz
+                                    stay unauthenticated regardless (kubelet carries no
+                                    bearer). The Helm chart sets this to true.
+  CYODA_METRICS_BEARER         Static Bearer token for GET /metrics       (default: unset)
+                                    Non-empty enables auth on /metrics with constant-time
+                                    compare. Honors _FILE suffix.
   CYODA_CONTEXT_PATH           Context path prefix for all routes        (default: /api)
   CYODA_ERROR_RESPONSE_MODE    Error detail level: sanitized | verbose   (default: sanitized)
   CYODA_MAX_STATE_VISITS       Max visits per state in workflow cascade   (default: 10)
@@ -327,6 +338,7 @@ CREDENTIAL _FILE VARIANTS
     CYODA_JWT_SIGNING_KEY_FILE        → file path for CYODA_JWT_SIGNING_KEY
     CYODA_HMAC_SECRET_FILE            → file path for CYODA_HMAC_SECRET
     CYODA_BOOTSTRAP_CLIENT_SECRET_FILE → file path for CYODA_BOOTSTRAP_CLIENT_SECRET
+    CYODA_METRICS_BEARER_FILE         → file path for CYODA_METRICS_BEARER
   This is the canonical Docker/Kubernetes pattern for wiring credentials from Secrets
   to the pod without exposing them in env output.
 

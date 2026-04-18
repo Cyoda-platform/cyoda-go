@@ -102,17 +102,23 @@ Plus the gRPC listener on `CYODA_GRPC_PORT` (default `9090`).
 | `CYODA_ADMIN_BIND_ADDRESS` | `127.0.0.1` | Interface the admin listener binds to |
 | `CYODA_ADMIN_PORT` | `9091` | Port the admin listener binds to |
 
-| Endpoint | Purpose | Probe target |
-|---|---|---|
-| `/livez` | Liveness — process responsive, event loop alive | Kubernetes `livenessProbe`, Docker `HEALTHCHECK` |
-| `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete | Kubernetes `readinessProbe`, load balancer health |
-| `/metrics` | Prometheus pull endpoint | Prometheus scrape / `ServiceMonitor` |
+| Endpoint | Purpose | Probe target | Auth |
+|---|---|---|---|
+| `/livez` | Liveness — process responsive, event loop alive | Kubernetes `livenessProbe`, Docker `HEALTHCHECK` | Always unauthenticated |
+| `/readyz` | Readiness — storage reachable, migrations applied, bootstrap complete | Kubernetes `readinessProbe`, load balancer health | Always unauthenticated |
+| `/metrics` | Prometheus pull endpoint | Prometheus scrape / `ServiceMonitor` | Optional Bearer (see below) |
 
-The admin listener is **unauthenticated by design**. Defaulting `CYODA_ADMIN_BIND_ADDRESS` to `127.0.0.1` ensures a bare desktop binary or a raw `docker run ...` (no port mapping) never exposes readiness/metrics to the network. Targets that need the admin listener to be reachable from outside the process override this — and in every container case they must, because the container's `127.0.0.1` is in its own network namespace and is unreachable from host port mappings or from kubelet probes:
+**Auth policy — probes unauth, `/metrics` optionally bearer-gated, bind-address is outer defense-in-depth.**
 
-- **Helm chart** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the pod so kubelet probes and a ClusterIP-only admin `Service` can reach it. The pod network (bounded) and the ClusterIP-only `Service` are the exposure boundaries.
-- **Canonical compose** likewise sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the container and constrains the host-side port mapping to `127.0.0.1:9091:9091`. Docker's port mapping forwards to the container's network interface (not its loopback), so a container-internal `127.0.0.1` bind would leave the admin port unreachable even through the host mapping. The host-side `127.0.0.1:...` mapping is the network boundary.
-- **Desktop binary** uses the `127.0.0.1` default — the admin surface is reachable only from the same host, no override needed.
+Probes (`/livez`, `/readyz`) must be unauthenticated: kubelet has no way to present a bearer token, so any auth on them would brick the readiness contract across every deployment.
+
+`/metrics` is different. When `CYODA_METRICS_BEARER` (or `_FILE`) is non-empty the binary requires `Authorization: Bearer <token>` on `GET /metrics` (constant-time compared); when empty the endpoint is served without auth. `CYODA_METRICS_REQUIRE_AUTH=true` additionally forces startup to fail if auth is required but the bearer is unset — a coupled predicate that prevents "I thought I turned it on" misconfiguration.
+
+`CYODA_ADMIN_BIND_ADDRESS` defaults to `127.0.0.1` so a bare desktop binary or raw `docker run ...` is loopback-only — no bearer needed to stay safe. Targets that need the listener reachable from outside the process override this, and in every container case they must, because the container's `127.0.0.1` is in its own network namespace and is unreachable from host port mappings or from kubelet probes:
+
+- **Helm chart** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the pod AND enables `CYODA_METRICS_REQUIRE_AUTH=true` with a chart-managed bearer. The pod network + ClusterIP Service + bearer-on-metrics is defense in depth: even on a shared cluster, a neighbouring pod scraping `/metrics` without the credential gets a `401`. `ServiceMonitor` is wired with `bearerTokenFile` so Prometheus scrapes authenticate transparently.
+- **Canonical compose** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the container (Docker port mapping forwards to the container interface, not loopback) and constrains the host-side port mapping to `127.0.0.1:9091:9091`. Host-loopback mapping is the network boundary; no bearer needed.
+- **Desktop binary** uses the `127.0.0.1` default — reachable only from the same host, no bearer needed.
 
 OTLP push (existing) stays, orthogonal to `/metrics`. Pull and push are both supported; operators pick one or both.
 

@@ -38,6 +38,15 @@ type Config struct {
 type AdminConfig struct {
 	Port        int
 	BindAddress string
+	// MetricsRequireAuth (CYODA_METRICS_REQUIRE_AUTH) makes bearer auth
+	// on /metrics mandatory at startup. Coupled predicate with
+	// MetricsBearerToken — startup fails if required but token is empty.
+	// Default false; the Helm chart sets it true.
+	MetricsRequireAuth bool
+	// MetricsBearerToken (CYODA_METRICS_BEARER, with _FILE suffix
+	// support) is the static Bearer token required on GET /metrics when
+	// non-empty. /livez and /readyz stay unauth regardless.
+	MetricsBearerToken string
 }
 
 type GRPCConfig struct {
@@ -74,6 +83,7 @@ func DefaultConfig() Config {
 	jwtSigningKey := envPEMFromSecret("CYODA_JWT_SIGNING_KEY")
 	hmacSecret := envHexFromSecret("CYODA_HMAC_SECRET")
 	bootstrapClientSecret := mustResolveSecretEnv("CYODA_BOOTSTRAP_CLIENT_SECRET")
+	metricsBearerToken := mustResolveSecretEnv("CYODA_METRICS_BEARER")
 
 	return Config{
 		HTTPPort:          envInt("CYODA_HTTP_PORT", 8080),
@@ -98,8 +108,10 @@ func DefaultConfig() Config {
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
 		Admin: AdminConfig{
-			Port:        envInt("CYODA_ADMIN_PORT", 9091),
-			BindAddress: envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
+			Port:               envInt("CYODA_ADMIN_PORT", 9091),
+			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
+			MetricsRequireAuth: envBool("CYODA_METRICS_REQUIRE_AUTH", false),
+			MetricsBearerToken: metricsBearerToken,
 		},
 		StartupTimeout:     envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{

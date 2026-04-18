@@ -40,7 +40,8 @@ jobs:
           helm lint deploy/helm/cyoda \
             --set postgres.existingSecret=lint-placeholder \
             --set jwt.existingSecret=lint-placeholder \
-            --set cluster.hmacSecret.existingSecret=lint-placeholder
+            --set cluster.hmacSecret.existingSecret=lint-placeholder \
+            --set monitoring.metricsBearer.existingSecret=lint-placeholder
 
       - name: helm template — default (Gateway API, replicas=1)
         run: |
@@ -48,6 +49,7 @@ jobs:
             --set postgres.existingSecret=test-dsn \
             --set jwt.existingSecret=test-jwt \
             --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
             --set gateway.parentRefs[0].name=test-gw \
             --set gateway.parentRefs[0].namespace=gateway-system \
             --set gateway.http.hostnames[0]=cyoda.example.com \
@@ -65,6 +67,7 @@ jobs:
             --set postgres.existingSecret=test-dsn \
             --set jwt.existingSecret=test-jwt \
             --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
             --set gateway.enabled=false \
             --set ingress.enabled=true \
             --set ingress.className=nginx \
@@ -80,6 +83,7 @@ jobs:
             --set postgres.existingSecret=test-dsn \
             --set jwt.existingSecret=test-jwt \
             --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
             --set gateway.parentRefs[0].name=test-gw \
             --set gateway.http.hostnames[0]=cyoda.example.com \
             --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
@@ -96,6 +100,7 @@ jobs:
             --set postgres.existingSecret=test-dsn \
             --set jwt.existingSecret=test-jwt \
             --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
             --set gateway.parentRefs[0].name=test-gw \
             --set gateway.http.hostnames[0]=cyoda.example.com \
             --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
@@ -136,6 +141,7 @@ jobs:
           set +e
           output=$(helm template cyoda deploy/helm/cyoda \
             --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
             --set gateway.parentRefs[0].name=test-gw \
             --set gateway.http.hostnames[0]=cyoda.example.com \
             --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
@@ -168,6 +174,7 @@ jobs:
             --set postgres.existingSecret=test-dsn \
             --set jwt.existingSecret=test-jwt \
             --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
             --set gateway.parentRefs[0].name=test-gw \
             --set gateway.http.hostnames[0]=cyoda.example.com \
             --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
@@ -293,6 +300,32 @@ jobs:
           trap "kill $PF_PID" EXIT
           sleep 3
           curl -fsS --max-time 5 http://localhost:9091/readyz
+
+      - name: Smoke test /metrics auth (401 without, 200 with bearer)
+        run: |
+          kubectl -n cyoda port-forward svc/cyoda 9091:metrics &
+          PF_PID=$!
+          trap "kill $PF_PID" EXIT
+          sleep 3
+          # Unauthenticated: expect 401.
+          status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+            http://localhost:9091/metrics)
+          if [ "$status" != "401" ]; then
+            echo "FAIL: /metrics without bearer should return 401; got $status"
+            exit 1
+          fi
+          # Read the chart-managed bearer from the Kubernetes Secret and
+          # present it. /metrics should return 200.
+          bearer=$(kubectl -n cyoda get secret cyoda-metrics-bearer \
+            -o jsonpath='{.data.bearer}' | base64 -d)
+          status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+            -H "Authorization: Bearer $bearer" \
+            http://localhost:9091/metrics)
+          if [ "$status" != "200" ]; then
+            echo "FAIL: /metrics with correct bearer should return 200; got $status"
+            exit 1
+          fi
+          echo "PASS: /metrics is bearer-gated end-to-end."
 
       - name: helm test cyoda
         # The migration Job runs as a pre-install hook and completes before
