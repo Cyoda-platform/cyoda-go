@@ -181,8 +181,8 @@ func New(cfg Config) *App {
 		a.authService = auth.NewDelegatingAuthenticator(validator)
 
 		// Bootstrap M2M client if configured.
-		// validateBootstrapConfig (called above) guarantees ClientSecret is non-empty
-		// when ClientID is set in jwt mode.
+		// validateBootstrapConfig (called above) guarantees that in jwt mode,
+		// ClientID and ClientSecret are coupled: both set or neither set.
 		if cfg.Bootstrap.ClientID != "" {
 			roles := strings.Split(cfg.Bootstrap.Roles, ",")
 			for i := range roles {
@@ -502,19 +502,29 @@ func (a *App) Shutdown() {
 // surface as a fatal startup failure.
 func validateBootstrapConfig(cfg *Config) (*Config, error) {
 	out := *cfg
-	if cfg.IAM.Mode != "jwt" {
-		// Mock (or any non-jwt) mode: bootstrap secret has no effect; zero it.
+	if out.IAM.Mode != "jwt" {
+		// Mock (or any non-jwt) mode: bootstrap is irrelevant. Zero the secret defensively so
+		// downstream code can't accidentally use it.
 		out.Bootstrap.ClientSecret = ""
 		return &out, nil
 	}
-	// jwt mode: secret is always required to prevent silent no-op bootstraps
-	// and to make missing-secret misconfigurations visible at startup.
-	if cfg.Bootstrap.ClientSecret == "" {
+	idSet := out.Bootstrap.ClientID != ""
+	secretSet := out.Bootstrap.ClientSecret != ""
+	switch {
+	case !idSet && !secretSet:
+		// No bootstrap M2M client configured. System starts without one;
+		// operator authenticates via JWKS / external signing keys.
+		return &out, nil
+	case idSet && secretSet:
+		// Bootstrap M2M client configured. Creation happens in New().
+		return &out, nil
+	case idSet && !secretSet:
 		return nil, fmt.Errorf(
-			"CYODA_BOOTSTRAP_CLIENT_SECRET is required when CYODA_IAM_MODE=jwt; " +
-				"set it explicitly (e.g. via a Kubernetes Secret) or switch to CYODA_IAM_MODE=mock")
+			"CYODA_BOOTSTRAP_CLIENT_SECRET is required when CYODA_BOOTSTRAP_CLIENT_ID is set in jwt mode")
+	default: // !idSet && secretSet
+		return nil, fmt.Errorf(
+			"CYODA_BOOTSTRAP_CLIENT_ID is required when CYODA_BOOTSTRAP_CLIENT_SECRET is set in jwt mode (secret would otherwise be unused)")
 	}
-	return &out, nil
 }
 
 // validateClusterConfig fails fast on missing/invalid cluster settings.
