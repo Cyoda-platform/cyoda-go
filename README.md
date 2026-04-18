@@ -400,7 +400,7 @@ The admin listener binds to `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default
 
 - `CYODA_METRICS_BEARER` (or `_FILE`) — static token; when non-empty, `GET /metrics` requires `Authorization: Bearer <token>`. Constant-time compared.
 - `CYODA_METRICS_REQUIRE_AUTH=true` — coupled predicate; refuses to start if set while the bearer is empty. Protects against "I thought I turned it on" misconfigurations.
-- The canonical Helm chart enables this end-to-end: a chart-managed Secret holds the token, the StatefulSet mounts it via the `_FILE` pattern, and the `ServiceMonitor` references it via `bearerTokenFile` so Prometheus scrapes authenticate automatically.
+- The canonical Helm chart enables this end-to-end: a chart-managed Secret holds the token, the StatefulSet mounts it via the `_FILE` pattern, and the `ServiceMonitor` references it via `bearerTokenSecret` so Prometheus scrapes authenticate automatically.
 
 Bind-address remains the outer boundary:
 - Desktop: leave `CYODA_ADMIN_BIND_ADDRESS` at its default `127.0.0.1` (loopback only); no bearer needed.

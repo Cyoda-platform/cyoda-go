@@ -119,3 +119,38 @@ func TestMetricsAuth_ReadyzStaysUnauthenticated(t *testing.T) {
 // property is hard to observe at the unit-test layer. We assert the
 // positive/negative cases above work; the implementation is expected to
 // use crypto/subtle.ConstantTimeCompare — reviewer verifies.
+
+// requireBearer is defence-in-depth against an empty-expected invocation:
+// admin.NewHandler gates it on non-empty token, but if ever called with an
+// empty token directly, every request must be rejected. Without this
+// guard the middleware would admit "Authorization: Bearer " with an empty
+// token body.
+func TestMetricsAuth_EmptyExpected_Rejects(t *testing.T) {
+	h := requireBearer("", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("empty expected bearer must reject every request; got %d", w.Code)
+	}
+}
+
+// Header parsing: "Bearer  token" (double space between scheme and token)
+// should reject, because TrimPrefix("Bearer ") leaves " token" which does
+// not equal "token". Regression test for the scheme boundary.
+func TestMetricsAuth_DoubleSpaceAfterScheme_Rejects(t *testing.T) {
+	h := NewHandler(Options{
+		Readiness:          func() error { return nil },
+		MetricsBearerToken: "valid-token-xyz",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer  valid-token-xyz") // double space
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("double-space between scheme and token should reject; got %d", w.Code)
+	}
+}

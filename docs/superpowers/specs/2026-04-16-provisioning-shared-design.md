@@ -116,7 +116,7 @@ Probes (`/livez`, `/readyz`) must be unauthenticated: kubelet has no way to pres
 
 `CYODA_ADMIN_BIND_ADDRESS` defaults to `127.0.0.1` so a bare desktop binary or raw `docker run ...` is loopback-only — no bearer needed to stay safe. Targets that need the listener reachable from outside the process override this, and in every container case they must, because the container's `127.0.0.1` is in its own network namespace and is unreachable from host port mappings or from kubelet probes:
 
-- **Helm chart** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the pod AND enables `CYODA_METRICS_REQUIRE_AUTH=true` with a chart-managed bearer. The pod network + ClusterIP Service + bearer-on-metrics is defense in depth: even on a shared cluster, a neighbouring pod scraping `/metrics` without the credential gets a `401`. `ServiceMonitor` is wired with `bearerTokenFile` so Prometheus scrapes authenticate transparently.
+- **Helm chart** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the pod AND enables `CYODA_METRICS_REQUIRE_AUTH=true` with a chart-managed bearer. The pod network + ClusterIP Service + bearer-on-metrics is defense in depth: even on a shared cluster, a neighbouring pod scraping `/metrics` without the credential gets a `401`. `ServiceMonitor` is wired with `bearerTokenSecret` so Prometheus scrapes authenticate transparently.
 - **Canonical compose** sets `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` inside the container (Docker port mapping forwards to the container interface, not loopback) and constrains the host-side port mapping to `127.0.0.1:9091:9091`. Host-loopback mapping is the network boundary; no bearer needed.
 - **Desktop binary** uses the `127.0.0.1` default — reachable only from the same host, no bearer needed.
 

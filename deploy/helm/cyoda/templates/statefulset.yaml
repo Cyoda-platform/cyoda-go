@@ -6,7 +6,12 @@ metadata:
     {{- include "cyoda.labels" . | nindent 4 }}
 spec:
   serviceName: {{ include "cyoda.fullname" . }}-headless
+  {{- /* When autoscaling is on, the HPA owns the replica count; omit
+         .spec.replicas so `helm upgrade --reuse-values` doesn't keep
+         resetting it back to .Values.replicas on every reconcile. */}}
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicas }}
+  {{- end }}
   # Pods start in parallel rather than strictly ordered — cyoda's cluster
   # mode handles peer discovery via gossip; we don't need the 0-then-1-then-2
   # ordering that StatefulSet provides by default.

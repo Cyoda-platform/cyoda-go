@@ -291,5 +291,6 @@ serving — investigate before retrying.
 
 ### `CYODA_*_FILE` in `extraEnv` causes install to fail with duplicate env
 
-Remove it. The chart sets all four credential env vars; to change a
-credential, change the referenced `existingSecret`.
+Remove it. The chart sets all five credential env vars (postgres DSN,
+JWT signing key, HMAC, bootstrap client secret, metrics bearer); to
+change a credential, change the referenced `existingSecret`.
