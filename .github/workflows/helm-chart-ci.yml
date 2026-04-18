@@ -1,0 +1,123 @@
+name: Helm chart CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/helm-chart-ci.yml'
+      - '.github/ct.yaml'
+  pull_request:
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/helm-chart-ci.yml'
+      - '.github/ct.yaml'
+
+jobs:
+  helm-lint-and-validate:
+    name: Lint, template, kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+
+      - name: helm lint
+        run: helm lint deploy/helm/cyoda
+
+      - name: helm template — default (Gateway API, replicas=1)
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.parentRefs[0].namespace=gateway-system \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            > /tmp/default.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.31.0-standalone-strict/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json' \
+            -skip HTTPRoute,GRPCRoute \
+            /tmp/default.yaml
+
+      - name: helm template — ingress mode
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.enabled=false \
+            --set ingress.enabled=true \
+            --set ingress.className=nginx \
+            --set ingress.http.host=cyoda.example.com \
+            --set ingress.grpc.host=grpc.cyoda.example.com \
+            > /tmp/ingress.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 /tmp/ingress.yaml
+
+      - name: helm template — 3-replica cluster mode
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set replicas=3 \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            > /tmp/replicas3.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -skip HTTPRoute,GRPCRoute \
+            /tmp/replicas3.yaml
+          # Must render a PDB at replicas=3.
+          grep -q "kind: PodDisruptionBudget" /tmp/replicas3.yaml
+
+      - name: helm template — monitoring + networkPolicy
+        run: |
+          helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set networkPolicy.enabled=true \
+            --set 'networkPolicy.metricsFromNamespaces[0].matchLabels.kubernetes\.io/metadata\.name=monitoring' \
+            > /tmp/monitoring.yaml
+          kubeconform -strict -kubernetes-version 1.31.0 \
+            -skip HTTPRoute,GRPCRoute,ServiceMonitor \
+            /tmp/monitoring.yaml
+          grep -q "kind: ServiceMonitor" /tmp/monitoring.yaml
+          grep -q "kind: NetworkPolicy" /tmp/monitoring.yaml
+
+      - name: helm template — GitOps safety guard fires when expected
+        run: |
+          # Without cluster.hmacSecret.existingSecret AND without live
+          # cluster access (helm template), the guard must fire.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            2>&1)
+          set -e
+          if ! echo "$output" | grep -q "cluster.hmacSecret.existingSecret is required"; then
+            echo "FAIL: expected GitOps-safety guard to fire; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: guard fired as expected."
