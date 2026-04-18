@@ -33,7 +33,14 @@ jobs:
           kubeconform -v
 
       - name: helm lint
-        run: helm lint deploy/helm/cyoda
+        # Chart requires operator-provided existingSecret values (no sensible
+        # defaults for Secret names); lint with placeholders that satisfy the
+        # schema's minLength:1 constraint.
+        run: |
+          helm lint deploy/helm/cyoda \
+            --set postgres.existingSecret=lint-placeholder \
+            --set jwt.existingSecret=lint-placeholder \
+            --set cluster.hmacSecret.existingSecret=lint-placeholder
 
       - name: helm template — default (Gateway API, replicas=1)
         run: |
