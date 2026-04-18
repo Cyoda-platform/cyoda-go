@@ -55,6 +55,9 @@ nfpms:
         dst: /etc/cyoda/cyoda.env
         type: "config|noreplace"
 
+# Intentionally using `brews:` despite deprecation warning.
+# cyoda is a CLI (not a .app), supports Linux Homebrew, and relies on
+# formula post_install hooks. Revisit if GoReleaser v3 removes `brews:`.
 brews:
   - name: cyoda
     # Skip tap upload on prerelease tags (v*-rc.*, v*-beta.*, v*-alpha.*).
