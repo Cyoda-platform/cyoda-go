@@ -246,22 +246,19 @@ jobs:
           kubernetes_version: v1.31.0
           wait: 120s
 
-      - name: Install Gateway API v1.2 CRDs
+      - name: Install Envoy Gateway (bundles Gateway API v1.2 CRDs)
         run: |
-          # Server-side apply so the next step (helm install of
-          # envoy-gateway, which bundles the same CRDs in v1.2) can
-          # take field ownership without annotation-channel conflicts.
-          kubectl apply --server-side --force-conflicts -f \
-            https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
-          kubectl wait --for=condition=established crd/gateways.gateway.networking.k8s.io --timeout=60s
-
-      - name: Install Envoy Gateway
-        run: |
+          # Envoy Gateway v1.2 bundles the Gateway API CRDs it needs
+          # (crds/gatewayapi-crds.yaml inside its Helm chart). Letting
+          # the chart install them avoids FieldManager conflicts that
+          # a separate pre-install step introduces.
           helm install eg oci://docker.io/envoyproxy/gateway-helm \
             --version v1.2.0 \
             -n envoy-gateway-system \
             --create-namespace \
             --wait --timeout 5m
+          kubectl wait --for=condition=established \
+            crd/gateways.gateway.networking.k8s.io --timeout=60s
 
       - name: Start Postgres sidecar
         run: |
