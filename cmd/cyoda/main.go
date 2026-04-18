@@ -250,10 +250,22 @@ func printHelp() {
 
 Usage:
   cyoda [flags]           Run the server with current config.
+  cyoda --help            Show this help.
+
+Subcommands:
   cyoda init [--force]    Write a starter user config enabling sqlite.
   cyoda health            Probe /readyz on the admin listener (exits 0 if ready).
                           Uses CYODA_ADMIN_PORT, default 9091.
-  cyoda --help            Show this help.
+  cyoda migrate [--timeout <duration>]
+                          Run schema migrations for the configured backend and exit.
+                          Dispatches on CYODA_STORAGE_BACKEND:
+                            memory  → no-op, exit 0
+                            sqlite  → no-op, exit 0 (migrations are applied lazily)
+                            postgres → run migrations, exit 0 on success, 1 on error
+                          Refuses if the DB schema is newer than the code.
+                          Exit codes: 0 success, 1 runtime error, 2 flag-parse error.
+                          Default timeout: 5 minutes.
+                          Used by the Helm chart pre-install/pre-upgrade Job.
 
 All configuration is via environment variables. Variables can be placed in .env
 files and loaded automatically using profiles.
@@ -293,13 +305,30 @@ SERVER
     CYODA_JWT_EXPIRY_SECONDS   Token lifetime in seconds                 (default: 3600)
 
 BOOTSTRAP (jwt mode only)
-  CYODA_BOOTSTRAP_CLIENT_ID    If set, creates an M2M client at startup and prints the secret.
-                                    Solves the chicken-and-egg problem of needing a token to create tokens.
-  CYODA_BOOTSTRAP_CLIENT_SECRET  Fixed secret for the bootstrap client. If omitted, a random secret
-                                    is generated and printed at startup.
+  CYODA_BOOTSTRAP_CLIENT_ID    Bootstrap M2M client ID. Optional.
+                                    Coupled with CYODA_BOOTSTRAP_CLIENT_SECRET: both must be set
+                                    (bootstrap client created at startup) or both must be empty
+                                    (no bootstrap client; operator authenticates via JWKS/external keys).
+                                    Half-configured states are rejected at startup with a clear error.
+                                    Ignored in mock mode.
+  CYODA_BOOTSTRAP_CLIENT_SECRET  Bootstrap M2M client secret. Must be set if
+                                    CYODA_BOOTSTRAP_CLIENT_ID is set (and vice
+                                    versa); both unset = no bootstrap client.
+                                    In mock mode, both are ignored.
   CYODA_BOOTSTRAP_TENANT_ID    Tenant for the bootstrap client            (default: default-tenant)
   CYODA_BOOTSTRAP_USER_ID      User ID for the bootstrap client           (default: admin)
   CYODA_BOOTSTRAP_ROLES        Comma-separated roles                      (default: ROLE_ADMIN,ROLE_M2M)
+
+CREDENTIAL _FILE VARIANTS
+  The following credential env vars accept a _FILE variant that reads the value from the
+  file at the given path. _FILE takes precedence when both are set. Trailing whitespace
+  is stripped — safe for DSN strings and multi-line PEM keys.
+    CYODA_POSTGRES_URL_FILE           → file path for CYODA_POSTGRES_URL
+    CYODA_JWT_SIGNING_KEY_FILE        → file path for CYODA_JWT_SIGNING_KEY
+    CYODA_HMAC_SECRET_FILE            → file path for CYODA_HMAC_SECRET
+    CYODA_BOOTSTRAP_CLIENT_SECRET_FILE → file path for CYODA_BOOTSTRAP_CLIENT_SECRET
+  This is the canonical Docker/Kubernetes pattern for wiring credentials from Secrets
+  to the pod without exposing them in env output.
 
 OBSERVABILITY
   CYODA_OTEL_ENABLED           Enable OpenTelemetry tracing/metrics      (default: false)

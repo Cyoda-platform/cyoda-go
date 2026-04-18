@@ -121,9 +121,9 @@ Uses the binary's compiled-in `memory` default. Set
 This runs Cyoda-Go with the `local` profile (`.env.local`): in-memory storage, JWT auth, debug logging on port **8123** (HTTP) and **9123** (gRPC). Copy `.env.local.example` to `.env.local` to customize.
 
 ```bash
-# Get a token (bootstrap credentials are printed at startup):
+# Get a token (set CYODA_BOOTSTRAP_CLIENT_ID and CYODA_BOOTSTRAP_CLIENT_SECRET in .env.local):
 TOKEN=$(curl -s -X POST http://localhost:8123/api/oauth/token \
-  -u "m2m.user:<secret-from-startup-log>" \
+  -u "$CYODA_BOOTSTRAP_CLIENT_ID:$CYODA_BOOTSTRAP_CLIENT_SECRET" \
   -d "grant_type=client_credentials" | jq -r .access_token)
 
 # Use it:
@@ -159,9 +159,9 @@ curl http://localhost:8080/api/health
 This generates a `.env.docker` with a fresh JWT signing key and starts both Cyoda-Go and PostgreSQL via `docker compose`. Data is persisted to a Docker volume.
 
 ```bash
-# Get a token (bootstrap secret is printed at startup):
+# Get a token (set CYODA_BOOTSTRAP_CLIENT_ID and CYODA_BOOTSTRAP_CLIENT_SECRET before starting):
 TOKEN=$(curl -s -X POST http://localhost:8123/api/oauth/token \
-  -u "m2m.user:<secret-from-startup-log>" -d "grant_type=client_credentials" | jq -r .access_token)
+  -u "$CYODA_BOOTSTRAP_CLIENT_ID:$CYODA_BOOTSTRAP_CLIENT_SECRET" -d "grant_type=client_credentials" | jq -r .access_token)
 
 # Use it:
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8123/api/health
@@ -275,6 +275,12 @@ precedence (later overrides earlier):
    [`.env.jwt.example`](.env.jwt.example).
 5. Shell environment variables (always win).
 
+### Subcommands
+
+- `cyoda init` — write a sqlite user config file (desktop use)
+- `cyoda health` — probe `/readyz` and exit 0 ready / 1 otherwise (Docker HEALTHCHECK)
+- `cyoda migrate` — run schema migrations for the configured backend and exit
+
 Run `cyoda init` to write a starter user config with sqlite enabled.
 Run `cyoda --help` for the full env-var reference.
 
@@ -317,12 +323,31 @@ The `./scripts/dev/run-local.sh` script is a convenience wrapper that sets `CYOD
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token lifetime |
 
+### Credential env vars: `_FILE` suffix support
+
+The four credential env vars — `CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`,
+`CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET` — accept a `_FILE`
+variant that reads the value from the file at the given path:
+
+```bash
+# Equivalent:
+export CYODA_JWT_SIGNING_KEY="$(cat /path/to/key.pem)"
+export CYODA_JWT_SIGNING_KEY_FILE=/path/to/key.pem
+```
+
+`_FILE` takes precedence when both are set. Trailing whitespace is stripped
+from file contents — safe for both DSN strings and multi-line PEM keys.
+
+This is the canonical Docker/Kubernetes pattern (postgres, mysql, redis,
+keycloak all use it) and is how the Helm chart wires credentials from
+Secrets to the pod without exposing them in `env` output.
+
 ### Bootstrap (jwt mode)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_BOOTSTRAP_CLIENT_ID` | — | Creates an M2M client at startup. Solves the chicken-and-egg of needing a token to create tokens. |
-| `CYODA_BOOTSTRAP_CLIENT_SECRET` | *(generated)* | Fixed secret, or omit to auto-generate |
+| `CYODA_BOOTSTRAP_CLIENT_ID` | `""` | Bootstrap M2M client ID. Coupled with `CYODA_BOOTSTRAP_CLIENT_SECRET` in jwt mode: both set (bootstrap client created at startup) or both empty (no bootstrap client). Half-configured states are rejected at startup. Ignored in mock mode. |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET` | `""` | Bootstrap M2M client secret. See `CYODA_BOOTSTRAP_CLIENT_ID` for the coupling rule. Ignored in mock mode. |
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for the bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 
