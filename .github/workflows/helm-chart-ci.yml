@@ -328,34 +328,33 @@ jobs:
                     from: Same
           EOF
 
-      - name: chart-testing install
+      - name: helm install cyoda
+        # Fixed release name "cyoda" so every downstream step can target
+        # svc/cyoda, secret/cyoda-metrics-bearer, pod/cyoda-0, etc. by
+        # a stable name. ct install was considered and rejected for this
+        # use case — its random release names are designed for multi-chart
+        # parallel testing, not the single-chart deep-verification pattern
+        # we need here (Layer 1 already lints and template-renders across
+        # overlays).
+        #
+        # NetworkPolicy disabled in CI: the default-on NP restricts :9091
+        # ingress to the monitoring namespace and would block the chart's
+        # own helm-test hook (which runs in the release's namespace).
+        # Real operators keep it on. Layer 1's monitoring+networkPolicy
+        # overlay already validates the rendered NP YAML.
         run: |
-          docker run --rm \
-            --network host \
-            -v "$HOME/.kube":/root/.kube \
-            -v "$(pwd)":/workspace \
-            -w /workspace \
-            quay.io/helmpack/chart-testing:v3.14.0 \
-            ct install \
-              --config .github/ct.yaml \
-              --namespace cyoda \
-              --helm-extra-set-args \
-                "--set=postgres.existingSecret=test-dsn \
-                 --set=jwt.existingSecret=test-jwt \
-                 --set=image.repository=cyoda-ci \
-                 --set=image.tag=test \
-                 --set=image.pullPolicy=Never \
-                 --set=networkPolicy.enabled=false \
-                 --set=gateway.parentRefs[0].name=test-gateway \
-                 --set=gateway.http.hostnames[0]=cyoda.ci \
-                 --set=gateway.grpc.hostnames[0]=grpc.cyoda.ci"
-          # NetworkPolicy default-on restricts :9091 ingress to the
-          # monitoring namespace; the chart's own `helm test` pod runs in
-          # the release's namespace and would be blocked. Real operators
-          # keep the default on (Prometheus in monitoring/). CI disables
-          # it to let the test-readyz hook reach /readyz over in-cluster
-          # DNS. The monitoring+networkPolicy template-render overlay on
-          # Layer 1 already validates the rendered NP YAML.
+          helm install cyoda deploy/helm/cyoda \
+            --namespace cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set image.repository=cyoda-ci \
+            --set image.tag=test \
+            --set image.pullPolicy=Never \
+            --set networkPolicy.enabled=false \
+            --set 'gateway.parentRefs[0].name=test-gateway' \
+            --set 'gateway.http.hostnames[0]=cyoda.ci' \
+            --set 'gateway.grpc.hostnames[0]=grpc.cyoda.ci' \
+            --wait --timeout 5m
 
       - name: Smoke test /readyz via port-forward
         run: |
