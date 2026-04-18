@@ -136,7 +136,14 @@ dockers_v2:
       org.opencontainers.image.licenses: Apache-2.0
 
 docker_signs:
-  - artifacts: manifests
+  # `dockers_v2` produces per-arch `Docker Image` artifacts (one per
+  # platform — linux/amd64, linux/arm64, ...). There is no separate
+  # `docker_manifests:` block and the v2 publish path assembles the
+  # multi-arch manifest list transparently from those per-arch images.
+  # Sign the images themselves: cosign signs each per-arch digest,
+  # multi-arch pulls resolve to a signed image, and the snapshot smoke
+  # can verify the signer's selector resolves non-empty.
+  - artifacts: images
     cmd: cosign
     args:
       - "sign"
