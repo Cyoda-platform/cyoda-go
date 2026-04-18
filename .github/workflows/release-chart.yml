@@ -62,7 +62,14 @@ jobs:
           sudo mv kubeconform /usr/local/bin/
 
       - name: helm lint
-        run: helm lint deploy/helm/cyoda
+        run: |
+          helm lint deploy/helm/cyoda \
+            --set postgres.existingSecret=x \
+            --set jwt.existingSecret=x \
+            --set cluster.hmacSecret.existingSecret=x \
+            --set 'gateway.parentRefs[0].name=x' \
+            --set 'gateway.http.hostnames[0]=x' \
+            --set 'gateway.grpc.hostnames[0]=x'
 
       - name: helm template + kubeconform
         run: |
