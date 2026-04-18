@@ -389,6 +389,20 @@ need it).
 
 Precedence: `<name>_FILE` wins if both are set. Documented. Tested.
 
+**`extraEnv` collision guidance.** The StatefulSet sets
+`CYODA_POSTGRES_URL_FILE`, `CYODA_JWT_SIGNING_KEY_FILE`,
+`CYODA_HMAC_SECRET_FILE`, and `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`
+directly on the container. An operator who also sets one of these via
+`extraEnv` (perhaps thinking they're overriding the path) hits a
+duplicate-env-name rejection from the Kubernetes API at
+`helm install`/`upgrade` time, which surfaces as an opaque error. The
+chart README and `NOTES.txt` both call out explicitly: **do not set any
+`CYODA_*_FILE` or `CYODA_POSTGRES_URL` / `CYODA_JWT_SIGNING_KEY` /
+`CYODA_HMAC_SECRET` / `CYODA_BOOTSTRAP_CLIENT_SECRET` via `extraEnv`.**
+Those four credentials flow through the projected-volume path driven by
+`existingSecret`; override them by changing the referenced Secret, not by
+adding an env entry.
+
 Failure modes:
 
 - `<name>_FILE` set, file unreadable → fail fast with a clear error. No
@@ -406,6 +420,7 @@ template logic, with an explicit GitOps-safety guard:
 # templates/secret-hmac.yaml
 {{- if not .Values.cluster.hmacSecret.existingSecret }}
 {{- $name := printf "%s-hmac" (include "cyoda.fullname" .) }}
+{{- $key  := .Values.cluster.hmacSecret.existingSecretKey }}
 {{- $existing := (lookup "v1" "Secret" .Release.Namespace $name) }}
 {{- if not $existing }}
   {{- /* Secret doesn't exist. Verify we have live cluster access before
@@ -415,12 +430,12 @@ template logic, with an explicit GitOps-safety guard:
          encryption key AND the inter-node HTTP dispatch auth. */ -}}
   {{- $ns := (lookup "v1" "Namespace" "" .Release.Namespace) }}
   {{- if not $ns }}
-    {{- fail "cluster.hmacSecret.existingSecret is required when the chart is rendered without live cluster access (helm template, Argo CD, --dry-run, or brand-new namespace). Pre-create the Secret with kubectl, set cluster.hmacSecret.existingSecret, and re-render. See the chart README > 'Using with GitOps'." }}
+    {{- fail "cluster.hmacSecret.existingSecret is required when the chart is rendered without live cluster access (helm template, Argo CD, --dry-run, or a namespace that does not yet exist — e.g. first-time 'helm install --create-namespace'). Fix: either (a) kubectl create namespace <ns> before running helm install; (b) pre-create the HMAC Secret and set cluster.hmacSecret.existingSecret; or (c) use an operator-managed GitOps path with external-secrets-operator. See the chart README > 'Using with GitOps'." }}
   {{- end }}
 {{- end }}
 {{- $value := "" }}
 {{- if $existing }}
-{{- $value = index $existing.data "secret" }}
+{{- $value = index $existing.data $key }}
 {{- else }}
 {{- $value = randAlphaNum 48 | b64enc }}
 {{- end }}
@@ -431,9 +446,19 @@ metadata:
   labels: {{- include "cyoda.labels" . | nindent 4 }}
 type: Opaque
 data:
-  secret: {{ $value | quote }}
+  {{ $key }}: {{ $value | quote }}
 {{- end }}
 ```
+
+The chart-managed path honors `existingSecretKey` symmetrically: whatever
+key the operator declared (default `secret`) is both what the generated
+Secret writes to AND what the pod's projected volume reads from. This
+keeps "value is written and read under the same key" as an invariant
+regardless of which subset of `existingSecret` / `existingSecretKey` the
+operator sets. If we hardcoded `secret:` here, an operator who set
+`existingSecretKey: myhmac` without `existingSecret` would get a pod that
+fails to mount — the chart would write to key `secret` but the volume
+would read key `myhmac`.
 
 **GitOps safety guard (the critical bit).** `lookup` returns nil when the
 chart is rendered without live cluster access (Argo CD's default path runs
