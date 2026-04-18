@@ -43,9 +43,21 @@ data:
   # Cluster mode is always on (matches chart docs). At replicas=1 the
   # binary runs as a "cluster of one" (internal/cluster/registry/gossip.go:100).
   CYODA_CLUSTER_ENABLED: "true"
-  # Seed pod-0 via the headless Service's stable pod DNS. The binary
-  # filters self-seeds, so pod-0 seeing itself is safe.
-  CYODA_SEED_NODES: "{{ include "cyoda.fullname" . }}-0.{{ include "cyoda.fullname" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local:7946"
+  {{- /*
+    Seed list = every pod's stable DNS name based on .Values.replicas.
+    The binary's filterSelf compares seed strings against its bindAddr —
+    which in Kubernetes is 0.0.0.0 (not the pod DNS) — so the string-level
+    comparison never matches and pod-0 would stay isolated if it were the
+    only seed. Listing every pod means every pod has real peers and joins
+    cleanly. On rolling restart at replicas=N, every pod picks up the
+    current ConfigMap and joins the surviving N-1 peers.
+  */}}
+  {{- $fullname := include "cyoda.fullname" . }}
+  {{- $seeds := list }}
+  {{- range $i, $_ := until (int .Values.replicas) }}
+  {{- $seeds = append $seeds (printf "%s-%d.%s-headless.%s.svc.cluster.local:7946" $fullname $i $fullname $.Release.Namespace) }}
+  {{- end }}
+  CYODA_SEED_NODES: {{ $seeds | join "," | quote }}
 
   # Logging + JWT claims.
   CYODA_LOG_LEVEL: {{ .Values.logLevel | quote }}
