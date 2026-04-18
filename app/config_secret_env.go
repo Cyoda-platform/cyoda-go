@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+// Mirrors plugins/postgres.resolveSecretWith (separate go.mod; keep behavior in sync).
+//
 // resolveSecretEnv returns the value of the named env var, OR — if that
 // env var is empty and <name>_FILE is set — reads the value from the
 // file at the path given by <name>_FILE.

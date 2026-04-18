@@ -41,6 +41,8 @@ func parseConfig(getenv func(string) string) (config, error) {
 	return cfg, nil
 }
 
+// Mirrors app.resolveSecretEnv (separate go.mod; keep behavior in sync).
+//
 // resolveSecretWith honours the _FILE suffix pattern using the injected getenv
 // for the var name lookup, and os.ReadFile for the actual file read.
 //
@@ -51,7 +53,7 @@ func resolveSecretWith(getenv func(string) string, name string) (string, error) 
 	if path := getenv(fileVar); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("reading %s=%q: %w", fileVar, path, err)
+			return "", fmt.Errorf("failed to read %s=%q: %w", fileVar, path, err)
 		}
 		return strings.TrimRight(string(data), " \t\n\r"), nil
 	}

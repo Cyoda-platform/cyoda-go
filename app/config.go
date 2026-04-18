@@ -133,8 +133,10 @@ func DefaultConfig() Config {
 }
 
 // envPEMFromSecret resolves the raw value for a PEM credential via
-// mustResolveSecretEnv (honouring <name>_FILE), then normalises it
-// exactly as envPEM does (base64 → raw PEM, or passthrough).
+// mustResolveSecretEnv (honouring <name>_FILE), then normalises it:
+// if the value starts with "-----BEGIN" it is used as-is; otherwise it
+// is treated as base64-encoded PEM (single-line friendly for .env files
+// and docker env_file).
 func envPEMFromSecret(key string) string {
 	v := mustResolveSecretEnv(key)
 	if v == "" || strings.HasPrefix(v, "-----BEGIN") {
@@ -148,8 +150,8 @@ func envPEMFromSecret(key string) string {
 }
 
 // envHexFromSecret resolves the raw value for a hex credential via
-// mustResolveSecretEnv (honouring <name>_FILE), then decodes hex
-// exactly as envHex does.
+// mustResolveSecretEnv (honouring <name>_FILE), then decodes hex.
+// Falls back to raw bytes if the value is not valid hex.
 func envHexFromSecret(key string) []byte {
 	v := mustResolveSecretEnv(key)
 	if v == "" {
@@ -179,21 +181,6 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
-// envPEM reads a PEM key from an environment variable. If the value starts with
-// "-----BEGIN", it is used as-is. Otherwise it is treated as base64-encoded PEM
-// (single-line friendly for .env files and docker env_file).
-func envPEM(key string) string {
-	v := os.Getenv(key)
-	if v == "" || strings.HasPrefix(v, "-----BEGIN") {
-		return v
-	}
-	decoded, err := base64.StdEncoding.DecodeString(v)
-	if err != nil {
-		return v // not base64, return as-is
-	}
-	return string(decoded)
-}
-
 func envBool(key string, fallback bool) bool {
 	if v, ok := os.LookupEnv(key); ok {
 		if b, err := strconv.ParseBool(v); err == nil {
@@ -210,19 +197,6 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
-}
-
-func envHex(key string) []byte {
-	v := envString(key, "")
-	if v == "" {
-		return nil
-	}
-	b, err := hex.DecodeString(v)
-	if err != nil {
-		// Fall back to raw bytes if not valid hex
-		return []byte(v)
-	}
-	return b
 }
 
 // mockRolesFromEnv parses CYODA_IAM_MOCK_ROLES and falls back to the
