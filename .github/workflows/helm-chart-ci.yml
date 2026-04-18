@@ -398,27 +398,40 @@ jobs:
       - name: Scale to 3 replicas and verify cluster mode converges
         run: |
           # gossip.go's "joined cluster" log is a one-shot snapshot at
-          # startup; it reports the member count at that moment and is
-          # never re-emitted. The only way to observe "all three pods
-          # see 3 members" via this signal is for all three pods to
-          # start into an already-sized replicas=3 StatefulSet. Scale
-          # down to zero first so the subsequent scale-up starts every
-          # ordinal fresh into a three-node configuration (each pod
-          # picks up the ConfigMap with the full 3-seed list, joins
-          # the others, and stability-window-logs members=3).
-          helm upgrade cyoda deploy/helm/cyoda \
-            -n cyoda --reuse-values --set replicas=0 \
-            --wait --timeout 2m
+          # startup; it reports member count at that moment and is
+          # never re-emitted. To observe "all three pods see 3 members"
+          # all three must start into an already-sized replicas=3
+          # StatefulSet. Workflow:
+          #
+          #   (a) helm upgrade --set replicas=3 regenerates the ConfigMap
+          #       with the full 3-seed list and spawns cyoda-1, cyoda-2.
+          #       cyoda-0 (from initial install at replicas=1) still runs
+          #       with its original 1-seed ConfigMap; its startup log
+          #       read members=1 and is frozen.
+          #   (b) kubectl scale --replicas=0 drops all pods while the
+          #       chart's values, ConfigMap, and Secrets persist. (We
+          #       use kubectl scale rather than helm --set replicas=0
+          #       because values.schema.json enforces minimum: 1 — a
+          #       sensible production constraint that the CI test
+          #       legitimately needs to bypass.)
+          #   (c) kubectl scale --replicas=3 respawns all three pods
+          #       simultaneously (podManagementPolicy: Parallel). Each
+          #       picks up the current ConfigMap (3-seed list), joins
+          #       the others during its stability window, and logs
+          #       members=3 at startup.
           helm upgrade cyoda deploy/helm/cyoda \
             -n cyoda --reuse-values --set replicas=3 \
             --wait --timeout 5m
+          kubectl -n cyoda scale statefulset/cyoda --replicas=0
+          kubectl -n cyoda wait --for=delete pod/cyoda-0 --timeout=60s || true
+          kubectl -n cyoda wait --for=delete pod/cyoda-1 --timeout=60s || true
+          kubectl -n cyoda wait --for=delete pod/cyoda-2 --timeout=60s || true
+          kubectl -n cyoda scale statefulset/cyoda --replicas=3
           kubectl -n cyoda rollout status statefulset/cyoda --timeout=5m
           for i in 0 1 2; do
             kubectl -n cyoda wait --for=condition=ready pod/cyoda-$i --timeout=120s
           done
-
-          # Give the stability window (2s default) room to elapse and
-          # the one-shot startup log to flush for all three pods.
+          # Stability window (2s default) + flush.
           sleep 5
           for i in 0 1 2; do
             if ! kubectl -n cyoda logs cyoda-$i | grep -q '"members":3'; then
