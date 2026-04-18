@@ -124,12 +124,22 @@ monitoring:
     interval: 30s
     labels: {}
 
-# -- Optional NetworkPolicy. Restricts admin-port ingress to declared
-# namespaces (e.g., the Prometheus namespace) and gossip-port ingress
-# to chart-managed pods. Requires a CNI that enforces NetworkPolicy.
+# -- NetworkPolicy. Restricts admin-port (9091) ingress to declared
+# namespaces (typically just the Prometheus namespace) and gossip-port
+# (7946) ingress to chart-managed pods. Default ON as defense in depth
+# alongside the bearer-authenticated /metrics — even if the bearer
+# leaks, the NetworkPolicy keeps the scrape surface from any pod.
+# REQUIRES a CNI that enforces NetworkPolicy (Calico, Cilium, Weave);
+# kindnet and some managed defaults do not. Operators on such a CNI
+# should set enabled=false to avoid a silent false-sense-of-security.
+# metricsFromNamespaces must be non-empty when enabled — set to the
+# namespace labels of your monitoring namespace, e.g.
+# [{matchLabels: {kubernetes.io/metadata.name: monitoring}}]
 networkPolicy:
-  enabled: false
-  metricsFromNamespaces: []
+  enabled: true
+  metricsFromNamespaces:
+    - matchLabels:
+        kubernetes.io/metadata.name: monitoring
 
 migrate:
   activeDeadlineSeconds: 600

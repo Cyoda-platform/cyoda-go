@@ -65,6 +65,36 @@ helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
 The chart auto-generates the secret (or use
 `bootstrap.clientSecret.existingSecret` for GitOps).
 
+### NetworkPolicy (default ON)
+
+The chart ships with `networkPolicy.enabled=true`. This restricts port
+9091 (`/livez`/`/readyz`/`/metrics`) ingress to namespaces the operator
+declares in `networkPolicy.metricsFromNamespaces`, and restricts
+gossip-port (7946) ingress to the chart's own pods. Defense in depth
+alongside the bearer-gated `/metrics`: even if the scrape credential
+leaks, scrape attempts from unauthorised namespaces don't reach the
+pod at all.
+
+Default `metricsFromNamespaces` points at a namespace labelled
+`kubernetes.io/metadata.name: monitoring` — the
+kube-prometheus-stack default. Override if your monitoring stack lives
+elsewhere:
+
+```yaml
+networkPolicy:
+  enabled: true
+  metricsFromNamespaces:
+    - matchLabels:
+        kubernetes.io/metadata.name: prometheus-system
+```
+
+**If your CNI does not enforce NetworkPolicy** (kindnet, default EKS
+without a secondary CNI, some on-prem setups) the rendered policy is a
+no-op. Set `networkPolicy.enabled=false` explicitly in that case —
+shipping with a rendered policy that doesn't actually restrict traffic
+is a false-sense-of-security footgun. The bearer on `/metrics` is the
+active guardrail there.
+
 ### Metrics scraping and `/metrics` authentication
 
 The chart ships with `CYODA_METRICS_REQUIRE_AUTH=true` so the admin

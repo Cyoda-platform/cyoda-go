@@ -42,11 +42,14 @@ that validates the chart on every PR.
      API 1.2 schemas.
    - Layer 2 (chart-affecting PRs + `main`): `ct install` on a kind cluster
      with a Postgres sidecar and Envoy Gateway, smoke test on `/readyz`.
-4. **Ingress-port NetworkPolicy template** (opt-in via
-   `networkPolicy.enabled=true`) that restricts admin-port ingress to
-   operator-declared namespaces and gossip-port ingress to the chart's
-   own pods. Default off, because enforcement requires a CNI that
-   supports NetworkPolicy.
+4. **Ingress-port NetworkPolicy template**, default ON
+   (`networkPolicy.enabled=true`) as defense-in-depth alongside the
+   bearer-gated `/metrics`. Restricts admin-port ingress to
+   operator-declared namespaces (default: namespace labelled
+   `kubernetes.io/metadata.name: monitoring`) and gossip-port ingress
+   to the chart's own pods. Operators on non-enforcing CNIs should
+   explicitly set `networkPolicy.enabled=false` to avoid a silent
+   no-op policy.
 5. **Activation of the two pre-stub release workflows** that already live in
    the repo:
    - `release-chart.yml` — triggered by `cyoda-*` tags, uses
@@ -110,7 +113,7 @@ deploy/helm/cyoda/
     ├── pdb.yaml                # rendered when replicas > 1
     ├── job-migrate.yaml        # pre-install + pre-upgrade hook; runs `cyoda migrate`
     ├── servicemonitor.yaml     # rendered when monitoring.serviceMonitor.enabled=true
-    ├── networkpolicy.yaml      # rendered when networkPolicy.enabled=true
+    ├── networkpolicy.yaml      # rendered when networkPolicy.enabled=true (default on)
     ├── gateway-httproute.yaml  # rendered when gateway.enabled=true
     ├── gateway-grpcroute.yaml  # same
     ├── ingress-http.yaml       # rendered when ingress.enabled=true (transitional path)
@@ -319,22 +322,30 @@ transitional compatibility affordance.
 The README also documents the legacy Ingress topology for operators
 mid-migration, with a pointer to Ingress2Gateway 1.0 for migration tooling.
 
-### NetworkPolicy (optional, v0.1)
+### NetworkPolicy (default ON)
 
-The admin listener binds `0.0.0.0:9091` to make ServiceMonitor scraping
-possible, and it is **unauthenticated by design** per the shared-spec
-probe discipline. That means in a default Kubernetes cluster any pod in
-any namespace can hit `/metrics` on any cyoda pod. Prometheus metrics
-cardinality routinely reveals tenant IDs, user IDs, and schema-change
-timing — a meaningful information-disclosure vector to neighboring
-workloads.
+The admin listener binds `0.0.0.0:9091` so kubelet probes and Prometheus
+scrapes can reach it; `/metrics` is bearer-gated at the application
+layer (§Observability below). NetworkPolicy is the second line of
+defense: even with the bearer enforced, keeping the scrape surface
+namespace-scoped means a token leak doesn't expose `/metrics` across
+the whole cluster, and gossip-port ingress is locked to chart-managed
+pods.
 
-The chart ships an optional `NetworkPolicy` template, off by default,
-enabled via `networkPolicy.enabled=true`. When enabled:
+Default `networkPolicy.enabled=true` with a pre-populated
+`metricsFromNamespaces` pointing at a namespace labelled
+`kubernetes.io/metadata.name: monitoring` (the kube-prometheus-stack
+default). Operators on a non-enforcing CNI (kindnet, default EKS with
+no secondary CNI, etc.) should set `enabled=false` explicitly to avoid
+false-sense-of-security — the rendered policy is a no-op there, and
+making the "my cluster doesn't enforce NetworkPolicy" choice explicit
+is safer than a silent default.
 
-- **Ingress to the `metrics` port (9091) is restricted** to namespaces the
-  operator declares via `networkPolicy.metricsFromNamespaces` — a list of
-  `namespaceSelector` entries. The typical value is
+When enabled:
+
+- **Ingress to the `metrics` port (9091) is restricted** to namespaces
+  declared via `networkPolicy.metricsFromNamespaces` — a list of
+  `namespaceSelector` entries. The default is
   `[{matchLabels: {kubernetes.io/metadata.name: monitoring}}]`.
 - **Ingress to `http` (8080) and `grpc` (9090) is not restricted** — the
   Gateway/Ingress layer is the boundary for application traffic.
@@ -344,12 +355,6 @@ enabled via `networkPolicy.enabled=true`. When enabled:
 - **Egress is not restricted** — cyoda needs reachability to Postgres and
   (via extraEnv) any OTel collector the operator wires in. Fine-grained
   egress is a v0.2 concern.
-
-Off by default because NetworkPolicy enforcement requires a CNI that
-implements it (Calico, Cilium, Weave — not the default kindnet), and
-enabling it without the CNI support gives operators a silent
-false-sense-of-security. Documented as an opt-in with a sentence about
-the CNI prerequisite.
 
 ### Observability
 
