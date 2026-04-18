@@ -122,6 +122,71 @@ jobs:
           fi
           echo "PASS: guard fired as expected."
 
+      - name: helm template — schema rejects empty postgres/jwt existingSecret
+        run: |
+          # Regression guard: empty existingSecret must fail schema validation
+          # (not silently render a StatefulSet that mounts a Secret named "").
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of empty existingSecret; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/postgres/existingSecret"; then
+            echo "FAIL: expected error to name /postgres/existingSecret; got:"
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/jwt/existingSecret"; then
+            echo "FAIL: expected error to name /jwt/existingSecret; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected empty existingSecret."
+
+      - name: helm template — schema rejects gateway+ingress both enabled
+        run: |
+          # Regression guard: the schema (not just a template fail) must
+          # reject gateway.enabled=true with ingress.enabled=true.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set ingress.enabled=true \
+            --set ingress.http.host=cyoda.example.com \
+            --set ingress.grpc.host=grpc.cyoda.example.com \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "FAIL: expected schema rejection of gateway+ingress; got success."
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "schema"; then
+            echo "FAIL: expected schema-level error, got template-level fail:"
+            echo "$output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "/ingress/enabled"; then
+            echo "FAIL: expected error to name /ingress/enabled; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected gateway+ingress both-enabled."
+
   helm-install-smoke:
     name: ct install on kind
     needs: helm-lint-and-validate

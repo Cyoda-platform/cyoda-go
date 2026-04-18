@@ -33,7 +33,7 @@
       "type": "object",
       "required": ["existingSecret", "existingSecretKey"],
       "properties": {
-        "existingSecret": {"type": "string"},
+        "existingSecret": {"type": "string", "minLength": 1},
         "existingSecretKey": {"type": "string", "minLength": 1}
       }
     },
@@ -41,7 +41,7 @@
       "type": "object",
       "required": ["existingSecret", "existingSecretKey"],
       "properties": {
-        "existingSecret": {"type": "string"},
+        "existingSecret": {"type": "string", "minLength": 1},
         "existingSecretKey": {"type": "string", "minLength": 1},
         "issuer": {"type": "string"},
         "expirySeconds": {"type": "integer", "minimum": 60}
@@ -155,13 +155,16 @@
     {
       "if": {
         "properties": {
-          "gateway": {"properties": {"enabled": {"const": true}}},
-          "ingress": {"properties": {"enabled": {"const": true}}}
+          "gateway": {"properties": {"enabled": {"const": true}}}
         },
-        "required": ["gateway", "ingress"]
+        "required": ["gateway"]
       },
       "then": {
-        "errorMessage": "gateway.enabled and ingress.enabled are mutually exclusive — pick one."
+        "properties": {
+          "ingress": {
+            "properties": {"enabled": {"const": false}}
+          }
+        }
       }
     }
   ]
