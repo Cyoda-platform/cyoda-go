@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -28,7 +27,8 @@ func parseMigrateArgs(args []string) (*migrateConfig, error) {
 }
 
 // runMigrate is the entry point for `cyoda migrate`. Returns exit code:
-// 0 on success, non-zero on any error.
+// 0 on success; 1 on runtime error (bad config, DB unreachable, migration
+// failure, timeout); 2 on flag-parse error (Unix convention: misuse).
 //
 // Behavior:
 //   - Loads the same config the server does (via app.DefaultConfig; honors
@@ -70,11 +70,18 @@ func runMigrate(args []string) int {
 }
 
 func runPostgresMigrate(ctx context.Context) int {
-	dsn := getPostgresDSN()
+	dsn, err := app.ResolveSecretEnv("CYODA_POSTGRES_URL")
+	if err != nil {
+		slog.Error("failed to read postgres DSN", "err", err)
+		return 1
+	}
+	if dsn == "" {
+		slog.Error("CYODA_POSTGRES_URL is required for postgres backend")
+		return 1
+	}
 
 	start := time.Now()
-	err := pgMigrate(ctx, dsn)
-	if err != nil {
+	if err := pgMigrate(ctx, dsn); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Error("migration timed out", "err", err)
 			return 1
@@ -87,21 +94,7 @@ func runPostgresMigrate(ctx context.Context) int {
 }
 
 // pgMigrate wraps the postgres plugin's migration entry point.
-// Package-level var so tests can inject a fake if needed.
+// Package-level var so tests can inject a fake without Docker.
 var pgMigrate = func(ctx context.Context, dsn string) error {
 	return pgplugin.RunMigrateWithDSN(ctx, dsn)
-}
-
-// getPostgresDSN reads CYODA_POSTGRES_URL (or CYODA_POSTGRES_URL_FILE) using
-// the same precedence logic as the plugin: _FILE wins when both are set.
-// The DSN value is never logged to avoid leaking credentials.
-func getPostgresDSN() string {
-	if p := os.Getenv("CYODA_POSTGRES_URL_FILE"); p != "" {
-		data, err := os.ReadFile(p)
-		if err == nil {
-			return string(data)
-		}
-		fmt.Fprintf(os.Stderr, "cyoda migrate: failed to read CYODA_POSTGRES_URL_FILE=%q: %v\n", p, err)
-	}
-	return os.Getenv("CYODA_POSTGRES_URL")
 }

@@ -41,7 +41,7 @@ func parseConfig(getenv func(string) string) (config, error) {
 	return cfg, nil
 }
 
-// Mirrors app.resolveSecretEnv (separate go.mod; keep behavior in sync).
+// Mirrors app.ResolveSecretEnv (separate go.mod; keep behavior in sync).
 //
 // resolveSecretWith honours the _FILE suffix pattern using the injected getenv
 // for the var name lookup, and os.ReadFile for the actual file read.

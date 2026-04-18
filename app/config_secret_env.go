@@ -7,8 +7,10 @@ import (
 )
 
 // Mirrors plugins/postgres.resolveSecretWith (separate go.mod; keep behavior in sync).
+// Exported so cmd/cyoda can share the same _FILE resolution (including
+// trailing-whitespace trim) without duplicating the logic.
 //
-// resolveSecretEnv returns the value of the named env var, OR — if that
+// ResolveSecretEnv returns the value of the named env var, OR — if that
 // env var is empty and <name>_FILE is set — reads the value from the
 // file at the path given by <name>_FILE.
 //
@@ -24,7 +26,7 @@ import (
 // Errors: returned only when <name>_FILE points at a path that cannot
 // be read. Silent fallthrough to empty would let a typo'd path look
 // like a missing credential, which is hard to debug.
-func resolveSecretEnv(name string) (string, error) {
+func ResolveSecretEnv(name string) (string, error) {
 	fileVar := name + "_FILE"
 	if path := os.Getenv(fileVar); path != "" {
 		data, err := os.ReadFile(path)
@@ -36,7 +38,7 @@ func resolveSecretEnv(name string) (string, error) {
 	return os.Getenv(name), nil
 }
 
-// mustResolveSecretEnv calls resolveSecretEnv and panics on error.
+// mustResolveSecretEnv calls ResolveSecretEnv and panics on error.
 //
 // Use at startup-time config loading (DefaultConfig) where the binary cannot
 // meaningfully continue if a specified _FILE path is unreadable — the operator
@@ -46,7 +48,7 @@ func resolveSecretEnv(name string) (string, error) {
 //
 // Never call mustResolveSecretEnv on a code path that runs after startup.
 func mustResolveSecretEnv(name string) string {
-	v, err := resolveSecretEnv(name)
+	v, err := ResolveSecretEnv(name)
 	if err != nil {
 		panic(fmt.Sprintf("config: %v", err))
 	}

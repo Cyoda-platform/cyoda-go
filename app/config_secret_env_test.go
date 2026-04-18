@@ -10,7 +10,7 @@ func TestResolveSecretEnv_PlainEnvOnly(t *testing.T) {
 	t.Setenv("TEST_SECRET", "plain-value")
 	t.Setenv("TEST_SECRET_FILE", "")
 
-	got, err := resolveSecretEnv("TEST_SECRET")
+	got, err := ResolveSecretEnv("TEST_SECRET")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestResolveSecretEnv_FileOnly(t *testing.T) {
 	t.Setenv("TEST_SECRET", "")
 	t.Setenv("TEST_SECRET_FILE", path)
 
-	got, err := resolveSecretEnv("TEST_SECRET")
+	got, err := ResolveSecretEnv("TEST_SECRET")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestResolveSecretEnv_FileWinsOverPlain(t *testing.T) {
 	t.Setenv("TEST_SECRET", "from-env")
 	t.Setenv("TEST_SECRET_FILE", path)
 
-	got, err := resolveSecretEnv("TEST_SECRET")
+	got, err := ResolveSecretEnv("TEST_SECRET")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestResolveSecretEnv_FileUnreadable(t *testing.T) {
 	t.Setenv("TEST_SECRET", "")
 	t.Setenv("TEST_SECRET_FILE", "/nonexistent/path/to/secret")
 
-	_, err := resolveSecretEnv("TEST_SECRET")
+	_, err := ResolveSecretEnv("TEST_SECRET")
 	if err == nil {
 		t.Fatal("expected error reading nonexistent file, got nil")
 	}
@@ -74,7 +74,7 @@ func TestResolveSecretEnv_TrimsTrailingWhitespace(t *testing.T) {
 	t.Setenv("TEST_SECRET", "")
 	t.Setenv("TEST_SECRET_FILE", path)
 
-	got, err := resolveSecretEnv("TEST_SECRET")
+	got, err := ResolveSecretEnv("TEST_SECRET")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestResolveSecretEnv_EmptyFileTreatedAsUnset(t *testing.T) {
 	t.Setenv("TEST_SECRET", "")
 	t.Setenv("TEST_SECRET_FILE", path)
 
-	got, err := resolveSecretEnv("TEST_SECRET")
+	got, err := ResolveSecretEnv("TEST_SECRET")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestResolveSecretEnv_NeitherSet(t *testing.T) {
 	t.Setenv("TEST_SECRET", "")
 	t.Setenv("TEST_SECRET_FILE", "")
 
-	got, err := resolveSecretEnv("TEST_SECRET")
+	got, err := ResolveSecretEnv("TEST_SECRET")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

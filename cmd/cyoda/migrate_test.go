@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -72,6 +73,42 @@ func TestRunMigrate_UnknownBackend(t *testing.T) {
 	code := runMigrate(nil)
 	if code == 0 {
 		t.Error("unknown backend should cause non-zero exit")
+	}
+}
+
+// TestRunMigrate_PostgresTimeoutPath verifies the context.DeadlineExceeded
+// branch exits 1 without requiring Docker.
+func TestRunMigrate_PostgresTimeoutPath(t *testing.T) {
+	t.Setenv("CYODA_STORAGE_BACKEND", "postgres")
+	t.Setenv("CYODA_POSTGRES_URL", "postgres://fake@localhost:1/fake")
+
+	orig := pgMigrate
+	t.Cleanup(func() { pgMigrate = orig })
+	pgMigrate = func(ctx context.Context, dsn string) error {
+		return context.DeadlineExceeded
+	}
+
+	code := runMigrate(nil)
+	if code != 1 {
+		t.Errorf("timeout should exit 1; got %d", code)
+	}
+}
+
+// TestRunMigrate_PostgresGenericError verifies a non-timeout migration error
+// exits 1, keeping the generic-error branch distinct from the timeout branch.
+func TestRunMigrate_PostgresGenericError(t *testing.T) {
+	t.Setenv("CYODA_STORAGE_BACKEND", "postgres")
+	t.Setenv("CYODA_POSTGRES_URL", "postgres://fake@localhost:1/fake")
+
+	orig := pgMigrate
+	t.Cleanup(func() { pgMigrate = orig })
+	pgMigrate = func(ctx context.Context, dsn string) error {
+		return errors.New("fake db error")
+	}
+
+	code := runMigrate(nil)
+	if code != 1 {
+		t.Errorf("generic error should exit 1; got %d", code)
 	}
 }
 
