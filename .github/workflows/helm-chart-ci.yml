@@ -116,25 +116,49 @@ jobs:
           grep -q "kind: ServiceMonitor" /tmp/monitoring.yaml
           grep -q "kind: NetworkPolicy" /tmp/monitoring.yaml
 
-      - name: helm template — GitOps safety guard fires when expected
+      - name: helm template — GitOps safety guard fires on HMAC
         run: |
           # Without cluster.hmacSecret.existingSecret AND without live
-          # cluster access (helm template), the guard must fire.
+          # cluster access (helm template), the HMAC guard must fire.
+          # (We pre-set monitoring.metricsBearer.existingSecret so the
+          # metrics-bearer guard doesn't short-circuit this check.)
           set +e
           output=$(helm template cyoda deploy/helm/cyoda \
             --set postgres.existingSecret=test-dsn \
             --set jwt.existingSecret=test-jwt \
+            --set monitoring.metricsBearer.existingSecret=test-mb \
             --set gateway.parentRefs[0].name=test-gw \
             --set gateway.http.hostnames[0]=cyoda.example.com \
             --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
             2>&1)
           set -e
           if ! echo "$output" | grep -q "cluster.hmacSecret.existingSecret is required"; then
-            echo "FAIL: expected GitOps-safety guard to fire; got:"
+            echo "FAIL: expected HMAC GitOps-safety guard to fire; got:"
             echo "$output"
             exit 1
           fi
-          echo "PASS: guard fired as expected."
+          echo "PASS: HMAC guard fired as expected."
+
+      - name: helm template — GitOps safety guard fires on metrics bearer
+        run: |
+          # Same shape for the metrics-bearer guard: no existingSecret
+          # and no live cluster access.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            2>&1)
+          set -e
+          if ! echo "$output" | grep -q "monitoring.metricsBearer.existingSecret is required"; then
+            echo "FAIL: expected metrics-bearer GitOps-safety guard to fire; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: metrics-bearer guard fired as expected."
 
       - name: helm template — schema rejects empty postgres/jwt existingSecret
         run: |
