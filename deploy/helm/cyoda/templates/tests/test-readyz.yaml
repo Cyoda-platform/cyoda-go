@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "cyoda.fullname" . }}-test-readyz
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: curl
+      image: curlimages/curl:8.10.1
+      command:
+        - sh
+        - -c
+        - |
+          set -eux
+          # Hit /readyz via in-cluster DNS on the metrics port.
+          curl -fsS --max-time 5 http://{{ include "cyoda.fullname" . }}:9091/readyz

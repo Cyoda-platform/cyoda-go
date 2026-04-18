@@ -1,0 +1,46 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cyoda.fullname" . }}
+  labels:
+    {{- include "cyoda.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cyoda.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Application traffic: unrestricted at this layer. The Gateway/Ingress
+    # is the boundary.
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+
+    # Metrics scraping: only from operator-declared namespaces (typically
+    # the Prometheus namespace).
+    {{- with .Values.networkPolicy.metricsFromNamespaces }}
+    - from:
+        {{- range . }}
+        - namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      ports:
+        - port: 9091
+          protocol: TCP
+    {{- end }}
+
+    # Gossip: peer-to-peer, only from chart-managed pods.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cyoda.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 7946
+          protocol: TCP
+        - port: 7946
+          protocol: UDP
+{{- end }}
