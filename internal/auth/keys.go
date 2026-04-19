@@ -28,8 +28,11 @@ type keysInfoResponse struct {
 	CreatedAt string `json:"createdAt"`
 }
 
-// ServeHTTP routes key pair management requests.
+// ServeHTTP routes key pair management requests. Requires ROLE_ADMIN.
 func (h *KeysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
 	const basePath = "/oauth/keys/keypair"
 
 	path := r.URL.Path

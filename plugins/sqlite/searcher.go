@@ -22,6 +22,12 @@ var ErrScanBudgetExhausted = errors.New("scan budget exhausted")
 // post-filters the residual in Go. Pagination is applied in SQL when no
 // residual exists, or in Go after post-filtering.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if err := validateFilterPaths(filter); err != nil {
+		return nil, err
+	}
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
+	}
 	plan := planQuery(filter)
 
 	var baseQuery string
