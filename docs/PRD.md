@@ -78,12 +78,15 @@ guarantees:
 - **First-committer-wins on entity-level conflicts** — two transactions
   contending on the same entity: exactly one commits, the other
   aborts with `spi.ErrConflict` and can retry.
-- **No distributed transaction coordinator** — each plugin achieves
-  the contract against its own engine primitives (PostgreSQL
-  `REPEATABLE READ` + row-level locks + commit-time read-set
-  validation; application-layer committed-log tracking in memory /
-  sqlite; proprietary mechanism in the commercial Cassandra plugin).
-  No ZooKeeper, no Paxos, no Raft in the cyoda-go process.
+- **No separate coordination daemon** — cyoda-go does not run its own
+  ZooKeeper, etcd, or Raft cluster for transaction coordination. Open-
+  source plugins achieve the contract against their storage engine's
+  own primitives (PostgreSQL `REPEATABLE READ` + row-level locks +
+  commit-time read-set validation; application-layer committed-log
+  tracking in memory / sqlite). The commercial Cassandra plugin
+  coordinates transactions plugin-internally. In every case the
+  deployment footprint is: cyoda-go + your chosen storage — nothing
+  else to operate.
 
 The uniform contract across backends is a deliberate design choice:
 application code sees the same concurrency semantics regardless of
@@ -339,9 +342,27 @@ Transactions have a configurable TTL (default: 60 seconds, set via `CYODA_TX_TTL
 
 ### Multi-Node Transaction Affinity
 
-In a multi-node cluster, the `pgx.Tx` handle lives in a single node's process memory. The transaction token encodes which node owns the transaction (see Section 9). All subsequent requests for that transaction are routed to the owning node — there is no distributed transaction protocol.
+In a multi-node cluster running the **postgres plugin**, the `pgx.Tx`
+handle lives in a single node's process memory. The transaction token
+encodes which node owns the transaction (see Section 9). All
+subsequent requests for that transaction are routed to the owning
+node — no distributed transaction coordination inside cyoda-go.
 
-If the owning node dies, the transaction dies. PostgreSQL automatically rolls back the connection. The client receives `TRANSACTION_NODE_UNAVAILABLE` and must retry from scratch.
+If the owning node dies, the transaction dies. PostgreSQL
+automatically rolls back the connection. The client receives
+`TRANSACTION_NODE_UNAVAILABLE` and must retry from scratch. Trading
+this failure mode for operational simplicity (no Paxos, no Raft, no
+ZooKeeper in the cyoda-go process) is a deliberate choice — see §9.
+
+The commercial **Cassandra plugin** takes a different approach: the
+plugin coordinates transactions across the cluster, so a transaction
+is not pinned to a single owning node and does not fail when any one
+node becomes unavailable mid-transaction. This removes the
+`TRANSACTION_NODE_UNAVAILABLE` failure mode and is one of the
+operational advantages of the Cassandra plugin over the postgres
+plugin in high-availability deployments. The coordination mechanism
+is plugin-internal; contact [Cyoda](https://www.cyoda.com) for
+architectural details.
 
 ---
 
