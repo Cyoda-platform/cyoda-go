@@ -473,30 +473,95 @@ enforce two invariants:
    `ON_DUTY` and `PENDING_ON_DUTY`. It does **not** call
    `Count`/`CountByState`.
 
-The model:
+#### A.3.1 State diagram
 
-```text
-states:      OFF_DUTY, PENDING_ON_DUTY, ON_DUTY
-transitions: OFF_DUTY        → PENDING_ON_DUTY   (REQUEST_DUTY)
-             PENDING_ON_DUTY → ON_DUTY           (PROMOTE)
-             PENDING_ON_DUTY → OFF_DUTY          (WITHDRAW)
-             ON_DUTY         → OFF_DUTY          (STEP_DOWN)
+There is **no** transition into `ON_DUTY` except `PROMOTE` from
+`PENDING_ON_DUTY`. Creation lands in `OFF_DUTY` only. This is the whole
+point of the fence: the FSM itself forbids the write-skew-enabling
+direct path.
 
-PROMOTE processor (pseudocode):
-  all := entityStore.GetAll(Doctor)              // populates read-set
-  onDuty   := filter(all, state = ON_DUTY)
-  pending  := filter(all, state = PENDING_ON_DUTY)
-  if len(onDuty) >= N: return error("cap reached")
-  // Optional ordering rule to pick a winner deterministically on retry:
-  // require self.id == min(pending.id) or similar.
-  self.state = ON_DUTY
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> OFF_DUTY: CREATE
+    OFF_DUTY --> PENDING_ON_DUTY: REQUEST_DUTY
+    PENDING_ON_DUTY --> OFF_DUTY: WITHDRAW
+    PENDING_ON_DUTY --> ON_DUTY: PROMOTE<br/>(fence: criterion + processor)
+    ON_DUTY --> OFF_DUTY: STEP_DOWN
 ```
 
-The critical step is `GetAll(Doctor)`. On the postgres plugin that call
-walks the entities table and, per
-`plugins/postgres/entity_store.go:232-236`, calls `recordReadIfInTx` for
-every returned row. Every current `Doctor` — whatever its state —
-enters the transaction's read-set with its observed version.
+ASCII equivalent for terminal readers:
+
+```text
+                 CREATE
+                   │
+                   ▼
+              ┌─────────┐   REQUEST_DUTY   ┌──────────────────┐
+              │ OFF_DUTY │ ───────────────▶ │ PENDING_ON_DUTY  │
+              │         │ ◀─────────────── │                  │
+              └─────────┘    WITHDRAW      └──────────────────┘
+                   ▲                                │
+                   │                        PROMOTE │ ← fence here
+                   │ STEP_DOWN                      │   (criterion + processor
+                   │                                │    read all Doctors)
+                   │                                ▼
+                   └──────────────────────── ┌──────────┐
+                                             │ ON_DUTY  │
+                                             └──────────┘
+
+Forbidden paths (enforced by the FSM — no such transitions exist):
+  × CREATE → ON_DUTY          (no direct admit)
+  × OFF_DUTY → ON_DUTY        (must go through PENDING_ON_DUTY)
+  × any path bypassing PROMOTE's criterion/processor
+```
+
+#### A.3.2 Transition table
+
+| Transition    | From              | To                | Criterion        | Processor    |
+|---------------|-------------------|-------------------|------------------|--------------|
+| `CREATE`      | `[*]`             | `OFF_DUTY`        | —                | —            |
+| `REQUEST_DUTY`| `OFF_DUTY`        | `PENDING_ON_DUTY` | —                | —            |
+| `WITHDRAW`    | `PENDING_ON_DUTY` | `OFF_DUTY`        | —                | —            |
+| `PROMOTE`     | `PENDING_ON_DUTY` | `ON_DUTY`         | `promote_ok`     | `promote`    |
+| `STEP_DOWN`   | `ON_DUTY`         | `OFF_DUTY`        | `step_down_ok`   | —            |
+
+#### A.3.3 Criterion and processor pseudocode
+
+The two invariant-bearing callbacks live on `PROMOTE`. Both do an
+**entity-level** read of all peers — `GetAll` on the postgres plugin
+walks the entities table and calls `recordReadIfInTx` for every row
+(`plugins/postgres/entity_store.go:232-236`), so every peer's version
+enters the transaction's read-set.
+
+```text
+criterion promote_ok(self):
+    all := entityStore.GetAll(model = Doctor)   // populates read-set
+    onDuty := [ d for d in all if d.state == ON_DUTY ]
+    return len(onDuty) < N
+
+processor promote(self):
+    all := entityStore.GetAll(model = Doctor)   // populates read-set
+    onDuty  := [ d for d in all if d.state == ON_DUTY ]
+    pending := [ d for d in all if d.state == PENDING_ON_DUTY ]
+    if len(onDuty) >= N:
+        return error("cap reached")
+    // Optional deterministic-winner rule (reduces useless retries
+    // under contention; not required for the fence):
+    //   if self.id != min(d.id for d in pending):
+    //       return error("yield to earlier PENDING candidate")
+    self.state = ON_DUTY
+```
+
+Non-negotiables for the author:
+
+- Use `GetAll` (or an equivalent predicate scan that returns entities).
+  **Never** use `Count` / `CountByState` here — aggregates do not
+  populate the read-set and silently disable the fence.
+- Read then filter. Filter-then-read via a non-transactional pre-fetch
+  shrinks the read-set and lets peers slip past.
+- The criterion's `GetAll` and the processor's `GetAll` hit the same
+  read-set (first-read-wins — `plugins/postgres/txstate.go:58-70`). The
+  redundancy is harmless; collapse to one if preferred.
 
 ### A.4 Why this is a fence — step by step
 
@@ -558,23 +623,76 @@ FCW needs.
 
 ### A.6 The symmetric case: minimum-cap
 
-The invariant "at least one doctor must be `ON_DUTY`" uses the same
-structure in reverse. Introduce a `STEPPING_DOWN` state. The transition
-`STEPPING_DOWN → OFF_DUTY` carries a processor that reads all doctors,
-confirms at least one remaining would be in `ON_DUTY` or
-`STEPPING_DOWN` but committing their own step-down, and writes the
-self state.
+The invariant "at least `M` doctors must be `ON_DUTY`" uses the same
+structure in reverse. Introduce a `STEPPING_DOWN` state. `ON_DUTY`
+exits only through `STEPPING_DOWN`; `STEPPING_DOWN → OFF_DUTY` carries
+the fence criterion/processor.
 
-Two doctors concurrently stepping down from `ON_DUTY` each capture the
-other in the read-set (peer is `ON_DUTY`), each writes their own
-entity. One commits; the other aborts on read-set validation because
-the peer's `ON_DUTY → STEPPING_DOWN` or `STEPPING_DOWN → OFF_DUTY`
-write landed first. The user retries, re-evaluates the criterion, and
-now sees correctly that dropping below 1 would violate the invariant.
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> OFF_DUTY: CREATE
+    OFF_DUTY --> PENDING_ON_DUTY: REQUEST_DUTY
+    PENDING_ON_DUTY --> OFF_DUTY: WITHDRAW
+    PENDING_ON_DUTY --> ON_DUTY: PROMOTE<br/>(max-cap fence)
+    ON_DUTY --> STEPPING_DOWN: REQUEST_STEP_DOWN
+    STEPPING_DOWN --> ON_DUTY: CANCEL_STEP_DOWN
+    STEPPING_DOWN --> OFF_DUTY: STEP_DOWN<br/>(min-cap fence)
+```
 
-The `STEPPING_DOWN` intermediate state is the symmetric mirror of
-`PENDING_ON_DUTY`: it serialises the conflict through a read-before-write
-point where peer entities are observable.
+ASCII equivalent:
+
+```text
+ CREATE
+   │
+   ▼
+┌─────────┐ REQUEST_DUTY ┌──────────────┐  PROMOTE   ┌──────────┐
+│OFF_DUTY │─────────────▶│PENDING_ON_DTY│───────────▶│ ON_DUTY  │
+│         │◀─────────────│              │            │          │
+└─────────┘   WITHDRAW   └──────────────┘            └──────────┘
+   ▲                                                       │
+   │                                                       │ REQUEST_STEP_DOWN
+   │ STEP_DOWN (min-cap fence)                             ▼
+   │                                                 ┌──────────────┐
+   └──────────────────────────────────────────────── │STEPPING_DOWN │
+                                                     │              │
+                                                     └──────────────┘
+                                                           ▲
+                                                           │ CANCEL_STEP_DOWN
+                                                           │ (back to ON_DUTY)
+
+Forbidden paths (enforced by the FSM):
+  × ON_DUTY → OFF_DUTY direct        (must pass STEPPING_DOWN)
+  × STEPPING_DOWN → OFF_DUTY without criterion   (no such transition)
+```
+
+Criterion and processor pseudocode:
+
+```text
+criterion step_down_ok(self):
+    all := entityStore.GetAll(model = Doctor)   // populates read-set
+    // Peer count of doctors who will still be ON_DUTY or
+    // STEPPING_DOWN after this transition. Self is excluded since
+    // we're leaving the set.
+    remaining := [
+        d for d in all
+        if d.id != self.id and d.state in (ON_DUTY, STEPPING_DOWN)
+    ]
+    return len(remaining) >= M
+```
+
+Two doctors concurrently invoking `STEP_DOWN`:
+
+- Each `GetAll` captures the other in the read-set (both were `ON_DUTY`
+  or `STEPPING_DOWN` at the respective snapshots).
+- Each writes its own entity (own state → `OFF_DUTY`).
+- First committer wins. Second's `ValidateReadSet` observes peer has
+  moved and returns `spi.ErrConflict`. The retry re-reads the now-
+  depleted set and the criterion correctly rejects dropping below `M`.
+
+The `STEPPING_DOWN` intermediate state mirrors `PENDING_ON_DUTY`: it
+serialises the conflict through a read-before-write point where peer
+entities are observable.
 
 ### A.7 Residual phantoms the fence does NOT close
 
