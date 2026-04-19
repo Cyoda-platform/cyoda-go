@@ -22,10 +22,15 @@ func TestMain(m *testing.M) {
 		println("FATAL: fixture setup failed:", err.Error())
 		os.Exit(1)
 	}
-	defer teardown()
 
 	sharedFixture = fix
-	os.Exit(m.Run())
+	// os.Exit skips deferred calls, so teardown must run before Exit —
+	// otherwise the cyoda subprocess (which inherits the test binary's
+	// stderr) survives, `go test` waits its WaitDelay for child I/O to
+	// close, and the package is marked FAIL even after PASS is printed.
+	code := m.Run()
+	teardown()
+	os.Exit(code)
 }
 
 func TestParity(t *testing.T) {
