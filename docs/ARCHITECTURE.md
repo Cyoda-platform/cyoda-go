@@ -438,6 +438,16 @@ Tags are updated whenever a compute member joins or leaves a node. The update is
 
 This handles simultaneous startup of all nodes. Memberlist is self-healing and merges transient split clusters before the stability window elapses.
 
+In Kubernetes deployments, `BindAddr` is `0.0.0.0` (all interfaces)
+while seeds are pod DNS names (e.g.
+`cyoda-0.cyoda-headless.cyoda.svc.cluster.local:7946`). Because the
+string-level comparison `0.0.0.0:7946 != <dns-name>:7946` never
+matches, no pod filters itself out. This is intentional: the Helm
+chart's ConfigMap emits every pod's DNS name in the seed list so
+every pod has real peers (at least N-1 non-self) to join. At
+`replicas=1`, the single pod's seed list effectively reduces to
+itself and it proceeds as a cluster of one.
+
 **Failure detection:** Automatic via SWIM protocol. Dead nodes are evicted from the membership list within seconds. No manual intervention required.
 
 **Graceful leave:** `Deregister()` calls `list.Leave(5s)` then `list.Shutdown()`, giving peers time to update their membership views.
@@ -455,6 +465,17 @@ type Claims struct {
 ```
 
 Token format: `base64url(json_payload).base64url(hmac_sha256(json_payload, secret))`
+
+`CYODA_HMAC_SECRET` is hex-encoded bytes by convention (the Helm
+chart's generated secret is a 64-char hex string decoded to 32 raw
+bytes); the binary's `envHexFromSecret` decodes hex if valid,
+falling back to raw bytes otherwise. Transaction tokens use
+base64url for both the JSON payload and the HMAC signature:
+`base64url(json_payload).base64url(hmac_sha256(json_payload, secret))`.
+Inter-node dispatch authentication uses a hex-encoded HMAC in the
+`X-Dispatch-HMAC` header — *not* base64. The distinction matters: a
+client or peer-forwarding handler that encodes the dispatch HMAC
+as base64url will be rejected.
 
 The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- address resolution is a local scan over `list.Members()`.
 
@@ -529,6 +550,10 @@ Three strategy interfaces, each with a default implementation:
    - HMAC-SHA256 signed body (X-Dispatch-HMAC header)
    - Peer deserializes, calls its own local dispatch, returns result
 ```
+
+Dispatch forwarding reuses a shared `http.Transport` (`MaxIdleConns: 20`,
+`MaxIdleConnsPerHost: 5`, timeout via `CYODA_DISPATCH_FORWARD_TIMEOUT`,
+default 30s) across all peer requests.
 
 **Internal dispatch endpoints:**
 
@@ -811,8 +836,13 @@ The workflow engine (`internal/domain/workflow/Engine`) implements a finite stat
 
 A `WorkflowDefinition` contains:
 - **States:** Named states (e.g., `NEW`, `PROCESSING`, `DONE`).
-- **Transitions:** Named edges between states, each with:
-  - `type`: `AUTOMATIC` or `MANUAL`
+- **Transitions:** Named edges between states, each with two boolean
+  flags — `Manual: bool` (true means operator-initiated only) and
+  `Disabled: bool` (true removes the edge). A transition is
+  *automatic* when `Manual == false && Disabled == false`; these fire
+  on state entry when criteria match. The cascade logic in
+  `internal/domain/workflow/engine.go:434` skips any transition where
+  `tr.Disabled || tr.Manual`. Each transition also carries:
   - `criteria`: Optional conditions (predicate or function) that must be satisfied.
   - `processors`: Ordered list of processors executed when the transition fires.
 - **Initial state:** The starting state for new entities.
@@ -828,7 +858,7 @@ Three entry points into the engine:
 
 ### 5.3 Cascade Logic
 
-After any transition fires, the engine cascades: it scans all `AUTOMATIC` transitions from the new state and fires the first whose criteria match. This continues until no automatic transition matches or a safety limit is hit.
+After any transition fires, the engine cascades: it scans all automatic transitions (i.e. where `Manual == false && Disabled == false`) from the new state and fires the first whose criteria match. This continues until no automatic transition matches or a safety limit is hit.
 
 **Loop protection:**
 
@@ -847,7 +877,7 @@ Processors are dispatched via the `ExternalProcessingService` SPI. In multi-node
 
 ### 5.5 Audit Trail
 
-The engine records state machine events to `StateMachineAuditStore` throughout execution. 13 event types:
+The engine records state machine events to `StateMachineAuditStore` throughout execution. 12 event types:
 
 | Event Type | Constant | Meaning |
 |------------|----------|---------|
@@ -861,7 +891,6 @@ The engine records state machine events to `StateMachineAuditStore` throughout e
 | `TRANSITION_MAKE` | `SMEventTransitionMade` | Transition fired |
 | `TRANSITION_NOT_FOUND` | `SMEventTransitionNotFound` | Named transition not in workflow |
 | `TRANSITION_NOT_MATCH_CRITERION` | `SMEventTransitionCriterionNoMatch` | Transition criterion failed |
-| `PROCESS_NOT_MATCH_CRITERION` | `SMEventProcessCriterionNoMatch` | Processor criterion failed |
 | `PAUSE_FOR_PROCESSING` | `SMEventProcessingPaused` | Waiting for async processor |
 | `STATE_PROCESS_RESULT` | `SMEventStateProcessResult` | Processor result received |
 
@@ -871,21 +900,26 @@ The engine records state machine events to `StateMachineAuditStore` throughout e
 
 ### 6.1 CloudEventsService
 
-The gRPC service implements 6 RPCs matching the Cyoda platform:
+The gRPC service is defined in `proto/cyoda/cyoda-cloud-api.proto`
+and exposes six RPCs — one bidirectional stream, four unary, and two
+server-streaming — all carrying `io.cloudevents.v1.CloudEvent` payloads:
 
 ```protobuf
 service CloudEventsService {
-    rpc SendCloudEvent(CloudEvent) returns (CloudEvent);
-    rpc SendCloudEventStream(stream CloudEvent) returns (CloudEvent);
-    rpc ReceiveCloudEventStream(CloudEvent) returns (stream CloudEvent);
-    rpc StartStreaming(stream CloudEvent) returns (stream CloudEvent);
-    rpc SendCloudEvents(stream CloudEvent) returns (CloudEvent);
-    rpc ReceiveCloudEvents(CloudEvent) returns (stream CloudEvent);
+    rpc startStreaming(stream io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+    rpc entityModelManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+    rpc entityManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+    rpc entityManageCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+    rpc entitySearch(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+    rpc entitySearchCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
 }
-
 ```
 
-`StartStreaming` is the primary RPC -- a bidirectional stream used for the full member lifecycle.
+`startStreaming` is the primary RPC — a bidirectional stream used for
+the full calculation-member lifecycle (join, greet, keep-alive, dispatch,
+response, leave). The unary and server-streaming RPCs carry the entity
+management, model management, and search CloudEvent types enumerated in
+§6.5.
 
 ### 6.2 Member Lifecycle
 
@@ -923,7 +957,13 @@ When the member responds, the streaming handler matches the response's `requestI
 
 **Model management:** `EntityModelImportRequest/Response`, `EntityModelExportRequest/Response`, `EntityModelTransitionRequest/Response`, `EntityModelDeleteRequest/Response`, `EntityModelGetAllRequest/Response`
 
-**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `SnapshotCancelRequest`, `SnapshotGetRequest`, `SnapshotGetStatusRequest`, `EntitySearchRequest`, `EntityStatsGetRequest/Response`, `EntityStatsByStateGetRequest/Response`, `EntityChangesMetadataGetRequest/Response`
+**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `EntitySearchRequest`, `EntityStatsGetRequest/EntityStatsResponse`, `EntityStatsByStateGetRequest/EntityStatsByStateResponse`, `EntityChangesMetadataGetRequest/EntityChangesMetadataResponse`
+
+**Snapshot lifecycle (no dedicated response CloudEvent type):**
+`SnapshotCancelRequest`, `SnapshotGetRequest`, `SnapshotGetStatusRequest`
+are one-way request events; replies are carried on the generic
+`EntityResponse` / `EventAckResponse` envelopes rather than dedicated
+`*Response` types. See `internal/grpc/cloudevent_types.go`.
 
 ---
 
@@ -966,11 +1006,46 @@ This is critical for multi-node clusters: all nodes sharing the same RSA private
 
 **OBO (On-Behalf-Of) exchange:** A compute member authenticated via M2M credentials can exchange its token for an OBO token carrying the original user's tenant and identity. This allows CRUD callbacks to carry the correct authorization context.
 
-**Bootstrap M2M client:** Optionally created at startup via `CYODA_BOOTSTRAP_CLIENT_ID`. Secret is either provided via `CYODA_BOOTSTRAP_CLIENT_SECRET` or auto-generated and printed to stdout.
+**Bootstrap M2M client:** Bootstrap M2M client creation is opt-in. In
+`jwt` mode, `CYODA_BOOTSTRAP_CLIENT_ID` and
+`CYODA_BOOTSTRAP_CLIENT_SECRET` must be set together (both present) or
+both left empty. Half-configured states are rejected at startup with an
+error naming the missing variable (see
+`app/app.go:validateBootstrapConfig`). When set, the bootstrap M2M
+client is created at startup and can be used to mint access tokens. In
+`mock` mode, both variables are ignored. The Helm chart provisions the
+secret via a chart-managed Kubernetes Secret with a GitOps-safety guard.
 
 ### 7.3 Authorization
 
 Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC streaming endpoint enforces `ROLE_M2M` for calculation members.
+
+### 7.4 Admin listener authentication
+
+The admin listener (`/livez`, `/readyz`, `/metrics` on
+`CYODA_ADMIN_PORT`, default `9091`) is served separately from the
+main API listener and has its own authentication policy:
+
+- **`/livez` and `/readyz`** are always unauthenticated. Kubelet
+  probes carry no bearer token; authenticating these endpoints
+  would break the standard readiness contract.
+- **`/metrics`** is optionally bearer-gated. When
+  `CYODA_METRICS_BEARER` (or `CYODA_METRICS_BEARER_FILE`) is
+  non-empty, a request must carry `Authorization: Bearer <token>`
+  and the token must match (constant-time compare) or the request
+  receives `401 Unauthorized`.
+- **`CYODA_METRICS_REQUIRE_AUTH=true`** is a coupled-predicate
+  safety: if set true but `CYODA_METRICS_BEARER` is empty, startup
+  fails with a fatal error naming the missing variable. Protects
+  against "I thought I turned auth on" misconfiguration.
+
+The canonical Helm chart binds the admin listener to `0.0.0.0`
+(kubelet probes and Prometheus scraping reach the pod-facing
+interface) and sets `CYODA_METRICS_REQUIRE_AUTH=true` with a
+chart-managed bearer secret projected into the pod via a
+projected-volume `_FILE` mount. Defense in depth: bind-address +
+bearer + NetworkPolicy restricting :9091 ingress to the monitoring
+namespace.
 
 ---
 
@@ -1024,11 +1099,14 @@ In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`), internal error details 
 | `ENTITY_NOT_FOUND` | Requested entity does not exist |
 | `VALIDATION_FAILED` | Entity data fails model schema validation |
 | `TRANSITION_NOT_FOUND` | Named transition not in workflow |
+| `WORKFLOW_NOT_FOUND` | No workflow matches the entity / model context |
 | `WORKFLOW_FAILED` | Workflow engine error |
 | `CONFLICT` | Optimistic concurrency conflict (retryable) |
+| `EPOCH_MISMATCH` | Operation targeted a stale model epoch (model has been re-locked since) |
 | `BAD_REQUEST` | Malformed request |
 | `UNAUTHORIZED` | Missing or invalid credentials |
 | `FORBIDDEN` | Insufficient permissions |
+| `NOT_IMPLEMENTED` | Feature is reachable but not yet implemented |
 | `SERVER_ERROR` | Internal server error (with ticket) |
 
 **Cluster errors:**
@@ -1050,6 +1128,24 @@ In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`), internal error details 
 | `DISPATCH_TIMEOUT` | Dispatch response not received in time |
 | `COMPUTE_MEMBER_DISCONNECTED` | Compute member stream closed during dispatch |
 
+**Transaction errors:**
+
+| Code | Meaning |
+|------|---------|
+| `TX_REQUIRED` | Operation requires an active transaction but none was present on the context |
+| `TX_CONFLICT` | Commit-time serialization failure (first-committer-wins) |
+| `TX_COORDINATOR_NOT_CONFIGURED` | Cluster-mode coordinator features invoked on a binary without cluster enabled |
+| `TX_NO_STATE` | Transaction state missing on context (programmer error or lost coordinator hand-off) |
+
+**Search errors:**
+
+| Code | Meaning |
+|------|---------|
+| `SEARCH_JOB_NOT_FOUND` | Async search job ID unknown (or reaped) |
+| `SEARCH_JOB_ALREADY_TERMINAL` | Cancel/update attempted on a job in a terminal status |
+| `SEARCH_SHARD_TIMEOUT` | Per-shard scan exceeded its budget |
+| `SEARCH_RESULT_LIMIT` | Result set would exceed the configured result limit |
+
 ### 8.4 Warning/Error Accumulation
 
 ```go
@@ -1065,6 +1161,32 @@ Warnings and errors are accumulated in the request context and propagated to the
 
 All values configurable via environment variables with the `CYODA_` prefix. Plugin-specific variables use the plugin's name as a secondary namespace (`CYODA_POSTGRES_*`, `CYODA_SQLITE_*`). Plugin-scoped variables are documented in the per-plugin reference under `docs/plugins/`. `./cyoda --help` on any binary renders the variables for the plugins it ships with — the help text is generated at runtime from the registered plugins' `ConfigVars()`.
 
+### Credential loading (`_FILE` suffix)
+
+Every credential-shaped environment variable accepts a `_FILE`
+variant that reads the value from a file path. Precedence: `_FILE`
+wins if both `<NAME>` and `<NAME>_FILE` are set. Trailing
+whitespace (spaces, tabs, CR, LF) is stripped from file contents,
+so multi-line PEM keys and DSN strings both round-trip cleanly. If
+`<NAME>_FILE` is set to a path that cannot be read, the binary
+fails at startup with the path and error.
+
+Applies to: `CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`,
+`CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET`,
+`CYODA_METRICS_BEARER`. Plugin-scoped credentials are documented in
+the per-plugin reference.
+
+This is the canonical Docker / Kubernetes pattern for wiring
+credentials from Secrets into the process without exposing them in
+`env` output. Reference implementation: `app/config_secret_env.go`
+`ResolveSecretEnv`.
+
+### Profiles
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_PROFILES` | (none) | Comma-separated list of profile names; loads `.env` then `.env.<profile>` in declaration order. Shell environment always wins over file values. Example: `CYODA_PROFILES=postgres,otel`. |
+
 ### Server
 
 | Variable | Default | Description |
@@ -1074,6 +1196,30 @@ All values configurable via environment variables with the `CYODA_` prefix. Plug
 | `CYODA_ERROR_RESPONSE_MODE` | `sanitized` | `sanitized` or `verbose` (dev only) |
 | `CYODA_MAX_STATE_VISITS` | `10` | Per-state visit limit for cascade loop protection |
 | `CYODA_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `CYODA_STARTUP_TIMEOUT` | `30s` | Deadline for binary startup (plugin factory init, migrations, cluster join). Fatal on expiry. |
+| `CYODA_SUPPRESS_BANNER` | `false` | Suppress the ASCII banner at startup (useful for structured-logging environments). |
+
+### Admin & metrics
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_ADMIN_PORT` | `9091` | Admin listener port (`/livez`, `/readyz`, `/metrics`). |
+| `CYODA_ADMIN_BIND_ADDRESS` | `127.0.0.1` | Admin listener bind address. Helm chart sets `0.0.0.0` so kubelet probes and Prometheus can reach the pod. |
+| `CYODA_METRICS_REQUIRE_AUTH` | `false` | Coupled predicate: if `true` and `CYODA_METRICS_BEARER` is empty, startup fails. |
+| `CYODA_METRICS_BEARER` (with `_FILE` variant) | (none) | Bearer token required on `/metrics` when non-empty. Constant-time compare. |
+
+See §7.4 for the authentication policy on admin endpoints.
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_OTEL_ENABLED` | `false` | Enable OpenTelemetry SDK and `otelhttp` middleware. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (OTel SDK default) | Standard OTel environment variable — honored directly, no cyoda-specific alias. |
+
+The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler`
+(see §11). The initial sampler honors `OTEL_TRACES_SAMPLER` and
+`OTEL_TRACES_SAMPLER_ARG` at startup.
 
 ### Storage — plugin selection
 
@@ -1085,31 +1231,47 @@ Per-store routing is **not supported** — a running binary uses one plugin for 
 
 ### PostgreSQL plugin (`CYODA_STORAGE_BACKEND=postgres`)
 
-Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--help`.
+Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--help`. Full reference: [docs/plugins/POSTGRES.md](plugins/POSTGRES.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_POSTGRES_URL` | (none, **required**) | PostgreSQL connection string |
+| `CYODA_POSTGRES_URL` (with `_FILE` variant) | (none, **required**) | PostgreSQL connection string |
 | `CYODA_POSTGRES_MAX_CONNS` | `25` | Maximum pool connections |
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | Minimum pool connections |
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Max idle time before connection is closed |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations at startup |
+
+### SQLite plugin (`CYODA_STORAGE_BACKEND=sqlite`)
+
+Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--help`. Full reference: [docs/plugins/SQLITE.md](plugins/SQLITE.md).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_SQLITE_PATH` | Platform-specific (see below) | Database file path. |
+| `CYODA_SQLITE_AUTO_MIGRATE` | `true` | Run embedded schema migrations at startup. |
+| `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | SQLite `busy_timeout` pragma. |
+| `CYODA_SQLITE_CACHE_SIZE` | `64000` | SQLite `cache_size` pragma (KiB). |
+| `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows scanned by a predicate-pushed search before it falls back to post-filter. |
+
+Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` with fallback to `~/.local/share/cyoda/cyoda.db`; on Windows, `%LocalAppData%\cyoda\cyoda.db`.
 
 ### IAM
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_IAM_MODE` | `mock` | `mock` (dev) or `jwt` (production) |
-| `CYODA_JWT_SIGNING_KEY` | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
+| `CYODA_JWT_SIGNING_KEY` (with `_FILE` variant) | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token expiry in seconds |
+| `CYODA_REQUIRE_JWT` | `false` | Production safety floor: when `true`, the binary refuses to start unless `CYODA_IAM_MODE=jwt` AND `CYODA_JWT_SIGNING_KEY` is set. Protects against silently shipping a mock-auth deployment. |
+| `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles attached to the default mock user (mock mode only). |
 
 ### Bootstrap
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup |
-| `CYODA_BOOTSTRAP_CLIENT_SECRET` | (none) | M2M client secret (generated if empty) |
+| `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup. Must be set together with `CYODA_BOOTSTRAP_CLIENT_SECRET` or both left empty — half-configured rejected (jwt mode). |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET` (with `_FILE` variant) | (none) | M2M client secret. Required when `CYODA_BOOTSTRAP_CLIENT_ID` is set in jwt mode; ignored in mock mode. |
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client |
 | `CYODA_BOOTSTRAP_USER_ID` | `admin` | User ID for bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
@@ -1136,7 +1298,7 @@ Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--hel
 | `CYODA_TX_REAP_INTERVAL` | `10s` | Frequency of transaction TTL reaper |
 | `CYODA_PROXY_TIMEOUT` | `30s` | HTTP proxy response header timeout |
 | `CYODA_TX_OUTCOME_TTL` | `5m` | How long completed transaction outcomes are retained |
-| `CYODA_HMAC_SECRET` | (none) | Hex-encoded secret for token signing + gossip encryption (required if cluster enabled) |
+| `CYODA_HMAC_SECRET` (with `_FILE` variant) | (none) | Hex-encoded secret for token signing + gossip encryption (required if cluster enabled). See §4.2 for encoding details. |
 | `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | How long to poll for a compute member with matching tags |
 | `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | HTTP timeout for cross-node dispatch forwarding |
 
