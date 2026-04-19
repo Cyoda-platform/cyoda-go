@@ -59,9 +59,16 @@ Scale envelope depends on the active storage plugin:
 
 ### Core Value Proposition
 
-Zero-compromise transactional safety. Every storage plugin delivers
-the same isolation contract: **Snapshot Isolation with
-First-Committer-Wins on entity-level conflicts.** This guarantees:
+Cyoda-Go delivers two properties that are usually traded off against
+each other: **zero-compromise transactional safety** and **immutable
+bi-temporal history at current-read performance**. Both are uniform
+across every storage plugin.
+
+#### 1. Zero-compromise transactional safety
+
+Every storage plugin delivers the same isolation contract: **Snapshot
+Isolation with First-Committer-Wins on entity-level conflicts.** This
+guarantees:
 
 - **Strict read-your-own-writes** — within a transaction, reads always
   reflect prior writes from that transaction, even before commit.
@@ -83,6 +90,43 @@ application code sees the same concurrency semantics regardless of
 which storage plugin is active. See `docs/CONSISTENCY.md` for the
 full contract, the phantom-read caveat, the operational rule for
 workflow authors, and the isolation-level taxonomy.
+
+#### 2. Immutable bi-temporal history as a first-class property
+
+Every mutation to an entity produces an **immutable version**. Prior
+versions are never overwritten and never deleted — soft-delete itself
+is a version in the chain, reversible without data loss. The version
+chain *is* the audit trail; there is no separate audit table that can
+drift from state.
+
+Every version carries two timestamps:
+
+- **`valid_time`** — when the fact was true in the domain.
+- **`transaction_time`** — when the system recorded it.
+
+This bi-temporal model answers both "what did we know, and when?" and
+"what was true, and when?" — the distinction that compliance,
+reconciliation, and historical reporting workloads require. Correcting
+a past fact adds a new version with earlier `valid_time` and current
+`transaction_time`; the original recording remains visible for audit.
+
+**Point-in-time reads run at the same performance class as current
+reads.** Current-state reads are primary-key lookups on a
+materialised `entities` table (one row per live entity). Historical
+reads (`GetAsAt`, `GetAllAsAt`) are indexed seeks against a dedicated
+bi-temporal composite index (`idx_ev_bitemporal` on
+`(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in
+the postgres plugin). Both are constant-time index operations — no
+version-chain scan, no rebuild, no reconstruction from an event log.
+
+This combination — transactional safety with no phantom-wide
+trade-offs, plus audit-grade history with no performance penalty —
+is what an Entity Database Management System is for. Systems that
+bolt on audit trails after the fact typically pay either a write-path
+tax (double-write to an audit table, eventually consistent), a
+read-path tax (reconstruct state from an event log on every historical
+read), or both. Cyoda-Go pays neither: history is the native storage
+model, and the current-state projection is the cache.
 
 ### Cost Model
 
