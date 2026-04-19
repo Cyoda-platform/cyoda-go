@@ -15,9 +15,9 @@ matching the PostgreSQL plugin's search shape.
 ## Concurrency model
 
 Application-layer Snapshot Isolation with First-Committer-Wins
-(SI+FCW), **ported from the memory plugin**. SQLite provides only
-database-level write locking (zero write concurrency); cyoda's SI+FCW
-layer gives entity-level conflict detection on top.
+(SI+FCW). SQLite provides only database-level write locking (zero
+write concurrency); cyoda's SI+FCW layer gives entity-level conflict
+detection on top.
 
 An exclusive `flock` on the database file is acquired at startup and
 held for the process lifetime. A second cyoda process against the
@@ -31,9 +31,9 @@ so the restriction is implicit in choosing SQLite at all.
 
 ## Transaction manager
 
-Same SI+FCW engine as the memory plugin (`TransactionManager` ported
-verbatim; SQLite is the durability layer, not the concurrency
-controller). Reference: `plugins/sqlite/txmanager.go`.
+Application-layer SI+FCW `TransactionManager`; SQLite is the
+durability layer, not the concurrency controller. Reference:
+`plugins/sqlite/txmanager.go`.
 
 ## Data model and schema
 

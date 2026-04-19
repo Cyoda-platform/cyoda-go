@@ -293,13 +293,13 @@ engine's primitives:
 | Plugin | Engine primitives | Handle |
 |--------|-------------------|--------|
 | **memory** | Application-layer committed-log scan; entity-level read set + write set tracking | In-process `Transaction` struct |
-| **sqlite** | Application-layer first-committer-wins (ported from memory); single-writer SQLite transaction under application coordination | In-process coordinator + local `sql.Tx` |
+| **sqlite** | Application-layer first-committer-wins over a single-writer SQLite transaction | In-process coordinator + local `sql.Tx` |
 | **postgres** | PostgreSQL `REPEATABLE READ` + row-level locks + commit-time read-set validation; conflicts surface as `spi.ErrConflict` | In-process lifecycle tracker; `pgx.Tx` held per-statement inside stores |
 | **cassandra** (commercial) | Proprietary mechanism against Cassandra primitives, delivering the same SI+FCW contract | Plugin-managed |
 
-SQLite plugin uses application-layer first-committer-wins ported from
-the memory plugin; the commercial Cassandra plugin implements the
-same contract against its own primitives.
+The memory and sqlite plugins share an application-layer
+first-committer-wins implementation; the commercial Cassandra plugin
+implements the same contract against its own primitives.
 
 ### Transaction Lifecycle
 

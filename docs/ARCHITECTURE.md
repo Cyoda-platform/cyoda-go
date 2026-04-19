@@ -65,7 +65,7 @@ plugins/                  Each plugin is its own Go module
     go.mod                module github.com/cyoda-platform/cyoda-go/plugins/sqlite
     plugin.go             init() → spi.Register; Name() + NewFactory() + ConfigVars()
     store_factory.go      Implements spi.StoreFactory
-    txmanager.go          Application-layer SI+FCW (ported from memory plugin)
+    txmanager.go          Application-layer SI+FCW
     entity_store.go, model_store.go, kv_store.go, message_store.go
     workflow_store.go, sm_audit_store.go, search_store.go
     query_planner.go, searcher.go, post_filter.go  Predicate pushdown to SQL
@@ -261,10 +261,9 @@ detail in [docs/plugins/IN_MEMORY.md](plugins/IN_MEMORY.md).
 
 Persistent, zero-ops single-node storage. Embedded in-process via a
 pure-Go (WASM) SQLite driver, exclusive file lock, application-layer
-SI+FCW concurrency control ported from the memory plugin, search
-predicate pushdown to SQL. Default for desktop binary, edge
-deployments, and containerised single-node production. Full detail in
-[docs/plugins/SQLITE.md](plugins/SQLITE.md).
+SI+FCW concurrency control, search predicate pushdown to SQL. Default
+for desktop binary, edge deployments, and containerised single-node
+production. Full detail in [docs/plugins/SQLITE.md](plugins/SQLITE.md).
 
 ### 2.3 The `postgres` plugin (`plugins/postgres/`)
 
@@ -367,7 +366,7 @@ The property remains load-bearing for the cluster design: see DD-2 in [Section 1
 Each plugin provides its own `TransactionManager` whose semantics match its storage engine — all delivering the same published Snapshot Isolation + first-committer-wins contract (see §3.7 and [docs/CONSISTENCY.md](CONSISTENCY.md)):
 
 - **memory plugin** — in-process SI+FCW with entity-level read/write sets and a committed-transaction log ([docs/plugins/IN_MEMORY.md](plugins/IN_MEMORY.md)).
-- **sqlite plugin** — same SI+FCW engine code as the memory plugin, ported to persist through a SQLite file with an exclusive file lock ([docs/plugins/SQLITE.md](plugins/SQLITE.md)).
+- **sqlite plugin** — application-layer SI+FCW over a SQLite file with an exclusive file lock ([docs/plugins/SQLITE.md](plugins/SQLITE.md)).
 - **postgres plugin** — PostgreSQL `REPEATABLE READ` for the engine-level snapshot, plus application-layer read-set validation at commit time ([docs/plugins/POSTGRES.md](plugins/POSTGRES.md)). The TM assigns IDs, tracks active/committed sets with timestamps, and supports savepoints as a local stack.
 - **Commercial plugins** (e.g. the Cassandra plugin from Cyoda)
   implement their own `TransactionManager` against their underlying
@@ -386,7 +385,7 @@ guarantee does not.
 | Plugin | Engine-level mechanism | Application-layer validation | Effective guarantee | Conflict granularity |
 |---|---|---|---|---|
 | `memory` | n/a — all in-process Go | committed-log + read/write-set tracking | SI+FCW | per-entity |
-| `sqlite` | DB-level write lock | same SI+FCW engine code ported from memory | SI+FCW | per-entity |
+| `sqlite` | DB-level write lock | application-layer SI+FCW | SI+FCW | per-entity |
 | `postgres` | `REPEATABLE READ` + tuple locks | entity-keyed read-set validation at commit; `40001`/`40P01` retry | SI+FCW | per-entity |
 | `cassandra` (commercial) | *(proprietary)* | *(plugin-internal)* | SI+FCW | per-entity |
 
