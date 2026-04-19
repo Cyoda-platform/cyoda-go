@@ -1,0 +1,85 @@
+# `sqlite` storage plugin
+
+## Capabilities
+
+Persistent, zero-ops single-node storage. Embedded in-process via a
+pure-Go (WASM) SQLite driver — no CGO, clean cross-compilation,
+future [sqlite-vec](https://github.com/asg017/sqlite-vec) support. The
+ideal backend for desktop binary users, edge deployments, and
+containerised single-node production.
+
+Search predicate pushdown to SQL — the majority of entity search
+predicates resolve in the SQL engine rather than post-filter in Go,
+matching the PostgreSQL plugin's search shape.
+
+## Concurrency model
+
+Application-layer Serializable Snapshot Isolation (SSI), **ported
+from the memory plugin**. SQLite provides only database-level write
+locking (zero write concurrency); cyoda's SSI gives first-committer-wins
+entity-level conflict detection on top.
+
+An exclusive `flock` on the database file is acquired at startup and
+held for the process lifetime. A second cyoda process against the
+same file fails fast with a clear error. The flock is required
+because the SSI state (committed-log, active-transaction set) is
+per-process — two processes sharing a file would have independent SSI
+and silently corrupt each other's conflict detection.
+
+`flock` does not work on NFS, but SQLite itself is unreliable on NFS,
+so the restriction is implicit in choosing SQLite at all.
+
+## Transaction manager
+
+Same SSI engine as the memory plugin (`TransactionManager` ported
+verbatim; SQLite is the durability layer, not the concurrency
+controller). Reference: `plugins/sqlite/txmanager.go`.
+
+## Data model and schema
+
+Mirrors the PostgreSQL logical schema with SQLite optimisations:
+
+- JSONB columns stored as `BLOB` with `jsonb()` / `json()` functions —
+  2-5× faster `json_extract()` than TEXT JSON. Plugin asserts
+  `sqlite_version() >= 3.45.0` at startup.
+- `STRICT` tables + `WITHOUT ROWID` on append-only tables (e.g.
+  `entity_versions`). The `entities` table keeps its rowid because it
+  is UPSERT-heavy and `WITHOUT ROWID` would rewrite the clustered row
+  on every update.
+- INTEGER timestamps (Unix nanoseconds) — 15-25% smaller, 15-30% faster
+  point lookups than TEXT timestamps.
+
+Migrations via `golang-migrate` with embedded SQL files — same pattern
+as the postgres plugin. Runs automatically on startup when
+`CYODA_SQLITE_AUTO_MIGRATE=true` (the default).
+
+## Configuration (env vars)
+
+| Var | Default | Purpose |
+|---|---|---|
+| `CYODA_SQLITE_PATH` | `$XDG_DATA_HOME/cyoda/cyoda.db` on Linux/macOS (fallback `~/.local/share/cyoda/cyoda.db`); `%LocalAppData%\cyoda\cyoda.db` on Windows | Database file path |
+| `CYODA_SQLITE_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup |
+| `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | Wait time for write lock before returning `SQLITE_BUSY` |
+| `CYODA_SQLITE_CACHE_SIZE` | `64000` (KiB) | Page cache size in KiB |
+| `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows examined per search when a residual filter applies |
+
+## Operational notes and limits
+
+- **No CGO.** Uses [`ncruces/go-sqlite3`](https://github.com/ncruces/go-sqlite3)
+  (WASM-based); ~2-3× slower on micro-benchmarks than native C SQLite.
+  Accepted for clean cross-compile and the sqlite-vec roadmap.
+- **Tenant isolation is application-layer only.** No RLS (SQLite has no
+  native row-level security). Same trust model as the memory plugin.
+- **Single-process, single-node.** See concurrency model for the flock
+  requirement.
+- **NFS unsupported.**
+
+## When to use / when not to use
+
+**Use:** desktop binary users, containerised single-node production,
+embedded deployments, edge devices, any scenario where "memory plugin
+but must survive restart" is the requirement.
+
+**Don't use:** multi-node deployments, multi-process deployments,
+NFS-mounted storage, workloads that need horizontal write scale (go to
+postgres or the commercial cassandra plugin).
