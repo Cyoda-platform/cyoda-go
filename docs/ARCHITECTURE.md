@@ -998,7 +998,7 @@ Full RS256 JWT authentication with JWKS discovery and M2M client support.
 | `InMemoryM2MClientStore` | Machine-to-machine client credentials |
 | `JWKSHandler` | `GET /.well-known/jwks.json` -- standard JWKS endpoint |
 | `TokenHandler` | `POST /oauth/token` -- issues JWTs (client_credentials, OBO exchange) |
-| `JWKSValidator` | Validates JWTs against the JWKS endpoint (with caching) |
+| `JWKSValidator` | Validates JWTs against a `KeySource`: in-process `LocalKeySource` by default (no HTTP fetch), or `HTTPJWKSSource` (TLS 1.3 pinned, JSON content-type validated) for future external-IdP wiring |
 | `DelegatingAuthenticator` | Implements `spi.AuthenticationService`, delegates to validator |
 
 **Deterministic KID derivation:**
