@@ -855,21 +855,6 @@ See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Section 14 for detailed technical 
 
 ---
 
-## 15. Planned Features
-
-Items carried forward from the `cyoda-light-go` predecessor repository that are not yet implemented against the refactored architecture. Issue numbers will be re-opened in the `cyoda-go` repository when each item is scheduled.
-
-| Title | Category | Description |
-|-------|----------|-------------|
-| Commit marker for transaction commit ambiguity resolution | HA Safety (PostgreSQL plugin) | Resolve ambiguity when a node dies after PostgreSQL COMMIT but before responding to the client. Write a commit marker to a separate table inside the transaction; clients can query the marker to determine if their transaction actually committed. |
-| Strict context deadline propagation across flow chain | Performance, HA Safety | Propagate `context.Context` deadlines through the entire flow chain (workflow cascade, processor dispatch, gRPC callbacks). Prevent unbounded execution when upstream has already timed out. |
-| Multi-node cluster E2E test with proxy routing | Test Coverage | End-to-end test exercising the full multi-node flow: client creates entity on node A, processor callback lands on node B, node B proxies to node A, commit succeeds. Validates transaction routing under realistic conditions. |
-| Batch SaveResults with pgx.CopyFrom | Performance (PostgreSQL plugin) | Replace row-by-row INSERT in `SaveResults` with `pgx.CopyFrom` for bulk loading of search job result IDs into PostgreSQL. |
-| Idempotency keys | HA Safety | Client-provided keys to prevent duplicate operations on retry (addresses the client-side commit-ambiguity path). |
-| Conformance test suite (`cyoda-go-spi/spitest/`) | Plugin ecosystem | Shared behavioral conformance harness for any plugin to run against its own `StoreFactory`. |
-
----
-
 ## References
 
 - **Architecture:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)
