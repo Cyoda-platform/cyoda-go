@@ -14,24 +14,24 @@ matching the PostgreSQL plugin's search shape.
 
 ## Concurrency model
 
-Application-layer Serializable Snapshot Isolation (SSI), **ported
-from the memory plugin**. SQLite provides only database-level write
-locking (zero write concurrency); cyoda's SSI gives first-committer-wins
-entity-level conflict detection on top.
+Application-layer Snapshot Isolation with First-Committer-Wins
+(SI+FCW), **ported from the memory plugin**. SQLite provides only
+database-level write locking (zero write concurrency); cyoda's SI+FCW
+layer gives entity-level conflict detection on top.
 
 An exclusive `flock` on the database file is acquired at startup and
 held for the process lifetime. A second cyoda process against the
 same file fails fast with a clear error. The flock is required
-because the SSI state (committed-log, active-transaction set) is
-per-process — two processes sharing a file would have independent SSI
-and silently corrupt each other's conflict detection.
+because the SI+FCW state (committed-log, active-transaction set) is
+per-process — two processes sharing a file would have independent
+conflict-detection state and silently corrupt each other.
 
 `flock` does not work on NFS, but SQLite itself is unreliable on NFS,
 so the restriction is implicit in choosing SQLite at all.
 
 ## Transaction manager
 
-Same SSI engine as the memory plugin (`TransactionManager` ported
+Same SI+FCW engine as the memory plugin (`TransactionManager` ported
 verbatim; SQLite is the durability layer, not the concurrency
 controller). Reference: `plugins/sqlite/txmanager.go`.
 

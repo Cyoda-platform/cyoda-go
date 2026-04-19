@@ -84,9 +84,9 @@ without full predicate locking). No conflict is detected.
 
 In isolation-level terms: cyoda provides **Snapshot Isolation with
 First-Committer-Wins on entity-level conflicts** — not full Serializability.
-This matches the semantic Oracle's `SERIALIZABLE`, SQL Server's `SNAPSHOT`,
-and MySQL InnoDB's `REPEATABLE READ` with commit-time validation deliver.
-It is weaker than PostgreSQL's native `SERIALIZABLE` (Cahill SSI with
+This matches the semantic that Oracle's `SERIALIZABLE` mode (snapshot
+isolation with commit-time read-set validation) delivers. It is weaker
+than PostgreSQL's native `SERIALIZABLE` (Cahill SSI with
 rw-antidependency tracking) on precisely this one anomaly class.
 
 The cyoda postgres plugin deliberately runs at `REPEATABLE READ` and

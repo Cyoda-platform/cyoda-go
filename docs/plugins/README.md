@@ -8,12 +8,13 @@ exactly one active plugin, selected at startup via `CYODA_STORAGE_BACKEND`.
 ## Open-source plugins shipped with the stock binary
 
 - **[`memory`](IN_MEMORY.md)** (default) — ephemeral, microsecond-latency
-  SSI for tests and high-throughput digital-twin workloads.
+  SI+FCW for tests and high-throughput digital-twin workloads.
 - **[`sqlite`](SQLITE.md)** — persistent, zero-ops single-node storage for
   desktop, edge, and containerised single-node production.
-- **[`postgres`](POSTGRES.md)** — durable multi-node storage with SSI via
-  PostgreSQL `SERIALIZABLE`; works against any managed PostgreSQL 14+
-  platform.
+- **[`postgres`](POSTGRES.md)** — durable multi-node storage. PostgreSQL
+  `REPEATABLE READ` plus application-layer first-committer-wins delivers
+  the same SI+FCW contract as the other plugins; works against any
+  managed PostgreSQL 14+ platform.
 
 ## Commercial plugin
 

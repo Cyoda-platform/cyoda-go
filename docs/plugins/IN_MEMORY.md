@@ -5,7 +5,7 @@
 Ephemeral, in-process state — no disk I/O, no network round-trips, no
 query planner on the hot path. The memory plugin's latency profile
 sits an order of magnitude ahead of any persistent backend: a full
-SSI transaction (begin → read-modify-write → commit) completes in
+SI+FCW transaction (begin → read-modify-write → commit) completes in
 the low microseconds rather than the milliseconds a Postgres
 round-trip takes.
 
@@ -15,14 +15,15 @@ workloads** — an agentic software factory where an agent swarm drives
 thousands of scenario executions per second against a behavioural
 twin of a production entity, or a simulation that replays weeks of
 production state-machine behaviour in seconds. Same workflow
-semantics, same FSM engine, same SSI guarantees as the persistent
+semantics, same FSM engine, same SI+FCW guarantees as the persistent
 backends — without the durability trade-off.
 
 ## Concurrency model
 
-The memory plugin implements Serializable Snapshot Isolation (SSI)
-entirely in-process. The concurrency controller is the plugin itself
-— there is no underlying database doing conflict detection.
+The memory plugin implements Snapshot Isolation with
+First-Committer-Wins (SI+FCW) entirely in-process. The concurrency
+controller is the plugin itself — there is no underlying database
+doing conflict detection.
 
 **Locking primitives:**
 
@@ -96,9 +97,9 @@ bounded, not growing without limit.
 
 The memory plugin implements `spi.TransactionManager` directly —
 there is no underlying engine to delegate to, so the plugin IS the
-concurrency controller. The manager owns the per-transaction
-read/write sets and the committed-log window used for conflict
-detection. Reference: `plugins/memory/txmanager.go`.
+concurrency controller for its SI+FCW contract. The manager owns
+the per-transaction read/write sets and the committed-log window
+used for conflict detection. Reference: `plugins/memory/txmanager.go`.
 
 ## Data model and schema
 
