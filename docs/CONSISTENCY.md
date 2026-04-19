@@ -744,3 +744,211 @@ state for the rate-limited transition, and read all peer entities in
 the processor. The cap check then runs against a materialised peer set
 inside the transaction, and FCW converts concurrent violations into
 retryable conflicts.
+
+---
+
+## Appendix B: Scaling the fence — `Doctor` + `DutyRoster`
+
+Appendix A's processor calls `GetAll(Doctor)` on every `PROMOTE` and
+`STEP_DOWN`. That is O(total doctors) work per transition. In a small
+ward it is fine; in a hospital with ten thousand doctors across
+hundreds of shifts it becomes a scan hot path. Appendix B keeps the
+same SI+FCW fence guarantee but makes the contended read O(1).
+
+The idea concretises §5 alternative (a) — "promote the count to a
+materialised counter entity" — for the roster case: keep the roster
+membership in a dedicated `DutyRoster` entity with a well-known ID.
+Every `PROMOTE` / `STEP_DOWN` reads and writes that one entity;
+concurrent transitions collide on it via FCW.
+
+### B.1 Two-entity model
+
+Two entity types participate:
+
+- **`Doctor`** — the same FSM as Appendix A (`OFF_DUTY`,
+  `PENDING_ON_DUTY`, `ON_DUTY`, `STEPPING_DOWN`). Carries identity and
+  doctor-specific attributes.
+- **`DutyRoster`** — a long-lived coordination entity with a
+  deterministic ID (e.g. `"main"`, or one per shift/ward —
+  `"ward-A/shift-night"`). Holds the current membership and the cap.
+
+```text
+Doctor                          DutyRoster (id = "main")
+├─ id                           ├─ id
+├─ name, credentials, ...       ├─ max_cap:      int       // N
+└─ state: OFF_DUTY | PENDING_   ├─ min_cap:      int       // M, may be 0
+         ON_DUTY | ON_DUTY |    ├─ on_duty_ids:  [doctor_id]  (size ≤ max_cap)
+         STEPPING_DOWN          └─ stepping_down_ids: [doctor_id]
+```
+
+`DutyRoster` exists once per ward/shift and is provisioned at tenant
+setup. It has a trivial FSM — a single `ACTIVE` state is sufficient;
+no transition-level workflow is needed on it, only entity-level reads
+and writes from the `Doctor` transitions.
+
+### B.2 Doctor FSM and roster touch-points
+
+The `Doctor` FSM is exactly Appendix A's combined max-cap + min-cap
+diagram (§A.6). What changes is **where** the criterion and processor
+do their work: against the `DutyRoster` entity, not a `GetAll(Doctor)`
+scan.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> OFF_DUTY: CREATE
+    OFF_DUTY --> PENDING_ON_DUTY: REQUEST_DUTY
+    PENDING_ON_DUTY --> OFF_DUTY: WITHDRAW
+    PENDING_ON_DUTY --> ON_DUTY: PROMOTE<br/>(reads/writes DutyRoster)
+    ON_DUTY --> STEPPING_DOWN: REQUEST_STEP_DOWN
+    STEPPING_DOWN --> ON_DUTY: CANCEL_STEP_DOWN
+    STEPPING_DOWN --> OFF_DUTY: STEP_DOWN<br/>(reads/writes DutyRoster)
+```
+
+| Doctor transition    | Reads `DutyRoster` | Writes `DutyRoster`            |
+|----------------------|--------------------|--------------------------------|
+| `CREATE`             | —                  | —                              |
+| `REQUEST_DUTY`       | —                  | —                              |
+| `WITHDRAW`           | —                  | —                              |
+| `PROMOTE`            | yes (get)          | yes (append self.id)           |
+| `REQUEST_STEP_DOWN`  | —                  | —                              |
+| `CANCEL_STEP_DOWN`   | —                  | —                              |
+| `STEP_DOWN`          | yes (get)          | yes (remove self.id)           |
+
+`REQUEST_DUTY`, `WITHDRAW`, `REQUEST_STEP_DOWN`, `CANCEL_STEP_DOWN` do
+not touch the roster. They are local-to-Doctor state changes with no
+invariant at stake. Only the transitions that cross the cap boundary
+go through the shared entity.
+
+### B.3 Criterion and processor pseudocode
+
+```text
+// PROMOTE: PENDING_ON_DUTY → ON_DUTY
+criterion promote_ok(self):
+    roster := entityStore.Get(DutyRoster, rosterIDFor(self))
+    return len(roster.on_duty_ids) < roster.max_cap
+
+processor promote(self):
+    roster := entityStore.Get(DutyRoster, rosterIDFor(self))  // read-set
+    if len(roster.on_duty_ids) >= roster.max_cap:
+        return error("cap reached")
+    roster.on_duty_ids = roster.on_duty_ids + [self.id]
+    entityStore.Save(DutyRoster, roster)                      // write-set
+    self.state = ON_DUTY
+
+// STEP_DOWN: STEPPING_DOWN → OFF_DUTY
+criterion step_down_ok(self):
+    roster := entityStore.Get(DutyRoster, rosterIDFor(self))
+    remaining := len(roster.on_duty_ids) + len(roster.stepping_down_ids)
+                 - 1  // subtract self
+    return remaining >= roster.min_cap
+
+processor step_down(self):
+    roster := entityStore.Get(DutyRoster, rosterIDFor(self))  // read-set
+    roster.on_duty_ids       = remove(roster.on_duty_ids,       self.id)
+    roster.stepping_down_ids = remove(roster.stepping_down_ids, self.id)
+    remaining := len(roster.on_duty_ids) + len(roster.stepping_down_ids)
+    if remaining < roster.min_cap:
+        return error("min-cap violated")
+    entityStore.Save(DutyRoster, roster)                      // write-set
+    self.state = OFF_DUTY
+```
+
+`REQUEST_STEP_DOWN` (`ON_DUTY → STEPPING_DOWN`) and its cancel path
+should also update `stepping_down_ids` on the roster — both are
+membership moves within the cap-relevant set. Mechanically they are
+the same pattern (read `DutyRoster`, mutate the two lists, save). For
+brevity those variants are omitted.
+
+### B.4 Why this is still a fence
+
+Two concurrent `PROMOTE` transactions, both seeing `len(on_duty_ids) =
+cap − 1`:
+
+```text
+T1 (promote Carol):
+  read  DutyRoster@v1 → on_duty_ids=[Alice,Bob], max_cap=3
+  write DutyRoster@v2 (on_duty_ids=[Alice,Bob,Carol])
+  write Carol.state = ON_DUTY
+
+T2 (promote Dave):
+  read  DutyRoster@v1 → on_duty_ids=[Alice,Bob], max_cap=3
+  write DutyRoster@v2 (on_duty_ids=[Alice,Bob,Dave])
+  write Dave.state = ON_DUTY
+```
+
+Both transactions attempt a write to the **same** `DutyRoster` entity.
+Cyoda's entity-level conflict detection resolves this two ways, either
+of which is sufficient:
+
+- **Write-write at DML time** (postgres): whichever transaction's
+  `UPDATE` on the `DutyRoster` row reaches the engine first takes the
+  tuple-exclusive lock. The second `UPDATE` blocks on that lock; when
+  the first commits, the second raises `40001`
+  (`could not serialize access due to concurrent update`) → mapped to
+  `spi.ErrConflict`.
+- **Read-set validation at commit** (all plugins): the loser read
+  `DutyRoster@v1`, but the winner committed `DutyRoster@v2`.
+  `ValidateReadSet` (`plugins/postgres/txstate.go:116`) finds the
+  mismatch and returns `spi.ErrConflict`.
+
+One succeeds; the other retries. On retry it re-reads the roster, sees
+the cap now full, and its criterion returns `false`. No scan required.
+
+### B.5 Cost comparison
+
+Per `PROMOTE` / `STEP_DOWN` transaction:
+
+| Approach                       | Entities in read-set | Entities in write-set |
+|--------------------------------|----------------------|-----------------------|
+| Appendix A (`GetAll(Doctor)`)  | total Doctor count   | `{self, DutyRoster?}` → `{self}` |
+| Appendix B (`DutyRoster`)      | `{DutyRoster}`       | `{self, DutyRoster}`  |
+
+Appendix A scales O(total doctors). Appendix B scales O(1) —
+independent of how many doctors exist in the tenant.
+
+The read-set size matters for commit cost: on postgres the commit
+phase runs `SELECT ... FOR SHARE` across the read-set
+(`plugins/postgres/commit_validator.go`); a large read-set means a
+large validation query.
+
+### B.6 Sharding to avoid global contention
+
+The price of Appendix B is that every promotion in a ward funnels
+through one entity. That is correct behaviour — it is precisely the
+serialisation the invariant requires — but it means a single
+`DutyRoster` is a contention point for the whole ward.
+
+Two mitigations, both natural in the entity model:
+
+- **Partition by scope.** Use `DutyRoster` per ward, per shift, or per
+  speciality, whichever matches the business-level invariant. The cap
+  is usually scoped anyway ("at most 3 on duty **per ward**"); the
+  roster should be scoped to match. Promotions in different wards
+  contend on different `DutyRoster` entities and proceed in parallel.
+
+  ```text
+  rosterIDFor(doctor) = "ward-" + doctor.ward + "/shift-" + doctor.shift
+  ```
+
+- **Accept expected retry rate.** Under realistic promotion rates
+  (human operators, not machine-driven), contention on a single
+  per-ward roster is low. `spi.ErrConflict` → HTTP `409 retryable` is
+  the correct API-level signal; the client retries and succeeds on the
+  next snapshot.
+
+The fence itself does not change; only the sharding key does.
+
+### B.7 When to pick A vs B
+
+- **Appendix A** is the right starting point when the roster is small
+  (tens of doctors per tenant) and the ops rate is low. It has no
+  extra entity to provision or migrate; the membership is reconstructible
+  from `Doctor` state alone.
+- **Appendix B** is the right starting point when rosters are large
+  or ops rates are high, or when the roster itself is a user-visible
+  concept ("who is on duty right now?") — that single read is already
+  natural to surface through the API.
+
+Both use the same fence; neither depends on Cahill SSI. The choice is
+a cost trade-off, not a correctness trade-off.
