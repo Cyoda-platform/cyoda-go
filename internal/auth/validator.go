@@ -1,28 +1,22 @@
 package auth
 
 import (
-	"crypto/rsa"
-	"encoding/json"
 	"fmt"
-	"io"
-	"math/big"
-	"net/http"
 	"sync"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// JWKSValidator validates JWT tokens by fetching public keys from a JWKS endpoint.
+// JWKSValidator validates JWT tokens against a KeySource. The transport —
+// in-process lookup, HTTPS JWKS fetch, or any future alternative — is pluggable
+// behind KeySource; the validator itself only owns issuer, audience, and claims
+// validation.
 type JWKSValidator struct {
-	jwksURL   string
-	issuer    string
-	audience  string
-	cache     map[string]*rsa.PublicKey
-	lastFetch time.Time
-	cacheTTL  time.Duration
-	mu        sync.RWMutex
-	client    *http.Client
+	source   KeySource
+	issuer   string
+	mu       sync.RWMutex
+	audience string
 }
 
 // SetExpectedAudience configures the audience value that tokens must
@@ -40,15 +34,19 @@ func (v *JWKSValidator) SetExpectedAudience(aud string) {
 	v.audience = aud
 }
 
-// NewJWKSValidator creates a new JWKSValidator that fetches keys from jwksURL.
+// NewValidatorFromSource returns a JWKSValidator that resolves keys via the
+// given KeySource. This is the preferred constructor — callers decide where
+// keys come from (in-process, external JWKS, etc).
+func NewValidatorFromSource(src KeySource, issuer string) *JWKSValidator {
+	return &JWKSValidator{source: src, issuer: issuer}
+}
+
+// NewJWKSValidator creates a validator backed by an HTTPS JWKS endpoint with
+// TLS 1.3 pinned, 10s request timeout, and the given cache TTL. Preserved as
+// a convenience for tests and for future external-IdP wiring; in-process
+// callers should use NewValidatorFromSource with NewLocalKeySource.
 func NewJWKSValidator(jwksURL, issuer string, cacheTTL time.Duration) *JWKSValidator {
-	return &JWKSValidator{
-		jwksURL:  jwksURL,
-		issuer:   issuer,
-		cache:    make(map[string]*rsa.PublicKey),
-		cacheTTL: cacheTTL,
-		client:   &http.Client{Timeout: 10 * time.Second},
-	}
+	return NewValidatorFromSource(NewHTTPJWKSSource(jwksURL, cacheTTL), issuer)
 }
 
 // Validate parses and validates a JWT token string, returning a UserContext on success.
@@ -67,9 +65,9 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 		return nil, fmt.Errorf("missing kid in token header")
 	}
 
-	publicKey, err := v.getKey(kid)
+	publicKey, err := v.source.GetKey(kid)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve key for kid %q: %w", kid, err)
 	}
 
 	if err := Verify(parsed.SigningInput, parsed.Signature, publicKey); err != nil {
@@ -100,101 +98,6 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	}
 
 	return uc, nil
-}
-
-// getKey retrieves the public key for the given kid, refreshing the cache if needed.
-func (v *JWKSValidator) getKey(kid string) (*rsa.PublicKey, error) {
-	v.mu.RLock()
-	key, found := v.cache[kid]
-	stale := time.Since(v.lastFetch) > v.cacheTTL
-	v.mu.RUnlock()
-
-	if found && !stale {
-		return key, nil
-	}
-
-	// Cache miss or stale — refresh
-	if err := v.refreshCache(); err != nil {
-		return nil, fmt.Errorf("failed to refresh JWKS cache: %w", err)
-	}
-
-	v.mu.RLock()
-	key, found = v.cache[kid]
-	v.mu.RUnlock()
-
-	if !found {
-		return nil, fmt.Errorf("kid %q not found in JWKS", kid)
-	}
-
-	return key, nil
-}
-
-// refreshCache fetches the JWKS endpoint and updates the key cache.
-func (v *JWKSValidator) refreshCache() error {
-	resp, err := v.client.Get(v.jwksURL)
-	if err != nil {
-		return fmt.Errorf("JWKS fetch failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("JWKS endpoint returned status %d", resp.StatusCode)
-	}
-
-	// Limit response body to 1 MB to prevent OOM from misconfigured/compromised endpoints.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Errorf("failed to read JWKS response: %w", err)
-	}
-
-	keys, err := parseJWKSResponse(body)
-	if err != nil {
-		return fmt.Errorf("failed to parse JWKS response: %w", err)
-	}
-
-	v.mu.Lock()
-	v.cache = keys
-	v.lastFetch = time.Now()
-	v.mu.Unlock()
-
-	return nil
-}
-
-// parseJWKSResponse parses a JWKS JSON response into a map of kid to RSA public keys.
-func parseJWKSResponse(body []byte) (map[string]*rsa.PublicKey, error) {
-	var jwks struct {
-		Keys []struct {
-			Kty string `json:"kty"`
-			KID string `json:"kid"`
-			N   string `json:"n"`
-			E   string `json:"e"`
-		} `json:"keys"`
-	}
-	if err := json.Unmarshal(body, &jwks); err != nil {
-		return nil, fmt.Errorf("invalid JWKS JSON: %w", err)
-	}
-
-	result := make(map[string]*rsa.PublicKey, len(jwks.Keys))
-	for _, k := range jwks.Keys {
-		if k.KID == "" || k.Kty != "RSA" {
-			continue
-		}
-		nBytes, err := decodeBase64URL(k.N)
-		if err != nil {
-			return nil, fmt.Errorf("invalid base64url for n (kid=%s): %w", k.KID, err)
-		}
-		eBytes, err := decodeBase64URL(k.E)
-		if err != nil {
-			return nil, fmt.Errorf("invalid base64url for e (kid=%s): %w", k.KID, err)
-		}
-
-		n := new(big.Int).SetBytes(nBytes)
-		e := int(new(big.Int).SetBytes(eBytes).Int64())
-
-		result[k.KID] = &rsa.PublicKey{N: n, E: e}
-	}
-
-	return result, nil
 }
 
 // buildUserContext extracts user information from JWT claims.

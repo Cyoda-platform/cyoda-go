@@ -183,9 +183,10 @@ func New(cfg Config) *App {
 		if err != nil {
 			panic(fmt.Sprintf("failed to create auth service: %v", err))
 		}
-		contextPath := strings.TrimRight(cfg.ContextPath, "/")
-		jwksURL := fmt.Sprintf("http://localhost:%d%s/.well-known/jwks.json", cfg.HTTPPort, contextPath)
-		validator := auth.NewJWKSValidator(jwksURL, authSvc.Issuer(), 5*time.Minute)
+		// The built-in IAM holds its signing keys in-process, so the validator
+		// reads public keys directly from the local key store. No loopback JWKS
+		// fetch, no HTTP client, no attack surface on that path.
+		validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(authSvc.KeyStore()), authSvc.Issuer())
 		if cfg.IAM.JWTAudience != "" {
 			validator.SetExpectedAudience(cfg.IAM.JWTAudience)
 		}
