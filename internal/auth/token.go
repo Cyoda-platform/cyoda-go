@@ -123,6 +123,11 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if err := EnsureAlgRS256(parsed.Header); err != nil {
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unsupported token algorithm")
+		return
+	}
+
 	kid, _ := parsed.Header["kid"].(string)
 	if kid == "" {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "missing kid in subject token")

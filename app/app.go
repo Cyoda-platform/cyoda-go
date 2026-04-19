@@ -186,6 +186,9 @@ func New(cfg Config) *App {
 		contextPath := strings.TrimRight(cfg.ContextPath, "/")
 		jwksURL := fmt.Sprintf("http://localhost:%d%s/.well-known/jwks.json", cfg.HTTPPort, contextPath)
 		validator := auth.NewJWKSValidator(jwksURL, authSvc.Issuer(), 5*time.Minute)
+		if cfg.IAM.JWTAudience != "" {
+			validator.SetExpectedAudience(cfg.IAM.JWTAudience)
+		}
 		a.authService = auth.NewDelegatingAuthenticator(validator)
 
 		// Bootstrap M2M client if configured.

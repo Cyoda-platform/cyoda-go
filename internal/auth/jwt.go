@@ -91,6 +91,30 @@ func Verify(signingInput string, signature []byte, publicKey *rsa.PublicKey) err
 	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], signature)
 }
 
+// EnsureAlgRS256 rejects tokens whose header does not explicitly declare
+// alg=RS256. This blocks two classic JWT attacks:
+//
+//   - alg:"none" — a token with an empty signature; naive validators that
+//     trust the header and skip verification accept it.
+//   - alg:"HS256" — algorithm confusion; an attacker signs with HMAC using
+//     the RSA public key as the shared secret, and a validator that
+//     switches on alg hands the public key to the HMAC verifier.
+//
+// Our signature path always computes SHA256/RS256 regardless of header,
+// so the attacks do not succeed today; this guard fails fast with a clear
+// message and prevents future refactors from accidentally introducing
+// alg-driven dispatch.
+func EnsureAlgRS256(header map[string]any) error {
+	alg, ok := header["alg"].(string)
+	if !ok {
+		return fmt.Errorf("missing alg in token header")
+	}
+	if alg != "RS256" {
+		return fmt.Errorf("unsupported alg %q: only RS256 is accepted", alg)
+	}
+	return nil
+}
+
 // ValidateClaims checks exp and iat claims.
 func ValidateClaims(claims map[string]any, clockSkew time.Duration) error {
 	now := time.Now()

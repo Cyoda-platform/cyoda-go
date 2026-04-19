@@ -22,11 +22,13 @@ type DispatchForwarder interface {
 
 // HTTPForwarder implements DispatchForwarder over HTTP with HMAC-SHA256 authentication.
 type HTTPForwarder struct {
-	hmacSecret []byte
-	client     *http.Client
+	hmacSecret    []byte
+	client        *http.Client
+	allowLoopback bool
 }
 
 // NewHTTPForwarder constructs an HTTPForwarder with the given HMAC secret and request timeout.
+// Loopback peer addresses are rejected by default; see AllowLoopbackForTesting.
 func NewHTTPForwarder(hmacSecret []byte, timeout time.Duration) *HTTPForwarder {
 	return &HTTPForwarder{
 		hmacSecret: hmacSecret,
@@ -41,8 +43,22 @@ func NewHTTPForwarder(hmacSecret []byte, timeout time.Duration) *HTTPForwarder {
 	}
 }
 
+// AllowLoopbackForTesting opts the forwarder out of the loopback SSRF
+// guard so unit and integration tests can target an httptest.Server on
+// 127.0.0.1. Link-local, unspecified, and multicast addresses are still
+// rejected. Never call this in production — it re-opens the SSRF pivot
+// the guard was written to close. Returns the receiver for fluent use
+// at construction sites: `NewHTTPForwarder(...).AllowLoopbackForTesting()`.
+func (f *HTTPForwarder) AllowLoopbackForTesting() *HTTPForwarder {
+	f.allowLoopback = true
+	return f
+}
+
 // ForwardProcessor POSTs a processor dispatch request to the peer at addr and returns the response.
 func (f *HTTPForwarder) ForwardProcessor(ctx context.Context, addr string, req *DispatchProcessorRequest) (*DispatchProcessorResponse, error) {
+	if err := validatePeerAddress(addr, f.allowLoopback); err != nil {
+		return nil, err
+	}
 	var resp DispatchProcessorResponse
 	if err := f.forward(ctx, ensureScheme(addr)+"/internal/dispatch/processor", req, &resp); err != nil {
 		return nil, err
@@ -52,6 +68,9 @@ func (f *HTTPForwarder) ForwardProcessor(ctx context.Context, addr string, req *
 
 // ForwardCriteria POSTs a criteria dispatch request to the peer at addr and returns the response.
 func (f *HTTPForwarder) ForwardCriteria(ctx context.Context, addr string, req *DispatchCriteriaRequest) (*DispatchCriteriaResponse, error) {
+	if err := validatePeerAddress(addr, f.allowLoopback); err != nil {
+		return nil, err
+	}
 	var resp DispatchCriteriaResponse
 	if err := f.forward(ctx, ensureScheme(addr)+"/internal/dispatch/criteria", req, &resp); err != nil {
 		return nil, err

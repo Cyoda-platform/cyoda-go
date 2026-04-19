@@ -80,7 +80,7 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second)
+	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
 	resp, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardProcessor: %v", err)
@@ -113,7 +113,7 @@ func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second)
+	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
 	resp, err := f.ForwardCriteria(context.Background(), srv.URL, makeCriteriaReq())
 	if err != nil {
 		t.Fatalf("ForwardCriteria: %v", err)
@@ -128,7 +128,7 @@ func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 
 func TestHTTPForwarder_PeerUnreachable(t *testing.T) {
 	// localhost:1 is guaranteed unreachable (privileged port, never listening)
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 2*time.Second)
+	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 2*time.Second).AllowLoopbackForTesting()
 
 	_, err := f.ForwardProcessor(context.Background(), "http://localhost:1", makeProcessorReq())
 	if err == nil {
@@ -157,7 +157,7 @@ func TestHTTPForwarder_HMACSignature(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder(secret, 5*time.Second)
+	f := dispatch.NewHTTPForwarder(secret, 5*time.Second).AllowLoopbackForTesting()
 	_, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardProcessor: %v", err)
@@ -185,7 +185,7 @@ func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
 	// Strip the "http://" from the test server URL to simulate gossip NODE_ADDR
 	addrWithoutScheme := srv.Listener.Addr().String() // e.g., "127.0.0.1:PORT"
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second)
+	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
 	resp, err := f.ForwardProcessor(context.Background(), addrWithoutScheme, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardProcessor with schemeless addr should work: %v", err)
@@ -201,7 +201,7 @@ func TestHTTPForwarder_PeerReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second)
+	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
 	_, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")

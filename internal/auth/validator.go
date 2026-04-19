@@ -17,11 +17,27 @@ import (
 type JWKSValidator struct {
 	jwksURL   string
 	issuer    string
+	audience  string
 	cache     map[string]*rsa.PublicKey
 	lastFetch time.Time
 	cacheTTL  time.Duration
 	mu        sync.RWMutex
 	client    *http.Client
+}
+
+// SetExpectedAudience configures the audience value that tokens must
+// carry in their aud claim. An empty string disables the check (matches
+// pre-hardening behaviour). When set, tokens with a non-matching or
+// missing aud are rejected. The check accepts aud as either a string
+// or a JSON array of strings (RFC 7519 §4.1.3).
+//
+// This is a setter rather than a constructor argument so existing
+// callers without an audience configured continue to build, and so
+// production wiring can opt-in via CYODA_JWT_AUDIENCE at startup.
+func (v *JWKSValidator) SetExpectedAudience(aud string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.audience = aud
 }
 
 // NewJWKSValidator creates a new JWKSValidator that fetches keys from jwksURL.
@@ -40,6 +56,10 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	parsed, err := Parse(tokenString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
+	}
+
+	if err := EnsureAlgRS256(parsed.Header); err != nil {
+		return nil, err
 	}
 
 	kid, ok := parsed.Header["kid"].(string)
@@ -63,6 +83,15 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	iss, _ := parsed.Claims["iss"].(string)
 	if iss != v.issuer {
 		return nil, fmt.Errorf("untrusted token issuer")
+	}
+
+	v.mu.RLock()
+	audience := v.audience
+	v.mu.RUnlock()
+	if audience != "" {
+		if err := checkAudience(parsed.Claims["aud"], audience); err != nil {
+			return nil, err
+		}
 	}
 
 	uc, err := v.buildUserContext(parsed.Claims)
@@ -199,6 +228,38 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 		},
 		Roles: roles,
 	}, nil
+}
+
+// checkAudience verifies that the token's aud claim contains the expected
+// audience. RFC 7519 §4.1.3 permits aud to be a single string or an array
+// of strings; both forms are accepted here.
+func checkAudience(claim any, expected string) error {
+	if claim == nil {
+		return fmt.Errorf("missing aud claim (required: %q)", expected)
+	}
+	switch v := claim.(type) {
+	case string:
+		if v == expected {
+			return nil
+		}
+		return fmt.Errorf("aud mismatch: token carries %q, want %q", v, expected)
+	case []any:
+		for _, a := range v {
+			if s, ok := a.(string); ok && s == expected {
+				return nil
+			}
+		}
+		return fmt.Errorf("aud array does not include required audience %q", expected)
+	case []string:
+		for _, s := range v {
+			if s == expected {
+				return nil
+			}
+		}
+		return fmt.Errorf("aud array does not include required audience %q", expected)
+	default:
+		return fmt.Errorf("aud claim has unsupported type %T", claim)
+	}
 }
 
 // extractStringSlice converts a claim value to []string, handling both []interface{} and []string.

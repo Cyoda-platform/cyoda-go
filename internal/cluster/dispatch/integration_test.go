@@ -44,7 +44,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second)
+		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
 		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second)
 
 		ctx := testContext()
@@ -77,7 +77,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second)
+		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
 		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second)
 
 		ctx := testContext()
@@ -109,7 +109,7 @@ func TestIntegration_ClusterDispatch_NoMemberTimeout(t *testing.T) {
 		},
 	}
 	selector := NewRandomSelector()
-	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second)
+	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second).AllowLoopbackForTesting()
 
 	const waitTimeout = 300 * time.Millisecond
 	d := NewClusterDispatcher(local, registry, "node-a", selector, forwarder, waitTimeout)

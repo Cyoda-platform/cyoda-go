@@ -114,7 +114,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 	}
 	registry := &stubNodeRegistry{}
 	selector := NewRandomSelector()
-	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second)
+	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second).AllowLoopbackForTesting()
 
 	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
 
@@ -183,7 +183,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second)
+		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
 
 		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
 
@@ -215,7 +215,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second)
+		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
 
 		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
 
@@ -240,7 +240,7 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 		},
 	}
 	selector := NewRandomSelector()
-	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second)
+	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second).AllowLoopbackForTesting()
 
 	// Use a very short wait timeout so the test completes quickly.
 	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 500*time.Millisecond)
