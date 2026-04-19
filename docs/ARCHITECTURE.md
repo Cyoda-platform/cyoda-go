@@ -292,6 +292,12 @@ as the open-source plugins — operators select it at runtime via
 - Append-only point-in-time storage with full historical reads
 - No single points of failure
 - Multi-node consistency
+- **Cluster-coordinated transactions** — transactions are not pinned
+  to a single owning cyoda-go node. A transaction survives the
+  unavailability of individual cluster nodes mid-flight, eliminating
+  the `TRANSACTION_NODE_UNAVAILABLE` failure mode that the postgres
+  plugin exposes under node affinity (see §4 Multi-Node Routing and
+  PRD §4 Multi-Node Transaction Affinity)
 
 **When it fits:** workloads whose write volume or availability
 requirements outgrow a single-primary PostgreSQL deployment — while
