@@ -387,3 +387,242 @@ A short checklist:
 The commercial Cassandra plugin's own design document (shipped with the
 proprietary binary) captures the same semantic contract with the same
 §5 operational rule, verbatim.
+
+---
+
+## Appendix A: Worked example — the Doctor On-Call Roster
+
+The Doctor On-Call Roster is the classic write-skew teaching example. It
+is instructive for cyoda because it shows, concretely, how the
+state-machine discipline turns a predicate anti-dependency (which SI+FCW
+does not catch) into an entity-level read/write conflict (which it does).
+
+### A.1 The invariant and the naive failure
+
+A hospital has an on-call roster. The invariant for this appendix:
+
+> **At most `N` doctors may be ON_DUTY at any one time.**
+
+(The symmetric "at least one must be ON_DUTY" works the same way;
+A.6 addresses it briefly.)
+
+Naive model: a `Doctor` entity with two states, `OFF_DUTY` and `ON_DUTY`.
+The promotion transition `OFF_DUTY → ON_DUTY` carries a criterion that
+counts current ON_DUTY doctors and rejects if the cap would be exceeded.
+
+```text
+transition PROMOTE:
+  from:      OFF_DUTY
+  to:        ON_DUTY
+  criterion: Count(Doctor where state = ON_DUTY) < N
+```
+
+Two concurrent transactions, each promoting a different doctor, both
+start before either commits:
+
+```text
+Initial: Alice, Bob ON_DUTY (count = 2). Cap N = 3. Carol, Dave OFF_DUTY.
+
+T1: promote Carol to ON_DUTY
+    Count(ON_DUTY) = 2 at snapshot → 2 < 3 → criterion passes
+    write Carol @ state = ON_DUTY
+
+T2: promote Dave to ON_DUTY
+    Count(ON_DUTY) = 2 at snapshot → 2 < 3 → criterion passes
+    write Dave @ state = ON_DUTY
+
+T1 commits. T2 commits. Final: 4 ON_DUTY. Invariant violated.
+```
+
+This is the phantom case from §7.3, expressed at the workflow level.
+
+### A.2 Why SI+FCW does not catch it out of the box
+
+Under cyoda's contract (§1), FCW triggers when a transaction's read-set
+intersects a concurrent committer's write-set. In the naive design:
+
+- T1's read-set contains `{Alice, Bob}` (the ON_DUTY doctors Count
+  would surface) — but the postgres plugin's `Count` does not populate
+  the read-set at all: it is an aggregate with no per-row identity, and
+  `plugins/postgres/entity_store.go:376` documents that exclusion
+  explicitly.
+- T1's write-set contains `{Carol}`.
+- T2's read-set (if populated) would be the same `{Alice, Bob}`; its
+  write-set is `{Dave}`.
+
+Read-sets and write-sets are entity-identity-disjoint across T1 and T2.
+Nothing for FCW to latch onto. Both commit. The predicate "how many
+ON_DUTY doctors exist" is not an entity — it is a count over a range —
+and the snapshot neither of T1 nor of T2 saw the other's addition
+because the addition didn't exist at their respective `Begin`.
+
+### A.3 The workflow fence: `PENDING_ON_DUTY`
+
+Introduce a third state, `PENDING_ON_DUTY`, and make the workflow
+enforce two invariants:
+
+1. **All admissions go through `PENDING_ON_DUTY` first.** A `Doctor`
+   entity can only enter `ON_DUTY` from `PENDING_ON_DUTY`, never
+   directly from `OFF_DUTY` or from creation. Enforced by the FSM: no
+   transition `OFF_DUTY → ON_DUTY` exists; there is only
+   `OFF_DUTY → PENDING_ON_DUTY` and `PENDING_ON_DUTY → ON_DUTY`.
+2. **The promotion processor reads every peer candidate by entity, not
+   by aggregate.** The `PENDING_ON_DUTY → ON_DUTY` transition's
+   processor calls `entityStore.GetAll(Doctor)` (or an equivalent that
+   returns individual entities) and filters in-memory for states
+   `ON_DUTY` and `PENDING_ON_DUTY`. It does **not** call
+   `Count`/`CountByState`.
+
+The model:
+
+```text
+states:      OFF_DUTY, PENDING_ON_DUTY, ON_DUTY
+transitions: OFF_DUTY        → PENDING_ON_DUTY   (REQUEST_DUTY)
+             PENDING_ON_DUTY → ON_DUTY           (PROMOTE)
+             PENDING_ON_DUTY → OFF_DUTY          (WITHDRAW)
+             ON_DUTY         → OFF_DUTY          (STEP_DOWN)
+
+PROMOTE processor (pseudocode):
+  all := entityStore.GetAll(Doctor)              // populates read-set
+  onDuty   := filter(all, state = ON_DUTY)
+  pending  := filter(all, state = PENDING_ON_DUTY)
+  if len(onDuty) >= N: return error("cap reached")
+  // Optional ordering rule to pick a winner deterministically on retry:
+  // require self.id == min(pending.id) or similar.
+  self.state = ON_DUTY
+```
+
+The critical step is `GetAll(Doctor)`. On the postgres plugin that call
+walks the entities table and, per
+`plugins/postgres/entity_store.go:232-236`, calls `recordReadIfInTx` for
+every returned row. Every current `Doctor` — whatever its state —
+enters the transaction's read-set with its observed version.
+
+### A.4 Why this is a fence — step by step
+
+Now replay the scenario. Carol and Dave start in `PENDING_ON_DUTY`, not
+`OFF_DUTY`.
+
+```text
+Initial: Alice, Bob ON_DUTY. Carol, Dave PENDING_ON_DUTY. Cap N = 3.
+
+T1: PROMOTE Carol
+    GetAll → {Alice@v, Bob@v, Carol@v, Dave@v} all enter read-set
+    onDuty = {Alice, Bob}; pending = {Carol, Dave}
+    len(onDuty)=2 < 3 → criterion passes
+    write Carol @ state=ON_DUTY  (Carol promoted from read-set to write-set)
+    T1 commit snapshot: read-set = {Alice, Bob, Dave}, write-set = {Carol}
+
+T2: PROMOTE Dave
+    GetAll → {Alice@v, Bob@v, Carol@v, Dave@v} all enter read-set
+    onDuty = {Alice, Bob}; pending = {Carol, Dave}
+    len(onDuty)=2 < 3 → criterion passes
+    write Dave @ state=ON_DUTY
+    T2 commit snapshot: read-set = {Alice, Bob, Carol}, write-set = {Dave}
+```
+
+Compare read-sets to concurrent write-sets:
+
+- `T1.readSet ∩ T2.writeSet = {Alice,Bob,Dave} ∩ {Dave} = {Dave}` — non-empty.
+- `T2.readSet ∩ T1.writeSet = {Alice,Bob,Carol} ∩ {Carol} = {Carol}` — non-empty.
+
+Whichever commits first wins; the other's `ValidateReadSet` finds the
+peer it observed has been modified and returns `spi.ErrConflict`. FCW
+has transformed what was a predicate-level anti-dependency into a
+concrete entity-level read/write conflict it can see.
+
+The mechanism is exactly what `plugins/postgres/txstate.go:116-129`
+describes: at commit, every entity in the read-set is checked against
+its latest committed version; any mismatch aborts.
+
+### A.5 What the two invariants are buying
+
+Each invariant plugs a specific leak.
+
+**Invariant 1 (all admissions through `PENDING_ON_DUTY`)** exists
+because a blind direct insert in `ON_DUTY` — `create Doctor with
+state=ON_DUTY` — is a *new* entity. It does not exist at any concurrent
+transaction's snapshot, so it cannot enter their read-sets. Two
+concurrent blind inserts, each reading `Count(ON_DUTY) < N`, both
+commit. The `PENDING_ON_DUTY` pre-registration makes every candidate a
+discoverable entity in the transaction system *before* its promotion
+becomes visible, so concurrent promotion transactions see each other's
+candidates as peers in their read-sets.
+
+**Invariant 2 (entity-level read, not aggregate)** exists because `Count`
+and `CountByState` do not populate the read-set. An author who writes
+`if CountByState(Doctor, [ON_DUTY]).sum() < N` inside a criterion gets
+the exact naive-failure mode from A.1 even with `PENDING_ON_DUTY` in
+the model. `GetAll`-and-filter preserves the per-entity identity that
+FCW needs.
+
+### A.6 The symmetric case: minimum-cap
+
+The invariant "at least one doctor must be `ON_DUTY`" uses the same
+structure in reverse. Introduce a `STEPPING_DOWN` state. The transition
+`STEPPING_DOWN → OFF_DUTY` carries a processor that reads all doctors,
+confirms at least one remaining would be in `ON_DUTY` or
+`STEPPING_DOWN` but committing their own step-down, and writes the
+self state.
+
+Two doctors concurrently stepping down from `ON_DUTY` each capture the
+other in the read-set (peer is `ON_DUTY`), each writes their own
+entity. One commits; the other aborts on read-set validation because
+the peer's `ON_DUTY → STEPPING_DOWN` or `STEPPING_DOWN → OFF_DUTY`
+write landed first. The user retries, re-evaluates the criterion, and
+now sees correctly that dropping below 1 would violate the invariant.
+
+The `STEPPING_DOWN` intermediate state is the symmetric mirror of
+`PENDING_ON_DUTY`: it serialises the conflict through a read-before-write
+point where peer entities are observable.
+
+### A.7 Residual phantoms the fence does NOT close
+
+The fence is only as strong as invariants 1 and 2. Specific residuals:
+
+- **Creation that bypasses `PENDING_ON_DUTY`.** If the API surface
+  allows a doctor to be created directly with `state=ON_DUTY` (whether
+  via admin tooling, import, or a badly modelled FSM), the pre-existing
+  promotion transactions cannot see that new entity until it commits,
+  and the fence is bypassed. The FSM must prohibit this transition;
+  import and administrative paths must too.
+- **Workflow author calls `CountByState` instead of `GetAll`.** Silent
+  bypass — the criterion passes, no read-set is populated. Enforceable
+  by code review and the §5 operational rule.
+- **Criterion reads a subset of candidates.** If the processor filters
+  the `GetAll` results before recording reads (e.g., by using a
+  non-transactional pre-fetch), the read-set shrinks and peers outside
+  the filter fall through. Always read then filter; never filter then
+  read.
+
+### A.8 On the "workflow fence" framing
+
+The draft article's framing — that a well-modelled workflow "fences"
+against write-skew without needing Cahill SSI — is correct **for
+cyoda's isolation model** provided the two invariants in A.3 hold. The
+mechanics:
+
+- Workflows materialise peer candidates as identifiable entities
+  (invariant 1).
+- Workflow processors read those peers by entity, not by aggregate
+  (invariant 2).
+- Entity-level reads populate the read-set; FCW at commit enforces
+  entity-level conflicts.
+- The result is the same serialisable outcome Cahill SSI would give,
+  but obtained through application-layer structure rather than
+  b-tree-page-granular engine-level dependency tracking.
+
+This is not a universal claim about workflows and databases — it is a
+specific claim about what cyoda's SI+FCW contract delivers when the
+workflow author observes §5 and follows the pattern in this appendix.
+Workloads that cannot be modelled this way (ad-hoc predicate analytics
+over uncoordinated entity sets, for instance) should use one of the
+alternatives in §5.
+
+The pattern generalises. Any invariant of the form "at most N entities
+of type X in state Y" or "at least M entities of type X in state Y"
+admits an analogous fence: introduce a pending/stepping intermediate
+state for the rate-limited transition, and read all peer entities in
+the processor. The cap check then runs against a materialised peer set
+inside the transaction, and FCW converts concurrent violations into
+retryable conflicts.
