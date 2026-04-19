@@ -19,7 +19,7 @@ import (
 //  4. Call DispatchProcessor on Node A's ClusterDispatcher.
 //  5. Verify the result comes from the peer (forwarded successfully).
 func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
-	hmacSecret := []byte("integration-hmac-secret")
+	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
 
 	t.Run("processor_full_flow", func(t *testing.T) {
 		// Node B: local dispatcher returns peer-processed result.
@@ -29,7 +29,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 				Data: []byte(`{"result":"from-peer-processor"}`),
 			},
 		}
-		handler := &DispatchHandler{local: nodeBLocal, hmacSecret: hmacSecret}
+		handler := NewDispatchHandler(nodeBLocal, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		nodeBServer := httptest.NewServer(mux)
@@ -44,7 +44,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
+		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second)
 
 		ctx := testContext()
@@ -62,7 +62,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 		nodeBLocal := &stubDispatcher{
 			criteriaResult: true,
 		}
-		handler := &DispatchHandler{local: nodeBLocal, hmacSecret: hmacSecret}
+		handler := NewDispatchHandler(nodeBLocal, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		nodeBServer := httptest.NewServer(mux)
@@ -77,7 +77,7 @@ func TestIntegration_ClusterDispatch_FullFlow(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
+		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 		d := NewClusterDispatcher(nodeALocal, registry, "node-a", selector, forwarder, 2*time.Second)
 
 		ctx := testContext()
@@ -109,7 +109,8 @@ func TestIntegration_ClusterDispatch_NoMemberTimeout(t *testing.T) {
 		},
 	}
 	selector := NewRandomSelector()
-	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second).AllowLoopbackForTesting()
+	timeoutAuth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
+	forwarder := NewHTTPForwarder(timeoutAuth, 5*time.Second).AllowLoopbackForTesting()
 
 	const waitTimeout = 300 * time.Millisecond
 	d := NewClusterDispatcher(local, registry, "node-a", selector, forwarder, waitTimeout)

@@ -479,10 +479,16 @@ bytes); the binary's `envHexFromSecret` decodes hex if valid,
 falling back to raw bytes otherwise. Transaction tokens use
 base64url for both the JSON payload and the HMAC signature:
 `base64url(json_payload).base64url(hmac_sha256(json_payload, secret))`.
-Inter-node dispatch authentication uses a hex-encoded HMAC in the
-`X-Dispatch-HMAC` header — *not* base64. The distinction matters: a
-client or peer-forwarding handler that encodes the dispatch HMAC
-as base64url will be rejected.
+
+Inter-node dispatch authentication uses AEAD (AES-256-GCM) over an
+HKDF-SHA256-derived key (info string `"cyoda-dispatch-v1"`), which
+separates the dispatch key from the raw gossip-encryption secret
+despite both being derived from the same `CYODA_HMAC_SECRET`. Wire
+format is `[nonce(12) || ciphertext||tag]` with Content-Type
+`application/cyoda-dispatch-v1`; `X-Dispatch-Timestamp` is bound as
+associated data along with HTTP method and path, preventing
+cross-endpoint and timestamp-strip replays. A bounded, TTL-evicted
+nonce cache rejects replays within the 30s skew window.
 
 The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- address resolution is a local scan over `list.Members()`.
 
@@ -554,8 +560,9 @@ Three strategy interfaces, each with a default implementation:
 3. Forward to selected peer:
    HTTPForwarder.ForwardProcessor(ctx, peer.Addr, request)
    - POST to http://peer/internal/dispatch/processor
-   - HMAC-SHA256 signed body (X-Dispatch-HMAC header)
-   - Peer deserializes, calls its own local dispatch, returns result
+   - AES-256-GCM AEAD envelope over the request body
+     (Content-Type: application/cyoda-dispatch-v1)
+   - Peer verifies envelope, decrypts, calls local dispatch, returns result
 ```
 
 Dispatch forwarding reuses a shared `http.Transport` (`MaxIdleConns: 20`,
@@ -1489,9 +1496,9 @@ Items carried forward from the `cyoda-light-go` predecessor repository. Issues w
 
 **Context:** What protocol to use for cross-node dispatch forwarding.
 
-**Decision:** HTTP POST to `/internal/dispatch/processor` and `/internal/dispatch/criteria`, authenticated with HMAC-SHA256.
+**Decision:** HTTP POST to `/internal/dispatch/processor` and `/internal/dispatch/criteria`, authenticated and encrypted with AES-256-GCM AEAD (PeerAuth interface, AEADPeerAuth impl). The AEAD key is HKDF-derived from `CYODA_HMAC_SECRET`; the forwarder and handler share a `PeerAuth` seam so a future mTLS-based transport can be swapped in without changing the dispatch logic.
 
-**Rationale:** Reuses the existing HTTP infrastructure. The dispatch payload is a single request-response pair (not a stream), making HTTP a natural fit. HMAC authentication reuses the cluster secret without adding TLS complexity for internal traffic.
+**Rationale:** Reuses the existing HTTP infrastructure. The dispatch payload is a single request-response pair (not a stream), making HTTP a natural fit. AEAD gives integrity + confidentiality + replay resistance (via timestamp skew + nonce cache) in one primitive, closing the plaintext-and-replayable gap the earlier HMAC-on-body design left open. Per-node identity remains cluster-scoped; adding it is a future transport change, not a protocol change.
 
 ### DD-9: Poll-Based Wait for Missing Compute Members
 

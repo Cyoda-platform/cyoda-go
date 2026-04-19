@@ -304,6 +304,18 @@ func New(cfg Config) *App {
 
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
+	// Peer-auth for inter-node dispatch. AES-256-GCM + HKDF-derived key over
+	// the shared cluster secret. 30-second timestamp skew window. Constructed
+	// once and shared by forwarder and handler so rotation is atomic.
+	var peerAuth clusterdispatch.PeerAuth
+	if cfg.Cluster.Enabled {
+		auth, err := clusterdispatch.NewAEADPeerAuth(cfg.Cluster.HMACSecret, 30*time.Second)
+		if err != nil {
+			slog.Error("failed to construct dispatch peer auth", "pkg", "cluster", "err", err)
+			os.Exit(1)
+		}
+		peerAuth = auth
+	}
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
 	} else if cfg.Cluster.Enabled {
@@ -312,7 +324,7 @@ func New(cfg Config) *App {
 			a.nodeRegistry,
 			cfg.Cluster.NodeID,
 			clusterdispatch.NewRandomSelector(),
-			clusterdispatch.NewHTTPForwarder(cfg.Cluster.HMACSecret, cfg.Cluster.DispatchForwardTimeout),
+			clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchForwardTimeout),
 			cfg.Cluster.DispatchWaitTimeout,
 		)
 	} else {
@@ -398,26 +410,18 @@ func New(cfg Config) *App {
 		outerMux.Handle(contextPath+"/", http.StripPrefix(contextPath, mux))
 		// Discovery routes at root (no auth, no context path)
 		internalapi.RegisterDiscoveryRoutes(outerMux, contextPath)
-		// Internal dispatch routes at root (HMAC-authenticated, not under context path)
+		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
 		if cfg.Cluster.Enabled {
-			dispatchHandler, dhErr := clusterdispatch.NewDispatchHandler(localDispatcher, cfg.Cluster.HMACSecret)
-			if dhErr != nil {
-				slog.Error("failed to create dispatch handler", "pkg", "cluster", "err", dhErr)
-				os.Exit(1)
-			}
+			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(outerMux)
 		}
 		a.handler = outerMux
 	} else {
 		// No context path — discovery routes on the main mux
 		internalapi.RegisterDiscoveryRoutes(mux, "")
-		// Internal dispatch routes (HMAC-authenticated)
+		// Internal dispatch routes (AEAD-authenticated)
 		if cfg.Cluster.Enabled {
-			dispatchHandler, dhErr := clusterdispatch.NewDispatchHandler(localDispatcher, cfg.Cluster.HMACSecret)
-			if dhErr != nil {
-				slog.Error("failed to create dispatch handler", "pkg", "cluster", "err", dhErr)
-				os.Exit(1)
-			}
+			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
 			dispatchHandler.Register(mux)
 		}
 		a.handler = mux

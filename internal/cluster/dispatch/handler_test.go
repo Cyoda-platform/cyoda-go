@@ -3,62 +3,78 @@ package dispatch
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // fakeLocalDispatcher implements contract.ExternalProcessingService for testing.
+// capturedCtx records the ctx from the most recent dispatch call so tests can
+// assert identity propagation.
 type fakeLocalDispatcher struct {
 	processorResult *spi.Entity
 	processorErr    error
 	criteriaResult  bool
 	criteriaErr     error
+	capturedCtx     context.Context
 }
 
 func (f *fakeLocalDispatcher) DispatchProcessor(
-	_ context.Context,
+	ctx context.Context,
 	_ *spi.Entity,
 	_ spi.ProcessorDefinition,
 	_, _, _ string,
 ) (*spi.Entity, error) {
+	f.capturedCtx = ctx
 	return f.processorResult, f.processorErr
 }
 
 func (f *fakeLocalDispatcher) DispatchCriteria(
-	_ context.Context,
+	ctx context.Context,
 	_ *spi.Entity,
 	_ json.RawMessage,
 	_, _, _, _, _ string,
 ) (bool, error) {
+	f.capturedCtx = ctx
 	return f.criteriaResult, f.criteriaErr
 }
 
-// newTestDispatchHandler creates a DispatchHandler without secret length validation,
-// for use in tests that predate the minimum-length requirement.
-func newTestDispatchHandler(local *fakeLocalDispatcher, secret []byte) *DispatchHandler {
-	return &DispatchHandler{local: local, hmacSecret: secret}
+var testSecret32 = bytes.Repeat([]byte{0xAB}, 32)
+
+// newAEAD builds an AEADPeerAuth keyed by testSecret32. Internal test helper.
+func newAEAD(t *testing.T) *AEADPeerAuth {
+	t.Helper()
+	a, err := NewAEADPeerAuth(testSecret32, 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewAEADPeerAuth: %v", err)
+	}
+	return a
 }
 
-// sign computes the HMAC-SHA256 of body using secret — mirrors HTTPForwarder.sign().
-func sign(secret, body []byte) string {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
+// signedRequest builds an AEAD-wrapped POST request ready for the handler
+// to verify. Convenience for tests that need an authenticated request body.
+func signedRequest(t *testing.T, auth *AEADPeerAuth, method, path string, plain []byte) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	wire, err := auth.Sign(req, plain)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(wire))
+	req.ContentLength = int64(len(wire))
+	return req
 }
 
 func TestHandler_ProcessorSuccess(t *testing.T) {
-	secret := []byte("test-secret")
-	resultData := json.RawMessage(`{"output":42}`)
+	auth := newAEAD(t)
 	fake := &fakeLocalDispatcher{
 		processorResult: &spi.Entity{
 			Meta: spi.EntityMeta{ID: "ent-1"},
@@ -66,7 +82,7 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 		},
 	}
 
-	handler := newTestDispatchHandler(fake, secret)
+	handler := NewDispatchHandler(fake, auth)
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
@@ -81,11 +97,8 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
 	}
-	body, _ := json.Marshal(req)
-
-	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Dispatch-HMAC", sign(secret, body))
+	plain, _ := json.Marshal(req)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -101,16 +114,16 @@ func TestHandler_ProcessorSuccess(t *testing.T) {
 	if !resp.Success {
 		t.Errorf("expected success=true, got false (error: %s)", resp.Error)
 	}
-	if string(resp.EntityData) != string(resultData) {
-		t.Errorf("expected entity data %s, got %s", resultData, resp.EntityData)
+	if string(resp.EntityData) != `{"output":42}` {
+		t.Errorf("unexpected entity data: %s", resp.EntityData)
 	}
 }
 
 func TestHandler_CriteriaSuccess(t *testing.T) {
-	secret := []byte("test-secret")
+	auth := newAEAD(t)
 	fake := &fakeLocalDispatcher{criteriaResult: true}
 
-	handler := newTestDispatchHandler(fake, secret)
+	handler := NewDispatchHandler(fake, auth)
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
@@ -127,11 +140,8 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
 	}
-	body, _ := json.Marshal(req)
-
-	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/criteria", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Dispatch-HMAC", sign(secret, body))
+	plain, _ := json.Marshal(req)
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/criteria", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -152,17 +162,15 @@ func TestHandler_CriteriaSuccess(t *testing.T) {
 	}
 }
 
-func TestHandler_MissingHMAC(t *testing.T) {
-	secret := []byte("test-secret")
-	fake := &fakeLocalDispatcher{}
-	handler := newTestDispatchHandler(fake, secret)
+func TestHandler_MissingAEADHeaders(t *testing.T) {
+	handler := NewDispatchHandler(&fakeLocalDispatcher{}, newAEAD(t))
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
 	body := []byte(`{}`)
 	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor", bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
-	// No X-Dispatch-HMAC header
+	// No X-Dispatch-Timestamp header, plain JSON body — rejected by AEAD Verify.
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
@@ -172,56 +180,118 @@ func TestHandler_MissingHMAC(t *testing.T) {
 	}
 }
 
-func TestHandler_InvalidHMAC(t *testing.T) {
-	secret := []byte("test-secret")
-	fake := &fakeLocalDispatcher{}
-	handler := newTestDispatchHandler(fake, secret)
+func TestHandler_RejectsPlainJSONWithoutAEAD(t *testing.T) {
+	// Even if someone sets the timestamp header, a plain JSON body fails AEAD.Open.
+	handler := NewDispatchHandler(&fakeLocalDispatcher{}, newAEAD(t))
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	body := []byte(`{"entityMeta":{"ID":"x"}}`)
-	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Dispatch-HMAC", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor",
+		bytes.NewReader([]byte(`{"not":"encrypted"}`)))
+	httpReq.Header.Set("Content-Type", DispatchContentType)
+	httpReq.Header.Set(DispatchTimestampHdr, fmt.Sprintf("%d", time.Now().Unix()))
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+		t.Fatalf("expected 403 for plain JSON, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestNewDispatchHandler_SecretTooShort(t *testing.T) {
-	_, err := NewDispatchHandler(&fakeLocalDispatcher{}, []byte("short"))
+func TestHandler_RejectsReplayedRequest(t *testing.T) {
+	auth := newAEAD(t)
+	handler := NewDispatchHandler(&fakeLocalDispatcher{
+		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "e"}, Data: []byte(`{}`)},
+	}, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Sign once, then submit the same wire body twice.
+	plain, _ := json.Marshal(DispatchProcessorRequest{
+		TenantID: "t", UserID: "u",
+		Processor:    spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+		WorkflowName: "w", TransitionName: "t", TxID: "x",
+		EntityMeta: spi.EntityMeta{ID: "e"},
+		Entity:     json.RawMessage(`{}`),
+	})
+	first := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
+	wire, _ := io.ReadAll(first.Body)
+	ts := first.Header.Get(DispatchTimestampHdr)
+
+	build := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor", bytes.NewReader(wire))
+		r.Header.Set("Content-Type", DispatchContentType)
+		r.Header.Set(DispatchTimestampHdr, ts)
+		return r
+	}
+
+	rec1 := httptest.NewRecorder()
+	mux.ServeHTTP(rec1, build())
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request should succeed, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, build())
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("replay should be rejected with 403, got %d", rec2.Code)
+	}
+}
+
+func TestHandler_PopulatesPeerIdentityInContext(t *testing.T) {
+	auth := newAEAD(t)
+	fake := &fakeLocalDispatcher{
+		processorResult: &spi.Entity{Meta: spi.EntityMeta{ID: "e"}, Data: []byte(`{}`)},
+	}
+	handler := NewDispatchHandler(fake, auth)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	plain, _ := json.Marshal(DispatchProcessorRequest{
+		TenantID: "t", UserID: "u", TxID: "tx",
+		Processor:    spi.ProcessorDefinition{Name: "p", Type: "SCRIPT"},
+		WorkflowName: "w", TransitionName: "t",
+		EntityMeta: spi.EntityMeta{ID: "e"},
+		Entity:     json.RawMessage(`{}`),
+	})
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httpReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	id, ok := PeerIdentityFromContext(fake.capturedCtx)
+	if !ok {
+		t.Fatal("PeerIdentity not found in dispatcher ctx — handler failed to propagate")
+	}
+	if id.AuthMethod() != "aead-v1" {
+		t.Errorf("AuthMethod = %q, want aead-v1", id.AuthMethod())
+	}
+}
+
+func TestNewAEADPeerAuth_SecretTooShort(t *testing.T) {
+	_, err := NewAEADPeerAuth([]byte("short"), 30*time.Second)
 	if err == nil {
 		t.Fatal("expected error for short secret")
 	}
-	if !errors.Is(err, ErrHMACSecretTooShort) {
-		t.Errorf("expected ErrHMACSecretTooShort, got %v", err)
-	}
-}
-
-func TestNewDispatchHandler_SecretValid(t *testing.T) {
-	h, err := NewDispatchHandler(&fakeLocalDispatcher{}, []byte("at-least-32-bytes-long-secret!!!"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if h == nil {
-		t.Fatal("expected non-nil handler")
+	if !errors.Is(err, ErrSharedSecretTooShort) {
+		t.Errorf("expected ErrSharedSecretTooShort, got %v", err)
 	}
 }
 
 func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
-	secret := []byte("at-least-32-bytes-long-secret!!!")
+	auth := newAEAD(t)
 	fake := &fakeLocalDispatcher{
 		processorErr: fmt.Errorf("connection refused: dial tcp 10.0.0.1:5432"),
 	}
-	handler, _ := NewDispatchHandler(fake, secret)
+	handler := NewDispatchHandler(fake, auth)
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	req := DispatchProcessorRequest{
+	plain, _ := json.Marshal(DispatchProcessorRequest{
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-1"},
 		Processor:      spi.ProcessorDefinition{Name: "proc1", Type: "SCRIPT"},
@@ -231,18 +301,14 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 		TenantID:       "tenant-a",
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
-	}
-	body, _ := json.Marshal(req)
-
-	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/processor", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Dispatch-HMAC", sign(secret, body))
+	})
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/processor", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
 	var resp DispatchProcessorResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Success {
 		t.Fatal("expected success=false")
 	}
@@ -255,15 +321,15 @@ func TestHandler_ProcessorError_SanitizedResponse(t *testing.T) {
 }
 
 func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
-	secret := []byte("at-least-32-bytes-long-secret!!!")
+	auth := newAEAD(t)
 	fake := &fakeLocalDispatcher{
 		criteriaErr: fmt.Errorf("pq: password authentication failed for user admin"),
 	}
-	handler, _ := NewDispatchHandler(fake, secret)
+	handler := NewDispatchHandler(fake, auth)
 	mux := http.NewServeMux()
 	handler.Register(mux)
 
-	req := DispatchCriteriaRequest{
+	plain, _ := json.Marshal(DispatchCriteriaRequest{
 		Entity:         json.RawMessage(`{"foo":"bar"}`),
 		EntityMeta:     spi.EntityMeta{ID: "ent-2"},
 		Criterion:      json.RawMessage(`{"type":"eq"}`),
@@ -275,18 +341,14 @@ func TestHandler_CriteriaError_SanitizedResponse(t *testing.T) {
 		TenantID:       "tenant-a",
 		UserID:         "user-1",
 		Roles:          []string{"ROLE_USER"},
-	}
-	body, _ := json.Marshal(req)
-
-	httpReq := httptest.NewRequest(http.MethodPost, "/internal/dispatch/criteria", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Dispatch-HMAC", sign(secret, body))
+	})
+	httpReq := signedRequest(t, auth, http.MethodPost, "/internal/dispatch/criteria", plain)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httpReq)
 
 	var resp DispatchCriteriaResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Success {
 		t.Fatal("expected success=false")
 	}

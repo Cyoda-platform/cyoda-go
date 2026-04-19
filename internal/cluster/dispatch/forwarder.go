@@ -3,9 +3,6 @@ package dispatch
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,18 +17,21 @@ type DispatchForwarder interface {
 	ForwardCriteria(ctx context.Context, addr string, req *DispatchCriteriaRequest) (*DispatchCriteriaResponse, error)
 }
 
-// HTTPForwarder implements DispatchForwarder over HTTP with HMAC-SHA256 authentication.
+// HTTPForwarder implements DispatchForwarder over HTTP with a PeerAuth
+// message-authentication wrapper. The auth impl — today AEADPeerAuth over
+// a shared secret, tomorrow potentially an mTLS variant — owns signing and
+// verification; the forwarder itself is transport plumbing.
 type HTTPForwarder struct {
-	hmacSecret    []byte
+	auth          PeerAuth
 	client        *http.Client
 	allowLoopback bool
 }
 
-// NewHTTPForwarder constructs an HTTPForwarder with the given HMAC secret and request timeout.
-// Loopback peer addresses are rejected by default; see AllowLoopbackForTesting.
-func NewHTTPForwarder(hmacSecret []byte, timeout time.Duration) *HTTPForwarder {
+// NewHTTPForwarder constructs an HTTPForwarder. Loopback peer addresses
+// are rejected by default; see AllowLoopbackForTesting.
+func NewHTTPForwarder(auth PeerAuth, timeout time.Duration) *HTTPForwarder {
 	return &HTTPForwarder{
-		hmacSecret: hmacSecret,
+		auth: auth,
 		client: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -86,19 +86,28 @@ func ensureScheme(addr string) string {
 	return addr
 }
 
-// forward marshals reqBody, signs it, POSTs to url, and decodes the response into respBody.
+// forward marshals reqBody as JSON, hands it to the PeerAuth for wire
+// encoding, POSTs the resulting bytes, and decodes the (plaintext) JSON
+// response. Response bodies are not AEAD-wrapped — integrity of the
+// peer's reply relies on TLS (future) or the trust boundary that auth
+// established for the request.
 func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, respBody any) error {
-	body, err := json.Marshal(reqBody)
+	plain, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("dispatch forward: marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("dispatch forward: build request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Dispatch-HMAC", f.sign(body))
+
+	wire, err := f.auth.Sign(httpReq, plain)
+	if err != nil {
+		return fmt.Errorf("dispatch forward: sign body: %w", err)
+	}
+	httpReq.Body = io.NopCloser(bytes.NewReader(wire))
+	httpReq.ContentLength = int64(len(wire))
 
 	httpResp, err := f.client.Do(httpReq)
 	if err != nil {
@@ -115,11 +124,4 @@ func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, re
 		return fmt.Errorf("dispatch forward: decode response from %s: %w", url, err)
 	}
 	return nil
-}
-
-// sign returns the hex-encoded HMAC-SHA256 of body using the configured secret.
-func (f *HTTPForwarder) sign(body []byte) string {
-	mac := hmac.New(sha256.New, f.hmacSecret)
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
 }

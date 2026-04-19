@@ -114,7 +114,8 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 	}
 	registry := &stubNodeRegistry{}
 	selector := NewRandomSelector()
-	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second).AllowLoopbackForTesting()
+	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
+	forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
 	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
 
@@ -158,7 +159,7 @@ func TestClusterDispatcher_LocalFirst(t *testing.T) {
 }
 
 func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
-	hmacSecret := []byte("test-hmac-secret")
+	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
 
 	t.Run("processor_forwarded_to_peer", func(t *testing.T) {
 		// Set up a peer httptest server that acts as a dispatch handler.
@@ -168,7 +169,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 				Data: []byte(`{"key":"peer-processed"}`),
 			},
 		}
-		handler := &DispatchHandler{local: peerLocal, hmacSecret: hmacSecret}
+		handler := NewDispatchHandler(peerLocal, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -183,7 +184,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
+		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
 		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
 
@@ -201,7 +202,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 		peerLocal := &stubDispatcher{
 			criteriaResult: true,
 		}
-		handler := &DispatchHandler{local: peerLocal, hmacSecret: hmacSecret}
+		handler := NewDispatchHandler(peerLocal, auth)
 		mux := http.NewServeMux()
 		handler.Register(mux)
 		peer := httptest.NewServer(mux)
@@ -215,7 +216,7 @@ func TestClusterDispatcher_ForwardsToPeer(t *testing.T) {
 			},
 		}
 		selector := NewRandomSelector()
-		forwarder := NewHTTPForwarder(hmacSecret, 5*time.Second).AllowLoopbackForTesting()
+		forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
 		d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 1*time.Second)
 
@@ -240,7 +241,8 @@ func TestClusterDispatcher_NoMemberAnywhere(t *testing.T) {
 		},
 	}
 	selector := NewRandomSelector()
-	forwarder := NewHTTPForwarder([]byte("secret"), 5*time.Second).AllowLoopbackForTesting()
+	auth, _ := NewAEADPeerAuth(testSecret32, 30*time.Second)
+	forwarder := NewHTTPForwarder(auth, 5*time.Second).AllowLoopbackForTesting()
 
 	// Use a very short wait timeout so the test completes quickly.
 	d := NewClusterDispatcher(local, registry, "self-node", selector, forwarder, 500*time.Millisecond)

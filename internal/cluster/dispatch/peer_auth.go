@@ -1,0 +1,74 @@
+package dispatch
+
+import (
+	"context"
+	"net/http"
+)
+
+// PeerAuth authenticates inter-node dispatch HTTP requests at the message
+// layer. Implementations wrap outbound bodies on the client and verify them
+// on the server, returning the authenticated plaintext plus a PeerIdentity.
+//
+// The interface is deliberately split so future transports (e.g. mTLS, where
+// authentication is transport-layer) can implement Sign as a no-op and derive
+// identity from tls.ConnectionState in Verify — without disturbing the
+// forwarder or handler call sites.
+type PeerAuth interface {
+	// Sign transforms the plaintext body into an on-the-wire body, setting
+	// any required headers on req. The returned slice replaces req.Body at
+	// the call site. Implementations MAY write to req.Header but MUST NOT
+	// capture or retain req past the call.
+	Sign(req *http.Request, body []byte) (wireBody []byte, err error)
+
+	// Verify reads the request body, validates it, and returns the
+	// authenticated plaintext plus the peer's identity. A non-nil error
+	// means authentication failed and the caller must respond with 403.
+	// The returned identity MUST be populated (even if degenerate) so
+	// handlers can attach it to the request context unconditionally.
+	Verify(r *http.Request) (body []byte, identity PeerIdentity, err error)
+}
+
+// PeerIdentity describes an authenticated cluster peer. Today (shared-key
+// AEAD) identity is degenerate — the sender held the derived dispatch key,
+// nothing more. In a future mTLS transport, NodeID carries the specific
+// node identifier from the peer certificate's CommonName. The abstraction
+// is stable across both so callers that care about origin can start reading
+// it today without having to be rewritten when transport changes.
+type PeerIdentity struct {
+	authMethod string
+	nodeID     string
+}
+
+// AuthMethod returns the auth-mechanism tag (e.g. "aead-v1", "mtls").
+// Used primarily for diagnostics and audit trails.
+func (i PeerIdentity) AuthMethod() string { return i.authMethod }
+
+// NodeID returns the specific peer node ID if the auth mechanism proves it,
+// or the empty string otherwise. Callers MUST treat empty NodeID as
+// "authenticated cluster member, identity unknown" rather than "anonymous".
+func (i PeerIdentity) NodeID() string { return i.nodeID }
+
+// NewPeerIdentityForTesting constructs a PeerIdentity with the given fields.
+// Production PeerAuth implementations have their own internal constructors
+// so the zero-value invariant stays meaningful; tests use this helper.
+func NewPeerIdentityForTesting(authMethod, nodeID string) PeerIdentity {
+	return PeerIdentity{authMethod: authMethod, nodeID: nodeID}
+}
+
+type peerIdentityCtxKey struct{}
+
+// WithPeerIdentity returns ctx annotated with the authenticated peer identity.
+// Handlers call this after Verify succeeds so downstream code can audit the
+// origin without re-running authentication.
+func WithPeerIdentity(ctx context.Context, id PeerIdentity) context.Context {
+	return context.WithValue(ctx, peerIdentityCtxKey{}, id)
+}
+
+// PeerIdentityFromContext retrieves the peer identity placed by
+// WithPeerIdentity. The boolean is false if no identity was set — callers
+// that expect one (i.e. inside a dispatch handler) should treat absence
+// as a bug rather than as "anonymous caller".
+func PeerIdentityFromContext(ctx context.Context) (PeerIdentity, bool) {
+	id, ok := ctx.Value(peerIdentityCtxKey{}).(PeerIdentity)
+	return id, ok
+}

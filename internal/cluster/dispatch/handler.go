@@ -2,12 +2,7 @@ package dispatch
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -15,27 +10,22 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
-var ErrHMACSecretTooShort = errors.New("HMAC secret must be at least 32 bytes")
-
-const maxDispatchBodySize = 10 * 1024 * 1024 // 10MB
-
-// DispatchHandler serves the internal dispatch endpoints for processor and criteria
-// execution. Requests are authenticated with HMAC-SHA256.
+// DispatchHandler serves the internal dispatch endpoints for processor and
+// criteria execution. Authenticates each request via PeerAuth — today AEAD
+// over a shared secret, tomorrow potentially mTLS — and annotates the
+// request context with the authenticated PeerIdentity so downstream code
+// can audit origin regardless of the transport.
 type DispatchHandler struct {
-	local      contract.ExternalProcessingService
-	hmacSecret []byte
+	local contract.ExternalProcessingService
+	auth  PeerAuth
 }
 
 // NewDispatchHandler constructs a DispatchHandler backed by the given local
-// ExternalProcessingService and HMAC secret. The secret must be at least 32 bytes.
-func NewDispatchHandler(local contract.ExternalProcessingService, hmacSecret []byte) (*DispatchHandler, error) {
-	if len(hmacSecret) < 32 {
-		return nil, ErrHMACSecretTooShort
-	}
-	return &DispatchHandler{
-		local:      local,
-		hmacSecret: hmacSecret,
-	}, nil
+// ExternalProcessingService and peer-authentication impl. Auth is already
+// validated at construction time (NewAEADPeerAuth etc. check secret length),
+// so this constructor does not return an error.
+func NewDispatchHandler(local contract.ExternalProcessingService, auth PeerAuth) *DispatchHandler {
+	return &DispatchHandler{local: local, auth: auth}
 }
 
 // Register registers the dispatch routes on the provided ServeMux.
@@ -46,7 +36,7 @@ func (h *DispatchHandler) Register(mux *http.ServeMux) {
 
 // handleProcessor handles POST /internal/dispatch/processor.
 func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request) {
-	body, ok := h.readAndVerify(w, r)
+	body, identity, ok := h.verifyRequest(w, r)
 	if !ok {
 		return
 	}
@@ -57,7 +47,7 @@ func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ctx := h.buildContext(r, req.TenantID, req.UserID, req.Roles)
+	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.Roles)
 
 	entity := &spi.Entity{
 		Meta: req.EntityMeta,
@@ -82,7 +72,7 @@ func (h *DispatchHandler) handleProcessor(w http.ResponseWriter, r *http.Request
 
 // handleCriteria handles POST /internal/dispatch/criteria.
 func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request) {
-	body, ok := h.readAndVerify(w, r)
+	body, identity, ok := h.verifyRequest(w, r)
 	if !ok {
 		return
 	}
@@ -93,7 +83,7 @@ func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ctx := h.buildContext(r, req.TenantID, req.UserID, req.Roles)
+	ctx := h.buildContext(r, identity, req.TenantID, req.UserID, req.Roles)
 
 	entity := &spi.Entity{
 		Meta: req.EntityMeta,
@@ -116,44 +106,29 @@ func (h *DispatchHandler) handleCriteria(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// readAndVerify reads the full request body, verifies the HMAC-SHA256 signature
-// from the X-Dispatch-HMAC header, and returns the body bytes. On failure it
-// writes an error response and returns false.
-func (h *DispatchHandler) readAndVerify(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	sig := r.Header.Get("X-Dispatch-HMAC")
-	if sig == "" {
-		slog.Warn("dispatch request missing HMAC header", "pkg", "dispatch", "remoteAddr", r.RemoteAddr)
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return nil, false
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxDispatchBodySize)
-	body, err := io.ReadAll(r.Body)
+// verifyRequest runs peer authentication over the incoming request. On
+// failure it writes 403 and returns ok=false; on success it returns the
+// authenticated plaintext body and the peer's identity. Error messages
+// are deliberately generic to avoid leaking which step failed.
+func (h *DispatchHandler) verifyRequest(w http.ResponseWriter, r *http.Request) ([]byte, PeerIdentity, bool) {
+	body, identity, err := h.auth.Verify(r)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusInternalServerError)
-		return nil, false
-	}
-
-	expected := h.sign(body)
-	if !hmac.Equal([]byte(sig), []byte(expected)) {
-		slog.Warn("dispatch request HMAC mismatch", "pkg", "dispatch", "remoteAddr", r.RemoteAddr)
+		slog.Warn("dispatch request auth failed",
+			"pkg", "dispatch",
+			"remoteAddr", r.RemoteAddr,
+			"err", err)
 		http.Error(w, "forbidden", http.StatusForbidden)
-		return nil, false
+		return nil, PeerIdentity{}, false
 	}
-
-	return body, true
+	return body, identity, true
 }
 
-// sign returns the hex-encoded HMAC-SHA256 of body — identical to HTTPForwarder.sign().
-func (h *DispatchHandler) sign(body []byte) string {
-	mac := hmac.New(sha256.New, h.hmacSecret)
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// buildContext constructs a context.Context carrying the UserContext from the
-// dispatch request fields.
-func (h *DispatchHandler) buildContext(r *http.Request, tenantID, userID string, roles []string) context.Context {
+// buildContext constructs a context.Context carrying the UserContext from
+// the dispatch request fields and the authenticated PeerIdentity. Even in
+// the shared-key regime where PeerIdentity is degenerate, propagating it
+// through context means downstream audit / tracing can read origin without
+// being rewritten when transport evolves.
+func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, tenantID, userID string, roles []string) context.Context {
 	uc := &spi.UserContext{
 		UserID: userID,
 		Tenant: spi.Tenant{
@@ -161,7 +136,9 @@ func (h *DispatchHandler) buildContext(r *http.Request, tenantID, userID string,
 		},
 		Roles: roles,
 	}
-	return spi.WithUserContext(r.Context(), uc)
+	ctx := spi.WithUserContext(r.Context(), uc)
+	ctx = WithPeerIdentity(ctx, identity)
+	return ctx
 }
 
 // writeJSON encodes v as JSON and writes it with the given status code.
