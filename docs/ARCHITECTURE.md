@@ -31,9 +31,11 @@ For product-level context, see the [PRD](PRD.md).
 
 ## 1. System Overview
 
-Cyoda-Go is a **modular monolith** organized by Domain-Driven Design boundaries, with a **pluggable storage layer** defined by an external SPI module. The storage contract (`cyoda-go-spi`) is a small, stable, stdlib-only Go module. Storage implementations live in separately versioned Go modules — stock plugins (`plugins/memory`, `plugins/postgres`) under this repository, proprietary and third-party plugins in their own repositories. The `cyoda-go` binary resolves its active plugin at startup via `spi.GetPlugin(cfg.StorageBackend)`; a custom binary including a third-party plugin is a one-file edit (blank import) of the `main` package.
+Cyoda-Go is a **modular monolith with a ports-and-adapters architecture**. The stable external port is `cyoda-go-spi`, a small stdlib-only Go module that defines the storage contract. Adapters are storage plugins in separately versioned Go modules — stock plugins (`plugins/memory`, `plugins/sqlite`, `plugins/postgres`) under this repository, proprietary and third-party plugins in their own repositories. The `cyoda-go` binary resolves its active plugin at startup via `spi.GetPlugin(cfg.StorageBackend)`; a custom binary including a third-party plugin is a one-file edit (blank import) of the `main` package.
 
-Non-storage cross-cutting concerns (authentication, audit, processing dispatch, cluster registry) are defined as internal-to-cyoda-go Go interfaces in `internal/contract/`. These are consumer-side contracts between cyoda-go's own layers — not plugin concerns.
+Non-storage cross-cutting concerns (authentication, audit, processing dispatch, cluster registry) are defined as internal-to-cyoda-go Go interfaces in `internal/contract/`. These are consumer-side ports between cyoda-go's own layers — not plugin concerns.
+
+Domain concepts are grouped under `internal/domain/` by responsibility (`entity`, `workflow`, `model`, `search`, `messaging`, `audit`, `account`). Each follows a consistent handler/service layering over the storage port.
 
 ### Repositories
 
