@@ -21,7 +21,7 @@ import (
 // The guard is enforced at address validation time; the HTTP call must
 // never be dialled.
 func TestHTTPForwarder_RejectsLoopbackAddresses(t *testing.T) {
-	fw := dispatch.NewHTTPForwarder([]byte("test-secret-long-enough-for-constructor-checks"), time.Second)
+	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second)
 
 	cases := []string{
 		"127.0.0.1:8080",
@@ -51,7 +51,7 @@ func TestHTTPForwarder_RejectsLoopbackAddresses(t *testing.T) {
 // a link-local reason — not a DNS-lookup failure that happens to reject
 // the address by accident.
 func TestHTTPForwarder_RejectsIPv6LinkLocalWithZoneID(t *testing.T) {
-	fw := dispatch.NewHTTPForwarder([]byte("test-secret-long-enough-for-constructor-checks"), time.Second)
+	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second)
 
 	_, err := fw.ForwardProcessor(context.Background(), "[fe80::1%eth0]:8080", makeProcessorReq())
 	if err == nil {
@@ -77,7 +77,7 @@ func TestHTTPForwarder_RejectsIPv6LinkLocalWithZoneID(t *testing.T) {
 // metadata-service SSRF vector. 169.254.169.254 is the canonical target;
 // the broader 169.254.0.0/16 range and IPv6 fe80::/10 are equally unsafe.
 func TestHTTPForwarder_RejectsLinkLocalAddresses(t *testing.T) {
-	fw := dispatch.NewHTTPForwarder([]byte("test-secret-long-enough-for-constructor-checks"), time.Second)
+	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second)
 
 	cases := []string{
 		"169.254.169.254:80",                // AWS / Azure metadata
@@ -105,7 +105,7 @@ func TestHTTPForwarder_AcceptsRoutableAddress(t *testing.T) {
 	// address known to be unreachable (TEST-NET-1) with a tiny timeout;
 	// the guard must let it through and the call must fail with a
 	// *network* error, not ErrForbiddenPeerAddress.
-	fw := dispatch.NewHTTPForwarder([]byte("test-secret-long-enough-for-constructor-checks"), 50*time.Millisecond)
+	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 50*time.Millisecond)
 	_, err := fw.ForwardProcessor(context.Background(), "192.0.2.1:8080", makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected network error for unreachable TEST-NET-1 address")

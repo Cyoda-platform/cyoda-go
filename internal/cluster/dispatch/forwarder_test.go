@@ -2,21 +2,17 @@ package dispatch_test
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 )
-
-const testHMACSecret = "test-secret-key"
 
 func makeProcessorReq() *dispatch.DispatchProcessorRequest {
 	return &dispatch.DispatchProcessorRequest{
@@ -46,17 +42,19 @@ func makeCriteriaReq() *dispatch.DispatchCriteriaRequest {
 	}
 }
 
-// verifyHMAC checks that the X-Dispatch-HMAC header matches the body.
-func verifyHMAC(t *testing.T, r *http.Request, secret string) {
+// verifyAEADHeaders confirms the forwarder set the expected AEAD envelope
+// headers. Replaces the pre-AEAD verifyHMAC helper.
+func verifyAEADHeaders(t *testing.T, r *http.Request) {
 	t.Helper()
-	sig := r.Header.Get("X-Dispatch-HMAC")
-	if sig == "" {
-		t.Fatal("X-Dispatch-HMAC header missing")
+	if got := r.Header.Get("Content-Type"); got != dispatch.DispatchContentType {
+		t.Errorf("Content-Type = %q, want %q", got, dispatch.DispatchContentType)
 	}
-	// body already read by handler; verify against what was signed
-	// We'll verify in a separate read of the body by the test server handler,
-	// so we accept any non-empty value here. More thorough check done in
-	// TestHTTPForwarder_HMACSignature below.
+	if r.Header.Get(dispatch.DispatchTimestampHdr) == "" {
+		t.Errorf("%s header missing", dispatch.DispatchTimestampHdr)
+	}
+	if r.Header.Get("X-Dispatch-HMAC") != "" {
+		t.Errorf("legacy X-Dispatch-HMAC header still set; should have been removed with AEAD migration")
+	}
 }
 
 func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
@@ -73,14 +71,14 @@ func TestHTTPForwarder_ProcessorSuccess(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("unexpected method %q", r.Method)
 		}
-		verifyHMAC(t, r, testHMACSecret)
+		verifyAEADHeaders(t, r)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(wantResp)
+		_ = json.NewEncoder(w).Encode(wantResp)
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
 	resp, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardProcessor: %v", err)
@@ -106,14 +104,14 @@ func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 		if r.URL.Path != "/internal/dispatch/criteria" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		verifyHMAC(t, r, testHMACSecret)
+		verifyAEADHeaders(t, r)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(wantResp)
+		_ = json.NewEncoder(w).Encode(wantResp)
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
 	resp, err := f.ForwardCriteria(context.Background(), srv.URL, makeCriteriaReq())
 	if err != nil {
 		t.Fatalf("ForwardCriteria: %v", err)
@@ -128,7 +126,7 @@ func TestHTTPForwarder_CriteriaSuccess(t *testing.T) {
 
 func TestHTTPForwarder_PeerUnreachable(t *testing.T) {
 	// localhost:1 is guaranteed unreachable (privileged port, never listening)
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 2*time.Second).AllowLoopbackForTesting()
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 2*time.Second).AllowLoopbackForTesting()
 
 	_, err := f.ForwardProcessor(context.Background(), "http://localhost:1", makeProcessorReq())
 	if err == nil {
@@ -141,35 +139,33 @@ func TestHTTPForwarder_PeerUnreachable(t *testing.T) {
 	}
 }
 
-func TestHTTPForwarder_HMACSignature(t *testing.T) {
-	secret := []byte("verify-me")
-
-	var capturedSig string
+// TestHTTPForwarder_WireBodyIsEncrypted proves the forwarder ships an AEAD
+// envelope — not plaintext JSON. Replaces the pre-AEAD HMAC-signature test.
+func TestHTTPForwarder_WireBodyIsEncrypted(t *testing.T) {
 	var capturedBody []byte
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedSig = r.Header.Get("X-Dispatch-HMAC")
 		capturedBody, _ = io.ReadAll(r.Body)
-
-		resp := dispatch.DispatchProcessorResponse{Success: true}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(dispatch.DispatchProcessorResponse{Success: true})
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder(secret, 5*time.Second).AllowLoopbackForTesting()
-	_, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
-	if err != nil {
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
+	if _, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq()); err != nil {
 		t.Fatalf("ForwardProcessor: %v", err)
 	}
 
-	// Compute expected HMAC over the captured body
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(capturedBody)
-	expected := hex.EncodeToString(mac.Sum(nil))
-
-	if capturedSig != expected {
-		t.Errorf("X-Dispatch-HMAC = %q, want %q", capturedSig, expected)
+	// Plaintext markers from makeProcessorReq() must not appear on the wire.
+	wire := string(capturedBody)
+	for _, marker := range []string{`"amount":100`, `"calc"`, `"wf"`, `"t1"`, `"tx-1"`} {
+		if strings.Contains(wire, marker) {
+			t.Errorf("wire body contains plaintext marker %q — payload is not encrypted", marker)
+		}
+	}
+	// And it must be non-empty (sanity — proves we captured something).
+	if len(capturedBody) == 0 {
+		t.Fatal("no body captured")
 	}
 }
 
@@ -178,14 +174,14 @@ func TestHTTPForwarder_HMACSignature(t *testing.T) {
 // "cyoda-go-node-2:8123"). Regression test for unsupported protocol error.
 func TestHTTPForwarder_AddrWithoutScheme(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(dispatch.DispatchProcessorResponse{Success: true})
+		_ = json.NewEncoder(w).Encode(dispatch.DispatchProcessorResponse{Success: true})
 	}))
 	defer srv.Close()
 
 	// Strip the "http://" from the test server URL to simulate gossip NODE_ADDR
 	addrWithoutScheme := srv.Listener.Addr().String() // e.g., "127.0.0.1:PORT"
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
 	resp, err := f.ForwardProcessor(context.Background(), addrWithoutScheme, makeProcessorReq())
 	if err != nil {
 		t.Fatalf("ForwardProcessor with schemeless addr should work: %v", err)
@@ -201,7 +197,7 @@ func TestHTTPForwarder_PeerReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := dispatch.NewHTTPForwarder([]byte(testHMACSecret), 5*time.Second).AllowLoopbackForTesting()
+	f := dispatch.NewHTTPForwarder(newTestPeerAuth(t), 5*time.Second).AllowLoopbackForTesting()
 	_, err := f.ForwardProcessor(context.Background(), srv.URL, makeProcessorReq())
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
