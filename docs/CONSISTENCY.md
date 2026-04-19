@@ -184,7 +184,7 @@ All plugins honour the same contract. Implementation strategy varies.
 | Plugin | Engine-level mechanism | Application-layer validation | Effective guarantee | Conflict granularity |
 |---|---|---|---|---|
 | **memory** | n/a — all in-process Go | Committed-log + per-transaction read/write-set tracking; first-committer-wins at commit | **SI+FCW** | per-entity |
-| **sqlite** | Database-level write lock (single writer at the engine level) | Same SSI-engine code ported from memory; SQLite is the durability layer only | **SI+FCW** | per-entity |
+| **sqlite** | Database-level write lock (single writer at the engine level) | Same SI+FCW engine code ported from memory; SQLite is the durability layer only | **SI+FCW** | per-entity |
 | **postgres** | `REPEATABLE READ` (snapshot) + row-level tuple locks on entity tables | Entity-keyed read-set validation at commit; `40001` (`could not serialize access`) and `40P01` (`deadlock_detected`) mapped to `spi.ErrConflict` with bounded retry | **SI+FCW** | per-entity (via tuple locks on 1-to-1 `entities` table) |
 | **cassandra** (commercial) | *(proprietary)* | *(plugin-internal)* | **SI+FCW** | per-entity |
 
@@ -382,7 +382,7 @@ A short checklist:
   — rationale for postgres plugin running at `REPEATABLE READ` instead
   of native `SERIALIZABLE`.
 - `docs/superpowers/specs/2026-04-15-sqlite-storage-plugin-design.md` —
-  rationale for porting the memory plugin's SSI engine into sqlite.
+  rationale for porting the memory plugin's SI+FCW engine into sqlite.
 
 The commercial Cassandra plugin's own design document (shipped with the
 proprietary binary) captures the same semantic contract with the same

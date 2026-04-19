@@ -386,7 +386,7 @@ guarantee does not.
 | Plugin | Engine-level mechanism | Application-layer validation | Effective guarantee | Conflict granularity |
 |---|---|---|---|---|
 | `memory` | n/a — all in-process Go | committed-log + read/write-set tracking | SI+FCW | per-entity |
-| `sqlite` | DB-level write lock | same SSI-engine code ported from memory | SI+FCW | per-entity |
+| `sqlite` | DB-level write lock | same SI+FCW engine code ported from memory | SI+FCW | per-entity |
 | `postgres` | `REPEATABLE READ` + tuple locks | entity-keyed read-set validation at commit; `40001`/`40P01` retry | SI+FCW | per-entity |
 | `cassandra` (commercial) | *(proprietary)* | *(plugin-internal)* | SI+FCW | per-entity |
 
