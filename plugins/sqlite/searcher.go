@@ -22,6 +22,12 @@ var ErrScanBudgetExhausted = errors.New("scan budget exhausted")
 // post-filters the residual in Go. Pagination is applied in SQL when no
 // residual exists, or in Go after post-filtering.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if err := validateFilterPaths(filter); err != nil {
+		return nil, err
+	}
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
+	}
 	plan := planQuery(filter)
 
 	var baseQuery string
@@ -172,6 +178,11 @@ func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
 }
 
 // orderByFieldExpr returns the SQL expression for an OrderSpec field.
+//
+// Safety invariant: spec.Path is interpolated into a JSON-path literal
+// and therefore MUST have been validated by validateOrderSpecs at the
+// Search() boundary (see path_validation.go). Adding a new caller that
+// bypasses Search() re-introduces SQL injection.
 func orderByFieldExpr(spec spi.OrderSpec, tablePrefix string) string {
 	qualify := func(col string) string {
 		if tablePrefix != "" {

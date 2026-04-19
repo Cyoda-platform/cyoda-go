@@ -17,7 +17,7 @@ func TestKeysHandler_IssueKeyPair(t *testing.T) {
 	store := NewInMemoryKeyStore()
 	handler := NewKeysHandler(store)
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair", nil)
+	req := adminReq(http.MethodPost, "/oauth/keys/keypair", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -58,7 +58,7 @@ func TestKeysHandler_GetCurrent(t *testing.T) {
 	handler := NewKeysHandler(store)
 
 	// Issue a key pair first
-	issueReq := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair", nil)
+	issueReq := adminReq(http.MethodPost, "/oauth/keys/keypair", nil)
 	issueRec := httptest.NewRecorder()
 	handler.ServeHTTP(issueRec, issueReq)
 
@@ -68,7 +68,7 @@ func TestKeysHandler_GetCurrent(t *testing.T) {
 	}
 
 	// Get current
-	req := httptest.NewRequest(http.MethodGet, "/oauth/keys/keypair/current", nil)
+	req := adminReq(http.MethodGet, "/oauth/keys/keypair/current", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -102,7 +102,7 @@ func TestKeysHandler_Invalidate(t *testing.T) {
 	handler := NewKeysHandler(store)
 
 	// Issue a key pair
-	issueReq := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair", nil)
+	issueReq := adminReq(http.MethodPost, "/oauth/keys/keypair", nil)
 	issueRec := httptest.NewRecorder()
 	handler.ServeHTTP(issueRec, issueReq)
 
@@ -112,7 +112,7 @@ func TestKeysHandler_Invalidate(t *testing.T) {
 	}
 
 	// Invalidate
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair/"+issued.KID+"/invalidate", nil)
+	req := adminReq(http.MethodPost, "/oauth/keys/keypair/"+issued.KID+"/invalidate", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -135,7 +135,7 @@ func TestKeysHandler_Reactivate(t *testing.T) {
 	handler := NewKeysHandler(store)
 
 	// Issue a key pair
-	issueReq := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair", nil)
+	issueReq := adminReq(http.MethodPost, "/oauth/keys/keypair", nil)
 	issueRec := httptest.NewRecorder()
 	handler.ServeHTTP(issueRec, issueReq)
 
@@ -145,12 +145,12 @@ func TestKeysHandler_Reactivate(t *testing.T) {
 	}
 
 	// Invalidate first
-	invReq := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair/"+issued.KID+"/invalidate", nil)
+	invReq := adminReq(http.MethodPost, "/oauth/keys/keypair/"+issued.KID+"/invalidate", nil)
 	invRec := httptest.NewRecorder()
 	handler.ServeHTTP(invRec, invReq)
 
 	// Reactivate
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair/"+issued.KID+"/reactivate", nil)
+	req := adminReq(http.MethodPost, "/oauth/keys/keypair/"+issued.KID+"/reactivate", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -173,7 +173,7 @@ func TestKeysHandler_Delete(t *testing.T) {
 	handler := NewKeysHandler(store)
 
 	// Issue a key pair
-	issueReq := httptest.NewRequest(http.MethodPost, "/oauth/keys/keypair", nil)
+	issueReq := adminReq(http.MethodPost, "/oauth/keys/keypair", nil)
 	issueRec := httptest.NewRecorder()
 	handler.ServeHTTP(issueRec, issueReq)
 
@@ -183,7 +183,7 @@ func TestKeysHandler_Delete(t *testing.T) {
 	}
 
 	// Delete
-	req := httptest.NewRequest(http.MethodDelete, "/oauth/keys/keypair/"+issued.KID, nil)
+	req := adminReq(http.MethodDelete, "/oauth/keys/keypair/"+issued.KID, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -202,7 +202,7 @@ func TestKeysHandler_GetCurrent_NoActiveKey(t *testing.T) {
 	store := NewInMemoryKeyStore()
 	handler := NewKeysHandler(store)
 
-	req := httptest.NewRequest(http.MethodGet, "/oauth/keys/keypair/current", nil)
+	req := adminReq(http.MethodGet, "/oauth/keys/keypair/current", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

@@ -50,7 +50,7 @@ func TestTrustedKeysHandler_RegisterAndList(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	// POST register
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -80,7 +80,7 @@ func TestTrustedKeysHandler_RegisterAndList(t *testing.T) {
 	}
 
 	// GET list
-	req = httptest.NewRequest(http.MethodGet, "/oauth/keys/trusted", nil)
+	req = adminReq(http.MethodGet, "/oauth/keys/trusted", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -114,7 +114,7 @@ func TestTrustedKeysHandler_Invalidate(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	// Register
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -122,7 +122,7 @@ func TestTrustedKeysHandler_Invalidate(t *testing.T) {
 	}
 
 	// Invalidate
-	req = httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted/ext-key-2/invalidate", nil)
+	req = adminReq(http.MethodPost, "/oauth/keys/trusted/ext-key-2/invalidate", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -153,7 +153,7 @@ func TestTrustedKeysHandler_Reactivate(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	// Register
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -161,7 +161,7 @@ func TestTrustedKeysHandler_Reactivate(t *testing.T) {
 	}
 
 	// Invalidate first
-	req = httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted/ext-key-3/invalidate", nil)
+	req = adminReq(http.MethodPost, "/oauth/keys/trusted/ext-key-3/invalidate", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -169,7 +169,7 @@ func TestTrustedKeysHandler_Reactivate(t *testing.T) {
 	}
 
 	// Reactivate
-	req = httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted/ext-key-3/reactivate", nil)
+	req = adminReq(http.MethodPost, "/oauth/keys/trusted/ext-key-3/reactivate", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -200,7 +200,7 @@ func TestTrustedKeysHandler_Delete(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	// Register
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -208,7 +208,7 @@ func TestTrustedKeysHandler_Delete(t *testing.T) {
 	}
 
 	// Delete
-	req = httptest.NewRequest(http.MethodDelete, "/oauth/keys/trusted/ext-key-4", nil)
+	req = adminReq(http.MethodDelete, "/oauth/keys/trusted/ext-key-4", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
@@ -216,7 +216,7 @@ func TestTrustedKeysHandler_Delete(t *testing.T) {
 	}
 
 	// Verify list is empty
-	req = httptest.NewRequest(http.MethodGet, "/oauth/keys/trusted", nil)
+	req = adminReq(http.MethodGet, "/oauth/keys/trusted", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -241,7 +241,7 @@ func TestTrustedKeysHandler_RegisterInvalidJWK(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -254,7 +254,7 @@ func TestTrustedKeysHandler_DeleteNotFound(t *testing.T) {
 	store := NewInMemoryTrustedKeyStore()
 	handler := NewTrustedKeysHandler(store)
 
-	req := httptest.NewRequest(http.MethodDelete, "/oauth/keys/trusted/nonexistent", nil)
+	req := adminReq(http.MethodDelete, "/oauth/keys/trusted/nonexistent", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

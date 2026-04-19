@@ -13,7 +13,7 @@ func TestM2M_CreateClient(t *testing.T) {
 	handler := NewM2MHandler(store)
 
 	body := `{"tenantId":"tenant-1","userId":"user-1","roles":["ROLE_ADMIN"]}`
-	req := httptest.NewRequest(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
+	req := adminReq(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -42,7 +42,7 @@ func TestM2M_ListClients(t *testing.T) {
 
 	// Create a client first.
 	body := `{"tenantId":"tenant-1","userId":"user-1","roles":["ROLE_ADMIN","ROLE_USER"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
+	createReq := adminReq(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
@@ -55,7 +55,7 @@ func TestM2M_ListClients(t *testing.T) {
 	json.NewDecoder(createRec.Body).Decode(&created)
 
 	// List clients.
-	listReq := httptest.NewRequest(http.MethodGet, "/account/m2m", nil)
+	listReq := adminReq(http.MethodGet, "/account/m2m", nil)
 	listRec := httptest.NewRecorder()
 	handler.ServeHTTP(listRec, listReq)
 
@@ -92,7 +92,7 @@ func TestM2M_VerifySecret(t *testing.T) {
 	handler := NewM2MHandler(store)
 
 	body := `{"tenantId":"tenant-1","userId":"user-1","roles":["ROLE_ADMIN"]}`
-	req := httptest.NewRequest(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
+	req := adminReq(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -125,7 +125,7 @@ func TestM2M_ResetSecret(t *testing.T) {
 
 	// Create a client.
 	body := `{"tenantId":"tenant-1","userId":"user-1","roles":["ROLE_ADMIN"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
+	createReq := adminReq(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
@@ -135,7 +135,7 @@ func TestM2M_ResetSecret(t *testing.T) {
 	oldSecret := created.ClientSecret
 
 	// Reset secret.
-	resetReq := httptest.NewRequest(http.MethodPost, "/account/m2m/"+created.ClientID+"/secret/reset", nil)
+	resetReq := adminReq(http.MethodPost, "/account/m2m/"+created.ClientID+"/secret/reset", nil)
 	resetRec := httptest.NewRecorder()
 	handler.ServeHTTP(resetRec, resetReq)
 
@@ -181,7 +181,7 @@ func TestM2M_DeleteClient(t *testing.T) {
 
 	// Create a client.
 	body := `{"tenantId":"tenant-1","userId":"user-1","roles":["ROLE_ADMIN"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
+	createReq := adminReq(http.MethodPost, "/account/m2m", bytes.NewBufferString(body))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
@@ -190,7 +190,7 @@ func TestM2M_DeleteClient(t *testing.T) {
 	json.NewDecoder(createRec.Body).Decode(&created)
 
 	// Delete the client.
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/account/m2m/"+created.ClientID, nil)
+	deleteReq := adminReq(http.MethodDelete, "/account/m2m/"+created.ClientID, nil)
 	deleteRec := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRec, deleteReq)
 
@@ -199,7 +199,7 @@ func TestM2M_DeleteClient(t *testing.T) {
 	}
 
 	// List should be empty.
-	listReq := httptest.NewRequest(http.MethodGet, "/account/m2m", nil)
+	listReq := adminReq(http.MethodGet, "/account/m2m", nil)
 	listRec := httptest.NewRecorder()
 	handler.ServeHTTP(listRec, listReq)
 
@@ -215,7 +215,7 @@ func TestM2M_DeleteNonExistent(t *testing.T) {
 	store := NewInMemoryM2MClientStore()
 	handler := NewM2MHandler(store)
 
-	req := httptest.NewRequest(http.MethodDelete, "/account/m2m/non-existent-id", nil)
+	req := adminReq(http.MethodDelete, "/account/m2m/non-existent-id", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

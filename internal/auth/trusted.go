@@ -42,8 +42,11 @@ func NewTrustedKeysHandler(store TrustedKeyStore) *TrustedKeysHandler {
 	return &TrustedKeysHandler{trustedKeyStore: store}
 }
 
-// ServeHTTP routes requests based on method and path.
+// ServeHTTP routes requests based on method and path. Requires ROLE_ADMIN.
 func (h *TrustedKeysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 
 	// POST /oauth/keys/trusted/{keyId}/invalidate
