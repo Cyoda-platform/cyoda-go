@@ -13,11 +13,21 @@ import (
 // authentication is transport-layer) can implement Sign as a no-op and derive
 // identity from tls.ConnectionState in Verify — without disturbing the
 // forwarder or handler call sites.
+//
+// Contract between PeerAuth and HTTPForwarder.forward:
+//   - forward sets Content-Type: application/json as the default BEFORE
+//     calling Sign. Impls using a different wire format (e.g. AEAD) override
+//     it inside Sign. Transport-auth-only impls (e.g. mTLS carrying plain
+//     JSON) can leave it alone.
+//   - forward replaces req.Body with the returned wireBody after Sign.
+//     Impls may return body unchanged if authentication is fully transport
+//     layer.
 type PeerAuth interface {
 	// Sign transforms the plaintext body into an on-the-wire body, setting
 	// any required headers on req. The returned slice replaces req.Body at
-	// the call site. Implementations MAY write to req.Header but MUST NOT
-	// capture or retain req past the call.
+	// the call site. Implementations MAY write to req.Header (including
+	// overriding Content-Type) but MUST NOT capture or retain req past the
+	// call. A no-op impl may return body unchanged.
 	Sign(req *http.Request, body []byte) (wireBody []byte, err error)
 
 	// Verify reads the request body, validates it, and returns the

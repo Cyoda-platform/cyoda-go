@@ -102,6 +102,13 @@ func (f *HTTPForwarder) forward(ctx context.Context, url string, reqBody any, re
 		return fmt.Errorf("dispatch forward: build request: %w", err)
 	}
 
+	// Default Content-Type is application/json — the plaintext format the
+	// handler parses after Verify. PeerAuth impls MAY override this in Sign
+	// if they use a wire format that supersedes JSON (e.g. AEADPeerAuth sets
+	// application/cyoda-dispatch-v1); a pure-transport-auth impl like future
+	// mTLS can leave it alone.
+	httpReq.Header.Set("Content-Type", "application/json")
+
 	wire, err := f.auth.Sign(httpReq, plain)
 	if err != nil {
 		return fmt.Errorf("dispatch forward: sign body: %w", err)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -204,6 +205,131 @@ func TestAEADPeerAuth_DerivedKeyDiffersFromRawSecret(t *testing.T) {
 	}
 	if len(derived) != 32 {
 		t.Fatalf("derived key length = %d, want 32", len(derived))
+	}
+}
+
+// TestAEADPeerAuth_SkewBoundaryReplayStillRejected pins the relationship
+// between the skew window (30s) and the nonce-cache TTL (skew*2 = 60s) with
+// observed=tsTime indexing: an envelope stamped at T and first verified
+// anywhere within [T-skew, T+skew], then replayed anywhere else within the
+// same window, MUST be rejected. Code review flagged a suspected eviction
+// window where the cache would evict before skew could reject; this test
+// locks in the invariant that that window does not exist.
+func TestAEADPeerAuth_SkewBoundaryReplayStillRejected(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	clock := base
+	clockFn := func() time.Time { return clock }
+
+	a, err := dispatch.NewAEADPeerAuthWithClockForTesting(testSecret, 30*time.Second, clockFn)
+	if err != nil {
+		t.Fatalf("NewAEADPeerAuth: %v", err)
+	}
+
+	// Sign at T.
+	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
+	wire, err := a.Sign(req, []byte(`{"a":1}`))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	ts := req.Header.Get(dispatch.DispatchTimestampHdr)
+
+	build := func() *http.Request {
+		r := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader(wire))
+		r.Header.Set(dispatch.DispatchTimestampHdr, ts)
+		r.Header.Set("Content-Type", dispatch.DispatchContentType)
+		return r
+	}
+
+	// First verify at T+25s (inside skew). Must succeed.
+	clock = base.Add(25 * time.Second)
+	if _, _, err := a.Verify(build()); err != nil {
+		t.Fatalf("first verify at T+25s should succeed: %v", err)
+	}
+
+	// Replay at T+30s (skew boundary). Must be rejected as replay, not
+	// accepted due to premature eviction.
+	clock = base.Add(30 * time.Second)
+	if _, _, err := a.Verify(build()); err == nil {
+		t.Fatal("replay at skew boundary was accepted — nonce cache evicted too aggressively")
+	}
+
+	// Replay at T+31s (just past skew boundary). Must be rejected — now by
+	// the skew check, not the nonce cache. Either rejection is correct;
+	// the invariant is that it's NOT accepted.
+	clock = base.Add(31 * time.Second)
+	if _, _, err := a.Verify(build()); err == nil {
+		t.Fatal("replay just past skew boundary was accepted")
+	}
+}
+
+func TestAEADPeerAuth_ZeroTimestampRejected(t *testing.T) {
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
+	req.Header.Set(dispatch.DispatchTimestampHdr, "0")
+	req.Header.Set("Content-Type", dispatch.DispatchContentType)
+	if _, _, err := a.Verify(req); err == nil {
+		t.Fatal("ts=0 (1970-01-01) was accepted")
+	}
+}
+
+func TestAEADPeerAuth_NegativeTimestampRejected(t *testing.T) {
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
+	req.Header.Set(dispatch.DispatchTimestampHdr, "-1")
+	req.Header.Set("Content-Type", dispatch.DispatchContentType)
+	if _, _, err := a.Verify(req); err == nil {
+		t.Fatal("negative ts was accepted")
+	}
+}
+
+func TestAEADPeerAuth_FarFutureTimestampRejected(t *testing.T) {
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader([]byte{}))
+	// Year 4000 or so.
+	req.Header.Set(dispatch.DispatchTimestampHdr, "64060588800")
+	req.Header.Set("Content-Type", dispatch.DispatchContentType)
+	if _, _, err := a.Verify(req); err == nil {
+		t.Fatal("year-4000 ts was accepted")
+	}
+}
+
+func TestAEADPeerAuth_EmptyPlaintextRoundTrips(t *testing.T) {
+	// Body at the envelope minimum: empty plaintext seals to
+	// nonceSize(12) + overhead(16) = 28 bytes on the wire. Confirms the
+	// len() >= nonceSize + overhead guard accepts the boundary case.
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	req := httptest.NewRequest("POST", "/internal/dispatch/processor", nil)
+	wire, err := a.Sign(req, []byte{})
+	if err != nil {
+		t.Fatalf("Sign empty body: %v", err)
+	}
+	if len(wire) != 12+16 {
+		t.Fatalf("expected 28-byte envelope, got %d", len(wire))
+	}
+
+	req2 := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader(wire))
+	req2.Header.Set(dispatch.DispatchTimestampHdr, req.Header.Get(dispatch.DispatchTimestampHdr))
+	req2.Header.Set("Content-Type", dispatch.DispatchContentType)
+
+	pt, _, err := a.Verify(req2)
+	if err != nil {
+		t.Fatalf("Verify at envelope minimum: %v", err)
+	}
+	if len(pt) != 0 {
+		t.Fatalf("expected empty plaintext, got %d bytes", len(pt))
+	}
+}
+
+func TestAEADPeerAuth_ShortBodyRejected(t *testing.T) {
+	// One byte below the envelope minimum must be rejected before any
+	// decrypt attempt.
+	a, _ := dispatch.NewAEADPeerAuth(testSecret, 30*time.Second)
+	tooShort := make([]byte, 12+16-1)
+	req := httptest.NewRequest("POST", "/internal/dispatch/processor", bytes.NewReader(tooShort))
+	req.Header.Set(dispatch.DispatchTimestampHdr, strconv.FormatInt(time.Now().Unix(), 10))
+	req.Header.Set("Content-Type", dispatch.DispatchContentType)
+	if _, _, err := a.Verify(req); err == nil {
+		t.Fatal("short body (below envelope min) was accepted")
 	}
 }
 
