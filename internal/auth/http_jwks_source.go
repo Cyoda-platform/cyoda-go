@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,6 +42,18 @@ func NewHTTPJWKSSourceWithTransportForTesting(jwksURL string, cacheTTL time.Dura
 	return newHTTPJWKSSource(jwksURL, cacheTTL, transport)
 }
 
+// NewHTTPJWKSSourceWithRootCAsForTesting returns a KeySource built via the
+// production transport assembly (TLS 1.3 pinned, no InsecureSkipVerify) with
+// the given CertPool substituted as RootCAs. Tests use this to verify that
+// the **production** MinVersion is TLS 1.3 end-to-end against an httptest
+// TLS server — not just the test-transport variant. Production code MUST
+// use NewHTTPJWKSSource; grep-enforced.
+func NewHTTPJWKSSourceWithRootCAsForTesting(jwksURL string, cacheTTL time.Duration, rootCAs *x509.CertPool) KeySource {
+	transport := defaultJWKSTransport()
+	transport.TLSClientConfig.RootCAs = rootCAs
+	return newHTTPJWKSSource(jwksURL, cacheTTL, transport)
+}
+
 func newHTTPJWKSSource(jwksURL string, cacheTTL time.Duration, transport *http.Transport) *httpJWKSSource {
 	return &httpJWKSSource{
 		jwksURL:  jwksURL,
@@ -73,6 +86,10 @@ func (s *httpJWKSSource) GetKey(kid string) (*rsa.PublicKey, error) {
 		return key, nil
 	}
 
+	// Stale cache is treated as no cache: a refresh failure returns an error
+	// even if a previously-cached key for this kid is still in memory. This
+	// is fail-closed — better to reject a token than to validate against a
+	// key we can no longer confirm is current. Matches pre-refactor behaviour.
 	if err := s.refreshCache(); err != nil {
 		return nil, fmt.Errorf("failed to refresh JWKS cache: %w", err)
 	}

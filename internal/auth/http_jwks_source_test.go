@@ -56,11 +56,40 @@ func TestHTTPJWKSSource_RejectsTLS12OnlyEndpoint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected handshake failure against TLS 1.2-only endpoint, got nil")
 	}
-	// Should be a TLS handshake / protocol version failure. Don't overfit on
-	// the exact message, but require it to NOT look like a 404 or body error.
-	msg := err.Error()
-	if strings.Contains(msg, "status") || strings.Contains(msg, "invalid JWKS JSON") {
-		t.Fatalf("expected TLS/handshake error, got HTTP-level error: %v", err)
+	// Positively confirm it's a TLS protocol-version failure, not an
+	// incidental DNS/timeout that would also pass this test.
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "protocol version") && !strings.Contains(msg, "handshake") && !strings.Contains(msg, "tls") {
+		t.Fatalf("expected TLS/handshake error, got: %v", err)
+	}
+}
+
+// TestHTTPJWKSSource_ProductionTransportPinsTLS13 exercises the **production**
+// constructor NewHTTPJWKSSource via the RootCAs-injection testing variant.
+// This closes the coverage gap that the WithTransportForTesting variant
+// leaves: without this test, defaultJWKSTransport()'s MinVersion pin is
+// trusted by inspection rather than proven end-to-end.
+func TestHTTPJWKSSource_ProductionTransportPinsTLS13(t *testing.T) {
+	body := jwksJSONBody(t)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	srv.TLS = &tls.Config{MaxVersion: tls.VersionTLS12}
+	srv.StartTLS()
+	defer srv.Close()
+
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+
+	src := auth.NewHTTPJWKSSourceWithRootCAsForTesting(srv.URL, 5*time.Minute, pool)
+	_, err := src.GetKey("any")
+	if err == nil {
+		t.Fatal("production transport accepted TLS 1.2 handshake — MinVersion pin is broken")
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "protocol version") && !strings.Contains(msg, "handshake") && !strings.Contains(msg, "tls") {
+		t.Fatalf("expected TLS/handshake error from production transport, got: %v", err)
 	}
 }
 

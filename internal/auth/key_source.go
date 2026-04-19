@@ -35,7 +35,9 @@ func NewLocalKeySource(ks KeyStore) KeySource {
 func (s *localKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
 	kp, err := s.ks.Get(kid)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %q: %v", ErrKeyNotFound, kid, err)
+		// Double %w so callers can errors.Is against both ErrKeyNotFound
+		// (semantic) and the underlying KeyStore error (diagnostic).
+		return nil, fmt.Errorf("%w (kid=%q): %w", ErrKeyNotFound, kid, err)
 	}
 	return kp.PublicKey, nil
 }
