@@ -749,17 +749,51 @@ retryable conflicts.
 
 ## Appendix B: Scaling the fence — `Doctor` + `DutyRoster`
 
-Appendix A's processor calls `GetAll(Doctor)` on every `PROMOTE` and
-`STEP_DOWN`. That is O(total doctors) work per transition. In a small
-ward it is fine; in a hospital with ten thousand doctors across
-hundreds of shifts it becomes a scan hot path. Appendix B keeps the
-same SI+FCW fence guarantee but makes the contended read O(1).
+Doctors on call is a teaching example. The class of invariants it
+represents — "at most N members of a set may be in state Y, at any
+time" — is pervasive in production workloads, and in most of them the
+member population is orders of magnitude larger than a hospital
+roster:
+
+- **Payments.** "A customer may have at most K pending authorisations
+  against an account." Peer population: every authorisation in the
+  system — millions per tenant, tens of thousands per account.
+- **Consumer systems.** "A user may have at most N active sessions,
+  subscriptions, or API keys." Peer population: every session ever
+  created for that user.
+- **Inventory and oversell protection.** "At most `stock` orders may
+  hold a reserved unit of SKU X at any time." Peer population: every
+  reservation against that SKU.
+- **Rate-limited resources.** "At most N jobs may be in state RUNNING
+  for this queue." Peer population: every job routed through the queue.
+- **Regulated caps.** "A tenant may have at most N entities of type X
+  in state Y" for compliance-driven quotas. Peer population: the full
+  tenant corpus.
+
+Appendix A's processor calls `GetAll(Doctor)` on every `PROMOTE` /
+`STEP_DOWN`. That is O(peer population) per transition. For a small
+ward it is fine. For any of the examples above it is catastrophic: a
+payment-authorisation workflow doing a full scan of authorisations per
+write is not viable at any meaningful throughput, and the read-set it
+produces would make commit-time validation (`SELECT ... FOR SHARE`
+over the read-set on postgres) the bottleneck even before engine-level
+concerns kick in.
+
+The dual-entity model cuts this to O(1). The workflow stops asking
+"what is true of the whole peer population?" and instead reads and
+writes a dedicated **coordination entity** that maintains just the
+cap-relevant summary. Every transition that can violate the invariant
+passes through that single entity, and FCW on it serialises
+concurrent violators. The peer scan disappears; the fence remains.
 
 The idea concretises §5 alternative (a) — "promote the count to a
-materialised counter entity" — for the roster case: keep the roster
-membership in a dedicated `DutyRoster` entity with a well-known ID.
-Every `PROMOTE` / `STEP_DOWN` reads and writes that one entity;
-concurrent transitions collide on it via FCW.
+materialised counter entity" — for invariants over large populations.
+For the roster, the coordination entity is `DutyRoster`. For payments
+it would be `AccountAuthorizationCounter`; for sessions,
+`UserSessionCounter`; for inventory, the SKU's `Reservation` record.
+The shape is the same: one long-lived entity with a deterministic ID,
+read and written by every transition that crosses the cap boundary,
+contended-on by FCW.
 
 ### B.1 Two-entity model
 
