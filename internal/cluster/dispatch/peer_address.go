@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -47,7 +48,13 @@ func validatePeerAddress(raw string, allowLoopback bool) error {
 		return fmt.Errorf("%w: empty host in %q", ErrForbiddenPeerAddress, raw)
 	}
 
-	if ip := net.ParseIP(host); ip != nil {
+	// netip.ParseAddr handles IPv6 zone identifiers (e.g. fe80::1%eth0)
+	// that net.ParseIP rejects. Without this, such literals fall through
+	// to net.LookupIP, whose behaviour for zoned addresses varies by
+	// libc resolver — darwin strips the zone and resolves, Linux may not.
+	// Parsing uniformly as a literal keeps the guard platform-independent.
+	if addr, err := netip.ParseAddr(host); err == nil {
+		ip := addr.AsSlice()
 		if err := checkIP(ip, allowLoopback); err != nil {
 			return fmt.Errorf("%w: %v (%s)", ErrForbiddenPeerAddress, err, raw)
 		}

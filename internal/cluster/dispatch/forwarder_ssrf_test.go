@@ -43,6 +43,36 @@ func TestHTTPForwarder_RejectsLoopbackAddresses(t *testing.T) {
 	}
 }
 
+// TestHTTPForwarder_RejectsIPv6LinkLocalWithZoneID covers IPv6 link-local
+// literals that carry a zone identifier (`fe80::1%eth0`). net.ParseIP
+// rejects these, so the guard must either handle them directly or ensure
+// rejection still fires rather than falling through to a noisy DNS error.
+// The reported error must explicitly wrap ErrForbiddenPeerAddress with
+// a link-local reason — not a DNS-lookup failure that happens to reject
+// the address by accident.
+func TestHTTPForwarder_RejectsIPv6LinkLocalWithZoneID(t *testing.T) {
+	fw := dispatch.NewHTTPForwarder([]byte("test-secret-long-enough-for-constructor-checks"), time.Second)
+
+	_, err := fw.ForwardProcessor(context.Background(), "[fe80::1%eth0]:8080", makeProcessorReq())
+	if err == nil {
+		t.Fatal("forwarder accepted IPv6 link-local with zone ID")
+	}
+	if !errors.Is(err, dispatch.ErrForbiddenPeerAddress) {
+		t.Fatalf("expected ErrForbiddenPeerAddress, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "link-local") {
+		t.Errorf("expected error to cite link-local rejection, got %v", err)
+	}
+	// Platform-independence: the rejection must come from parsing
+	// fe80::1%eth0 as a literal IP, not from net.LookupIP accidentally
+	// resolving the zoned form to fe80::1 (which darwin does but other
+	// libc resolvers may not). If the error mentions "resolve" or
+	// "lookup" the code is taking the DNS path and the fix regressed.
+	if strings.Contains(err.Error(), "resolve") || strings.Contains(err.Error(), "lookup") {
+		t.Errorf("expected IP-literal rejection path (platform-independent); got DNS path: %v", err)
+	}
+}
+
 // TestHTTPForwarder_RejectsLinkLocalAddresses blocks the AWS/GCP/Azure
 // metadata-service SSRF vector. 169.254.169.254 is the canonical target;
 // the broader 169.254.0.0/16 range and IPv6 fe80::/10 are equally unsafe.
