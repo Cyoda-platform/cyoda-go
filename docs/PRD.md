@@ -1,14 +1,14 @@
 # Cyoda-Go: Product Requirements Document
 
-**Version:** 2.0
-**Date:** 2026-04-14
-**Status:** Target state after the storage-plugin architecture refactor (Plans 1–5). See `docs/superpowers/specs/2026-04-13-storage-plugin-architecture-design.md` for the refactor plan.
+**Version:** 2.1
+**Date:** 2026-04-18
+**Status:** Current as of 2026-04-18 (Helm provisioning shipped in PR #60; docs reconciled against commit at branch tip).
 
 ---
 
 ## 1. Product Vision and Target Use Case
 
-Cyoda-Go is an Entity Database Management System (EDBMS) — a database engine where the first-class abstraction is not a row or document but a *stateful entity* with schema, lifecycle, temporal history, and transactional integrity. Storage is provided by pluggable backends; the stock binary ships with in-memory (default) and PostgreSQL plugins, and third-party plugins can be compiled in to target other storage engines.
+Cyoda-Go is an Entity Database Management System (EDBMS) — a database engine where the first-class abstraction is not a row or document but a *stateful entity* with schema, lifecycle, temporal history, and transactional integrity. Storage is provided by pluggable backends; the stock binary ships with in-memory (default), SQLite, and PostgreSQL plugins, and third-party plugins can be compiled in to target other storage engines.
 
 ### Target Applications
 
@@ -21,23 +21,127 @@ High-complexity, high-consistency enterprise domains where correctness is non-ne
 
 ### Scale Profile
 
-Small compute clusters (3-10 stateless Go nodes) with a shared PostgreSQL instance. Active-active high availability — any node can serve any request. Moderate to high throughput bounded by PostgreSQL's write capacity.
+Scale envelope depends on the active storage plugin:
 
-> **Storage plugin architecture.** Cyoda-Go's storage layer is a plugin system defined by the stable `cyoda-go-spi` module (stdlib-only Go interfaces and value types). A running binary has exactly one active plugin, selected at startup via `CYODA_STORAGE_BACKEND`. The stock `cyoda-go` binary ships with the `memory` plugin (default, zero external dependencies) and the `postgres` plugin (durable storage with `SERIALIZABLE` isolation). A proprietary `cyoda-go-cassandra` plugin ships as a separate binary for deployments that need horizontal write scalability. Third-party plugins (Redis, ScyllaDB, FoundationDB, etc.) can be authored against `cyoda-go-spi` and compiled into a custom binary via a blank import. See `docs/ARCHITECTURE.md` Section 2 for the plugin contract and Section 9 for configuration.
+- **`memory`** — single process, bounded by host RAM.
+- **`sqlite`** — single node, persistent; throughput bounded by local
+  disk. No clustering.
+- **`postgres`** — small compute clusters (3–10 stateless Go nodes)
+  behind a load balancer, sharing a primary PostgreSQL. Active-active
+  HA; any node serves any request. Write throughput bounded by the
+  PostgreSQL primary.
+- **`cassandra`** (commercial) — multi-cluster, horizontal write
+  scale-out without a single-primary bottleneck.
+
+> **Storage plugin architecture.** Cyoda-Go's storage layer is a plugin
+> system defined by the stable `cyoda-go-spi` module (stdlib-only Go
+> interfaces and value types). A running binary has exactly one active
+> plugin, selected at startup via `CYODA_STORAGE_BACKEND`. The stock
+> `cyoda-go` binary ships with three open-source plugins:
+>
+> - **`memory`** (default) — ephemeral, microsecond-latency concurrency
+>   control for tests and high-throughput digital-twin workloads.
+> - **`sqlite`** — persistent, zero-ops single-node storage for desktop,
+>   edge, and containerised single-node production.
+> - **`postgres`** — durable multi-node storage; works against any
+>   managed PostgreSQL 14+ platform.
+>
+> A commercial `cassandra` plugin is also available from Cyoda for
+> deployments that need horizontal write scalability beyond what a
+> single-primary PostgreSQL can provide — see
+> [cyoda.com](https://www.cyoda.com) and use its contact page.
+>
+> Third-party plugins (Redis, ScyllaDB, FoundationDB, etc.) can be
+> authored against `cyoda-go-spi` and compiled into a custom binary via
+> a blank import. See `docs/ARCHITECTURE.md` for the plugin contract,
+> `docs/plugins/` for per-plugin specifics, and `docs/CONSISTENCY.md`
+> for the isolation guarantee shared across all backends.
 
 ### Core Value Proposition
 
-Zero-compromise transactional safety. Each transaction holds a `pgx.Tx` handle in a single node's process memory, executing under PostgreSQL's `SERIALIZABLE` isolation. This guarantees:
+Cyoda-Go delivers two properties that are usually traded off against
+each other: **zero-compromise transactional safety** and **immutable
+bi-temporal history at current-read performance**. Both are uniform
+across every storage plugin.
 
-- **Strict read-your-own-writes** — within a transaction, reads always reflect prior writes from that transaction, even before commit
-- **Snapshot isolation** — concurrent transactions see a consistent snapshot, with conflict detection at commit time
-- **No distributed transaction coordinator** — PostgreSQL is the single source of truth; no two-phase commit, no Paxos, no Raft
+#### 1. Zero-compromise transactional safety
+
+Every storage plugin delivers the same isolation contract: **Snapshot
+Isolation with First-Committer-Wins on entity-level conflicts.** This
+guarantees:
+
+- **Strict read-your-own-writes** — within a transaction, reads always
+  reflect prior writes from that transaction, even before commit.
+- **Snapshot isolation** — concurrent transactions see a consistent
+  snapshot taken at `Begin`; a concurrent committer's writes are
+  invisible to us until we commit.
+- **First-committer-wins on entity-level conflicts** — two transactions
+  contending on the same entity: exactly one commits, the other
+  aborts with `spi.ErrConflict` and can retry.
+- **No separate coordination daemon** — cyoda-go does not run its own
+  ZooKeeper, etcd, or Raft cluster for transaction coordination. Open-
+  source plugins achieve the contract against their storage engine's
+  own primitives (PostgreSQL `REPEATABLE READ` + row-level locks +
+  commit-time read-set validation; application-layer committed-log
+  tracking in memory / sqlite). The commercial Cassandra plugin
+  coordinates transactions plugin-internally. In every case the
+  deployment footprint is: cyoda-go + your chosen storage — nothing
+  else to operate.
+
+The uniform contract across backends is a deliberate design choice:
+application code sees the same concurrency semantics regardless of
+which storage plugin is active. See `docs/CONSISTENCY.md` for the
+full contract, the phantom-read caveat, the operational rule for
+workflow authors, and the isolation-level taxonomy.
+
+#### 2. Immutable bi-temporal history as a first-class property
+
+Every mutation to an entity produces an **immutable version**. Prior
+versions are never overwritten and never deleted — soft-delete itself
+is a version in the chain, reversible without data loss. The version
+chain *is* the audit trail; there is no separate audit table that can
+drift from state.
+
+Every version carries two timestamps:
+
+- **`valid_time`** — when the fact was true in the domain.
+- **`transaction_time`** — when the system recorded it.
+
+This bi-temporal model answers both "what did we know, and when?" and
+"what was true, and when?" — the distinction that compliance,
+reconciliation, and historical reporting workloads require. Correcting
+a past fact adds a new version with earlier `valid_time` and current
+`transaction_time`; the original recording remains visible for audit.
+
+**Point-in-time reads run at the same performance class as current
+reads.** Current-state reads are primary-key lookups on a
+materialised `entities` table (one row per live entity). Historical
+reads (`GetAsAt`, `GetAllAsAt`) are indexed seeks against a dedicated
+bi-temporal composite index (`idx_ev_bitemporal` on
+`(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in
+the postgres plugin). Both are constant-time index operations — no
+version-chain scan, no rebuild, no reconstruction from an event log.
+
+This combination — transactional safety with no phantom-wide
+trade-offs, plus audit-grade history with no performance penalty —
+is what an Entity Database Management System is for. Systems that
+bolt on audit trails after the fact typically pay either a write-path
+tax (double-write to an audit table, eventually consistent), a
+read-path tax (reconstruct state from an event log on every historical
+read), or both. Cyoda-Go pays neither: history is the native storage
+model, and the current-state projection is the cache.
 
 ### Cost Model
 
-- A standard HA PostgreSQL instance (managed or self-hosted)
-- A small number of stateless Go binaries behind a load balancer
-- No ZooKeeper, no etcd, no Kafka, no distributed cache infrastructure
+Cost shape by plugin:
+
+- `memory` / `sqlite`: zero infra. The binary is the deployment.
+- `postgres`: a standard HA PostgreSQL instance (managed or
+  self-hosted) plus a small number of stateless Go binaries behind a
+  load balancer. No ZooKeeper, no etcd, no Kafka, no distributed cache.
+- `cassandra` (commercial): a Cassandra cluster plus stateless Go
+  binaries. Aligned with the Cassandra operational model; contact
+  Cyoda for a sizing conversation.
 
 ---
 
@@ -121,7 +225,16 @@ Each entity follows a workflow — a directed graph of states connected by trans
 |------|---------|--------|
 | **Automated** | Fires on state entry when criteria are met | Criteria evaluation |
 | **Manual** | Explicit API call (`POST /entity/{entityId}/{transition}`) | Criteria evaluation |
-| **Loopback** | Self-transition that re-triggers automation from the current state | Criteria evaluation |
+
+#### Loopback
+
+Loopback is an operation, not a transition type. A client can invoke
+`PUT /entity/{id}?loopback` to re-evaluate the entity's automated
+transitions from its current state without forcing a manual transition.
+Useful for retriggering workflow logic after the entity's data has
+changed via a non-workflow path (e.g. an external processor's
+callback), or after external preconditions that criteria depend on
+have changed.
 
 ### Criteria Types
 
@@ -155,7 +268,7 @@ Processors may create or mutate other entities, triggering further workflow trav
 
 ### Audit Trail
 
-13 event types track the full state machine narrative:
+12 event types track the full state machine narrative:
 
 - Workflow selection (selected, not found)
 - Transition attempts (attempted, made, denied, failed)
@@ -171,13 +284,25 @@ Filterable by event type, severity, time range, transaction ID. Cursor-based pag
 
 ### ACID Guarantees
 
-Cyoda-Go provides full ACID transactions. Each storage plugin supplies its own `TransactionManager` matching its storage engine's semantics:
+Cyoda-Go provides ACID transactions with a specific, uniform isolation
+contract across all plugins: **Snapshot Isolation with
+First-Committer-Wins on entity-level conflicts** (SI+FCW). This is the
+"I" in ACID — it is not full ACID-Serializable, and the distinction
+matters (see `docs/CONSISTENCY.md` for the phantom-read caveat and the
+operational rule for workflow authors). Each storage plugin supplies
+its own `TransactionManager` that realises this contract against its
+engine's primitives:
 
-| Plugin | Isolation | Conflict Detection | Handle |
-|--------|-----------|-------------------|--------|
-| **memory** | Serializable Snapshot Isolation (SSI) | Entity-level read set + write set tracking | In-process `Transaction` struct |
-| **postgres** | `SERIALIZABLE` (SSI via predicate locks) | PostgreSQL-native (error `40001` mapped to `CONFLICT`) | In-process lifecycle tracker; `pgx.Tx` held per-statement inside stores |
-| **cassandra** (proprietary plugin, separate binary) | SSI via custom coordinator + 2PC over a message broker | Per-entity version checks, HLC fencing, shard-epoch LWT | Coordinator-managed, multi-phase |
+| Plugin | Engine primitives | Handle |
+|--------|-------------------|--------|
+| **memory** | Application-layer committed-log scan; entity-level read set + write set tracking | In-process `Transaction` struct |
+| **sqlite** | Application-layer first-committer-wins over a single-writer SQLite transaction | In-process coordinator + local `sql.Tx` |
+| **postgres** | PostgreSQL `REPEATABLE READ` + row-level locks + commit-time read-set validation; conflicts surface as `spi.ErrConflict` | In-process lifecycle tracker; `pgx.Tx` held per-statement inside stores |
+| **cassandra** (commercial) | Proprietary mechanism against Cassandra primitives, delivering the same SI+FCW contract | Plugin-managed |
+
+The memory and sqlite plugins share an application-layer
+first-committer-wins implementation; the commercial Cassandra plugin
+implements the same contract against its own primitives.
 
 ### Transaction Lifecycle
 
@@ -189,33 +314,55 @@ BEGIN ──► READ/WRITE ──► COMMIT
   └──► ROLLBACK ◄──── timeout (TTL reaper)
 ```
 
-1. **Begin** — Snapshot time captured. In-memory: empty read/write sets. PostgreSQL: `BEGIN SERIALIZABLE`.
+1. **Begin** — Snapshot established. Each plugin captures its own snapshot primitive (committed-log watermark for memory/sqlite; PostgreSQL transaction snapshot under `REPEATABLE READ`).
 2. **Read** — Check transaction buffer first (read-your-own-writes), then snapshot view.
 3. **Write** — Buffered in transaction. Not visible to other transactions until commit.
-4. **Commit** — Conflict detection. In-memory: check concurrent writes against read/write sets. PostgreSQL: native SSI validation. Atomic flush on success.
-5. **Rollback** — Discard buffer (in-memory) or `ROLLBACK` (PostgreSQL).
+4. **Commit** — Entity-level read-set validation at commit time. Conflicts surface as `spi.ErrConflict` (retryable).
+5. **Rollback** — Discard buffer; release plugin-level resources.
 
 ### Read-Your-Own-Writes
 
 Within a transaction, all reads reflect prior writes from that transaction, even before commit. This is critical for processor cascade correctness — a processor that creates entity B must be able to read entity B in the same transaction.
 
-**Implementation:** The transaction maintains a write buffer. Read operations check the buffer before the underlying store. This holds for both in-memory and PostgreSQL backends (PostgreSQL's `SERIALIZABLE` isolation provides this natively; the in-memory backend replicates it via explicit buffering).
+**Implementation:** The transaction maintains a write buffer. Read operations check the buffer before the underlying store. This holds uniformly across all backends.
 
 ### Conflict Detection
 
-**In-Memory SSI:** On commit, scan the committed transaction log for transactions committed after our snapshot time. If any committed transaction's write set intersects our read set or write set, abort with `CONFLICT` (409, `retryable: true`).
-
-**PostgreSQL:** Native SSI predicate locking. PostgreSQL raises a serialization failure if concurrent transactions conflict. The application catches `40001` and returns `CONFLICT`.
+Entity-level read-set validation at commit time; conflicts surface as
+`spi.ErrConflict` (retryable, returned to the client as
+`CONFLICT` / HTTP 409). The mechanism differs per plugin — memory and
+sqlite scan a committed-transaction log for intersecting write sets;
+postgres uses row-level locks plus a commit-time re-validation pass;
+the commercial cassandra plugin uses its proprietary coordinator —
+but the contract is the same. See `docs/CONSISTENCY.md` for depth.
 
 ### Transaction Timeout and Reaper
 
-Transactions have a configurable TTL (default: 30 seconds). A background reaper goroutine periodically scans for expired transactions and rolls them back. The TTL aligns with PostgreSQL's `idle_in_transaction_session_timeout`.
+Transactions have a configurable TTL (default: 60 seconds, set via `CYODA_TX_TTL`). A background reaper goroutine periodically scans for expired transactions and rolls them back. For the PostgreSQL plugin, the TTL should align with the server-side `idle_in_transaction_session_timeout`.
 
 ### Multi-Node Transaction Affinity
 
-In a multi-node cluster, the `pgx.Tx` handle lives in a single node's process memory. The transaction token encodes which node owns the transaction (see Section 9). All subsequent requests for that transaction are routed to the owning node — there is no distributed transaction protocol.
+In a multi-node cluster running the **postgres plugin**, the `pgx.Tx`
+handle lives in a single node's process memory. The transaction token
+encodes which node owns the transaction (see Section 9). All
+subsequent requests for that transaction are routed to the owning
+node — no distributed transaction coordination inside cyoda-go.
 
-If the owning node dies, the transaction dies. PostgreSQL automatically rolls back the connection. The client receives `TRANSACTION_NODE_UNAVAILABLE` and must retry from scratch.
+If the owning node dies, the transaction dies. PostgreSQL
+automatically rolls back the connection. The client receives
+`TRANSACTION_NODE_UNAVAILABLE` and must retry from scratch. Trading
+this failure mode for operational simplicity (no Paxos, no Raft, no
+ZooKeeper in the cyoda-go process) is a deliberate choice — see §9.
+
+The commercial **Cassandra plugin** takes a different approach: the
+plugin coordinates transactions across the cluster, so a transaction
+is not pinned to a single owning node and does not fail when any one
+node becomes unavailable mid-transaction. This removes the
+`TRANSACTION_NODE_UNAVAILABLE` failure mode and is one of the
+operational advantages of the Cassandra plugin over the postgres
+plugin in high-availability deployments. The coordination mechanism
+is plugin-internal; contact [Cyoda](https://www.cyoda.com) for
+architectural details.
 
 ---
 
@@ -270,14 +417,22 @@ SUBMIT ──► RUNNING ──► SUCCESSFUL ──► (retrieve results) ─�
 
 **Point-in-time:** The job captures `pointInTime` at submission (caller-specified or wall clock). Result entity IDs are stored; entity data is re-fetched at the job's point-in-time on retrieval.
 
-### Predicate Operators (23)
+### Predicate Operators (26)
 
 | Category | Operators |
 |----------|-----------|
-| **Equality** | `EQUALS`, `NOT_EQUAL`, `IS_NULL`, `NOT_NULL` |
-| **Comparison** | `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE` |
-| **String** | `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `MATCHES_PATTERN`, `LIKE` |
-| **Case-Insensitive** | `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH` |
+| **Equality** (4) | `EQUALS`, `NOT_EQUAL`, `IS_NULL`, `NOT_NULL` |
+| **Comparison** (6) | `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE` |
+| **String** (8) | `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `MATCHES_PATTERN`, `LIKE` |
+| **Case-Insensitive** (8) | `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH` |
+
+The four category subtotals sum to 26 (4 + 6 + 8 + 8).
+
+Two additional operators, `IS_CHANGED` and `IS_UNCHANGED`, are planned
+— they are reachable in the API and routed through the predicate
+machinery, but currently return `"operator X not implemented"` at
+runtime until the feature lands. They are excluded from the 26-count
+above.
 
 ### Condition Types
 
@@ -507,7 +662,7 @@ All operations use CloudEvent envelopes with JSON payloads, matching the Cyoda C
 
 ### Single Binary
 
-Cyoda-Go compiles to a single Go binary. No runtime dependencies beyond the binary itself (in memory mode) or PostgreSQL (in postgres mode).
+Cyoda-Go compiles to a single Go binary. No runtime dependencies beyond the binary itself (in memory or sqlite mode) or PostgreSQL (in postgres mode).
 
 **Container image:** Distroless base (`gcr.io/distroless/static-debian12`). Minimal attack surface.
 
@@ -516,8 +671,9 @@ Cyoda-Go compiles to a single Go binary. No runtime dependencies beyond the bina
 | Mode | Dependencies | Use Case |
 |------|-------------|----------|
 | **Standalone (memory)** | None | Development, testing, CI |
-| **Standalone (PostgreSQL)** | PostgreSQL 17+ | Single-node production |
-| **Multi-node cluster** | PostgreSQL 17+, nginx LB | HA production |
+| **Standalone (sqlite)** | None — embedded WASM SQLite + a writable data directory | Desktop, edge, containerised single-node production |
+| **Standalone (PostgreSQL)** | PostgreSQL 14+ | Single-node production |
+| **Multi-node cluster** | PostgreSQL 14+, nginx LB | HA production |
 
 ### Multi-Node Docker Deployment
 
@@ -530,7 +686,7 @@ Cyoda-Go compiles to a single Go binary. No runtime dependencies beyond the bina
 │ Node 2  │
 │ Node 3  │
 ├─────────┤
-│PostgreSQL│ ← Shared, SERIALIZABLE isolation
+│PostgreSQL│ ← Shared primary; SI+FCW contract (REPEATABLE READ + row locks)
 └─────────┘
 ```
 
@@ -547,13 +703,16 @@ A running binary has exactly one active storage plugin. Per-store routing (mixin
 | Plugin | Dependencies | Use case |
 |--------|--------------|----------|
 | **memory** (default) | None — in-process Go maps | Rapid development, agent-driven application engineering, embedded/test usage. Single-node only; data is lost on restart. |
-| **postgres** | PostgreSQL 17+ | Production durability; single-node or multi-node clusters (3–10 nodes) behind a load balancer. All cluster state flows through PostgreSQL as the consistency authority. |
+| **sqlite** | None — WASM SQLite embedded in the binary | Persistent single-node storage for desktop, edge, and containerised single-node production. Single-process only (flock-guarded); no NFS. |
+| **postgres** | PostgreSQL 14+ | Production durability; single-node or multi-node clusters (3–10 nodes) behind a load balancer. All cluster state flows through PostgreSQL as the consistency authority. |
 
-### Proprietary Plugin (separate binary: `cyoda-go-cassandra`)
+### Commercial Plugin (available from Cyoda)
 
-| Plugin | Dependencies | Use case |
-|--------|--------------|----------|
-| **cassandra** | Apache Cassandra 4.x+, message broker (Kafka/Redpanda) | Deployments that outgrow a single PostgreSQL instance and need horizontal write scalability. SSI guarantees preserved via a custom 2-phase commit coordinator protocol. Higher operational complexity. |
+A commercial `cassandra` plugin is also available for deployments that
+need horizontal write scalability beyond what a single-primary
+PostgreSQL can provide. It delivers the same SI+FCW isolation contract
+as the stock plugins. See [cyoda.com](https://www.cyoda.com) for
+details and sizing guidance.
 
 ### Writing a Third-Party Plugin
 
@@ -570,12 +729,15 @@ Users compose a custom binary by blank-importing plugins alongside `cyoda-go`:
 ```go
 import (
     _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
+    _ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
     _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
     _ "example.com/my-redis-plugin"
 )
 ```
 
-The `memory` and `postgres` plugins serve as reference implementations. See `docs/ARCHITECTURE.md` Section 2 for the full contract.
+The `memory`, `sqlite`, and `postgres` plugins serve as reference
+implementations. See `docs/ARCHITECTURE.md` for the full plugin
+contract and `docs/plugins/` for per-plugin operational detail.
 
 ---
 
@@ -645,13 +807,18 @@ Error responses follow RFC 9457 (Problem Details). Error detail level controlled
 
 ### OpenTelemetry
 
-OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and log correlation use the OTel SDK with OTLP HTTP exporters. HTTP requests are auto-traced via `otelhttp`. Transaction lifecycle operations (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) produce spans with duration/active/conflict metrics regardless of which plugin is active (the core wraps the plugin's `TransactionManager` with a tracing decorator). Workflow engine and externalized processor dispatch are traced. Plugins may add their own instrumentation — the `cyoda-go-cassandra` plugin, for example, emits per-CQL timing histograms, batch execution metrics, concurrency limiter metrics, and commit-protocol phase spans. A Grafana / Prometheus / Tempo dashboard ships with the bundled docker environment. Standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`) configure export and sampling.
+OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and log correlation use the OTel SDK with OTLP HTTP exporters. HTTP requests are auto-traced via `otelhttp`. Transaction lifecycle operations (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) produce spans with duration/active/conflict metrics regardless of which plugin is active (the core wraps the plugin's `TransactionManager` with a tracing decorator). Workflow engine and externalized processor dispatch are traced. Plugins may add their own plugin-namespaced spans and metrics as their hot-path semantics warrant. A Grafana / Prometheus / Tempo dashboard ships with the bundled docker environment. Standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`) configure export and sampling.
 
 ---
 
 ## 14. Scale Profile and Operational Boundaries
 
-### Target Operating Envelope
+### Target Operating Envelope (PostgreSQL plugin, multi-node)
+
+The envelope below characterises the multi-node PostgreSQL
+deployment. The `memory` and `sqlite` plugins are single-node and
+bounded by host resources; the commercial `cassandra` plugin has its
+own envelope (contact Cyoda).
 
 | Dimension | Sweet Spot | Upper Bound | Notes |
 |-----------|-----------|-------------|-------|
@@ -659,19 +826,19 @@ OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and lo
 | Concurrent transactions | 50–250 | ~750 (3 nodes × 25 PG connections) | Bounded by PG connection pool × node count |
 | Entity volume | Up to millions per model | Bounded by PG storage | Version history grows monotonically (append-only, no compaction) |
 | Transaction duration | < 1 second (ideal) | 60 seconds (default TTL) | Each second of transaction duration consumes one PG connection |
-| Write throughput | 50–200 entity creates/s per node | Bounded by PG SERIALIZABLE | Contention on same entities triggers serialization failures + retries |
+| Write throughput | 50–200 entity creates/s per node | Bounded by PG primary throughput | Contention on same entities triggers SI+FCW conflicts + retries |
 | Compute processor latency | < 500 ms | 30s (default timeout) | Processor duration dominates transaction duration |
 
 ### Where This Design Excels (PostgreSQL plugin)
 
-- **Transactional correctness:** Zero-compromise SERIALIZABLE isolation. No eventual consistency, no conflict windows, no split-brain. PostgreSQL is the single source of truth.
+- **Transactional correctness:** Zero-compromise SI+FCW isolation (see `docs/CONSISTENCY.md`). No eventual consistency, no conflict windows, no split-brain. PostgreSQL is the single source of truth.
 - **Operational simplicity:** One PostgreSQL instance plus stateless Go binaries. No ZooKeeper, no Kafka, no external service discovery.
 - **Development velocity:** The `memory` plugin runs with zero dependencies. Same code, same tests, same APIs as production.
 - **Small-to-medium data volumes:** For financial ledgers, regulatory records, order management — datasets that fit comfortably in a single PostgreSQL instance (terabytes, not petabytes).
 
 ### Where This Design Has Limits (PostgreSQL plugin)
 
-- **Write-heavy workloads at scale:** All writes go through a single PostgreSQL instance. The PostgreSQL plugin cannot shard writes across storage nodes. The `cassandra` plugin (separate `cyoda-go-cassandra` binary) is the answer for deployments that outgrow a single PostgreSQL instance and need horizontal write scalability.
+- **Write-heavy workloads at scale:** All writes go through a single PostgreSQL primary. The PostgreSQL plugin cannot shard writes across storage nodes. The commercial `cassandra` plugin from Cyoda is the answer for deployments that outgrow a single PostgreSQL instance and need horizontal write scalability.
 - **Long-running transactions:** A 10-second processor holds a PG connection for 10+ seconds, limiting concurrency.
 - **Large cluster sizes:** Beyond 10 nodes, the benefits of adding nodes diminish — compute capacity scales, but write capacity does not.
 - **Unbounded version histories:** Append-only entity versioning has no built-in archival. Long-lived entities with frequent updates accumulate version chains that slow point-in-time queries.
@@ -680,33 +847,20 @@ OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and lo
 
 | Symptom | Signal to switch | Destination |
 |---------|------------------|-------------|
-| Transactions per second saturating a single PG instance, or growth trajectory will exceed PG single-node capacity within 12 months | Write throughput ceiling | `cyoda-go-cassandra` binary (cassandra plugin) |
-| Cluster size consistently above 10 nodes with write bottleneck | Scale-out ceiling | `cyoda-go-cassandra` binary |
+| Transactions per second saturating a single PG instance, or growth trajectory will exceed PG single-node capacity within 12 months | Write throughput ceiling | Commercial `cassandra` plugin (contact Cyoda) |
+| Cluster size consistently above 10 nodes with write bottleneck | Scale-out ceiling | Commercial `cassandra` plugin (contact Cyoda) |
 | Storage engine has no match in the stock lineup (e.g. cloud-native KV store, specialized time-series engine) | Plugin fit | Third-party plugin (author against `cyoda-go-spi`) |
 
 See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Section 14 for detailed technical limits, latency expectations, and sizing guidance.
 
 ---
 
-## 15. Planned Features
-
-Items carried forward from the `cyoda-light-go` predecessor repository that are not yet implemented against the refactored architecture. Issue numbers will be re-opened in the `cyoda-go` repository when each item is scheduled.
-
-| Title | Category | Description |
-|-------|----------|-------------|
-| Commit marker for transaction commit ambiguity resolution | HA Safety (PostgreSQL plugin) | Resolve ambiguity when a node dies after PostgreSQL COMMIT but before responding to the client. Write a commit marker to a separate table inside the transaction; clients can query the marker to determine if their transaction actually committed. |
-| Strict context deadline propagation across flow chain | Performance, HA Safety | Propagate `context.Context` deadlines through the entire flow chain (workflow cascade, processor dispatch, gRPC callbacks). Prevent unbounded execution when upstream has already timed out. |
-| Multi-node cluster E2E test with proxy routing | Test Coverage | End-to-end test exercising the full multi-node flow: client creates entity on node A, processor callback lands on node B, node B proxies to node A, commit succeeds. Validates transaction routing under realistic conditions. |
-| Batch SaveResults with pgx.CopyFrom | Performance (PostgreSQL plugin) | Replace row-by-row INSERT in `SaveResults` with `pgx.CopyFrom` for bulk loading of search job result IDs into PostgreSQL. |
-| Idempotency keys | HA Safety | Client-provided keys to prevent duplicate operations on retry (addresses the client-side commit-ambiguity path). |
-| Conformance test suite (`cyoda-go-spi/spitest/`) | Plugin ecosystem | Shared behavioral conformance harness for any plugin to run against its own `StoreFactory`. Scheduled for after the cassandra plugin extraction. |
-
----
-
 ## References
 
 - **Architecture:** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)
+- **Consistency contract:** [`docs/CONSISTENCY.md`](CONSISTENCY.md)
+- **Per-plugin documentation:** [`docs/plugins/`](plugins/)
 - **Architecture Decision Records:** [`docs/adr/`](adr/)
 - **OpenAPI Specification:** `api/openapi.yaml`
 - **Storage Plugin SPI module:** [github.com/cyoda-platform/cyoda-go-spi](https://github.com/cyoda-platform/cyoda-go-spi)
-- **Proprietary Cassandra plugin:** [github.com/cyoda-platform/cyoda-go-cassandra](https://github.com/cyoda-platform/cyoda-go-cassandra) (private)
+- **Commercial Cassandra plugin:** contact Cyoda via [cyoda.com](https://www.cyoda.com)

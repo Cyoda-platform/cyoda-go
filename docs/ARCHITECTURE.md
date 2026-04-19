@@ -1,10 +1,10 @@
 # Cyoda-Go Architecture
 
-**Version:** 2.0
-**Date:** 2026-04-14
-**Status:** Target state after the storage-plugin architecture refactor (Plans 1–5). See `docs/superpowers/specs/2026-04-13-storage-plugin-architecture-design.md` for the refactor plan.
+**Version:** 2.1
+**Date:** 2026-04-18
+**Status:** Current as of 2026-04-18 (Helm provisioning shipped in PR #60; docs reconciled against commit at branch tip).
 
-Technical architecture reference for Cyoda-Go, a Go implementation of the Cyoda platform with a pluggable storage layer. This document targets system architects familiar with distributed systems concepts (CAP theorem, SERIALIZABLE isolation, SWIM gossip protocols, Serializable Snapshot Isolation).
+Technical architecture reference for Cyoda-Go, a Go implementation of the Cyoda platform with a pluggable storage layer. This document targets system architects familiar with distributed systems concepts (CAP theorem, Snapshot Isolation, SWIM gossip protocols, first-committer-wins validation).
 
 For product-level context, see the [PRD](PRD.md).
 
@@ -31,9 +31,11 @@ For product-level context, see the [PRD](PRD.md).
 
 ## 1. System Overview
 
-Cyoda-Go is a **modular monolith** organized by Domain-Driven Design boundaries, with a **pluggable storage layer** defined by an external SPI module. The storage contract (`cyoda-go-spi`) is a small, stable, stdlib-only Go module. Storage implementations live in separately versioned Go modules — stock plugins (`plugins/memory`, `plugins/postgres`) under this repository, proprietary and third-party plugins in their own repositories. The `cyoda-go` binary resolves its active plugin at startup via `spi.GetPlugin(cfg.StorageBackend)`; a custom binary including a third-party plugin is a one-file edit (blank import) of the `main` package.
+Cyoda-Go is a **modular monolith with a ports-and-adapters architecture**. The stable external port is `cyoda-go-spi`, a small stdlib-only Go module that defines the storage contract. Adapters are storage plugins in separately versioned Go modules — stock plugins (`plugins/memory`, `plugins/sqlite`, `plugins/postgres`) under this repository, proprietary and third-party plugins in their own repositories. The `cyoda-go` binary resolves its active plugin at startup via `spi.GetPlugin(cfg.StorageBackend)`; a custom binary including a third-party plugin is a one-file edit (blank import) of the `main` package.
 
-Non-storage cross-cutting concerns (authentication, audit, processing dispatch, cluster registry) are defined as internal-to-cyoda-go Go interfaces in `internal/contract/`. These are consumer-side contracts between cyoda-go's own layers — not plugin concerns.
+Non-storage cross-cutting concerns (authentication, audit, processing dispatch, cluster registry) are defined as internal-to-cyoda-go Go interfaces in `internal/contract/`. These are consumer-side ports between cyoda-go's own layers — not plugin concerns.
+
+Domain concepts are grouped under `internal/domain/` by responsibility (`entity`, `workflow`, `model`, `search`, `messaging`, `audit`, `account`). Each follows a consistent handler/service layering over the storage port.
 
 ### Repositories
 
@@ -41,32 +43,41 @@ Non-storage cross-cutting concerns (authentication, audit, processing dispatch, 
 |--------|------|---------|---------|
 | `cyoda-go` | github.com/cyoda-platform/cyoda-go | Application core + stock plugins | Apache 2.0 |
 | `cyoda-go-spi` | github.com/cyoda-platform/cyoda-go-spi | Storage-plugin contract (stdlib only) | Apache 2.0 |
-| `cyoda-go-cassandra` | github.com/cyoda-platform/cyoda-go-cassandra | Proprietary Cassandra storage plugin + full binary | Proprietary |
 
 ### Package Layout (`cyoda-go`)
 
 ```
 cmd/
-  cyoda-go/main.go        Entrypoint; blank-imports stock plugins
+  cyoda/main.go           Entrypoint; blank-imports stock plugins
   compute-test-client/    Local compute harness for parity tests
 go.mod                    module github.com/cyoda-platform/cyoda-go
-go.work                   Lists ., plugins/memory, plugins/postgres
+go.work                   Lists ., plugins/memory, plugins/postgres, plugins/sqlite
 
 plugins/                  Each plugin is its own Go module
   memory/
     go.mod                module github.com/cyoda-platform/cyoda-go/plugins/memory
     plugin.go             init() → spi.Register; Name() + NewFactory()
     store_factory.go      Implements spi.StoreFactory
-    txmanager.go          Implements spi.TransactionManager (in-process SSI)
+    txmanager.go          Implements spi.TransactionManager (in-process SI+FCW)
     entity_store.go
     model_store.go, kv_store.go, message_store.go, workflow_store.go
     sm_audit_store.go, search_store.go
     doc.go                Reference example for plugin authors
+  sqlite/
+    go.mod                module github.com/cyoda-platform/cyoda-go/plugins/sqlite
+    plugin.go             init() → spi.Register; Name() + NewFactory() + ConfigVars()
+    store_factory.go      Implements spi.StoreFactory
+    txmanager.go          Application-layer SI+FCW
+    entity_store.go, model_store.go, kv_store.go, message_store.go
+    workflow_store.go, sm_audit_store.go, search_store.go
+    query_planner.go, searcher.go, post_filter.go  Predicate pushdown to SQL
+    migrate.go            Embedded schema migrations
+    migrations/
   postgres/
     go.mod                module github.com/cyoda-platform/cyoda-go/plugins/postgres
     plugin.go             init() → spi.Register; Name() + NewFactory() + ConfigVars()
     store_factory.go      Implements spi.StoreFactory
-    txmanager.go          Lifecycle-only tx manager (~150 loc)
+    txmanager.go          Lifecycle + savepoint tx manager (~370 loc)
     entity_store.go, entity_doc.go
     model_store.go, kv_store.go, message_store.go, workflow_store.go
     sm_audit_store.go, search_store.go
@@ -141,7 +152,7 @@ The AST is stdlib-only. A plugin that translates predicates to its own query dia
 
 type Plugin interface {
     Name() string
-    NewFactory(getenv func(string) string, opts ...FactoryOption) (StoreFactory, error)
+    NewFactory(ctx context.Context, getenv func(string) string, opts ...FactoryOption) (StoreFactory, error)
 }
 
 type DescribablePlugin interface {   // optional — for --help rendering
@@ -174,6 +185,7 @@ A plugin registers itself from `init()`. The `cyoda-go/main.go` blank-imports th
 import (
     _ "github.com/cyoda-platform/cyoda-go/plugins/memory"
     _ "github.com/cyoda-platform/cyoda-go/plugins/postgres"
+    _ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 ```
 
@@ -228,9 +240,8 @@ if clusterSvc != nil && clusterSvc.Broadcaster() != nil {
 factory, err := plugin.NewFactory(ctx, os.Getenv, opts...)
 
 // Start runs BEFORE TransactionManager: plugins whose TM depends on
-// Start's side effects (e.g. cassandra's shard-rebalance wait) would
-// otherwise init a half-ready TM. Plugins with no background
-// lifecycle (memory, postgres) don't implement Startable and this is
+// Start's side effects would otherwise init a half-ready TM. Plugins
+// with no background lifecycle don't implement Startable and this is
 // a no-op for them.
 if s, ok := factory.(spi.Startable); ok {
     s.Start(ctx)
@@ -241,128 +252,61 @@ txMgr, _ := factory.TransactionManager(ctx)
 
 No per-store routing. No swap logic for transaction managers. Every store in the binary comes from the same plugin, and the plugin supplies its own `TransactionManager` whose semantics match its storage engine.
 
-### 2.1 The `memory` Plugin
+### 2.1 The `memory` plugin (`plugins/memory/`)
 
-The default plugin. A single standalone instance with zero external dependencies — all data lives in Go maps protected by synchronization primitives. Not multi-node compatible. Intended for rapid development and agent-driven application engineering.
+Ephemeral, in-process state with microsecond-latency SI+FCW concurrency
+control. Default for tests, local development, and high-throughput
+digital-twin workloads where durability is delegated elsewhere. Full
+detail in [docs/plugins/IN_MEMORY.md](plugins/IN_MEMORY.md).
 
-**Concurrency model:**
+### 2.2 The `sqlite` plugin (`plugins/sqlite/`)
 
-- **Service-level `sync.RWMutex`** on `StoreFactory` -- serializes writes to the shared entity data maps during transaction commit.
-- **Per-transaction `OpMu`** (`sync.RWMutex` on `TransactionState`) -- gates concurrent operations within a single transaction and ensures in-flight operations complete before commit/rollback.
+Persistent, zero-ops single-node storage. Embedded in-process via a
+pure-Go (WASM) SQLite driver, exclusive file lock, application-layer
+SI+FCW concurrency control, search predicate pushdown to SQL. Default
+for desktop binary, edge deployments, and containerised single-node
+production. Full detail in [docs/plugins/SQLITE.md](plugins/SQLITE.md).
 
-**Serializable Snapshot Isolation (SSI):**
+### 2.3 The `postgres` plugin (`plugins/postgres/`)
 
-Each transaction captures a `SnapshotTime` at `Begin()`. Reads see only data committed before the snapshot. Writes are buffered in a per-transaction `Buffer` map. At commit time, the committed log is scanned for conflicts:
+Durable multi-node storage. PostgreSQL `REPEATABLE READ` provides
+snapshot isolation; an application-layer read-set validation at commit
+time provides first-committer-wins on entity-level conflicts. Works
+against any managed PostgreSQL 14+ platform (RDS, Cloud SQL, Azure,
+Supabase, Neon, Aiven, Crunchy Bridge, self-hosted, etc.). Full detail
+in [docs/plugins/POSTGRES.md](plugins/POSTGRES.md).
 
-```go
-type TransactionState struct {
-    ID           string
-    TenantID     TenantID
-    SnapshotTime time.Time
-    ReadSet      map[string]bool      // entity IDs read
-    WriteSet     map[string]bool      // entity IDs written
-    Buffer       map[string]*Entity   // buffered writes
-    Deletes      map[string]bool      // buffered deletes
-    OpMu         sync.RWMutex         // per-tx operation gate
-    Closed       bool
-    RolledBack   bool
-}
-```
+### 2.4 The `cassandra` plugin (commercial)
 
-**Conflict detection algorithm (committed log scan):**
+A Cassandra-backed storage plugin is available as a commercial offering
+from Cyoda. It slots into cyoda-go through the same `spi.Plugin` contract
+as the open-source plugins — operators select it at runtime via
+`CYODA_STORAGE_BACKEND=cassandra`.
 
-```
-FOR EACH committed_tx IN committedLog WHERE committed_tx.submitTime > tx.SnapshotTime:
-    FOR EACH entityID IN committed_tx.writeSet:
-        IF entityID IN tx.ReadSet OR entityID IN tx.WriteSet:
-            ABORT with ErrConflict
-```
+**Capability envelope:**
 
-**TOCTOU guard:** A `committing` map prevents double-commit races. The commit sequence acquires `tx.OpMu.Lock()` (waits for in-flight ops), then `factory.mu.Lock()` (exclusive data access), then `tm.mu.Lock()` (committed log check), in that order.
+- Horizontal write scalability across a Cassandra cluster
+- Snapshot isolation with first-committer-wins semantics (same
+  published contract as the open-source plugins — see
+  [docs/CONSISTENCY.md](CONSISTENCY.md))
+- Append-only point-in-time storage with full historical reads
+- No single points of failure
+- Multi-node consistency
+- **Cluster-coordinated transactions** — transactions are not pinned
+  to a single owning cyoda-go node. A transaction survives the
+  unavailability of individual cluster nodes mid-flight, eliminating
+  the `TRANSACTION_NODE_UNAVAILABLE` failure mode that the postgres
+  plugin exposes under node affinity (see §4 Multi-Node Routing and
+  PRD §4 Multi-Node Transaction Affinity)
 
-**Committed log pruning:** After each commit, entries older than the oldest active transaction's snapshot time are removed. When no transactions are active, the entire log is cleared.
+**When it fits:** workloads whose write volume or availability
+requirements outgrow a single-primary PostgreSQL deployment — while
+keeping the same EDBMS semantics (entities, workflows, temporal
+history, uniform isolation contract) that the open-source binary
+provides on top of the in-memory / sqlite / postgres plugins.
 
-### 2.2 The `postgres` Plugin
-
-Production-grade storage backed by PostgreSQL with `SERIALIZABLE` isolation. The postgres plugin's `TransactionManager` is a lightweight in-process lifecycle tracker — the durable work happens inside stores via pgx. The actual serialization guarantee comes from the database, not the TM.
-
-**Connection pooling:** pgx `pgxpool.Pool` with configurable bounds (default: 25 max, 5 min connections).
-
-**Bi-temporal versioning:**
-
-The `entity_versions` table provides full temporal history:
-
-```sql
-CREATE TABLE entity_versions (
-    tenant_id        TEXT        NOT NULL,
-    entity_id        TEXT        NOT NULL,
-    model_name       TEXT        NOT NULL,
-    model_version    TEXT        NOT NULL,
-    version          BIGINT      NOT NULL,
-    valid_time       TIMESTAMPTZ NOT NULL,
-    transaction_time TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    wall_clock_time  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    doc              JSONB       NOT NULL,
-    PRIMARY KEY (tenant_id, entity_id, version)
-);
-```
-
-- `valid_time`: application-supplied timestamp (entity's logical time)
-- `transaction_time`: database `CURRENT_TIMESTAMP` (when PG recorded the row)
-- `wall_clock_time`: `clock_timestamp()` (actual wall-clock, independent of transaction)
-
-As-at queries filter by `valid_time`:
-
-```sql
-SELECT doc FROM entity_versions
-WHERE tenant_id = $1 AND entity_id = $2 AND valid_time <= $3
-ORDER BY valid_time DESC, transaction_time DESC
-LIMIT 1;
-```
-
-**Row-level security (RLS):**
-
-Every table has RLS enabled with a policy that compares `tenant_id` against the session variable `app.current_tenant`, set via `SET LOCAL` at transaction start:
-
-```sql
-ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation_entities ON entities
-    USING (tenant_id = current_setting('app.current_tenant', true));
-```
-
-This provides defense-in-depth: even if application code has a tenant-scoping bug, PostgreSQL enforces isolation at the row level.
-
-**Schema (all tables):**
-
-| Table | Purpose | Partitioned by |
-|-------|---------|----------------|
-| `entities` | Current entity state (one row per entity) | `(tenant_id, entity_id)` PK |
-| `entity_versions` | Append-only bi-temporal history | `(tenant_id, entity_id, version)` PK |
-| `models` | Model descriptors (JSON) | `(tenant_id, model_name, model_version)` PK |
-| `kv_store` | Generic key-value (workflows, configs) | `(tenant_id, namespace, key)` PK |
-| `messages` | Edge messages with binary payload | `(tenant_id, message_id)` PK |
-| `workflows` | (stored in `kv_store`) | via namespace |
-| `sm_audit_events` | State machine audit trail | `(tenant_id, entity_id, event_id)` PK |
-| `search_jobs` | Async search job metadata | `id` PK, `tenant_id` indexed |
-| `search_job_results` | Entity ID results per job | `(job_id, seq)` PK, FK to `search_jobs` |
-
-**Migrations:** Embedded SQL files via `embed.FS`, applied at startup with `golang-migrate` when `CYODA_POSTGRES_AUTO_MIGRATE=true`.
-
-### 2.3 The `cassandra` Plugin (proprietary, ships as `cyoda-go-cassandra`)
-
-The `cassandra` plugin is a proprietary module in a separate repository (`github.com/cyoda-platform/cyoda-go-cassandra`). It implements the same `spi.Plugin` contract as the stock plugins. The `cyoda-go-cassandra` binary is a custom `main.go` that blank-imports memory + postgres + cassandra, so operators choose any backend at runtime via `CYODA_STORAGE_BACKEND`.
-
-Cassandra alone does not provide cross-partition serializability. The plugin achieves SSI by layering a custom coordinator protocol on top of Cassandra primitives, with a message broker (Kafka / Redpanda) providing work queuing and shard-ownership rebalancing. Summary of the approach:
-
-- **Hybrid Logical Clock (HLC)** — every write uses `USING TIMESTAMP hlc.Now()` so Cassandra's Last-Writer-Wins fences out zombie writers.
-- **Shard epoch ownership** — shards are assigned to nodes via the broker's consumer-group rebalancing; each takeover increments an `epoch` via a Cassandra LWT and cancels in-flight writes from the revoked owner via a fenced context.
-- **Transaction coordinator** — a per-node singleton that consumes `CommitRequest` messages, runs a 5-phase 2PC protocol, and publishes the result. Phases: set PENDING → load read/write sets → fan out version checks to entity shard owners → write COMMITTED (linearization point) → materialize to the durable version + index + checkpoint tables.
-- **Transaction reaper** — scans `transaction_log_idx` on startup and periodically, idempotently replaying materialization for committed-but-unfinished transactions (LWW makes replay safe).
-- **`ClusterBroadcaster` integration** — the cassandra plugin consumes `spi.ClusterBroadcaster` (supplied by cyoda-go's `MemberlistBroadcaster`) via an internal adapter for its clock-gossip channel. All other channels (commit commands, version checks, search events) remain strictly inside the plugin over the broker.
-
-**Full design:** see `docs/CASSANDRA_BACKEND_DESIGN.md` inside the proprietary `cyoda-go-cassandra` repository. Operators interacting only with `cyoda-go` need not read it; operators running the cassandra-included binary should.
-
-**Configuration:** plugin-namespaced env vars `CYODA_CASSANDRA_*` and `CYODA_REDPANDA_*`. The plugin advertises them via `spi.DescribablePlugin.ConfigVars()` so the binary's `--help` output renders them automatically.
+**Interested?** Get in touch with Cyoda at
+[cyoda.com](https://www.cyoda.com) and use its contact page.
 
 ---
 
@@ -377,60 +321,30 @@ type TransactionManager interface {
     Rollback(ctx context.Context, txID string) error
     Join(ctx context.Context, txID string) (txCtx context.Context, err error)
     GetSubmitTime(ctx context.Context, txID string) (time.Time, error)
+    Savepoint(ctx context.Context, txID string) (savepointID string, err error)
+    RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error
+    ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error
 }
 ```
 
 - `Begin`: Resolves tenant from context, generates a UUID txID, creates a transaction, returns a new context carrying the `TransactionState`.
 - `Join`: Attaches to an existing active transaction by txID. Used when a proxied CRUD request arrives at the transaction-owning node. Verifies tenant match.
-- `Commit`: Validates, flushes, records. Returns `common.ErrConflict` on serialization failure.
+- `Commit`: Validates, flushes, records. Returns `common.ErrConflict` on serialization failure (Snapshot Isolation with first-committer-wins (SI+FCW); see [docs/CONSISTENCY.md](CONSISTENCY.md) for the full contract and per-plugin implementation).
 - `Rollback`: Marks transaction rolled back, clears from active map. Waits for in-flight operations via `OpMu`.
 - `GetSubmitTime`: Returns the database timestamp captured at commit. Used for temporal ordering.
+- `Savepoint` / `RollbackToSavepoint` / `ReleaseSavepoint`: nested-savepoint support used by the workflow engine's `ASYNC_NEW_TX` execution mode. The plugin returns a savepoint ID that the caller passes back for rollback or release. Plugins that don't support savepoints may return `common.ErrUnsupported`.
 
-### 3.2 In-Memory SSI Conflict Detection
+### 3.2 In-Memory SI+FCW Conflict Detection
 
-The in-memory `TransactionManager` implements Serializable Snapshot Isolation with a committed log:
+Extracted to [docs/plugins/IN_MEMORY.md](plugins/IN_MEMORY.md).
+See also [docs/CONSISTENCY.md](CONSISTENCY.md) for the cross-plugin
+contract.
 
-**Commit sequence (critical section):**
+### 3.3 Postgres SI+FCW via `REPEATABLE READ` + commit-time validation
 
-```
-1. Acquire tx.OpMu.Lock()         -- wait for in-flight ops to finish
-2. Acquire factory.mu.Lock()      -- exclusive access to shared data
-3. Acquire tm.mu.Lock()           -- scan committed log
-4. FOR EACH committed_tx where submitTime > tx.SnapshotTime:
-     IF committed_tx.writeSet intersects (tx.ReadSet UNION tx.WriteSet):
-       ABORT → ErrConflict
-5. Flush tx.Buffer to factory.entityData (deep copy)
-6. Apply tx.Deletes (append tombstone versions)
-7. Append to committedLog: {txID, submitTime, writeSet}
-8. Record submitTime in submitTimes map
-9. Remove from active map
-10. Prune committedLog (entries older than oldest active snapshot)
-11. Release all locks
-```
-
-The committed log grows only as long as there are concurrent transactions. When all active transactions complete, the log is cleared entirely. The `submitTimes` map grows without bound -- acceptable for in-memory single-node use.
-
-### 3.3 PostgreSQL SERIALIZABLE + Error Code 40001
-
-The PostgreSQL `TransactionManager` delegates conflict detection entirely to the database:
-
-```go
-pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
-```
-
-Every transaction begins with `SET LOCAL app.current_tenant = $1` for RLS. On commit, PostgreSQL detects serialization failures and returns error code `40001`, which is mapped to `common.ErrConflict`:
-
-```go
-func classifyError(err error) error {
-    var pgErr *pgconn.PgError
-    if errors.As(err, &pgErr) && pgErr.Code == "40001" {
-        return common.ErrConflict
-    }
-    return err
-}
-```
-
-Before committing, the transaction captures `SELECT CURRENT_TIMESTAMP` for the submit time -- this is the database's view of commit time, not the application's wall clock.
+Extracted to [docs/plugins/POSTGRES.md](plugins/POSTGRES.md).
+See also [docs/CONSISTENCY.md](CONSISTENCY.md) for the cross-plugin
+contract.
 
 ### 3.4 Transaction Lifecycle Manager
 
@@ -449,26 +363,48 @@ type Manager struct {
 - **Outcome tracking:** `RecordOutcome(txID, committed|rolledBack)` -- moves from active to outcomes map. Outcomes expire after `outcomeTTL`.
 - **Cluster visibility:** `ListByNode(nodeID)` -- returns all active transactions owned by a specific node.
 
-### 3.5 pgx.Tx Single-Owner Property
+### 3.5 `pgx.Tx` Single-Owner Property
 
-A critical safety property: **a `pgx.Tx` is held by exactly one goroutine on exactly one node.** There is no mechanism for two nodes to share a PostgreSQL transaction. This means:
+Extracted to [docs/plugins/POSTGRES.md](plugins/POSTGRES.md).
 
-- No distributed locking is needed for transaction access.
-- No fencing tokens are needed to prevent stale writes.
-- If the owning node dies, PostgreSQL automatically rolls back the transaction (idle timeout).
-- The `txRegistry` (a `sync.RWMutex`-protected map of `txID -> pgx.Tx`) is the single source of truth for active transactions on a node.
-
-This is why DD-2 (fencing tokens not required) holds. See [Section 13](#13-design-decisions-log).
+The property remains load-bearing for the cluster design: see DD-2 in [Section 13](#13-design-decisions-log) — fencing tokens are not required because no two nodes can share a PostgreSQL transaction.
 
 ### 3.6 Plugin-Specific Transaction Managers
 
-Each plugin provides its own `TransactionManager` whose semantics match its storage engine:
+Each plugin provides its own `TransactionManager` whose semantics match its storage engine — all delivering the same published Snapshot Isolation + first-committer-wins contract (see §3.7 and [docs/CONSISTENCY.md](CONSISTENCY.md)):
 
-- **memory plugin** — in-process SSI with entity-level read/write sets and a committed-transaction log (Section 3.2).
-- **postgres plugin** — lightweight in-process lifecycle tracker. The real serialization guarantee comes from PostgreSQL's `SERIALIZABLE` isolation inside the stores (Section 3.3). The TM assigns IDs, tracks active/committed sets with timestamps, and supports savepoints as a local stack.
-- **cassandra plugin** — a coordinator-managed 2PC over a message broker, with HLC fencing, per-shard epoch ownership, and committed-log replay for recovery (see Section 2.3). Owns its own TM because Cassandra has neither `SERIALIZABLE` nor native multi-partition transactions.
+- **memory plugin** — in-process SI+FCW with entity-level read/write sets and a committed-transaction log ([docs/plugins/IN_MEMORY.md](plugins/IN_MEMORY.md)).
+- **sqlite plugin** — application-layer SI+FCW over a SQLite file with an exclusive file lock ([docs/plugins/SQLITE.md](plugins/SQLITE.md)).
+- **postgres plugin** — PostgreSQL `REPEATABLE READ` for the engine-level snapshot, plus application-layer read-set validation at commit time ([docs/plugins/POSTGRES.md](plugins/POSTGRES.md)). The TM assigns IDs, tracks active/committed sets with timestamps, and supports savepoints as a local stack.
+- **Commercial plugins** (e.g. the Cassandra plugin from Cyoda)
+  implement their own `TransactionManager` against their underlying
+  store's primitives. See §2.4 for the capability envelope of the
+  commercial Cassandra plugin.
 
 The core `cyoda-go` never picks a TM. It asks the plugin via `factory.TransactionManager(ctx)` and wraps the result with its tracing decorator when OTel is enabled.
+
+### 3.7 Cross-plugin isolation contract
+
+All four storage plugins deliver the same semantic guarantee:
+**Snapshot Isolation with First-Committer-Wins on entity-level
+conflicts.** The implementation mechanism differs by plugin — the
+guarantee does not.
+
+| Plugin | Engine-level mechanism | Application-layer validation | Effective guarantee | Conflict granularity |
+|---|---|---|---|---|
+| `memory` | n/a — all in-process Go | committed-log + read/write-set tracking | SI+FCW | per-entity |
+| `sqlite` | DB-level write lock | application-layer SI+FCW | SI+FCW | per-entity |
+| `postgres` | `REPEATABLE READ` + tuple locks | entity-keyed read-set validation at commit; `40001`/`40P01` retry | SI+FCW | per-entity |
+| `cassandra` (commercial) | *(proprietary)* | *(plugin-internal)* | SI+FCW | per-entity |
+
+This contract catches dirty read, non-repeatable read, lost update,
+and entity-level write-write / write-after-read conflicts. It does
+NOT prevent predicate-based phantom anomalies. Workflow authors
+observe an operational rule: do not branch on
+`search(predicate).count()` inside a transactional workflow step.
+See [docs/CONSISTENCY.md](CONSISTENCY.md) for the full contract,
+worked scenarios, the operational rule with three robust
+alternatives, and the isolation-level taxonomy.
 
 ---
 
@@ -509,6 +445,16 @@ Tags are updated whenever a compute member joins or leaves a node. The update is
 
 This handles simultaneous startup of all nodes. Memberlist is self-healing and merges transient split clusters before the stability window elapses.
 
+In Kubernetes deployments, `BindAddr` is `0.0.0.0` (all interfaces)
+while seeds are pod DNS names (e.g.
+`cyoda-0.cyoda-headless.cyoda.svc.cluster.local:7946`). Because the
+string-level comparison `0.0.0.0:7946 != <dns-name>:7946` never
+matches, no pod filters itself out. This is intentional: the Helm
+chart's ConfigMap emits every pod's DNS name in the seed list so
+every pod has real peers (at least N-1 non-self) to join. At
+`replicas=1`, the single pod's seed list effectively reduces to
+itself and it proceeds as a cluster of one.
+
 **Failure detection:** Automatic via SWIM protocol. Dead nodes are evicted from the membership list within seconds. No manual intervention required.
 
 **Graceful leave:** `Deregister()` calls `list.Leave(5s)` then `list.Shutdown()`, giving peers time to update their membership views.
@@ -526,6 +472,17 @@ type Claims struct {
 ```
 
 Token format: `base64url(json_payload).base64url(hmac_sha256(json_payload, secret))`
+
+`CYODA_HMAC_SECRET` is hex-encoded bytes by convention (the Helm
+chart's generated secret is a 64-char hex string decoded to 32 raw
+bytes); the binary's `envHexFromSecret` decodes hex if valid,
+falling back to raw bytes otherwise. Transaction tokens use
+base64url for both the JSON payload and the HMAC signature:
+`base64url(json_payload).base64url(hmac_sha256(json_payload, secret))`.
+Inter-node dispatch authentication uses a hex-encoded HMAC in the
+`X-Dispatch-HMAC` header — *not* base64. The distinction matters: a
+client or peer-forwarding handler that encodes the dispatch HMAC
+as base64url will be rejected.
 
 The token is opaque to the client. The router decodes it to extract `nodeID` without any network call -- address resolution is a local scan over `list.Members()`.
 
@@ -601,6 +558,10 @@ Three strategy interfaces, each with a default implementation:
    - Peer deserializes, calls its own local dispatch, returns result
 ```
 
+Dispatch forwarding reuses a shared `http.Transport` (`MaxIdleConns: 20`,
+`MaxIdleConnsPerHost: 5`, timeout via `CYODA_DISPATCH_FORWARD_TIMEOUT`,
+default 30s) across all peer requests.
+
 **Internal dispatch endpoints:**
 
 ```
@@ -663,7 +624,7 @@ Participants:
 
 ```
 t0   Client --> POST /entity create --> Node A
-t1   Node A: BEGIN tx-123, generate txToken --> PG: BEGIN SERIALIZABLE
+t1   Node A: BEGIN tx-123, generate txToken --> PG: BEGIN REPEATABLE READ
 t2   Node A: Save entity --> PG: INSERT entity (in tx-123)
 t3   Node A: SM engine dispatches to processor
 t3a  Node A: Check local MemberRegistry --> not found
@@ -816,7 +777,7 @@ SAFE: All cases lead to rollback or retry. No data corruption possible because t
 
 | Category | Finding | Needed Mechanism |
 |----------|---------|-----------------|
-| **Consistency** | All partition scenarios lead to rollback or clean commit. No split-brain possible because `pgx.Tx` is single-owner. PG `SERIALIZABLE` catches conflicting concurrent writes. | None (inherently safe) |
+| **Consistency** | All partition scenarios lead to rollback or clean commit. No split-brain possible because `pgx.Tx` is single-owner. PG `REPEATABLE READ` + commit-time read-set validation (SI+FCW, see §3.7) catches conflicting concurrent writes. | None (inherently safe) |
 | **Duplicate operations** | Client <-> Node A partition at any point can cause the client to retry, creating a second transaction for the same intent. Both may commit without conflicting. | Idempotency keys |
 | **Commit ambiguity** | L5 partition at COMMIT time: Node A cannot tell if PG committed or not. | Commit marker (write marker row before COMMIT; check on reconnect) |
 | **Timeout / liveness** | Several failure modes depend on timeouts (gRPC keepalive, PG TCP keepalive) that may be slow (minutes). Flow chain can hang waiting for dead compute nodes. | Transaction TTL + deadline propagation via context |
@@ -882,8 +843,13 @@ The workflow engine (`internal/domain/workflow/Engine`) implements a finite stat
 
 A `WorkflowDefinition` contains:
 - **States:** Named states (e.g., `NEW`, `PROCESSING`, `DONE`).
-- **Transitions:** Named edges between states, each with:
-  - `type`: `AUTOMATIC` or `MANUAL`
+- **Transitions:** Named edges between states, each with two boolean
+  flags — `Manual: bool` (true means operator-initiated only) and
+  `Disabled: bool` (true removes the edge). A transition is
+  *automatic* when `Manual == false && Disabled == false`; these fire
+  on state entry when criteria match. The cascade logic in
+  `internal/domain/workflow/engine.go:434` skips any transition where
+  `tr.Disabled || tr.Manual`. Each transition also carries:
   - `criteria`: Optional conditions (predicate or function) that must be satisfied.
   - `processors`: Ordered list of processors executed when the transition fires.
 - **Initial state:** The starting state for new entities.
@@ -899,7 +865,7 @@ Three entry points into the engine:
 
 ### 5.3 Cascade Logic
 
-After any transition fires, the engine cascades: it scans all `AUTOMATIC` transitions from the new state and fires the first whose criteria match. This continues until no automatic transition matches or a safety limit is hit.
+After any transition fires, the engine cascades: it scans all automatic transitions (i.e. where `Manual == false && Disabled == false`) from the new state and fires the first whose criteria match. This continues until no automatic transition matches or a safety limit is hit.
 
 **Loop protection:**
 
@@ -918,7 +884,7 @@ Processors are dispatched via the `ExternalProcessingService` SPI. In multi-node
 
 ### 5.5 Audit Trail
 
-The engine records state machine events to `StateMachineAuditStore` throughout execution. 13 event types:
+The engine records state machine events to `StateMachineAuditStore` throughout execution. 12 event types:
 
 | Event Type | Constant | Meaning |
 |------------|----------|---------|
@@ -932,7 +898,6 @@ The engine records state machine events to `StateMachineAuditStore` throughout e
 | `TRANSITION_MAKE` | `SMEventTransitionMade` | Transition fired |
 | `TRANSITION_NOT_FOUND` | `SMEventTransitionNotFound` | Named transition not in workflow |
 | `TRANSITION_NOT_MATCH_CRITERION` | `SMEventTransitionCriterionNoMatch` | Transition criterion failed |
-| `PROCESS_NOT_MATCH_CRITERION` | `SMEventProcessCriterionNoMatch` | Processor criterion failed |
 | `PAUSE_FOR_PROCESSING` | `SMEventProcessingPaused` | Waiting for async processor |
 | `STATE_PROCESS_RESULT` | `SMEventStateProcessResult` | Processor result received |
 
@@ -942,21 +907,26 @@ The engine records state machine events to `StateMachineAuditStore` throughout e
 
 ### 6.1 CloudEventsService
 
-The gRPC service implements 6 RPCs matching the Cyoda platform:
+The gRPC service is defined in `proto/cyoda/cyoda-cloud-api.proto`
+and exposes six RPCs — one bidirectional stream, four unary, and two
+server-streaming — all carrying `io.cloudevents.v1.CloudEvent` payloads:
 
 ```protobuf
 service CloudEventsService {
-    rpc SendCloudEvent(CloudEvent) returns (CloudEvent);
-    rpc SendCloudEventStream(stream CloudEvent) returns (CloudEvent);
-    rpc ReceiveCloudEventStream(CloudEvent) returns (stream CloudEvent);
-    rpc StartStreaming(stream CloudEvent) returns (stream CloudEvent);
-    rpc SendCloudEvents(stream CloudEvent) returns (CloudEvent);
-    rpc ReceiveCloudEvents(CloudEvent) returns (stream CloudEvent);
+    rpc startStreaming(stream io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+    rpc entityModelManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+    rpc entityManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+    rpc entityManageCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+    rpc entitySearch(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+    rpc entitySearchCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
 }
-
 ```
 
-`StartStreaming` is the primary RPC -- a bidirectional stream used for the full member lifecycle.
+`startStreaming` is the primary RPC — a bidirectional stream used for
+the full calculation-member lifecycle (join, greet, keep-alive, dispatch,
+response, leave). The unary and server-streaming RPCs carry the entity
+management, model management, and search CloudEvent types enumerated in
+§6.5.
 
 ### 6.2 Member Lifecycle
 
@@ -994,7 +964,13 @@ When the member responds, the streaming handler matches the response's `requestI
 
 **Model management:** `EntityModelImportRequest/Response`, `EntityModelExportRequest/Response`, `EntityModelTransitionRequest/Response`, `EntityModelDeleteRequest/Response`, `EntityModelGetAllRequest/Response`
 
-**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `SnapshotCancelRequest`, `SnapshotGetRequest`, `SnapshotGetStatusRequest`, `EntitySearchRequest`, `EntityStatsGetRequest/Response`, `EntityStatsByStateGetRequest/Response`, `EntityChangesMetadataGetRequest/Response`
+**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `EntitySearchRequest`, `EntityStatsGetRequest/EntityStatsResponse`, `EntityStatsByStateGetRequest/EntityStatsByStateResponse`, `EntityChangesMetadataGetRequest/EntityChangesMetadataResponse`
+
+**Snapshot lifecycle (no dedicated response CloudEvent type):**
+`SnapshotCancelRequest`, `SnapshotGetRequest`, `SnapshotGetStatusRequest`
+are one-way request events; replies are carried on the generic
+`EntityResponse` / `EventAckResponse` envelopes rather than dedicated
+`*Response` types. See `internal/grpc/cloudevent_types.go`.
 
 ---
 
@@ -1037,11 +1013,46 @@ This is critical for multi-node clusters: all nodes sharing the same RSA private
 
 **OBO (On-Behalf-Of) exchange:** A compute member authenticated via M2M credentials can exchange its token for an OBO token carrying the original user's tenant and identity. This allows CRUD callbacks to carry the correct authorization context.
 
-**Bootstrap M2M client:** Optionally created at startup via `CYODA_BOOTSTRAP_CLIENT_ID`. Secret is either provided via `CYODA_BOOTSTRAP_CLIENT_SECRET` or auto-generated and printed to stdout.
+**Bootstrap M2M client:** Bootstrap M2M client creation is opt-in. In
+`jwt` mode, `CYODA_BOOTSTRAP_CLIENT_ID` and
+`CYODA_BOOTSTRAP_CLIENT_SECRET` must be set together (both present) or
+both left empty. Half-configured states are rejected at startup with an
+error naming the missing variable (see
+`app/app.go:validateBootstrapConfig`). When set, the bootstrap M2M
+client is created at startup and can be used to mint access tokens. In
+`mock` mode, both variables are ignored. The Helm chart provisions the
+secret via a chart-managed Kubernetes Secret with a GitOps-safety guard.
 
 ### 7.3 Authorization
 
 Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC streaming endpoint enforces `ROLE_M2M` for calculation members.
+
+### 7.4 Admin listener authentication
+
+The admin listener (`/livez`, `/readyz`, `/metrics` on
+`CYODA_ADMIN_PORT`, default `9091`) is served separately from the
+main API listener and has its own authentication policy:
+
+- **`/livez` and `/readyz`** are always unauthenticated. Kubelet
+  probes carry no bearer token; authenticating these endpoints
+  would break the standard readiness contract.
+- **`/metrics`** is optionally bearer-gated. When
+  `CYODA_METRICS_BEARER` (or `CYODA_METRICS_BEARER_FILE`) is
+  non-empty, a request must carry `Authorization: Bearer <token>`
+  and the token must match (constant-time compare) or the request
+  receives `401 Unauthorized`.
+- **`CYODA_METRICS_REQUIRE_AUTH=true`** is a coupled-predicate
+  safety: if set true but `CYODA_METRICS_BEARER` is empty, startup
+  fails with a fatal error naming the missing variable. Protects
+  against "I thought I turned auth on" misconfiguration.
+
+The canonical Helm chart binds the admin listener to `0.0.0.0`
+(kubelet probes and Prometheus scraping reach the pod-facing
+interface) and sets `CYODA_METRICS_REQUIRE_AUTH=true` with a
+chart-managed bearer secret projected into the pod via a
+projected-volume `_FILE` mount. Defense in depth: bind-address +
+bearer + NetworkPolicy restricting :9091 ingress to the monitoring
+namespace.
 
 ---
 
@@ -1095,11 +1106,14 @@ In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`), internal error details 
 | `ENTITY_NOT_FOUND` | Requested entity does not exist |
 | `VALIDATION_FAILED` | Entity data fails model schema validation |
 | `TRANSITION_NOT_FOUND` | Named transition not in workflow |
+| `WORKFLOW_NOT_FOUND` | No workflow matches the entity / model context |
 | `WORKFLOW_FAILED` | Workflow engine error |
 | `CONFLICT` | Optimistic concurrency conflict (retryable) |
+| `EPOCH_MISMATCH` | Operation targeted a stale model epoch (model has been re-locked since) |
 | `BAD_REQUEST` | Malformed request |
 | `UNAUTHORIZED` | Missing or invalid credentials |
 | `FORBIDDEN` | Insufficient permissions |
+| `NOT_IMPLEMENTED` | Feature is reachable but not yet implemented |
 | `SERVER_ERROR` | Internal server error (with ticket) |
 
 **Cluster errors:**
@@ -1121,6 +1135,24 @@ In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`), internal error details 
 | `DISPATCH_TIMEOUT` | Dispatch response not received in time |
 | `COMPUTE_MEMBER_DISCONNECTED` | Compute member stream closed during dispatch |
 
+**Transaction errors:**
+
+| Code | Meaning |
+|------|---------|
+| `TX_REQUIRED` | Operation requires an active transaction but none was present on the context |
+| `TX_CONFLICT` | Commit-time serialization failure (first-committer-wins) |
+| `TX_COORDINATOR_NOT_CONFIGURED` | Cluster-mode coordinator features invoked on a binary without cluster enabled |
+| `TX_NO_STATE` | Transaction state missing on context (programmer error or lost coordinator hand-off) |
+
+**Search errors:**
+
+| Code | Meaning |
+|------|---------|
+| `SEARCH_JOB_NOT_FOUND` | Async search job ID unknown (or reaped) |
+| `SEARCH_JOB_ALREADY_TERMINAL` | Cancel/update attempted on a job in a terminal status |
+| `SEARCH_SHARD_TIMEOUT` | Per-shard scan exceeded its budget |
+| `SEARCH_RESULT_LIMIT` | Result set would exceed the configured result limit |
+
 ### 8.4 Warning/Error Accumulation
 
 ```go
@@ -1134,7 +1166,33 @@ Warnings and errors are accumulated in the request context and propagated to the
 
 ## 9. Configuration Reference
 
-All values configurable via environment variables with the `CYODA_` prefix. Plugin-specific variables use the plugin's name as a secondary namespace (`CYODA_POSTGRES_*`, `CYODA_CASSANDRA_*`). `./cyoda --help` on any binary renders the variables for the plugins it ships with — the help text is generated at runtime from the registered plugins' `ConfigVars()`.
+All values configurable via environment variables with the `CYODA_` prefix. Plugin-specific variables use the plugin's name as a secondary namespace (`CYODA_POSTGRES_*`, `CYODA_SQLITE_*`). Plugin-scoped variables are documented in the per-plugin reference under `docs/plugins/`. `./cyoda --help` on any binary renders the variables for the plugins it ships with — the help text is generated at runtime from the registered plugins' `ConfigVars()`.
+
+### Credential loading (`_FILE` suffix)
+
+Every credential-shaped environment variable accepts a `_FILE`
+variant that reads the value from a file path. Precedence: `_FILE`
+wins if both `<NAME>` and `<NAME>_FILE` are set. Trailing
+whitespace (spaces, tabs, CR, LF) is stripped from file contents,
+so multi-line PEM keys and DSN strings both round-trip cleanly. If
+`<NAME>_FILE` is set to a path that cannot be read, the binary
+fails at startup with the path and error.
+
+Applies to: `CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`,
+`CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET`,
+`CYODA_METRICS_BEARER`. Plugin-scoped credentials are documented in
+the per-plugin reference.
+
+This is the canonical Docker / Kubernetes pattern for wiring
+credentials from Secrets into the process without exposing them in
+`env` output. Reference implementation: `app/config_secret_env.go`
+`ResolveSecretEnv`.
+
+### Profiles
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_PROFILES` | (none) | Comma-separated list of profile names; loads `.env` then `.env.<profile>` in declaration order. Shell environment always wins over file values. Example: `CYODA_PROFILES=postgres,otel`. |
 
 ### Server
 
@@ -1145,6 +1203,30 @@ All values configurable via environment variables with the `CYODA_` prefix. Plug
 | `CYODA_ERROR_RESPONSE_MODE` | `sanitized` | `sanitized` or `verbose` (dev only) |
 | `CYODA_MAX_STATE_VISITS` | `10` | Per-state visit limit for cascade loop protection |
 | `CYODA_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `CYODA_STARTUP_TIMEOUT` | `30s` | Deadline for binary startup (plugin factory init, migrations, cluster join). Fatal on expiry. |
+| `CYODA_SUPPRESS_BANNER` | `false` | Suppress the ASCII banner at startup (useful for structured-logging environments). |
+
+### Admin & metrics
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_ADMIN_PORT` | `9091` | Admin listener port (`/livez`, `/readyz`, `/metrics`). |
+| `CYODA_ADMIN_BIND_ADDRESS` | `127.0.0.1` | Admin listener bind address. Helm chart sets `0.0.0.0` so kubelet probes and Prometheus can reach the pod. |
+| `CYODA_METRICS_REQUIRE_AUTH` | `false` | Coupled predicate: if `true` and `CYODA_METRICS_BEARER` is empty, startup fails. |
+| `CYODA_METRICS_BEARER` (with `_FILE` variant) | (none) | Bearer token required on `/metrics` when non-empty. Constant-time compare. |
+
+See §7.4 for the authentication policy on admin endpoints.
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_OTEL_ENABLED` | `false` | Enable OpenTelemetry SDK and `otelhttp` middleware. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (OTel SDK default) | Standard OTel environment variable — honored directly, no cyoda-specific alias. |
+
+The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler`
+(see §11). The initial sampler honors `OTEL_TRACES_SAMPLER` and
+`OTEL_TRACES_SAMPLER_ARG` at startup.
 
 ### Storage — plugin selection
 
@@ -1156,50 +1238,47 @@ Per-store routing is **not supported** — a running binary uses one plugin for 
 
 ### PostgreSQL plugin (`CYODA_STORAGE_BACKEND=postgres`)
 
-Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--help`.
+Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--help`. Full reference: [docs/plugins/POSTGRES.md](plugins/POSTGRES.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_POSTGRES_URL` | (none, **required**) | PostgreSQL connection string |
+| `CYODA_POSTGRES_URL` (with `_FILE` variant) | (none, **required**) | PostgreSQL connection string |
 | `CYODA_POSTGRES_MAX_CONNS` | `25` | Maximum pool connections |
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | Minimum pool connections |
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Max idle time before connection is closed |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations at startup |
 
-### Cassandra plugin (`CYODA_STORAGE_BACKEND=cassandra`, available only in the `cyoda-go-cassandra` binary)
+### SQLite plugin (`CYODA_STORAGE_BACKEND=sqlite`)
 
-The cassandra plugin has the largest config surface of any shipped plugin. Only the most common operator-facing options are listed here; the plugin's `ConfigVars()` (rendered in `--help`) is authoritative.
+Advertised via `DescribablePlugin.ConfigVars()`; rendered in the binary's `--help`. Full reference: [docs/plugins/SQLITE.md](plugins/SQLITE.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_CASSANDRA_CONTACT_POINTS` | (none, **required**) | Comma-separated `host:port` list |
-| `CYODA_CASSANDRA_KEYSPACE` | `cyoda_go` | Keyspace name |
-| `CYODA_CASSANDRA_REPLICATION` | SimpleStrategy RF=3 | CQL replication strategy JSON |
-| `CYODA_CASSANDRA_NUM_SHARDS` | `32` | Virtual shard count (immutable after first use) |
-| `CYODA_CASSANDRA_AUTO_MIGRATE` | `true` | Run schema migrations at startup |
-| `CYODA_CASSANDRA_CONSISTENCY_LEVEL` | `QUORUM` | CQL consistency level for reads and writes |
-| `CYODA_CASSANDRA_MAX_CONCURRENT_WRITES` | `32` | Max concurrent CQL writes per node |
-| `CYODA_CASSANDRA_USERNAME` | (none) | Auth username (optional) |
-| `CYODA_CASSANDRA_PASSWORD` | (none) | Auth password (optional) |
-| `CYODA_REDPANDA_BROKERS` | (none, **required**) | Comma-separated broker list (Kafka-compatible) |
-| `CYODA_REDPANDA_CONSUMER_GROUP` | `cyoda-go` | Consumer group identifier |
-| `CYODA_CASSANDRA_REDPANDA_SESSION_TIMEOUT_SEC` | `30` | Consumer session timeout |
+| `CYODA_SQLITE_PATH` | Platform-specific (see below) | Database file path. |
+| `CYODA_SQLITE_AUTO_MIGRATE` | `true` | Run embedded schema migrations at startup. |
+| `CYODA_SQLITE_BUSY_TIMEOUT` | `5s` | SQLite `busy_timeout` pragma. |
+| `CYODA_SQLITE_CACHE_SIZE` | `64000` | SQLite `cache_size` pragma (KiB). |
+| `CYODA_SQLITE_SEARCH_SCAN_LIMIT` | `100000` | Max rows scanned by a predicate-pushed search before it falls back to post-filter. |
+
+Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` with fallback to `~/.local/share/cyoda/cyoda.db`; on Windows, `%LocalAppData%\cyoda\cyoda.db`.
 
 ### IAM
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_IAM_MODE` | `mock` | `mock` (dev) or `jwt` (production) |
-| `CYODA_JWT_SIGNING_KEY` | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
+| `CYODA_JWT_SIGNING_KEY` (with `_FILE` variant) | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token expiry in seconds |
+| `CYODA_REQUIRE_JWT` | `false` | Production safety floor: when `true`, the binary refuses to start unless `CYODA_IAM_MODE=jwt` AND `CYODA_JWT_SIGNING_KEY` is set. Protects against silently shipping a mock-auth deployment. |
+| `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles attached to the default mock user (mock mode only). |
 
 ### Bootstrap
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup |
-| `CYODA_BOOTSTRAP_CLIENT_SECRET` | (none) | M2M client secret (generated if empty) |
+| `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup. Must be set together with `CYODA_BOOTSTRAP_CLIENT_SECRET` or both left empty — half-configured rejected (jwt mode). |
+| `CYODA_BOOTSTRAP_CLIENT_SECRET` (with `_FILE` variant) | (none) | M2M client secret. Required when `CYODA_BOOTSTRAP_CLIENT_ID` is set in jwt mode; ignored in mock mode. |
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client |
 | `CYODA_BOOTSTRAP_USER_ID` | `admin` | User ID for bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
@@ -1226,7 +1305,7 @@ The cassandra plugin has the largest config surface of any shipped plugin. Only 
 | `CYODA_TX_REAP_INTERVAL` | `10s` | Frequency of transaction TTL reaper |
 | `CYODA_PROXY_TIMEOUT` | `30s` | HTTP proxy response header timeout |
 | `CYODA_TX_OUTCOME_TTL` | `5m` | How long completed transaction outcomes are retained |
-| `CYODA_HMAC_SECRET` | (none) | Hex-encoded secret for token signing + gossip encryption (required if cluster enabled) |
+| `CYODA_HMAC_SECRET` (with `_FILE` variant) | (none) | Hex-encoded secret for token signing + gossip encryption (required if cluster enabled). See §4.2 for encoding details. |
 | `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | How long to poll for a compute member with matching tags |
 | `CYODA_DISPATCH_FORWARD_TIMEOUT` | `30s` | HTTP timeout for cross-node dispatch forwarding |
 
@@ -1279,7 +1358,7 @@ Architecture:
 
 - **nginx:** Round-robin load balancer. Proxies `/api/*` paths only. Internal paths (`/internal/*`) are not exposed.
 - **Gossip:** Each node runs a memberlist listener on a distinct port. Seed nodes are configured so all nodes discover each other.
-- **Shared PostgreSQL:** All nodes connect to the same PostgreSQL instance. `SERIALIZABLE` isolation + RLS ensure correctness.
+- **Shared PostgreSQL:** All nodes connect to the same PostgreSQL instance. `REPEATABLE READ` + application-layer SI+FCW validation + RLS ensure correctness (see [docs/CONSISTENCY.md](CONSISTENCY.md)).
 - **Shared secrets:** All nodes share the same HMAC secret (for token verification and gossip encryption) and the same JWT signing key (for deterministic KID derivation).
 
 **Scripts:**
@@ -1307,19 +1386,26 @@ OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal
 
 **Workflow and dispatch:** spans for `workflow.execute`, `workflow.manual_transition`, `workflow.loopback`; `dispatch.processor` and `dispatch.criteria` with `cyoda.dispatch.duration` and `cyoda.dispatch.count` metrics.
 
-**Plugin-level instrumentation:** plugins are free to add their own spans and metrics under a plugin-specific namespace (e.g., `cyoda.cassandra.cql.duration`, `cyoda.cassandra.batch.duration`, `cyoda.cassandra.limiter.*`, commit-protocol phase spans). The `memory` and `postgres` plugins emit minimal plugin-level telemetry (their behavior is well-captured by the core transaction/workflow/dispatch spans); the `cassandra` plugin adds detailed CQL, batch, and commit-protocol instrumentation because its hot-path semantics warrant finer visibility.
+**Plugin-level instrumentation:** plugins are free to add their own
+spans and metrics under a plugin-specific namespace. The `memory`
+and `postgres` plugins do not emit custom plugin-level telemetry;
+their behaviour is fully captured by the core transaction /
+workflow / dispatch spans listed above. Other plugins may add
+detailed instrumentation scoped to their own namespace as their
+hot-path semantics warrant.
 
 **Exporter endpoint:** `OTEL_EXPORTER_OTLP_ENDPOINT` (standard OTel env var). The bundled docker setup ships a Grafana / Prometheus / Tempo stack via `grafana/otel-lgtm` with a pre-provisioned `Cyoda-Go Overview` dashboard covering HTTP, transactions, and workflow/dispatch.
 
 **Runtime sampler control.** The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler` (requires `ROLE_ADMIN`), mirroring `/api/admin/log-level`. Operators can toggle between 100% sampling, probabilistic sampling, and off without restarting the service. The initial sampler honors the standard OTel env vars `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` at startup.
 
-**Known gaps (carried forward from `cyoda-light-go`):** trace context propagation through the cassandra plugin's broker messages, search pipeline, and external-processor gRPC/CloudEvents is incomplete. Issues will be re-opened in their respective repositories when scheduled.
+**Known gaps:** trace context propagation through the search pipeline
+and external-processor gRPC/CloudEvents is incomplete.
 
 ---
 
 ## 12. Planned Features (Not Yet Implemented)
 
-Items carried forward from the `cyoda-light-go` predecessor repository. Issues will be re-opened in the appropriate repository (`cyoda-go` for core, `cyoda-go-cassandra` for cassandra plugin) when each item is scheduled.
+Items carried forward from the `cyoda-light-go` predecessor repository. Issues will be re-opened in `cyoda-go` when each item is scheduled.
 
 ### Carried to `cyoda-go`
 
@@ -1330,17 +1416,7 @@ Items carried forward from the `cyoda-light-go` predecessor repository. Issues w
 | Multi-node E2E tests with proxy routing | Automated testing of the full cluster topology |
 | Batch `SaveResults` with `pgx.CopyFrom` (PostgreSQL plugin) | Performance optimization for async search result insertion |
 | Idempotency keys | Client-provided keys to prevent duplicate operations on retry |
-| Plugin conformance test suite (`cyoda-go-spi/spitest/`) | Shared behavioral conformance harness any plugin can run against its own `StoreFactory`. Scheduled after the cassandra plugin extraction. |
-
-### Carried to `cyoda-go-cassandra`
-
-| Feature | Purpose |
-|---------|---------|
-| HLC monotonicity fix on shard takeover | Close the clock-gossip monotonicity gap documented in ADRs 0001 and 0002 (see Plan 4 in the storage plugin spec) |
-| Parallelize version-check publish + await | Cut commit latency for large collection saves |
-| Bound shard takeover scans | Make startup time data-independent |
-| Parallelize `MutationBatch.ExecuteChunked` | Cut materialize latency for large writes |
-| Trace context propagation through the broker | Unified commit trace waterfall |
+| Plugin conformance test suite (`cyoda-go-spi/spitest/`) | Shared behavioral conformance harness any plugin can run against its own `StoreFactory`. |
 
 ### Cross-cutting
 
@@ -1436,11 +1512,11 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Dimension | Scaling Behavior | Limit |
 |-----------|-----------------|-------|
 | **Node count** | Linear improvement in compute dispatch capacity (more nodes = more compute members). No improvement in write throughput — all writes go through PostgreSQL. | 10–20 nodes practical maximum. Beyond this, gossip metadata size grows (per-tenant tag sets × nodes), and the probability of proxy hops increases. |
-| **Write throughput** | Bounded by PostgreSQL SERIALIZABLE isolation. Every transaction holds a `pgx.Tx` for its full duration (including external compute phases). | Single PG instance is the bottleneck. Connection pool default is 25 per node; with 10 nodes that's 250 concurrent PG connections. Long-held transactions reduce effective throughput. |
+| **Write throughput** | Bounded by PostgreSQL `REPEATABLE READ` + application-layer SI+FCW validation (see §3.7). Every transaction holds a `pgx.Tx` for its full duration (including external compute phases). | Single PG instance is the bottleneck. Connection pool default is 25 per node; with 10 nodes that's 250 concurrent PG connections. Long-held transactions reduce effective throughput. |
 | **Read throughput** | Scales with node count for non-transactional reads (entity queries, search). Each node can serve reads independently from PG. | Bounded by PG read capacity. Point-in-time queries require version table scans. |
 | **Compute throughput** | Scales with compute member count across the cluster. Each node can host multiple compute members. Cross-node dispatch adds one HTTP hop (~1ms intra-cluster). | Bounded by compute member availability per tag. If only one node has a member for a given tag, that node is the bottleneck for that tag. |
 
-**Contrast with Cyoda Cloud:** Cyoda Cloud uses a fully distributed storage layer (Cassandra) with no single-node write bottleneck. Cyoda-Go trades unlimited write scalability for PostgreSQL's stronger isolation guarantees and simpler operational model.
+**Contrast with Cyoda Cloud:** Cyoda Cloud uses a fully distributed storage layer with no single-node write bottleneck. The open-source cyoda-go binary trades unlimited write scalability for simpler operational requirements (a single primary PostgreSQL — or none at all, with the memory or sqlite plugins).
 
 ### 14.2 Transaction Timing and Duration
 
@@ -1483,14 +1559,14 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 
 **Single point of failure:** PostgreSQL. If PG is down, the cluster is effectively down for writes. This is by design — PG is the consistency authority. HA PostgreSQL (streaming replication with automatic failover) is the recommended mitigation.
 
-**No split-brain:** The `pgx.Tx` single-owner property ensures that no two nodes can commit the same transaction. PostgreSQL SERIALIZABLE isolation catches conflicting concurrent writes from different transactions. There is no application-level consensus needed because PG is the sole arbiter.
+**No split-brain:** The `pgx.Tx` single-owner property ensures that no two nodes can commit the same transaction. PostgreSQL `REPEATABLE READ` plus the application-layer SI+FCW validation (§3.7) catches conflicting concurrent writes from different transactions. There is no application-level consensus needed because PG is the sole arbiter.
 
 ### 14.5 Consistency Guarantees and Caveats
 
 | Guarantee | Strength | Caveat |
 |-----------|----------|--------|
 | **Read-your-own-writes** | Strong (within a transaction) | Guaranteed by `pgx.Tx` — all reads within a transaction see its own buffered writes. Across transactions, reads are snapshot-isolated. |
-| **Snapshot isolation** | Strong (SERIALIZABLE in PG) | PG SERIALIZABLE may abort transactions with serialization failures (error 40001). The application retries. Under high contention, retry storms are possible. |
+| **Snapshot isolation** | Strong (SI+FCW across all plugins; see §3.7 and [docs/CONSISTENCY.md](CONSISTENCY.md)) | Commit-time conflict detection may abort with `ErrConflict` (40001 / 40P01 on PostgreSQL). The application retries. Under high contention, retry storms are possible. |
 | **Cross-node consistency** | Strong (PG is the authority) | All nodes share the same PG instance. There is no eventual consistency between nodes — they all see the same data at the same isolation level. Gossip metadata (node registry, compute tags) is eventually consistent with sub-second convergence. |
 | **Temporal consistency** | Strong (point-in-time queries) | `GetAsAt` returns the entity as it was at a specific timestamp. Accuracy depends on PG clock precision (microsecond) and correct use of `transaction_time` vs `wall_clock_time`. |
 | **Commit ambiguity** | **Gap** (planned: #56) | If the network partitions between Node A and PG at COMMIT time, Node A cannot determine whether PG committed or not. The planned commit marker (#56) will resolve this. Until then, the client may see a false failure for a transaction that actually committed. |
