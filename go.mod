@@ -1,6 +1,6 @@
 module github.com/cyoda-platform/cyoda-go
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/cyoda-platform/cyoda-go-spi v0.5.3

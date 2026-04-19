@@ -64,6 +64,7 @@ type IAMConfig struct {
 	MockRoles      []string
 	JWTSigningKey  string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
 	JWTIssuer      string // JWT issuer claim (CYODA_JWT_ISSUER)
+	JWTAudience    string // Expected JWT audience (CYODA_JWT_AUDIENCE); empty disables aud check
 	JWTExpiry      int    // Token expiry in seconds (CYODA_JWT_EXPIRY_SECONDS)
 	RequireJWT     bool   // CYODA_REQUIRE_JWT — when true, refuses to start unless mode=jwt and signing key set
 }
@@ -123,6 +124,7 @@ func DefaultConfig() Config {
 			MockRoles:      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
 			JWTSigningKey:  jwtSigningKey,
 			JWTIssuer:      envString("CYODA_JWT_ISSUER", "cyoda"),
+			JWTAudience:    envString("CYODA_JWT_AUDIENCE", ""),
 			JWTExpiry:      envInt("CYODA_JWT_EXPIRY_SECONDS", 3600),
 			RequireJWT:     envBool("CYODA_REQUIRE_JWT", false),
 		},
