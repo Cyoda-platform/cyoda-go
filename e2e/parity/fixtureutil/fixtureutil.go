@@ -392,6 +392,15 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get gRPC port: %w", err)
 	}
+	// Admin port must be picked too — the default (9091) is fixed, so
+	// parity packages running in parallel (memory, postgres, sqlite, …)
+	// collide on a single host and one subprocess logs "bind: address
+	// already in use" while the others succeed. Isolating the admin port
+	// per fixture mirrors HTTP/gRPC isolation.
+	adminPort, err := FreePort()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get admin port: %w", err)
+	}
 
 	var opt LaunchOpts
 	if len(opts) > 0 {
@@ -410,6 +419,7 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	cyodaCmd := exec.Command(cyodaBin)
 	cyodaCmd.WaitDelay = 3 * time.Second
 	cyodaCmd.Env = append(CyodaEnv(httpPort, grpcPort, ks), extraEnv...)
+	cyodaCmd.Env = append(cyodaCmd.Env, fmt.Sprintf("CYODA_ADMIN_PORT=%d", adminPort))
 	cyodaCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cyodaCmd.Stdout = os.Stderr
 	cyodaCmd.Stderr = os.Stderr
