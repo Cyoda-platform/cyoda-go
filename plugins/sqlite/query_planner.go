@@ -166,6 +166,12 @@ var directMetaColumns = map[string]bool{
 // SourceMeta fields without direct columns (e.g., "state") use
 // json_extract on the meta JSONB column.
 // SourceData fields use json_extract on the data BLOB column.
+//
+// Safety invariant: f.Path is interpolated into a JSON-path literal and
+// therefore MUST have been validated by validateFilterPaths at the
+// Search() boundary (see path_validation.go). Adding a new caller that
+// bypasses Search() re-introduces SQL injection — call validateJSONPath
+// or validateFilterPaths before invoking this function.
 func fieldExpr(f spi.Filter) string {
 	if f.Source == spi.SourceMeta {
 		if directMetaColumns[f.Path] {
