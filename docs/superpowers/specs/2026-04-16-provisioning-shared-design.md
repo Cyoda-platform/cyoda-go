@@ -55,8 +55,8 @@ Helm bundles `bitnami/postgresql` as a subchart with `postgresql.enabled: true` 
 
 The Go binary's compiled-in default stays `memory` (unchanged). Desktop users who install via:
 
-- `go install github.com/Cyoda-platform/cyoda-go/cmd/cyoda-go@latest` — get the raw binary with memory default. Power-user path; they're expected to set env.
-- **Homebrew formula, `.deb`/`.rpm`, or the `curl|sh` installer script** — get a thin wrapper (or systemd unit, or launchd plist, or shell script on PATH) that sets `CYODA_STORAGE_BACKEND=sqlite` and `CYODA_SQLITE_PATH=$XDG_DATA_HOME/cyoda-go/cyoda.db` before invoking the binary.
+- `go install github.com/Cyoda-platform/cyoda-go/cmd/cyoda@latest` — get the raw binary with memory default. Power-user path; they're expected to set env.
+- **Homebrew formula, `.deb`/`.rpm`, or the `curl|sh` installer script** — get a thin wrapper (or systemd unit, or launchd plist, or shell script on PATH) that sets `CYODA_STORAGE_BACKEND=sqlite` and `CYODA_SQLITE_PATH=$XDG_DATA_HOME/cyoda/cyoda.db` before invoking the binary.
 
 The packaging layer owns the opinion. The desktop per-target spec picks which packaging paths ship in the first release.
 
@@ -159,7 +159,7 @@ A dedicated migration entrypoint (e.g., a `cyoda-go migrate` subcommand) is **no
 **Decoupled versioning** — two independent tag streams. Both reset to `0.1.0`:
 
 - App tags at the repo root: `v0.1.0` onward. The only existing root-level tag stream is pre-public; no consumers depend on it.
-- Chart tags: `cyoda-go-0.1.0` onward. No prior chart has shipped.
+- Chart tags: `cyoda-0.1.0` onward (per the rename supersession at the top of this document). No prior chart has shipped.
 
 **Plugin module tags** (`plugins/memory/v0.1.0`, `plugins/postgres/v0.1.0`, and future `plugins/sqlite/v0.1.0`) are a separate stream governed by Go module semantics and the SPI's own versioning policy — they are **not reset** and **not controlled by this spec**. See the Out-of-Scope section.
 
@@ -174,15 +174,15 @@ Triggered by pushing a semver tag matching `v*`. Produces:
 
 Windows binaries ship from day one. Windows-specific packaging paths (MSI, Chocolatey, Scoop, Winget, service install) are deferred to the desktop per-target spec — a `.exe` in a `.zip` on the GH Release is the initial coverage.
 
-### Chart tags (`cyoda-go-0.1.0`, `cyoda-go-0.2.0`, …) — Helm chart
+### Chart tags (`cyoda-0.1.0`, `cyoda-0.2.0`, …) — Helm chart
 
-Triggered by pushing a tag matching `cyoda-go-*`. Uses [`helm/chart-releaser-action`](https://github.com/helm/chart-releaser-action) — the Helm org's canonical chart-release workflow:
+Triggered by pushing a tag matching `cyoda-*`. Uses [`helm/chart-releaser-action`](https://github.com/helm/chart-releaser-action) — the Helm org's canonical chart-release workflow:
 
-- Packages the chart from `deploy/helm/cyoda-go/`.
+- Packages the chart from `deploy/helm/cyoda/`.
 - Chart's `appVersion` field pins a tested app version (e.g., `appVersion: "0.1.0"`).
-- The exact publishing target — GitHub Pages (chart-releaser's original mode, `gh-pages` branch with `index.yaml`) versus OCI at `ghcr.io/cyoda-platform/charts/cyoda-go` — is a mechanical choice for the Helm per-target spec. Both are supported by current tooling; this shared spec only commits to the tag scheme and packaging action.
+- The exact publishing target — GitHub Pages (chart-releaser's original mode, `gh-pages` branch with `index.yaml`) versus OCI at `ghcr.io/cyoda-platform/charts/cyoda` — is a mechanical choice for the Helm per-target spec. Both are supported by current tooling; this shared spec only commits to the tag scheme and packaging action.
 
-The `cyoda-go-<version>` tag form is the convention `chart-releaser-action` expects. Diverging from it would mean writing a custom workflow — not worth it.
+The `cyoda-<version>` tag form is the convention `chart-releaser-action` expects. Diverging from it would mean writing a custom workflow — not worth it.
 
 ### Private Nexus publishing
 
@@ -219,7 +219,7 @@ deploy/
     compose.yaml
     README.md
   helm/
-    cyoda-go/                    # chart skeleton created here; filled in per-target spec
+    cyoda/                       # chart skeleton created here; filled in per-target spec
       values-production.yaml     # production preset: postgresql.enabled=false, external URL required
 examples/
   compose-with-observability/
@@ -231,7 +231,7 @@ scripts/
 .github/workflows/
   ci.yml                         # unchanged
   release.yml                    # NEW: GoReleaser + multi-arch image + keyless cosign on v* tags
-  release-chart.yml              # NEW: helm/chart-releaser-action on cyoda-go-* tags
+  release-chart.yml              # NEW: helm/chart-releaser-action on cyoda-* tags
   bump-chart-appversion.yml      # NEW: opens PR bumping Chart.yaml appVersion on stable v* tags
 ```
 
@@ -275,9 +275,9 @@ The implementation plan generated from this spec covers the shared-layer work:
 
    **Pre-flight check.** The release workflow runs `GOWORK=off go mod download` and `GOWORK=off go mod verify` before invoking GoReleaser. If any plugin dependency resolves to a pseudo-version, a `replace` directive, or a non-tagged SHA, the workflow fails fast with a clear error naming the offending module. This prevents an accidental root-repo tag from producing a release built against unreleased or stale plugin code.
 7. Add `.github/workflows/release-chart.yml` using `helm/chart-releaser-action`, gated on the chart's existence.
-8. Add `.github/workflows/bump-chart-appversion.yml` — triggered when a stable (non-prerelease) `v*` tag is pushed, this workflow opens a PR updating `deploy/helm/cyoda-go/Chart.yaml`'s `appVersion` to the new app version. Keeps the decoupled tag streams in sync without manual edits. A human reviews and merges the PR (which becomes the trigger for the next chart tag when desired).
+8. Add `.github/workflows/bump-chart-appversion.yml` — triggered when a stable (non-prerelease) `v*` tag is pushed, this workflow opens a PR updating `deploy/helm/cyoda/Chart.yaml`'s `appVersion` to the new app version. Keeps the decoupled tag streams in sync without manual edits. A human reviews and merges the PR (which becomes the trigger for the next chart tag when desired).
 9. Delete `.github/workflows/docker-publish.yml`.
-10. Update `README.md`, `CONTRIBUTING.md`, `cmd/cyoda-go/main.go` `printHelp()` for new endpoints, new env vars (`CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_SUPPRESS_BANNER`, `CYODA_REQUIRE_JWT`), new port convention, and new layout. Additionally, close existing SQLite documentation gaps now that sqlite is elevated to a default:
+10. Update `README.md`, `CONTRIBUTING.md`, `cmd/cyoda/main.go` `printHelp()` for new endpoints, new env vars (`CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_SUPPRESS_BANNER`, `CYODA_REQUIRE_JWT`), new port convention, and new layout. Additionally, close existing SQLite documentation gaps now that sqlite is elevated to a default:
     - Add **sqlite** as a first-class row in the README "Storage backends" table alongside memory and postgres.
     - Add a **Configuration > SQLite** subsection in the README documenting `CYODA_SQLITE_PATH`, `CYODA_SQLITE_AUTO_MIGRATE`, `CYODA_SQLITE_BUSY_TIMEOUT`, `CYODA_SQLITE_CACHE_SIZE`, `CYODA_SQLITE_SEARCH_SCAN_LIMIT`.
     - Add a **`.env.sqlite.example`** alongside the existing `.env.local.example` / `.env.postgres.example` / `.env.jwt.example` / `.env.otel.example` so "copy the example for your backend" works for sqlite too.
