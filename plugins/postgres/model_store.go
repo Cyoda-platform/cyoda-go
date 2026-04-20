@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -52,6 +53,28 @@ func (s *modelStore) Save(ctx context.Context, desc *spi.ModelDescriptor) error 
 		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion, raw)
 	if err != nil {
 		return fmt.Errorf("failed to save model %s: %w", desc.Ref, err)
+	}
+
+	// Save is the full-replace lifecycle path. By the operator contract
+	// (docs/CONSISTENCY.md) the extension log must already be empty for
+	// this ref — ExtendSchema is disjoint from Save via the state
+	// machine. Defensively DELETE: in dev builds a non-zero RowsAffected
+	// here is a fatal assertion; in production it logs a warning and
+	// proceeds, because Save itself is the authoritative schema source
+	// at this moment.
+	tag, err := s.q.Exec(ctx, `
+		DELETE FROM model_schema_extensions
+		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(s.tenantID), desc.Ref.EntityName, desc.Ref.ModelVersion)
+	if err != nil {
+		return fmt.Errorf("Save: clear extension log for %s: %w", desc.Ref, err)
+	}
+	if n := tag.RowsAffected(); n != 0 {
+		if buildIsDev() {
+			return fmt.Errorf("Save found %d stale extension rows for %s; operator-contract violation (see docs/CONSISTENCY.md)", n, desc.Ref)
+		}
+		slog.Warn("Save cleared stale extension rows",
+			"pkg", "postgres", "ref", desc.Ref, "count", n)
 	}
 	return nil
 }
@@ -121,7 +144,29 @@ func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
 }
 
 func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
-	return s.updateStateField(ctx, modelRef, spi.ModelUnlocked, "unlock")
+	if err := s.updateStateField(ctx, modelRef, spi.ModelUnlocked, "unlock"); err != nil {
+		return err
+	}
+	// Operator contract: all writers (ExtendSchema) must be drained
+	// before Unlock. If rows remain, something bypassed the state
+	// machine. Dev builds surface this as an error; production logs a
+	// warning and proceeds (the log is cleared unconditionally — the
+	// caller has committed to leaving LOCKED state).
+	tag, err := s.q.Exec(ctx, `
+		DELETE FROM model_schema_extensions
+		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+	if err != nil {
+		return fmt.Errorf("Unlock: clear extension log for %s: %w", modelRef, err)
+	}
+	if n := tag.RowsAffected(); n != 0 {
+		if buildIsDev() {
+			return fmt.Errorf("Unlock found %d live extension rows for %s; operator-contract violation — concurrent writers did not drain before Unlock", n, modelRef)
+		}
+		slog.Warn("Unlock drained stale extension rows",
+			"pkg", "postgres", "ref", modelRef, "count", n)
+	}
+	return nil
 }
 
 func (s *modelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool, error) {
