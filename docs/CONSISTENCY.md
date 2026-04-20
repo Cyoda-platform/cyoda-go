@@ -100,6 +100,59 @@ entity-row granularity across all plugins and eliminates those false
 positives, at the cost of not catching predicate-phantom anomalies. This
 is an accepted trade-off captured in cyoda's published semantic contract.
 
+## 3a. Model / Data Contract
+
+Model descriptors are second-class state: they describe the shape of the
+first-class data. Because concurrent entity writes coexist with
+occasional schema extensions (when a model has a non-empty
+`ChangeLevel`), the boundary between the two is part of the
+transactional contract itself. The spec living in
+`docs/superpowers/specs/2026-04-20-model-schema-extensions-design.md`
+states this as five invariants:
+
+1. **Non-interference.** A schema extension triggered inside an
+   entity transaction must not cause that transaction (or any
+   concurrent entity transaction) to fail with a conflict. In
+   practice this means schema extensions don't write the same row
+   that entity data writes touch.
+2. **Commit-bound visibility.** A schema extension is visible to
+   subsequent readers only after the enclosing entity transaction
+   commits. Rolled-back entity transactions leave no trace of their
+   extension on the observable schema.
+3. **Commutativity.** Well-formed deltas fold order-independently.
+   Two extensions to the same model produced by concurrent writers
+   produce the same folded schema regardless of the interleaving.
+4. **Validation-monotonicity.** Every op in the catalog strictly
+   broadens the accepted-value set. Documents that validate against
+   the base always validate against the extended schema. An op that
+   tightens the accepted set (e.g., adding a required field) is
+   explicitly excluded from the catalog.
+5. **State-machine disjointness.** `Save(desc)` requires the model
+   UNLOCKED; `ExtendSchema(ref, delta)` requires the model LOCKED
+   with a non-empty `ChangeLevel`. The two paths are disjoint by
+   the state machine — they cannot run concurrently against the
+   same model.
+
+### Operator Contract for Unlock
+
+`Unlock` is the caller-facing transition from LOCKED to UNLOCKED. The
+contract requires writers to **drain before** `Unlock` is invoked —
+no `ExtendSchema` may be in flight at the moment `Unlock` runs.
+
+Plugins enforce this defensively: Postgres' `Unlock` and `Save` both
+`DELETE` any lingering `model_schema_extensions` rows for the ref.
+Under a development-mode flag (`postgres.SetDebugMode(true)`), a
+non-zero delete count is treated as a fatal operator-contract
+violation and returned as an error. In production the same event
+logs a `WARN` and continues — the Save or Unlock itself is the
+authoritative schema state at that moment.
+
+Operator misuse — issuing `Unlock` while writers are still in flight
+— is undefined behavior at the SPI level (a concurrent writer's
+commit is racing with the `Unlock`'s delete). The assertion exists
+to catch such misuse loudly in development rather than have it
+manifest as silent data loss in production.
+
 ## 4. Why the transactional umbrella doesn't fix this by itself
 
 Every transaction in cyoda is started by an entity create/update at the
