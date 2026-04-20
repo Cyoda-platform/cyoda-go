@@ -104,6 +104,64 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	return nil
 }
 
+// ValidateWithRefresh runs strict schema validation with a bounded
+// refresh-on-stale safety net. One refresh attempt, only on unknown-
+// schema-element errors — the signal that our cached schema is behind
+// a peer's ExtendSchema. Other validation failures surface directly.
+// Stores that don't implement RefreshAndGet (no caching layer) skip
+// the refresh and return the original errors. See spec §4.3.
+func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, data any) error {
+	desc, err := modelStore.Get(ctx, ref)
+	if err != nil {
+		return err
+	}
+	errs := validateDescriptor(desc, data)
+	if errs == nil {
+		return nil
+	}
+	if !schema.HasUnknownSchemaElement(errs) {
+		return validationErrorsToError(errs)
+	}
+	refresher, ok := modelStore.(interface {
+		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
+	})
+	if !ok {
+		return validationErrorsToError(errs) // plugin has no cache
+	}
+	freshDesc, rErr := refresher.RefreshAndGet(ctx, ref)
+	if rErr != nil {
+		return rErr
+	}
+	if errs2 := validateDescriptor(freshDesc, data); errs2 != nil {
+		return validationErrorsToError(errs2)
+	}
+	return nil
+}
+
+// validateDescriptor unmarshals desc.Schema and runs schema.Validate.
+// Returns nil on success, or a []ValidationError on failure (including
+// a descriptive entry if desc itself is malformed or nil).
+func validateDescriptor(desc *spi.ModelDescriptor, data any) []schema.ValidationError {
+	if desc == nil {
+		return []schema.ValidationError{{Message: "nil descriptor"}}
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return []schema.ValidationError{{Message: fmt.Sprintf("unmarshal schema: %v", err)}}
+	}
+	return schema.Validate(node, data)
+}
+
+// validationErrorsToError converts a []ValidationError to a single error,
+// preserving the concatenation style used by validateOrExtend.
+func validationErrorsToError(errs []schema.ValidationError) error {
+	msgs := make([]string, len(errs))
+	for i, e := range errs {
+		msgs[i] = e.Error()
+	}
+	return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+}
+
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
 // internal (5xx) or operational (4xx) and returns the appropriate AppError.
 func classifyValidateOrExtendErr(err error) *common.AppError {
