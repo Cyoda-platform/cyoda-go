@@ -47,8 +47,10 @@ extensions producing different additive deltas converge on read.
 
 **Phase 1 (this spec):**
 
-- Split ModelStore's physical representation in the Postgres and Cassandra
-  plugins into stable metadata + an append-only log of additive extensions.
+- Split ModelStore's physical representation in the Postgres plugin into
+  stable metadata + an append-only log of additive extensions. External
+  plugins follow the same SPI contract with their own internal
+  representation (specified in each plugin's own design doc).
 - Introduce `ModelStore.ExtendSchema(ctx, ref, delta)` at the SPI boundary.
 - A minimal `CachingModelStore` decorator that memoizes the
   immutable-in-practice case (`State == LOCKED && ChangeLevel == ""`) and
@@ -173,22 +175,12 @@ reverse to locate the most recent savepoint, then folds forward. A simple
 covering index on `(tenant_id, model_name, model_version, seq DESC)`
 keeps the scan bounded.
 
-#### Cassandra
+#### External plugins
 
-Per the per-plugin audit: `model_schema_extensions` with partition key
-`(tenant_id, entity_name, model_version)`, clustering `delta_seq ASC`,
-`delta_type` enum (`DELTA`, `SAVEPOINT`), TimeWindowCompactionStrategy.
-`delta_seq` assigned from the plugin's existing HLC clock — monotonic
-across writers, no LWT needed.
-
-**Transaction-binding work in the Cassandra plugin.** Today
-`ModelStore.Save` in that plugin is free-floating, not bound to entity
-commit. `ExtendSchema` must defer its write into the plugin's existing
-`TxCoordinator.materialiseFromWriteSet` path (the same mechanism used
-for entity writes). This is additional scope local to the
-`cyoda-go-cassandra` repo; it is called out here so the plan can track
-it. The contract requires it; Postgres gets commit-binding for free via
-the shared `pgx.Tx`.
+External storage plugins implement the same SPI and honour the same
+two invariants from §2. Their internal representation and
+transaction-binding mechanisms are plugin-specific and are specified
+in each plugin's own design documentation, out of scope here.
 
 #### Memory and SQLite
 
@@ -251,15 +243,17 @@ all invalidation stays local. Multi-node deployments wire the real
 
 ## 5. Migration collapse
 
-Existing plugin migrations (`plugins/postgres/migrations/000001`
-through `000005`, `plugins/sqlite/migrations/000001`) are collapsed into
-a single `0001_initial_schema.up.{sql,cql}` per plugin. No intermediate
-migrations are preserved — this is pre-release greenfield. The same
-principle applies to Cassandra's single initial `cql` file.
+Existing migrations in the plugins owned by this repo
+(`plugins/postgres/migrations/000001` through `000005`,
+`plugins/sqlite/migrations/000001`) are collapsed into a single
+`0001_initial_schema.up.sql` per plugin. No intermediate migrations are
+preserved — this is pre-release greenfield.
 
 The new initial schema includes the two tables introduced here
 (`models`, `model_schema_extensions`) plus everything from the prior
 migrations, consolidated into one file. Down migrations symmetric.
+External plugins handle their own migration collapse in their own
+repositories.
 
 ## 6. Documentation updates
 
@@ -281,7 +275,8 @@ migrations, consolidated into one file. Down migrations symmetric.
 
 - `ExtendSchema` appends; `Get` folds deltas into the expected
   descriptor.
-- Savepoints emitted on the Nth delta (Postgres, Cassandra only).
+- Savepoints emitted on the Nth delta (Postgres only; external-plugin
+  equivalents tested in their own repositories).
 - `Save` clears the extension log.
 - `Lock`, `Unlock`, `SetChangeLevel` unaffected.
 
@@ -312,10 +307,10 @@ migrations, consolidated into one file. Down migrations symmetric.
 
 ## 8. Risks and mitigations
 
-- **Cassandra-side scope.** `ExtendSchema` needs commit-binding work in
-  the Cassandra plugin repo (TxCoordinator integration). Track as a
-  separate task in that repo's plan; gate Phase 1 cut on both repos
-  landing.
+- **External-plugin scope.** Some external plugins may need additional
+  work to bind `ExtendSchema` to the entity commit path; such work is
+  tracked in the respective plugin's own repository. Gate Phase 1 cut
+  on all dependent repos landing their equivalent changes.
 - **Fold cost under adversarial delta rate.** Savepoint every 64 bounds
   this; profile once real workloads exist. If needed, tune the interval
   via a plugin-level config knob (out of scope Phase 1).
