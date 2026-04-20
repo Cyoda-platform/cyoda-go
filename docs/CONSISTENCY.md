@@ -303,7 +303,8 @@ per-node `TransactionManager` holds per-transaction state (read-set,
 write-set, postgres `pgx.Tx` handle) in the process memory of the node
 that called `Begin`. Subsequent requests inside the same transaction
 must route back to that node — enforced by the cluster-mode dispatch
-layer (signed transaction tokens + HMAC-authenticated forwarding).
+layer (HMAC-signed transaction tokens + AEAD-encrypted inter-node
+forwarding via the `PeerAuth` seam).
 
 The isolation contract is therefore preserved end-to-end: an API caller
 interacting with transaction `T` always lands on the same node for the
