@@ -6,10 +6,28 @@ import (
 	"strings"
 )
 
+// ErrorKind classifies a ValidationError so handlers can branch on
+// specific failure modes without matching error message text.
+type ErrorKind int
+
+const (
+	// ErrKindGeneric covers validation failures that do not map to a
+	// more specific kind (type mismatches, shape mismatches).
+	ErrKindGeneric ErrorKind = iota
+
+	// ErrKindUnknownElement fires when a data document carries a field
+	// that the validating schema does not declare. In practice this is
+	// the "stale schema" signal handlers use to decide whether to
+	// refresh from authoritative storage and retry (see
+	// internal/domain/entity/handler.go).
+	ErrKindUnknownElement
+)
+
 // ValidationError describes a single validation failure at a specific path.
 type ValidationError struct {
 	Path    string
 	Message string
+	Kind    ErrorKind
 }
 
 // Error implements the error interface.
@@ -18,6 +36,19 @@ func (e ValidationError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf("%s: %s", e.Path, e.Message)
+}
+
+// HasUnknownSchemaElement reports whether any of the validation
+// errors in errs classify as ErrKindUnknownElement — the stale-schema
+// signal. Handlers use this to decide whether to force a cache
+// refresh and re-validate once before surfacing a 4xx to the client.
+func HasUnknownSchemaElement(errs []ValidationError) bool {
+	for _, e := range errs {
+		if e.Kind == ErrKindUnknownElement {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate checks whether data conforms to the given model schema.
@@ -62,6 +93,7 @@ func validateObject(model *ModelNode, data any, path string) []ValidationError {
 			errs = append(errs, ValidationError{
 				Path:    joinPath(path, name),
 				Message: "unexpected field not present in model",
+				Kind:    ErrKindUnknownElement,
 			})
 		}
 	}
