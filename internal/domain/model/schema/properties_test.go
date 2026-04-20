@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -328,3 +329,109 @@ func marshalLeaf(t *testing.T, dt DataType) []byte {
 
 // Ensure SchemaDelta type is in scope in this file.
 var _ spi.SchemaDelta
+
+// TestValidationMonotonicity: for every catalog op kind, every
+// document valid against base must remain valid against Apply(base,
+// delta). Prevents a tightening op sneaking into the catalog.
+func TestValidationMonotonicity(t *testing.T) {
+	cases := []struct {
+		name string
+		base func() *ModelNode
+		op   func(t *testing.T) SchemaOp
+		docs []string
+	}{
+		{
+			name: "add_property/new_field_does_not_reject_old_docs",
+			base: func() *ModelNode {
+				root := NewObjectNode()
+				root.SetChild("name", NewLeafNode(String))
+				return root
+			},
+			op: func(t *testing.T) SchemaOp {
+				return NewAddProperty("", "email", marshalLeaf(t, String))
+			},
+			docs: []string{
+				`{"name":"alice"}`,
+				`{}`,
+				`{"name":"bob"}`,
+			},
+		},
+		{
+			name: "broaden_type/accepts_old_type_values",
+			base: func() *ModelNode {
+				root := NewObjectNode()
+				root.SetChild("age", NewLeafNode(Integer))
+				return root
+			},
+			op: func(t *testing.T) SchemaOp {
+				op, err := NewBroadenType("age", []DataType{Null})
+				if err != nil {
+					t.Fatalf("%v", err)
+				}
+				return op
+			},
+			docs: []string{
+				`{"age":42}`,
+				`{"age":0}`,
+			},
+		},
+		{
+			name: "add_array_item_type/accepts_old_element_types",
+			base: func() *ModelNode {
+				root := NewObjectNode()
+				root.SetChild("tags", NewArrayNode(NewLeafNode(Integer)))
+				return root
+			},
+			op: func(t *testing.T) SchemaOp {
+				op, err := NewAddArrayItemType("tags", []DataType{String})
+				if err != nil {
+					t.Fatalf("%v", err)
+				}
+				return op
+			},
+			docs: []string{
+				`{"tags":[1,2,3]}`,
+				`{"tags":[]}`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := tc.base()
+			for _, doc := range tc.docs {
+				if errs := validateDoc(t, base, doc); len(errs) != 0 {
+					t.Fatalf("doc %q does not validate against base: %v", doc, errs)
+				}
+			}
+			delta, err := MarshalDelta([]SchemaOp{tc.op(t)})
+			if err != nil {
+				t.Fatalf("MarshalDelta: %v", err)
+			}
+			extended, err := Apply(base, delta)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			for _, doc := range tc.docs {
+				if errs := validateDoc(t, extended, doc); len(errs) != 0 {
+					t.Errorf("monotonicity violated: doc %q was valid against base but not against Apply(base, %s): %v",
+						doc, tc.op(t).Kind, errs)
+				}
+			}
+		})
+	}
+}
+
+// validateDoc is a thin wrapper around schema.Validate. Validate
+// returns a []ValidationError slice (nil / length-0 means valid).
+// Note: the task plan's draft assumed Validate returned error; the
+// actual signature in validate.go returns []ValidationError. The
+// wrapper adapts that — an empty slice is "valid".
+func validateDoc(t *testing.T, node *ModelNode, docJSON string) []ValidationError {
+	t.Helper()
+	var doc any
+	if err := json.Unmarshal([]byte(docJSON), &doc); err != nil {
+		t.Fatalf("bad test doc %q: %v", docJSON, err)
+	}
+	return Validate(node, doc)
+}
