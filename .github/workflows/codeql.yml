@@ -1,0 +1,55 @@
+name: CodeQL
+
+# CodeQL static analysis (issue #67). Complements the `security` job in ci.yml:
+#   - govulncheck asks "does the call graph reach a known-CVE function?"
+#   - dependency-review asks "is this PR adding a vulnerable dep?"
+#   - CodeQL asks "does the code we wrote itself contain a bug pattern?"
+# Uses GitHub's security-and-quality query pack — broader than security-extended;
+# includes code-quality queries that catch logic bugs alongside security findings.
+#
+# Free for public repositories on GitHub.com — no GHAS license required.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly cron catches newly-published queries against stable code that
+    # isn't actively being modified. Monday 06:00 UTC keeps results fresh
+    # for the workweek without clashing with release-day traffic.
+    - cron: '0 6 * * 1'
+
+permissions:
+  security-events: write   # upload SARIF to Security tab
+  actions: read
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          queries: security-and-quality
+
+      # Explicit build across the workspace (root + plugins/memory|postgres|sqlite
+      # via go.work). CodeQL's autobuild would normally handle this, but being
+      # explicit surfaces build failures cleanly and guarantees every module in
+      # the workspace is observed.
+      - name: Build workspace
+        run: go build ./...
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:go"

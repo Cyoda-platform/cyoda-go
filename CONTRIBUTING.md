@@ -56,14 +56,15 @@ go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Clou
 
 ## CI checks
 
-Every PR must pass the following gates before it can be merged (see `.github/workflows/ci.yml`):
+Every PR must pass the following gates before it can be merged:
 
-| Job | Purpose |
-|-----|---------|
-| `test` | Unit + integration tests, race detector, `go build`. |
-| `per-module-hygiene` | Each plugin module builds and vets independently with `GOWORK=off` (protects downstream consumers). |
-| `security` | `govulncheck` against the root module and each plugin submodule; `actions/dependency-review-action` on PR diffs. |
-| `shellcheck` | Lint for shell scripts. |
+| Job | Workflow | Purpose |
+|-----|----------|---------|
+| `test` | `ci.yml` | Unit + integration tests, race detector, `go build`. |
+| `per-module-hygiene` | `ci.yml` | Each plugin module builds and vets independently with `GOWORK=off` (protects downstream consumers). |
+| `security` | `ci.yml` | `govulncheck` against the root module and each plugin submodule; `actions/dependency-review-action` on PR diffs. |
+| `Analyze Go` | `codeql.yml` | CodeQL static analysis (`security-and-quality` pack). Findings surface in the Security tab and as PR annotations. Also runs on a weekly cron. |
+| `shellcheck` | `ci.yml` | Lint for shell scripts. |
 
 The `security` job is blocking: any vulnerability finding in the call graph, or any new dependency at `moderate` severity or above, fails the PR. To reproduce locally:
 
