@@ -28,7 +28,7 @@ Data operations require the model to be `LOCKED`. A locked model carries a
 `ChangeLevel` that governs what additive schema evolution is permitted at
 ingestion time.
 
-Two invariants for additive model mutation:
+Invariants for additive model mutation:
 
 1. **Non-interference.** An additive mutation of a model's schema must not
    cause a transaction conflict with concurrent data operations on the same
@@ -38,10 +38,36 @@ Two invariants for additive model mutation:
 2. **Commit-bound visibility.** An additive mutation is visible to other
    readers **iff** the owning entity transaction commits. If the entity
    transaction rolls back, the schema mutation is never observed.
+3. **Commutativity.** For any two well-formed deltas `d1, d2` over a
+   shared base schema `B`, `Apply(Apply(B, d1), d2) ≡ Apply(Apply(B, d2), d1)`.
+   Concurrent extensions converge regardless of apply order.
+4. **Validation-monotonicity.** Any document that validates against a
+   schema `B` also validates against `Apply(B, d)` for every delta `d`.
+   "Additive" in the operational sense means *strictly broadening the
+   accepted set* — never tightening it. Ops that narrow acceptance
+   (e.g. adding to `required`) are excluded from the op-kind catalog
+   by construction.
 
-These two constraints are jointly satisfiable because extensions are
-backwards-compatible, commutative, and idempotent. Two concurrent
-extensions producing different additive deltas converge on read.
+**State-machine disjointness.** The existing model lifecycle makes
+`Save` and `ExtendSchema` structurally disjoint:
+
+- `Save` requires `UNLOCKED` (admin path; replaces schema wholesale).
+- `ExtendSchema` requires `LOCKED` with `ChangeLevel != ""` (ingestion
+  path; appends a delta).
+- `UNLOCKED → LOCKED` is permitted only when no live data exists for
+  the model (all soft-deleted).
+
+Consequence: `Save` and `ExtendSchema` cannot run concurrently on the
+same model. No storage-layer locks, advisory locks, or cross-operation
+snapshots are needed to exclude them. The guarantee is plugin-agnostic.
+
+**Accepted policy, not a violation.** `SetChangeLevel` under the
+`LOCKED → LOCKED` transition may tighten the permitted level while an
+`ExtendSchema` under the old level is in flight. Commit-bound
+visibility still holds: the extension either commits against the
+now-tightened policy (audit-trailed, subsequent reads see the resulting
+schema) or it rolls back. This is called out in `CONSISTENCY.md` as
+accepted behaviour, not a race to guard against.
 
 ## 3. Scope
 
@@ -52,19 +78,21 @@ extensions producing different additive deltas converge on read.
   plugins follow the same SPI contract with their own internal
   representation (specified in each plugin's own design doc).
 - Introduce `ModelStore.ExtendSchema(ctx, ref, delta)` at the SPI boundary.
-- A minimal `CachingModelStore` decorator that memoizes the
-  immutable-in-practice case (`State == LOCKED && ChangeLevel == ""`) and
-  broadcasts drop-invalidation on any write.
+- A `CachingModelStore` decorator that memoizes any `LOCKED` descriptor
+  (any `ChangeLevel`), with a three-layer coherence strategy: gossip
+  drop-invalidation (fast path), validator-triggered refresh-on-stale
+  (correctness safety net), and a generous TTL lease (operational
+  bound). Gossip is a latency optimization; correctness rests on the
+  catalog invariants plus the refresh step.
 - Collapse all existing plugin migrations into a single
-  `0001_initial_schema.{up,down}.{sql,cql}` per plugin (greenfield — no
-  released versions to preserve).
+  `0001_initial_schema.up.sql` per plugin (greenfield — no released
+  versions to preserve).
 
 **Out of scope (deferred to a later phase if profiling justifies it):**
 
-- Caching for mutable models (`ChangeLevel != ""` or `UNLOCKED`).
-- Push-delta gossip (sending the patch contents cross-node) — Phase 1 uses
-  notify-and-drop.
-- TTL eviction, LRU caps, cache size tuning.
+- LRU caps, cache size tuning.
+- Push-delta gossip (sending delta contents cross-node) — Phase 1 uses
+  notify-and-drop, which combined with self-healing is sufficient.
 - Compaction / folding of the extension log by external tooling.
 
 ## 4. Architecture
@@ -115,14 +143,16 @@ type SchemaOpKind string
 
 const (
     SchemaOpAddProperty      SchemaOpKind = "add_property"
-    SchemaOpAddRequired      SchemaOpKind = "add_required"
     SchemaOpAddEnumValue     SchemaOpKind = "add_enum_value"
     SchemaOpBroadenType      SchemaOpKind = "broaden_type"
     SchemaOpAddArrayItemType SchemaOpKind = "add_array_item_type"
     SchemaOpExtendOneOf      SchemaOpKind = "extend_one_of"
     SchemaOpExtendAnyOf      SchemaOpKind = "extend_any_of"
     // Enumeration finalized at plan-time by auditing schema.Extend
-    // output classes (see §9).
+    // output classes (see §9). Every candidate op-kind must satisfy
+    // BOTH commutativity and validation-monotonicity, verified by the
+    // property-test harness in §7; any that tightens the accepted set
+    // (e.g. `add_required`) is rejected from the catalog.
 )
 
 type SchemaOp struct {
@@ -145,9 +175,9 @@ type ModelStore interface {
     //     targeting the same model MUST NOT conflict with each other at
     //     the storage layer.
     //   - Any two well-formed deltas must fold commutatively into the
-    //     same final schema regardless of apply order. This is enforced
-    //     by the op-kind catalog (each kind's merge rule is documented
-    //     in schema.Apply).
+    //     same final schema regardless of apply order, and every delta
+    //     must be validation-monotone (broadens acceptance, never
+    //     narrows). Enforced by the op-kind catalog (see §2 and §7).
     ExtendSchema(ctx context.Context, ref ModelRef, delta *SchemaDelta) error
 }
 ```
@@ -209,6 +239,41 @@ The existing failure-mode translation in `classifyValidateOrExtendErr`
 stays; `common.Internal` still unwraps `spi.ErrConflict` to a `409` for
 the (rare) legitimate concurrent-extension case.
 
+**Read-side self-healing on strict validate and search.**
+
+When the handler validates against a possibly-cached schema —
+`schema.Validate` in the `ChangeLevel == ""` branch of
+`validateOrExtend` above, and field-path validation in search queries
+(`internal/domain/search`, `internal/match`) — a stale cache on the
+receiving node can surface as an "unknown schema element" error even
+though the extension has committed elsewhere. Bounded, one-shot
+refresh handles this:
+
+```go
+desc, _ := modelStore.Get(ctx, ref)
+err := schema.Validate(desc, input)
+if err != nil && isUnknownSchemaElement(err) {
+    desc, _ = modelStore.RefreshAndGet(ctx, ref) // drops cache entry, reloads from plugin
+    err = schema.Validate(desc, input)
+}
+return err
+```
+
+Bounds:
+
+- **At most one refresh per request.** No loops, no DoS surface.
+- **Only the `unknown schema element` error class.** Type mismatches,
+  range violations, pattern mismatches surface directly — a client
+  submitting genuinely invalid input must not trigger source-of-truth
+  traffic.
+- If the refresh sees the same schema (the error was legitimate), the
+  second validation produces the same error and the caller sees the
+  correct answer.
+
+`RefreshAndGet` is exposed on `CachingModelStore` (§4.5). Handlers use
+it via a small optional-interface type assertion so non-caching paths
+don't need the method.
+
 ### 4.4 Per-plugin realization
 
 #### Postgres
@@ -216,8 +281,19 @@ the (rare) legitimate concurrent-extension case.
 Two tables:
 
 - `models` — stable metadata only. One row per `(tenant, ref)`. Mutated by
-  `Save`, `Lock`, `Unlock`, `SetChangeLevel`. Columns include `base_schema`
-  (JSONB).
+  `Save` (UNLOCKED state), `Lock`, `Unlock`, `SetChangeLevel`. Columns
+  include `base_schema` (JSONB).
+
+  **Lifecycle coupling with the extension log.** Because `Save`
+  requires `UNLOCKED` and `ExtendSchema` requires `LOCKED`, the two
+  never run concurrently on the same model (§2). `Unlock` deletes all
+  rows from `model_schema_extensions` for the model as part of the
+  same transaction that flips state to `UNLOCKED` — the log should
+  already be drained of semantic content because entity data is
+  soft-deleted before `Unlock` is permitted, but the `DELETE` makes
+  the invariant "log non-empty ⇒ LOCKED" structural. The original
+  draft's "Save clears the log" step becomes a defensive `DELETE ...
+  RETURNING count; assert count == 0` at plan-time.
 - `model_schema_extensions` — append-only. Primary key
   `(tenant_id, model_name, model_version, seq BIGSERIAL)`. Columns: `kind`
   (`'delta' | 'savepoint'`), `payload` (JSONB — the serialized
@@ -269,97 +345,92 @@ A new type in `internal/cluster/modelcache` (lean, finalized at plan-time):
 
 ```go
 type CachingModelStore struct {
-    inner       spi.ModelStore
-    broadcaster spi.ClusterBroadcaster // nil-safe
-    mu          sync.RWMutex
-    cache       map[cacheKey]*spi.ModelDescriptor // only LOCKED + ""
-    epochs      map[cacheKey]uint64              // bumped on any invalidation
+    inner        spi.ModelStore
+    broadcaster  spi.ClusterBroadcaster // nil-safe
+    clock        Clock                  // injected; real time by default
+    lease        time.Duration          // e.g. 1h — operational bound, not correctness
+    mu           sync.RWMutex
+    cache        map[cacheKey]entry
+}
+
+type entry struct {
+    desc      *spi.ModelDescriptor
+    expiresAt time.Time
 }
 ```
+
+**Admission.** Cache **any** `LOCKED` descriptor, for any
+`ChangeLevel`. The §2 state-machine disjointness eliminates the
+staleness hazard that the original draft's `ChangeLevel == ""`
+restriction was protecting against. `UNLOCKED` descriptors pass
+through uncached — their lifetime is short and they're always on the
+admin path.
 
 **Policy.**
 
-- On `Get`: cache hit → return copy. Cache miss → delegate to `inner`;
-  if the returned descriptor has `State == LOCKED && ChangeLevel == ""`,
-  store it under the epoch-guard rule below; otherwise pass through
-  uncached.
+- On `Get`: cache hit with `clock.Now() < expiresAt` → return. Cache
+  hit past lease → drop entry, fall through to miss. Miss → delegate
+  to `inner`; if returned descriptor is `LOCKED`, store with
+  `expiresAt = Now() + lease`.
 - On every local mutating call (`Save`, `Lock`, `Unlock`,
   `SetChangeLevel`, `ExtendSchema`, `Delete`): delegate to `inner`
-  first, then bump the ref's epoch and drop the cache entry, then
-  (if broadcaster is non-nil) publish the invalidation.
-- On incoming gossip invalidation: bump the ref's epoch and drop the
-  entry. No further action.
+  first, then drop the cache entry, then (if broadcaster is non-nil)
+  publish the invalidation.
+- On incoming gossip invalidation: drop the cache entry.
 
-**Epoch-guarded populate.** A populate-during-invalidation race
-(reader issues DB read, invalidation arrives before reader stores the
-result, reader then caches stale data) is prevented by capturing the
-ref's current epoch *before* the underlying `Get` and re-checking
-after:
+**`RefreshAndGet`.** Extra method on the decorator (not the SPI)
+consumed by the validator path (§4.3):
 
 ```go
-func (c *CachingModelStore) Get(ctx context.Context, ref ModelRef) (*ModelDescriptor, error) {
-    if d := c.lookup(ref); d != nil {
-        return d, nil
-    }
-
-    c.mu.RLock()
-    snapshotEpoch := c.epochs[key(ref)]
-    c.mu.RUnlock()
-
-    desc, err := c.inner.Get(ctx, ref)
-    if err != nil || desc.State != ModelLocked || desc.ChangeLevel != "" {
-        return desc, err
-    }
-
-    c.mu.Lock()
-    if c.epochs[key(ref)] == snapshotEpoch {
-        c.cache[key(ref)] = desc
-    } // else: concurrent invalidation — drop result rather than cache stale
-    c.mu.Unlock()
-    return desc, nil
-}
-
-func (c *CachingModelStore) invalidate(ref ModelRef) {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    c.epochs[key(ref)]++
-    delete(c.cache, key(ref))
-}
+// Drops the cache entry, re-reads from inner, stores the fresh result,
+// and returns it. Used by validators on "unknown schema element"
+// errors as a correctness safety net; bounded to one call per request
+// by the handler.
+func (c *CachingModelStore) RefreshAndGet(ctx context.Context, ref ModelRef) (*spi.ModelDescriptor, error)
 ```
 
-**Race coverage — all three orderings:**
+**Three-layer coherence, in decreasing importance:**
 
-1. *Invalidation before the `Get` starts.* Epoch is already bumped;
-   reader captures the post-bump epoch; stores successfully with the
-   fresh DB result. Correct.
-2. *Invalidation during the DB read.* Reader captured pre-bump epoch;
-   invalidation bumps; reader's post-check sees mismatch; result is
-   returned to the caller but not cached. Next `Get` repopulates with
-   a new epoch snapshot. Correct.
-3. *Invalidation after the reader stores.* Reader stores under old
-   epoch; invalidation then bumps the epoch and deletes the entry.
-   Correct — the cache ends up empty, as intended.
+1. **Catalog invariants (correctness floor).** Commutativity and
+   validation-monotonicity (§2) mean a node operating on a stale
+   cached schema is never catastrophically wrong:
+   - *Write-side self-healing.* A stale-cache node sees an
+     apparently-new field, computes a delta, calls `ExtendSchema`.
+     The resulting log folds to the same final schema as if the node
+     had seen the prior extension. At worst one redundant log entry.
+   - *Read-side self-healing.* A stale-cache node may fail validation
+     on an element the stale schema doesn't contain; the validator's
+     bounded refresh step (§4.3) reloads from the plugin and
+     revalidates once. Succeeds if the extension has committed;
+     surfaces a legitimate error otherwise.
+2. **Gossip invalidation (performance optimization).** The
+   `model.invalidate` topic carries a small `(tenantID, ref)` payload;
+   receivers drop their cache entry. Without gossip, staleness is
+   bounded by the TTL lease and by validator-triggered refresh.
+   Gossip just makes the window shorter for most requests.
+3. **TTL lease (operational hygiene).** Bounds the lifetime of every
+   entry regardless of invalidation paths. Lease is generous (~1h) —
+   short enough to reclaim memory for unused models and defend
+   against unknown failure modes, long enough that it isn't on any
+   latency-sensitive path in steady state.
 
-Epoch values only ever grow. Memory overhead is one `uint64` per
-distinct ref seen; bounded by the model catalog size.
+**What's deliberately not present.** No epoch counter, no
+populate-during-invalidation race guard: staleness is not a
+correctness problem under the self-healing model, so we avoid the
+complexity of preventing the races I previously worried about. The
+worst impact of a populate-race is a stale entry living until the
+next gossip-invalidation, the next validator refresh, or TTL
+expiry — bounded and self-correcting.
 
-**Gossip topic:** `model.invalidate` (new constant).
-
-**Payload:** small codec carrying `tenantID` and `ref` bytes. No model
-contents on the wire.
-
-**Subscription:** the decorator registers a handler on construction.
-The handler invokes `invalidate(ref)` — same path as local mutation
-post-write.
+**Gossip topic:** `model.invalidate` (new constant). Payload: small
+codec carrying `tenantID` and `ref` bytes.
 
 **Wiring.** `StoreFactory.ModelStore(ctx)` returns
-`CachingModelStore{inner: pluginModelStore, broadcaster: ...}`. Call
-sites see only `spi.ModelStore` — no caller knows the decorator exists.
-
-**Construction.** Single-node deployments (memory, sqlite, or postgres
-running without gossip configured) pass `nil` for the broadcaster and
-all invalidation stays local. Multi-node deployments wire the real
-`spi.ClusterBroadcaster` obtained from the cluster registry.
+`CachingModelStore{inner: pluginModelStore, broadcaster: ..., clock:
+..., lease: ...}`. Call sites see `spi.ModelStore`; the validator
+path obtains `RefreshAndGet` via optional-interface type assertion.
+Single-node deployments pass `nil` for the broadcaster; gossip stays
+off, TTL + refresh still give correctness.
 
 ## 5. Migration collapse
 
@@ -413,11 +484,17 @@ repositories.
   `Apply(Apply(b, d1), d2) ≡ Apply(Apply(b, d2), d1)`. Table-driven
   with a small generator; fails noisily if an op-kind's merge rule is
   not order-independent.
+- **Validation-monotonicity property tests:** for every op-kind `k`,
+  every document that validates against some base `B` must also
+  validate against `Apply(B, d)` for any delta `d` of kind `k`.
+  Prevents a tightening op sneaking into the catalog.
 - **Extend-completeness test:** for every classified output of
   `schema.Extend` (enumerated at plan-time per §9), `Diff` must be
   able to express the change as a `SchemaDelta`. A change that
-  `Extend` permits but `Diff` cannot encode is a design bug and the
-  test fails.
+  `Extend` permits but `Diff` cannot encode — or a change that
+  `Extend` permits but violates monotonicity — is a design bug; the
+  test fails until either the op catalog grows to cover it or
+  `Extend` is constrained to not produce it.
 
 **Integration — concurrent update regression (`plugins/postgres`):**
 
@@ -425,17 +502,29 @@ repositories.
   entities of a `ChangeLevel`-enabled model, asserting all N commit.
 - GREEN after fix: same test, no `spi.ErrConflict` surfaces.
 
-**Integration — cache + gossip (`internal/cluster/modelcache`):**
+**Integration — cache + self-healing (`internal/cluster/modelcache`):**
 
 - Two decorators sharing a fake broadcaster. `ExtendSchema` on
   decorator A drops the entry on decorator B.
-- Cache only stores `LOCKED + ""` entries; `UNLOCKED` and
-  `ChangeLevel != ""` entries bypass.
-- **Populate race tests** — one test per ordering from §4.5:
-  (i) invalidation-before-read, (ii) invalidation-during-read (using a
-  hook on the inner store to block mid-`Get` while an invalidation is
-  published), (iii) invalidation-after-store. In every case the
-  decorator must not leave a stale entry visible to subsequent `Get`s.
+- Cache admits any `LOCKED` descriptor regardless of `ChangeLevel`;
+  `UNLOCKED` bypasses.
+- **TTL lease expiry** drops an entry once `clock.Now() > expiresAt`;
+  next `Get` repopulates.
+- **Canonical read-side self-healing scenario** (end-to-end integration):
+  1. Node A commits an `ExtendSchema` adding `newField` and broadcasts
+     invalidation.
+  2. Node B is constructed with gossip disconnected, so it does not
+     receive the invalidation. Its cache still holds the pre-extension
+     descriptor.
+  3. A search filtering on `newField` arrives at Node B. First
+     validation fails with the "unknown schema element" class.
+  4. Handler calls `RefreshAndGet`; sees the committed extension;
+     revalidates; serves the query.
+  5. Same test with the extension NOT committed: refresh sees the same
+     schema; the error surfaces to the caller as legitimate.
+- **Refresh bounds.** Refresh fires only on the unknown-element error
+  class; other validation failures (type, range, pattern) do not
+  trigger a refetch. At most one refresh per handler invocation.
 
 **E2E (`internal/e2e`):**
 
@@ -452,15 +541,15 @@ repositories.
 - **Fold cost under adversarial delta rate.** Savepoint every 64 bounds
   this; profile once real workloads exist. If needed, tune the interval
   via a plugin-level config knob (out of scope Phase 1).
-- **Cache correctness if the "immutability" assumption is wrong.** The
-  only mutators of a `LOCKED + ""` model are `Unlock`,
-  `SetChangeLevel`, `ExtendSchema` (should not happen — `""` level),
-  `Save`, `Delete`, and `Lock` (already locked). All go through the
-  decorator, all invalidate. The one failure mode is a direct DB write
-  by something outside the SPI; we document that as "don't do that."
+- **SetChangeLevel during in-flight ExtendSchema** (accepted policy
+  per §2). An extension under the old level may commit against a now-
+  tightened level. Commit-bound visibility preserves the audit trail;
+  subsequent reads see the schema consistent with at-the-time
+  authority. Documented in `CONSISTENCY.md` as accepted behaviour,
+  not a bug to guard against.
 - **Gate 6 — resolving vs deferring.** Every item flagged during this
-  brainstorm was addressed inline or scoped explicitly out (Phase 2).
-  No silent TODOs.
+  brainstorm was addressed inline or scoped explicitly out. No silent
+  TODOs.
 
 ## 9. Open questions for plan-time
 
