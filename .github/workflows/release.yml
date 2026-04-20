@@ -118,7 +118,9 @@ jobs:
           echo "ref=ghcr.io/cyoda-platform/cyoda:${version}" >> "$GITHUB_OUTPUT"
 
       - name: Scan release image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pin to >= v0.35.0; earlier versions are covered by
+        # GHSA-69fq-xp46-6x23 (briefly-compromised supply chain).
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ${{ steps.image-ref.outputs.ref }}
           format: table
