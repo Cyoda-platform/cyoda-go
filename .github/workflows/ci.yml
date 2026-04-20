@@ -68,3 +68,47 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
         run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh
+
+  # Continuous security gates (issue #67):
+  #   - govulncheck scans the call graph for exploitable stdlib and third-party CVEs,
+  #     covering the root module and each plugin submodule (they have their own go.mod
+  #     and are independently consumable, so each must be scanned separately).
+  #   - dependency-review-action blocks PRs that introduce known-vulnerable deps
+  #     before they land.
+  # Both gates are blocking: merging past a vulnerability finding is not allowed.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Pinned binary for CI reproducibility. The vulnerability database itself is
+      # fetched at scan time, so pinning the tool does not pin the findings.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: govulncheck (root)
+        run: govulncheck ./...
+
+      - name: govulncheck (plugins/memory)
+        working-directory: plugins/memory
+        run: govulncheck ./...
+
+      - name: govulncheck (plugins/postgres)
+        working-directory: plugins/postgres
+        run: govulncheck ./...
+
+      - name: govulncheck (plugins/sqlite)
+        working-directory: plugins/sqlite
+        run: govulncheck ./...
+
+      # dependency-review is only meaningful on PR events (it compares base↔head).
+      # Push events to main/develop skip this step — the govulncheck above still runs.
+      - name: Dependency review
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
