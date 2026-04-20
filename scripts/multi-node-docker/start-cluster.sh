@@ -105,9 +105,11 @@ rm -rf "$BUILDCTX"
 mkdir -p "$BUILDCTX/$HOST_PLATFORM"
 
 log_info "Building cyoda binary for $HOST_PLATFORM..."
-CGO_ENABLED=0 GOOS=linux GOARCH="$HOST_ARCH" \
+# Build from PROJECT_ROOT so `go` discovers this repo's go.work, not one
+# that might exist in the invoker's cwd.
+(cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$HOST_ARCH" \
     go build -ldflags="-s -w" -o "$BUILDCTX/$HOST_PLATFORM/cyoda" \
-    "$PROJECT_ROOT/cmd/cyoda"
+    ./cmd/cyoda)
 
 log_info "Building image $LOCAL_IMAGE_TAG..."
 docker buildx build --load \
