@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
@@ -127,7 +128,6 @@ func New(cfg Config) *App {
 	if err != nil {
 		panic(fmt.Sprintf("create storage factory for %s: %v", plugin.Name(), err))
 	}
-	a.storeFactory = factory
 
 	// Wire the schema.Apply replay function into the plugin factory so
 	// ExtendSchema can fold deltas on read. Postgres uses this to fold
@@ -142,12 +142,23 @@ func New(cfg Config) *App {
 		setter.SetApplyFunc(makeSchemaApply())
 	}
 
-	// TODO(G1-followup): wrap a.storeFactory with modelcache.CachingModelStore
-	// at the factory level once the tenant-aware factory-decorator design
-	// lands. The cache package is already in place at
-	// internal/cluster/modelcache; what's missing is the factory-level
-	// adapter that holds one cache shared across all tenant-scoped
-	// ModelStore(ctx) calls.
+	// Wrap the factory in the caching decorator. ModelStore(ctx) now
+	// returns a per-request adapter that reads through one shared
+	// cache (tenant-scoped via ctx). In cluster mode the decorator
+	// publishes "model.invalidate" on gossipReg so peer nodes stay in
+	// sync; in single-node mode no broadcaster is installed (passing a
+	// typed-nil *registry.Gossip as an interface would still evaluate
+	// != nil and trigger a nil-deref, so we pass an untyped nil).
+	var cacheBroadcaster spi.ClusterBroadcaster
+	if gossipReg != nil {
+		cacheBroadcaster = gossipReg
+	}
+	a.storeFactory = modelcache.NewCachingStoreFactory(
+		factory,
+		cacheBroadcaster,
+		nil, // wall clock
+		cfg.ModelCacheLease,
+	)
 
 	// Startable plugins (cassandra, etc.) must complete Start BEFORE the
 	// factory can serve TransactionManager: the initial takeover / shard-
