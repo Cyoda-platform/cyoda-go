@@ -227,3 +227,9 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 		Schema:      doc.Schema,
 	}, nil
 }
+
+// ExtendSchema is a placeholder until Phase D (Task D3) implements
+// the delta log semantics for the sqlite plugin.
+func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
+	return fmt.Errorf("ExtendSchema not yet implemented")
+}

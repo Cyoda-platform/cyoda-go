@@ -104,3 +104,9 @@ func (s *ModelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 	entry.ChangeLevel = level
 	return nil
 }
+
+// ExtendSchema is a placeholder until Phase D (Task D1) implements
+// the delta log semantics for the memory plugin.
+func (s *ModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
+	return fmt.Errorf("ExtendSchema not yet implemented")
+}
