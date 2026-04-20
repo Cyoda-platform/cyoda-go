@@ -1,3 +1,5 @@
+DROP INDEX IF EXISTS model_schema_extensions_lookup;
+DROP TABLE IF EXISTS model_schema_extensions;
 DROP VIEW IF EXISTS entity_versions_readable;
 DROP VIEW IF EXISTS entities_readable;
 DROP TABLE IF EXISTS submit_times;
