@@ -32,6 +32,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -127,6 +128,26 @@ func New(cfg Config) *App {
 		panic(fmt.Sprintf("create storage factory for %s: %v", plugin.Name(), err))
 	}
 	a.storeFactory = factory
+
+	// Wire the schema.Apply replay function into the plugin factory so
+	// ExtendSchema can fold deltas on read. Postgres uses this to fold
+	// the extension log; SQLite/Memory use it to apply in-place. The
+	// interface uses the raw function signature (not any plugin-local
+	// named ApplyFunc type) so a single type-assertion satisfies all
+	// plugins uniformly.
+	type applyFuncSetter interface {
+		SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
+	}
+	if setter, ok := factory.(applyFuncSetter); ok {
+		setter.SetApplyFunc(makeSchemaApply())
+	}
+
+	// TODO(G1-followup): wrap a.storeFactory with modelcache.CachingModelStore
+	// at the factory level once the tenant-aware factory-decorator design
+	// lands. The cache package is already in place at
+	// internal/cluster/modelcache; what's missing is the factory-level
+	// adapter that holds one cache shared across all tenant-scoped
+	// ModelStore(ctx) calls.
 
 	// Startable plugins (cassandra, etc.) must complete Start BEFORE the
 	// factory can serve TransactionManager: the initial takeover / shard-
@@ -575,6 +596,23 @@ func validateClusterConfig(c cluster.Config) {
 	if !strings.HasPrefix(c.NodeAddr, "http://") && !strings.HasPrefix(c.NodeAddr, "https://") {
 		slog.Error("CYODA_NODE_ADDR must include scheme (http:// or https://)", "pkg", "cluster", "addr", c.NodeAddr)
 		os.Exit(1)
+	}
+}
+
+// makeSchemaApply returns the schema-apply replay function the plugin
+// factories use to fold extension-log deltas on read. Defined here so
+// the plugin packages don't depend on internal/domain/model/schema.
+func makeSchemaApply() func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		node, err := schema.Unmarshal(base)
+		if err != nil {
+			return nil, fmt.Errorf("apply: unmarshal base: %w", err)
+		}
+		extended, err := schema.Apply(node, delta)
+		if err != nil {
+			return nil, err
+		}
+		return schema.Marshal(extended)
 	}
 }
 

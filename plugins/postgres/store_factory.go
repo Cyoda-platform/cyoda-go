@@ -28,13 +28,19 @@ func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 
 // SetApplyFunc installs the replay function used by modelStore.Get
 // to fold the extension log. It may be called at most once —
-// typically at factory-construction time in cmd/cyoda/main.go.
+// typically at factory-construction time in app/app.go.
 // Calling it twice is a programmer error (panic).
-func (f *StoreFactory) SetApplyFunc(fn ApplyFunc) {
+//
+// The parameter is the unnamed function type (not postgres.ApplyFunc)
+// so that an interface type-assertion in app/app.go can satisfy the
+// setter uniformly across plugins whose named ApplyFunc types differ.
+// Values of postgres.ApplyFunc are assignable to this parameter because
+// the underlying signatures are identical.
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
 	if f.applyFunc != nil {
 		panic("postgres: SetApplyFunc called twice")
 	}
-	f.applyFunc = fn
+	f.applyFunc = ApplyFunc(fn)
 }
 
 // setTransactionManager wires the plugin's own TM into the factory. The

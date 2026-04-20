@@ -26,6 +26,21 @@ func WithApplyFunc(fn ApplyFunc) Option {
 	return func(f *StoreFactory) { f.applyFunc = fn }
 }
 
+// SetApplyFunc installs the replay function used by ExtendSchema.
+// May be called at most once — typically immediately after
+// Plugin.NewFactory in app/app.go. Panics on double-call
+// (programmer error).
+//
+// The parameter is the unnamed function type (not memory.ApplyFunc)
+// so that an interface type-assertion in app/app.go can satisfy the
+// setter uniformly across plugins.
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+	if f.applyFunc != nil {
+		panic("memory: SetApplyFunc called twice")
+	}
+	f.applyFunc = ApplyFunc(fn)
+}
+
 type StoreFactory struct {
 	clock       Clock
 	entityMu    sync.RWMutex
