@@ -357,3 +357,212 @@ func TestUnlock_CleanState_Succeeds(t *testing.T) {
 		t.Fatalf("Unlock: %v", err)
 	}
 }
+
+// --- D5: conformance extras — rollback invisibility, multi-delta fold, tenant isolation ---
+
+// setupModelExtTestWithTM is like setupModelExtTest but also wires a
+// TransactionManager onto the factory so tests can Begin/Commit/Rollback
+// and exercise tx-bound visibility of ExtendSchema.
+func setupModelExtTestWithTM(t *testing.T) *postgres.StoreFactory {
+	t.Helper()
+	pool := newTestPool(t)
+	if err := postgres.DropSchemaForTest(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	if err := postgres.Migrate(pool); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
+	factory := postgres.NewStoreFactory(pool)
+	factory.InitTransactionManager(newTestUUIDGenerator())
+	return factory
+}
+
+// TestExtendSchema_RolledBack_NotVisible asserts that ExtendSchema called
+// inside a tx that is subsequently rolled back leaves no observable effect
+// on disk or on Get — visibility must be commit-bound.
+func TestExtendSchema_RolledBack_NotVisible(t *testing.T) {
+	factory := setupModelExtTestWithTM(t)
+	factory.SetApplyFunc(jsonRecordingApplyFunc())
+
+	ctx := ctxWithTenant("t1")
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
+	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	// ExtendSchema must be invoked via a store built for the tx-carrying
+	// context so that subsequent plugin-internal resolutions still see the
+	// tx (the ctxQuerier will re-resolve on each call anyway, but we reuse
+	// the same ms because resolveRaw inspects the call-time context).
+	if err := ms.ExtendSchema(txCtx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
+		_ = tm.Rollback(ctx, txID)
+		t.Fatalf("ExtendSchema: %v", err)
+	}
+	if err := tm.Rollback(ctx, txID); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	// Post-rollback: extension row must not exist.
+	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 0 {
+		t.Errorf("after rollback expected 0 extension rows, got %d", n)
+	}
+
+	// And Get returns the base schema untouched — the applied-delta marker
+	// inserted by jsonRecordingApplyFunc must not appear.
+	desc, err := ms.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if bytes.Contains(desc.Schema, []byte(`"$$applied"`)) {
+		t.Errorf("rolled-back delta leaked into Get result: %s", desc.Schema)
+	}
+}
+
+// TestExtendSchema_Commit_VisibleAfterCommit asserts the happy path: the
+// delta written inside the tx becomes visible once the tx commits.
+func TestExtendSchema_Commit_VisibleAfterCommit(t *testing.T) {
+	factory := setupModelExtTestWithTM(t)
+	factory.SetApplyFunc(jsonRecordingApplyFunc())
+
+	ctx := ctxWithTenant("t1")
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
+	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := ms.ExtendSchema(txCtx, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`)); err != nil {
+		_ = tm.Rollback(ctx, txID)
+		t.Fatalf("ExtendSchema: %v", err)
+	}
+	if err := tm.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if n := countExtensionRows(t, factory.Pool(), "t1", ref); n != 1 {
+		t.Errorf("after commit expected 1 extension row, got %d", n)
+	}
+}
+
+// TestExtendSchema_MultiDeltaFold asserts three sequential ExtendSchema
+// calls all survive fold: the folded schema contains markers from every
+// delta.
+func TestExtendSchema_MultiDeltaFold(t *testing.T) {
+	factory := setupModelExtTest(t)
+	factory.SetApplyFunc(jsonRecordingApplyFunc())
+
+	ctx := ctxWithTenant("t1")
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
+	seedBaseModel(t, ms, ctx, ref, `{"base":1}`, spi.ChangeLevelStructural)
+
+	deltas := []spi.SchemaDelta{
+		spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["NULL"]}]`),
+		spi.SchemaDelta(`[{"kind":"broaden_type","path":"y","payload":["STRING"]}]`),
+		spi.SchemaDelta(`[{"kind":"broaden_type","path":"z","payload":["BOOLEAN"]}]`),
+	}
+	for i, d := range deltas {
+		if err := ms.ExtendSchema(ctx, ref, d); err != nil {
+			t.Fatalf("delta %d: %v", i, err)
+		}
+	}
+
+	desc, err := ms.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for _, marker := range []string{"NULL", "STRING", "BOOLEAN"} {
+		if !bytes.Contains(desc.Schema, []byte(marker)) {
+			t.Errorf("expected %q in folded schema, got %s", marker, desc.Schema)
+		}
+	}
+}
+
+// TestExtendSchema_CrossTenantIsolation asserts that ExtendSchema on one
+// tenant's model never leaks into another tenant's same-ref model.
+func TestExtendSchema_CrossTenantIsolation(t *testing.T) {
+	factory := setupModelExtTest(t)
+	factory.SetApplyFunc(jsonRecordingApplyFunc())
+
+	ctxA := ctxWithTenant("tenantA")
+	ctxB := ctxWithTenant("tenantB")
+
+	msA, err := factory.ModelStore(ctxA)
+	if err != nil {
+		t.Fatalf("ModelStore A: %v", err)
+	}
+	msB, err := factory.ModelStore(ctxB)
+	if err != nil {
+		t.Fatalf("ModelStore B: %v", err)
+	}
+
+	ref := spi.ModelRef{EntityName: "Shared", ModelVersion: "1"}
+	if err := msA.Save(ctxA, &spi.ModelDescriptor{
+		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
+		Schema: []byte(`{"t":"A"}`), UpdateDate: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Save A: %v", err)
+	}
+	if err := msB.Save(ctxB, &spi.ModelDescriptor{
+		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
+		Schema: []byte(`{"t":"B"}`), UpdateDate: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Save B: %v", err)
+	}
+
+	if err := msA.ExtendSchema(ctxA, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["A_DELTA"]}]`)); err != nil {
+		t.Fatalf("ExtendSchema A: %v", err)
+	}
+
+	descA, err := msA.Get(ctxA, ref)
+	if err != nil {
+		t.Fatalf("Get A: %v", err)
+	}
+	descB, err := msB.Get(ctxB, ref)
+	if err != nil {
+		t.Fatalf("Get B: %v", err)
+	}
+
+	if !bytes.Contains(descA.Schema, []byte("A_DELTA")) {
+		t.Errorf("tenant A: expected A_DELTA, got %s", descA.Schema)
+	}
+	if bytes.Contains(descB.Schema, []byte("A_DELTA")) {
+		t.Errorf("tenant isolation broken: tenant B sees A's delta: %s", descB.Schema)
+	}
+	if !bytes.Contains(descA.Schema, []byte(`"t":"A"`)) {
+		t.Errorf("tenant A lost base: %s", descA.Schema)
+	}
+	if !bytes.Contains(descB.Schema, []byte(`"t":"B"`)) {
+		t.Errorf("tenant B lost base: %s", descB.Schema)
+	}
+	// Per-tenant extension counts.
+	if n := countExtensionRows(t, factory.Pool(), "tenantA", ref); n != 1 {
+		t.Errorf("tenantA: expected 1 extension row, got %d", n)
+	}
+	if n := countExtensionRows(t, factory.Pool(), "tenantB", ref); n != 0 {
+		t.Errorf("tenantB: expected 0 extension rows, got %d", n)
+	}
+}
