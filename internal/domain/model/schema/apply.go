@@ -1,0 +1,166 @@
+package schema
+
+import (
+	"fmt"
+	"strings"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
+
+// Apply replays the opaque SchemaDelta bytes onto base, returning a
+// new *ModelNode. The same function is used by plugins (via factory
+// injection) to fold the extension log on Get, and by tests to verify
+// commutativity and validation-monotonicity.
+//
+// Apply does not mutate base — a fresh tree is produced via the
+// codec's Marshal/Unmarshal round-trip. Note that this round-trip
+// drops transient observability state (ArrayInfo) in accordance with
+// the persistence format.
+//
+// base must be non-nil. An empty delta yields a clean clone of base.
+func Apply(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error) {
+	if base == nil {
+		return nil, fmt.Errorf("schema.Apply: base is nil")
+	}
+
+	root, err := cloneNode(base)
+	if err != nil {
+		return nil, fmt.Errorf("schema.Apply: clone base: %w", err)
+	}
+
+	if len(delta) == 0 {
+		return root, nil
+	}
+
+	ops, err := UnmarshalDelta(delta)
+	if err != nil {
+		return nil, fmt.Errorf("schema.Apply: decode delta: %w", err)
+	}
+
+	for i, op := range ops {
+		if err := applyOp(root, op); err != nil {
+			return nil, fmt.Errorf("schema.Apply: op %d (%s %q): %w", i, op.Kind, op.Path, err)
+		}
+	}
+	return root, nil
+}
+
+func applyOp(root *ModelNode, op SchemaOp) error {
+	switch op.Kind {
+	case KindAddProperty:
+		return applyAddProperty(root, op)
+	case KindBroadenType:
+		return applyBroadenType(root, op)
+	case KindAddArrayItemType:
+		return applyAddArrayItemType(root, op)
+	default:
+		return fmt.Errorf("unknown op kind %q", op.Kind)
+	}
+}
+
+func applyAddProperty(root *ModelNode, op SchemaOp) error {
+	parent, err := resolvePath(root, op.Path)
+	if err != nil {
+		return fmt.Errorf("resolve parent: %w", err)
+	}
+	if parent.Kind() != KindObject {
+		return fmt.Errorf("parent at %q is not an object (kind=%s)", op.Path, parent.Kind())
+	}
+	if op.Name == "" {
+		return fmt.Errorf("add_property requires a non-empty Name")
+	}
+	incoming, err := Unmarshal(op.Payload)
+	if err != nil {
+		return fmt.Errorf("decode subtree: %w", err)
+	}
+	if existing := parent.Child(op.Name); existing != nil {
+		parent.SetChild(op.Name, Merge(existing, incoming))
+		return nil
+	}
+	parent.SetChild(op.Name, incoming)
+	return nil
+}
+
+func applyBroadenType(root *ModelNode, op SchemaOp) error {
+	target, err := resolvePath(root, op.Path)
+	if err != nil {
+		return fmt.Errorf("resolve leaf: %w", err)
+	}
+	if target.Kind() != KindLeaf {
+		return fmt.Errorf("target at %q is not a leaf (kind=%s)", op.Path, target.Kind())
+	}
+	types, err := DecodeTypeNames(op.Payload)
+	if err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	for _, dt := range types {
+		target.Types().Add(dt)
+	}
+	return nil
+}
+
+func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
+	target, err := resolvePath(root, op.Path)
+	if err != nil {
+		return fmt.Errorf("resolve array: %w", err)
+	}
+	if target.Kind() != KindArray {
+		return fmt.Errorf("target at %q is not an array (kind=%s)", op.Path, target.Kind())
+	}
+	elem := target.Element()
+	if elem == nil {
+		return fmt.Errorf("array at %q has no element", op.Path)
+	}
+	if elem.Kind() != KindLeaf {
+		return fmt.Errorf("array element at %q is not a leaf (kind=%s)", op.Path, elem.Kind())
+	}
+	types, err := DecodeTypeNames(op.Payload)
+	if err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	for _, dt := range types {
+		elem.Types().Add(dt)
+	}
+	return nil
+}
+
+// resolvePath walks root along a slash-separated path of child names.
+// The empty path returns root. A missing segment returns a descriptive
+// error rather than a nil node — Apply surfaces the segment name so
+// the error identifies the stale-schema case cleanly.
+func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
+	if path == "" {
+		return root, nil
+	}
+	parts := strings.Split(path, "/")
+	cur := root
+	for _, part := range parts {
+		if part == "" {
+			return nil, fmt.Errorf("empty path segment in %q", path)
+		}
+		if cur.Kind() != KindObject {
+			return nil, fmt.Errorf("cannot descend through non-object at segment %q (kind=%s)", part, cur.Kind())
+		}
+		next := cur.Child(part)
+		if next == nil {
+			return nil, fmt.Errorf("missing segment %q under %q", part, path)
+		}
+		cur = next
+	}
+	return cur, nil
+}
+
+// cloneNode produces an independent copy of node via the codec
+// round-trip. ArrayInfo is not preserved (mirrors the persistence
+// format).
+func cloneNode(node *ModelNode) (*ModelNode, error) {
+	raw, err := Marshal(node)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	out, err := Unmarshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	return out, nil
+}
