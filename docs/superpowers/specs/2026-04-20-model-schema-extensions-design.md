@@ -193,20 +193,33 @@ path in an order-independent way. Listing them here so that readers
 of the SPI know what's being promised before they read the tests in
 §7.
 
-| Kind | Shape | Merge rule on same path |
-|---|---|---|
-| `add_property(path, name, def)` | insert key into an object | *Idempotent on exact payload.* Same `(path, name, def)` applied twice = once. Divergent `def` for the same `name` merges by schema-union (polymorphic broadening — the resulting property accepts values that satisfy either `def`). |
-| `add_enum_value(path, v)` | append to `enum` list | *Set-union over values.* Concurrent adds of different values both land; duplicates collapse. |
-| `broaden_type(path, t)` | extend `type` from scalar or union to include `t` | *Set-union over type primitives.* `type: "string"` + `broaden(path, "null")` + `broaden(path, "number")` → `type: ["string", "null", "number"]` regardless of order. |
-| `add_array_item_type(path, def)` | extend tuple-`items` / `prefixItems` / homogeneous-`items` variant set | *Set-union keyed by `def` signature hash.* Structurally identical adds dedup; different adds accumulate. |
-| `extend_one_of(path, branch)` / `extend_any_of(path, branch)` | append branch to `oneOf`/`anyOf` | *Set-union keyed by branch-signature hash.* |
+The catalog is shaped against the existing `schema.ModelNode`
+representation — a domain tree of `OBJECT` / `ARRAY` / `LEAF` kinds
+carrying a `TypeSet` of primitives, rather than a JSON-Schema AST.
+`ChangeLevel` (`ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`)
+is the enterprise-proven axis of permitted change; ops map directly
+to the change classes `ChangeLevel` already governs.
 
-Op catalog is finalized at plan-time by auditing `schema.Extend`
-output classes (§9). Every candidate must satisfy **both**
-commutativity and validation-monotonicity, verified by the property
-tests in §7; any op that tightens the accepted set (e.g.
-`add_required`) is rejected — it is not additive in the operational
-sense regardless of JSON Schema taxonomy.
+| Kind | Shape | ChangeLevel required | Merge rule on same path |
+|---|---|---|---|
+| `add_property(path, name, def)` | insert a child into an `OBJECT` node | `STRUCTURAL` | *Idempotent on exact sub-tree;* for the same `(path, name)` with different sub-trees, fold by `schema.Merge`, which is the same recursive set-union `schema.Extend` uses today (leaf `TypeSet` union; objects merge children; arrays widen element `TypeSet`). Commutative because `Merge` is commutative and associative. |
+| `broaden_type(path, t)` | widen a `LEAF` node's `TypeSet` with primitive `t` | `TYPE` | *Set-union over type primitives.* `{string}` + `broaden(path, null)` + `broaden(path, number)` → `{string, null, number}` regardless of order. Canonical order on read. |
+| `add_array_item_type(path, t)` | widen an `ARRAY` node's element `LEAF` `TypeSet` with primitive `t` | `ARRAY_ELEMENTS` | *Set-union over type primitives* on the array's element leaf. Independent of `add_property` on any peer path. |
+
+The catalog is the minimal set needed to cover every change class
+`schema.Extend` currently emits at `ChangeLevel ∈ {ARRAY_ELEMENTS,
+TYPE, STRUCTURAL}`. It does **not** include JSON-Schema concepts that
+`ModelNode` does not carry (`enum`, `oneOf`, `anyOf`, `required`,
+`prefixItems` etc.). Array-length-only changes (growing bounds in
+`ArrayInfo`) do not alter the accepted-value set beyond count and
+are folded by `Extend` without requiring a catalog op; they remain
+out of scope here.
+
+Every op in the catalog satisfies **both** commutativity and
+validation-monotonicity, verified by the property tests in §7. Any
+op that tightens the accepted set (e.g. `add_required`) is rejected
+— it is not additive in the operational sense regardless of JSON
+Schema taxonomy.
 
 `Save` keeps its existing full-replace semantic and runs only in the
 UNLOCKED state (§2). The relationship between `Save` and any
@@ -550,8 +563,8 @@ repositories.
   overlap, and disjoint value sets. For every sample,
   `Apply(Apply(b, d1), d2) ≡ Apply(Apply(b, d2), d1)`. Path overlap
   is where the subtle bugs hide — `add_property /p` composed with
-  `add_enum_value /p/enum` is a case the earlier draft's kind-pair
-  axis alone would miss.
+  `broaden_type /p/type` (a LEAF widening where a peer `add_property`
+  is folded first) is a case the kind-pair axis alone would miss.
 - **Validation-monotonicity property tests:** for every op-kind `k`,
   every document that validates against some base `B` must also
   validate against `Apply(B, d)` for any delta `d` of kind `k`.
