@@ -51,9 +51,14 @@ func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
 	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeBadRequest, "not yet implemented"))
 }
 
-// validateOrExtend validates parsedData against the model schema. When changeLevel
-// is set, it extends the model instead of strict validation and saves the updated
-// model back. Returns an error on validation or extension failure.
+// validateOrExtend validates parsedData against the model schema. When
+// changeLevel is set, it computes an additive schema delta via schema.Diff
+// and appends it to the model's extension log via ModelStore.ExtendSchema.
+// That call participates in the ambient entity transaction, so visibility
+// is commit-bound and concurrent entity writes on the same model do not
+// contend on a single "models" row — the hot-row regression that
+// ModelStore.Save would otherwise produce under REPEATABLE READ.
+// Returns an error on validation or extension failure.
 func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
@@ -80,13 +85,21 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	if err != nil {
 		return fmt.Errorf("change level violation: %w", err)
 	}
-	schemaBytes, err := schema.Marshal(extended)
+
+	// Compute the additive delta. Diff returns (nil, nil) when the
+	// extension is a semantic no-op, which is the common case on
+	// every entity write.
+	delta, err := schema.Diff(modelNode, extended)
 	if err != nil {
-		return fmt.Errorf("failed to marshal extended schema: %w", err)
+		return fmt.Errorf("failed to compute schema delta: %w", err)
 	}
-	desc.Schema = schemaBytes
-	if err := modelStore.Save(ctx, desc); err != nil {
-		return fmt.Errorf("failed to save extended model: %w", err)
+	if delta == nil {
+		return nil
+	}
+	// Append to the extension log via the plugin. Participates in the
+	// ambient entity transaction so visibility is commit-bound.
+	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
+		return fmt.Errorf("failed to extend schema: %w", err)
 	}
 	return nil
 }
@@ -97,7 +110,8 @@ func classifyValidateOrExtendErr(err error) *common.AppError {
 	msg := err.Error()
 	if strings.Contains(msg, "failed to unmarshal") ||
 		strings.Contains(msg, "failed to marshal") ||
-		strings.Contains(msg, "failed to save") {
+		strings.Contains(msg, "failed to extend schema") ||
+		strings.Contains(msg, "failed to compute schema delta") {
 		return common.Internal("failed to process model schema", err)
 	}
 	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, msg)
