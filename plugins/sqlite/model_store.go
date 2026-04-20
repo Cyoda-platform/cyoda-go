@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,8 +12,9 @@ import (
 )
 
 type modelStore struct {
-	db       *sql.DB
-	tenantID spi.TenantID
+	db        *sql.DB
+	tenantID  spi.TenantID
+	applyFunc ApplyFunc
 }
 
 // modelDoc is the JSON representation stored in the doc BLOB column.
@@ -57,7 +59,7 @@ func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, classifyError(err))
@@ -119,7 +121,7 @@ func (s *modelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool,
 		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return false, fmt.Errorf("failed to check lock status for model %s: %w", modelRef, err)
@@ -139,7 +141,7 @@ func (s *modelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to read model %s: %w", modelRef, err)
@@ -176,7 +178,7 @@ func (s *modelStore) updateStateField(ctx context.Context, modelRef spi.ModelRef
 		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return fmt.Errorf("failed to %s model %s: %w", op, modelRef, err)
@@ -228,8 +230,56 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	}, nil
 }
 
-// ExtendSchema is a placeholder until Phase D (Task D3) implements
-// the delta log semantics for the sqlite plugin.
+// ExtendSchema is SQLite's thin apply-in-place realization: read the
+// current schema, call ApplyFunc, write the result back. Single-writer
+// serialization (BEGIN IMMEDIATE) means no concurrent writers can
+// interleave — this is correct without the Postgres plugin's append-
+// only log + fold machinery.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
-	return fmt.Errorf("ExtendSchema not yet implemented")
+	if len(delta) == 0 {
+		return nil
+	}
+	if s.applyFunc == nil {
+		return fmt.Errorf("sqlite: ApplyFunc not wired (call WithApplyFunc when creating StoreFactory)")
+	}
+
+	// Read current doc.
+	var raw []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+		}
+		return fmt.Errorf("ExtendSchema: read %s: %w", ref, err)
+	}
+
+	var doc modelDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("ExtendSchema: unmarshal doc: %w", err)
+	}
+
+	newSchema, err := s.applyFunc(doc.Schema, delta)
+	if err != nil {
+		return fmt.Errorf("ExtendSchema: apply delta for %s: %w", ref, err)
+	}
+	doc.Schema = newSchema
+
+	updated, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("ExtendSchema: marshal doc: %w", err)
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE models SET doc = jsonb(?) WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		updated, string(s.tenantID), ref.EntityName, ref.ModelVersion)
+	if err != nil {
+		return fmt.Errorf("ExtendSchema: update %s: %w", ref, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+	}
+	return nil
 }
