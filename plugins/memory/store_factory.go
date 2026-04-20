@@ -18,6 +18,14 @@ func WithClock(c Clock) Option {
 	return func(f *StoreFactory) { f.clock = c }
 }
 
+// ApplyFunc replays an opaque SchemaDelta onto a base schema.
+type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+
+// WithApplyFunc installs the replay function used by ExtendSchema.
+func WithApplyFunc(fn ApplyFunc) Option {
+	return func(f *StoreFactory) { f.applyFunc = fn }
+}
+
 type StoreFactory struct {
 	clock       Clock
 	entityMu    sync.RWMutex
@@ -35,6 +43,7 @@ type StoreFactory struct {
 	blobDir     string
 	txManager   *TransactionManager
 	searchStore *AsyncSearchStore
+	applyFunc   ApplyFunc
 }
 
 func NewStoreFactory(opts ...Option) *StoreFactory {
