@@ -90,3 +90,46 @@ func TestModelSchemaExtensions_ConcurrentUpdatesNoConflict(t *testing.T) {
 		}
 	}
 }
+
+// TestModelSchemaExtensions_SequentialFoldAcrossRequests asserts that
+// the Postgres Get-fold correctly replays the extension log across
+// multiple HTTP requests. Each POST appends a delta; the final export
+// must reflect every accumulated field.
+//
+// This is the single-node read-side correctness check. Multi-node
+// self-healing via RefreshAndGet on a stale cache is covered by unit
+// tests (internal/domain/entity handler_validate_refresh_test.go and
+// internal/cluster/modelcache integration_test.go); the end-to-end
+// multi-node variant waits on the deferred factory-level caching
+// wrap (TODO(G1-followup)).
+func TestModelSchemaExtensions_SequentialFoldAcrossRequests(t *testing.T) {
+	const modelName = "e2e-schema-ext-sequential"
+	const version = 1
+
+	importModelE2E(t, modelName, version)
+	lockModelE2E(t, modelName, version)
+	setChangeLevelE2E(t, modelName, version, "STRUCTURAL")
+
+	// Six sequential writes, each adding a new field.
+	for i := 0; i < 6; i++ {
+		payload := fmt.Sprintf(
+			`{"name":"Sequential-%d","amount":%d,"status":"new","seq_field_%d":"val_%d"}`,
+			i, i, i, i,
+		)
+		path := fmt.Sprintf("/api/entity/JSON/%s/%d", modelName, version)
+		resp := doAuth(t, http.MethodPost, path, payload)
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("create #%d failed: status=%d body=%s", i, resp.StatusCode, body)
+		}
+	}
+
+	schema := exportModelE2E(t, modelName, version)
+	raw := fmt.Sprintf("%v", schema)
+	for i := 0; i < 6; i++ {
+		want := fmt.Sprintf("seq_field_%d", i)
+		if !strings.Contains(raw, want) {
+			t.Errorf("folded schema missing %q after sequential writes: %s", want, raw)
+		}
+	}
+}
