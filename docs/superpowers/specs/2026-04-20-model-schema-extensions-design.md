@@ -48,18 +48,25 @@ Invariants for additive model mutation:
    (e.g. adding to `required`) are excluded from the op-kind catalog
    by construction.
 
-**State-machine disjointness.** The existing model lifecycle makes
-`Save` and `ExtendSchema` structurally disjoint:
+5. **State-machine disjointness of `Save` and `ExtendSchema`.** The
+   existing model lifecycle enforces that these two writes never run
+   concurrently on the same model:
+   - `Save` requires `UNLOCKED` (admin path; replaces schema wholesale).
+   - `ExtendSchema` requires `LOCKED` with `ChangeLevel != ""`
+     (ingestion path; appends a delta).
 
-- `Save` requires `UNLOCKED` (admin path; replaces schema wholesale).
-- `ExtendSchema` requires `LOCKED` with `ChangeLevel != ""` (ingestion
-  path; appends a delta).
-- `UNLOCKED → LOCKED` is permitted only when no live data exists for
-  the model (all soft-deleted).
+   No storage-layer locks, advisory locks, or cross-operation snapshots
+   are needed to exclude them. The guarantee is plugin-agnostic and
+   holds identically for every backend.
 
-Consequence: `Save` and `ExtendSchema` cannot run concurrently on the
-same model. No storage-layer locks, advisory locks, or cross-operation
-snapshots are needed to exclude them. The guarantee is plugin-agnostic.
+**Operator contract on `Unlock`.** `UNLOCKED → LOCKED` is permitted
+only when no live data exists for the model (all soft-deleted); the
+reverse `LOCKED → UNLOCKED` transition is an operator action that
+requires the application to have drained writers to this model first.
+Concurrent `ExtendSchema` during `Unlock` is **undefined behaviour,
+not a supported mode** — the plugin's "extension log non-empty
+after unlock" defensive assertion (§4.4) exists to catch operator
+misuse during development, not to serve as a production race guard.
 
 **Accepted policy, not a violation.** `SetChangeLevel` under the
 `LOCKED → LOCKED` transition may tighten the permitted level while an
@@ -107,9 +114,10 @@ For each `(tenant, modelRef)` a plugin conceptually maintains:
 - **Extension log.** Append-only sequence of entries, each either:
   - A **delta** carrying a typed-op schema delta (see §4.2) to apply on
     top of `baseSchema + preceding deltas`.
-  - A **savepoint** carrying the fully-folded schema as of that point.
-    Plugin-internal optimization; emitted in the same batch that creates
-    the triggering delta.
+  - A **savepoint** carrying the fully-folded schema *including* the
+    triggering delta (i.e., the state as of the `seq` just written).
+    Plugin-internal optimization; emitted in the same batch as the
+    triggering delta.
 
 On read, a plugin folds `baseSchema` with the deltas back to (but not
 beyond) the most recent savepoint. With a savepoint every N=64 deltas,
@@ -127,39 +135,18 @@ contract property, not an observation.
 
 ### 4.2 SPI changes (`cyoda-go-spi`)
 
-A new method on `ModelStore` and typed-op value types. The SPI owns
-only the value shapes; apply semantics live in the main repo (§4.3).
+The SPI carries one opaque value type and one new method. Typed-op
+structure and apply/merge logic live entirely in
+`internal/domain/model/schema`; plugins store-and-forward bytes and
+never interpret them.
 
 ```go
-// SchemaDelta is an ordered list of additive schema operations. The
-// SPI stores it opaquely; schema.Apply (main repo) replays it onto a
-// base schema. Each op-kind's merge is order-independent, making the
-// overall fold commutative.
-type SchemaDelta struct {
-    Ops []SchemaOp
-}
-
-type SchemaOpKind string
-
-const (
-    SchemaOpAddProperty      SchemaOpKind = "add_property"
-    SchemaOpAddEnumValue     SchemaOpKind = "add_enum_value"
-    SchemaOpBroadenType      SchemaOpKind = "broaden_type"
-    SchemaOpAddArrayItemType SchemaOpKind = "add_array_item_type"
-    SchemaOpExtendOneOf      SchemaOpKind = "extend_one_of"
-    SchemaOpExtendAnyOf      SchemaOpKind = "extend_any_of"
-    // Enumeration finalized at plan-time by auditing schema.Extend
-    // output classes (see §9). Every candidate op-kind must satisfy
-    // BOTH commutativity and validation-monotonicity, verified by the
-    // property-test harness in §7; any that tightens the accepted set
-    // (e.g. `add_required`) is rejected from the catalog.
-)
-
-type SchemaOp struct {
-    Kind    SchemaOpKind
-    Path    string // JSON pointer into the schema, e.g. "/properties/address"
-    Payload []byte // op-specific data; shape determined by Kind
-}
+// SchemaDelta is an opaque, plugin-agnostic serialization of an
+// additive schema change. The bytes are produced by schema.Diff
+// (main repo) and consumed by schema.Apply (main repo, invoked by
+// plugins via the injected ApplyFunc on their factory config — see
+// §4.4). Plugins persist the bytes verbatim and never inspect them.
+type SchemaDelta []byte
 
 type ModelStore interface {
     // ... existing methods unchanged ...
@@ -167,49 +154,91 @@ type ModelStore interface {
     // ExtendSchema appends an additive schema delta to the model.
     //
     // Contract:
-    //   - The plugin must append, not replace. `Save` remains the
-    //     full-replace path for admin operations.
-    //   - The append must participate in any active entity transaction:
-    //     visible iff that transaction commits.
+    //   - Semantically equivalent to "append the delta to the model's
+    //     extension log, participating in the active entity
+    //     transaction." A plugin whose storage doesn't natively model
+    //     a log may implement this by applying the delta to the
+    //     in-store schema so long as the externally observable
+    //     behaviour matches: visible iff the entity tx commits; no
+    //     conflict with concurrent data ops; result equal to what an
+    //     append-and-fold would produce.
+    //   - `Save` remains the full-replace path for admin operations
+    //     and is disjoint from `ExtendSchema` via the state machine
+    //     (see §2).
     //   - Concurrent ExtendSchema calls on distinct entity transactions
-    //     targeting the same model MUST NOT conflict with each other at
-    //     the storage layer.
+    //     targeting the same model MUST NOT conflict with each other
+    //     at the storage layer.
     //   - Any two well-formed deltas must fold commutatively into the
     //     same final schema regardless of apply order, and every delta
-    //     must be validation-monotone (broadens acceptance, never
-    //     narrows). Enforced by the op-kind catalog (see §2 and §7).
-    ExtendSchema(ctx context.Context, ref ModelRef, delta *SchemaDelta) error
+    //     must be validation-monotone. Enforcement is handler-side
+    //     (op catalog and merge rules live in schema; see below);
+    //     plugins have no contract obligation beyond store-and-forward.
+    ExtendSchema(ctx context.Context, ref ModelRef, delta SchemaDelta) error
 }
 ```
 
-**Why the SPI carries value types and not apply logic.** Plugins must
-not depend on `internal/domain/model/schema` (plugin submodule
-self-containment). The logic for `Diff` and `Apply` lives in the main
-repo. Plugins that need to fold during `Get` are handed a
-`schema.ApplyFunc` at construction time via their store-factory config
-— see §4.4. Plugins store `SchemaDelta` bytes opaquely and never
-interpret them.
+**Why bytes, not typed ops.** Exposing `SchemaOp`/`SchemaOpKind` at
+the SPI would force every plugin (and its CI) to track catalog
+revisions. With opaque bytes, adding an op-kind is a main-repo-only
+change; Postgres, Cassandra, Memory, SQLite are forward-compatible by
+construction. The cost is that wire-compatibility across cyoda-go
+versions becomes a schema-package concern — noted in §8.
 
-`Save` keeps its existing full-replace semantic. Plugins with an
-extension log clear the log on `Save`.
+#### Op catalog and merge rules (`internal/domain/model/schema`)
+
+The catalog is internal to the main repo, but the contract each op
+honours is part of the design. Each op-kind specifies a merge rule;
+the rule is how `Apply` folds two deltas acting on the same schema
+path in an order-independent way. Listing them here so that readers
+of the SPI know what's being promised before they read the tests in
+§7.
+
+| Kind | Shape | Merge rule on same path |
+|---|---|---|
+| `add_property(path, name, def)` | insert key into an object | *Idempotent on exact payload.* Same `(path, name, def)` applied twice = once. Divergent `def` for the same `name` merges by schema-union (polymorphic broadening — the resulting property accepts values that satisfy either `def`). |
+| `add_enum_value(path, v)` | append to `enum` list | *Set-union over values.* Concurrent adds of different values both land; duplicates collapse. |
+| `broaden_type(path, t)` | extend `type` from scalar or union to include `t` | *Set-union over type primitives.* `type: "string"` + `broaden(path, "null")` + `broaden(path, "number")` → `type: ["string", "null", "number"]` regardless of order. |
+| `add_array_item_type(path, def)` | extend tuple-`items` / `prefixItems` / homogeneous-`items` variant set | *Set-union keyed by `def` signature hash.* Structurally identical adds dedup; different adds accumulate. |
+| `extend_one_of(path, branch)` / `extend_any_of(path, branch)` | append branch to `oneOf`/`anyOf` | *Set-union keyed by branch-signature hash.* |
+
+Op catalog is finalized at plan-time by auditing `schema.Extend`
+output classes (§9). Every candidate must satisfy **both**
+commutativity and validation-monotonicity, verified by the property
+tests in §7; any op that tightens the accepted set (e.g.
+`add_required`) is rejected — it is not additive in the operational
+sense regardless of JSON Schema taxonomy.
+
+`Save` keeps its existing full-replace semantic and runs only in the
+UNLOCKED state (§2). The relationship between `Save` and any
+extension log is not part of the SPI contract — plugins that keep
+one handle it internally as a lifecycle concern (§4.4).
 
 ### 4.3 Handler-side changes (`internal/domain/model/schema`)
 
 Two new functions paired with the existing `Extend`:
 
 ```go
-// Diff emits the typed-op delta expressing `new` as an additive change
-// over `old`. Caller guarantees `new` is produced by schema.Extend with
-// a valid ChangeLevel. Diff returns an error if it encounters a change
-// that cannot be expressed commutatively — that is a contract bug in
-// Extend and should be caught by tests (see §7), not surface at runtime.
-func Diff(old, new *ModelNode) (*spi.SchemaDelta, error)
+// Diff emits the serialized delta expressing `new` as an additive
+// change over `old`. Caller guarantees `new` is produced by
+// schema.Extend with a valid ChangeLevel.
+//
+// Returns:
+//   - (delta, nil) when new ≠ old: a non-empty SchemaDelta.
+//   - (nil, nil) when new == old semantically: no-op. Callers MUST
+//     check for nil before calling ExtendSchema, or pass the zero
+//     value; ExtendSchema on a nil/empty delta is a caller bug.
+//   - (nil, err) if the change cannot be expressed by the op catalog
+//     — a contract bug in Extend caught by the Extend-completeness
+//     test (§7), not a runtime mode.
+//
+// Diff does not rely on pointer identity of inputs.
+func Diff(old, new *ModelNode) (spi.SchemaDelta, error)
 
-// Apply replays the ops in `delta` onto `base`, producing the folded
+// Apply replays the serialized delta onto `base`, producing the folded
 // schema. The same function is injected into plugins at store-factory
 // construction so they can fold during Get without importing internal
 // packages.
-func Apply(base *ModelNode, delta *spi.SchemaDelta) (*ModelNode, error)
+func Apply(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error)
 ```
 
 **Commutativity is a test obligation.** For each op-kind defined in
@@ -229,11 +258,25 @@ incomingModel, err := importer.Walk(parsedData)
 if err != nil { return err }
 extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
 if err != nil { return err }          // non-additive for the level
-if extended == modelNode { return nil } // Extend short-circuits on no-op
 delta, err := schema.Diff(modelNode, extended)
 if err != nil { return err }
+if delta == nil {                       // no-op signalled by Diff
+    return nil
+}
 return modelStore.ExtendSchema(ctx, desc.Ref, delta)
 ```
+
+No pointer-equality check on `extended`. The no-op short-circuit is a
+documented `Diff` return, not an `Extend` pointer-identity
+side effect, so a future implementation that allocates a fresh
+equivalent node doesn't silently commit a no-op delta.
+
+**Diff summary of the rewrite** (for reviewers comparing against
+today's code): the `ChangeLevel != ""` branch no longer calls
+`modelStore.Save`. That call was the defect — it wrote the `models`
+row inside the entity transaction on every update, producing the
+REPEATABLE-READ hot-row conflict on concurrent updates. `ExtendSchema`
+replaces it and is append-only by contract.
 
 The existing failure-mode translation in `classifyValidateOrExtendErr`
 stays; `common.Internal` still unwraps `spi.ErrConflict` to a `409` for
@@ -252,17 +295,28 @@ refresh handles this:
 ```go
 desc, _ := modelStore.Get(ctx, ref)
 err := schema.Validate(desc, input)
-if err != nil && isUnknownSchemaElement(err) {
-    desc, _ = modelStore.RefreshAndGet(ctx, ref) // drops cache entry, reloads from plugin
+if err != nil && hasUnknownSchemaElement(err) {
+    desc, _ = modelStore.RefreshAndGet(ctx, ref) // drops cache, reloads via singleflight
     err = schema.Validate(desc, input)
 }
 return err
 ```
 
+**Error classifier (`hasUnknownSchemaElement`).** Typed sentinel, not
+string-match. `schema.Validate` returns a structured multi-error type
+whose constituent errors each expose a classified kind
+(`UnknownProperty`, `UnknownEnumValue`, `UnknownTypeVariant`,
+`TypeMismatch`, `OutOfRange`, `PatternMismatch`, …). The classifier
+returns true iff **any** constituent error is in the "unknown element"
+family. This handles the multi-field case where one field is unknown
+and another fails for a non-schema-stale reason: refresh, revalidate
+once, and return whatever the post-refresh validation says. One
+refresh still caps the blast radius.
+
 Bounds:
 
 - **At most one refresh per request.** No loops, no DoS surface.
-- **Only the `unknown schema element` error class.** Type mismatches,
+- **Only the `unknown schema element` family.** Type mismatches,
   range violations, pattern mismatches surface directly — a client
   submitting genuinely invalid input must not trigger source-of-truth
   traffic.
@@ -286,14 +340,14 @@ Two tables:
 
   **Lifecycle coupling with the extension log.** Because `Save`
   requires `UNLOCKED` and `ExtendSchema` requires `LOCKED`, the two
-  never run concurrently on the same model (§2). `Unlock` deletes all
-  rows from `model_schema_extensions` for the model as part of the
-  same transaction that flips state to `UNLOCKED` — the log should
-  already be drained of semantic content because entity data is
-  soft-deleted before `Unlock` is permitted, but the `DELETE` makes
-  the invariant "log non-empty ⇒ LOCKED" structural. The original
-  draft's "Save clears the log" step becomes a defensive `DELETE ...
-  RETURNING count; assert count == 0` at plan-time.
+  never run concurrently on the same model (§2). On `Unlock`, the
+  plugin performs a `DELETE FROM model_schema_extensions ... RETURNING
+  count` and, at development build-time, asserts `count == 0`. Per the
+  operator contract in §2, concurrent writers during `Unlock` are not
+  a supported mode; the assertion catches operator misuse during
+  development and is not a production race guard. A non-zero count in
+  production is logged as an anomaly and the rows are discarded — the
+  `Unlock` itself still succeeds.
 - `model_schema_extensions` — append-only. Primary key
   `(tenant_id, model_name, model_version, seq BIGSERIAL)`. Columns: `kind`
   (`'delta' | 'savepoint'`), `payload` (JSONB — the serialized
@@ -313,7 +367,7 @@ covering index on `(tenant_id, model_name, model_version, seq DESC)`
 keeps the scan bounded.
 
 **Apply-func injection.** The postgres store factory grows an optional
-`ApplyFunc func(base *ModelNode, delta *spi.SchemaDelta) (*ModelNode, error)`
+`ApplyFunc func(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error)`
 configuration field; at initialization `StoreFactory` wires
 `schema.Apply` into it. Plugins unit-tested with a stub `ApplyFunc` so
 plugin tests don't depend on the main repo's schema package.
@@ -348,23 +402,27 @@ type CachingModelStore struct {
     inner        spi.ModelStore
     broadcaster  spi.ClusterBroadcaster // nil-safe
     clock        Clock                  // injected; real time by default
-    lease        time.Duration          // e.g. 1h — operational bound, not correctness
+    lease        time.Duration          // baseline (e.g. 1h); real expiry jittered ±10%
     mu           sync.RWMutex
     cache        map[cacheKey]entry
+    refresh      *singleflight.Group    // collapses concurrent RefreshAndGet per ref
 }
 
 type entry struct {
     desc      *spi.ModelDescriptor
-    expiresAt time.Time
+    expiresAt time.Time // lease + per-entry jitter
 }
 ```
 
 **Admission.** Cache **any** `LOCKED` descriptor, for any
-`ChangeLevel`. The §2 state-machine disjointness eliminates the
-staleness hazard that the original draft's `ChangeLevel == ""`
-restriction was protecting against. `UNLOCKED` descriptors pass
-through uncached — their lifetime is short and they're always on the
-admin path.
+`ChangeLevel`. This widens admission relative to today's code (and
+relative to an earlier draft of this spec), which only cached
+immutable models. Justification: §2's state-machine disjointness
+between `Save` and `ExtendSchema`, plus commutativity and
+validation-monotonicity on every op-kind, make a stale cache
+*self-healing* — there is no catastrophic failure mode to protect
+against by restricting admission. `UNLOCKED` descriptors still pass
+through uncached — short lifetimes, always on the admin path.
 
 **Policy.**
 
@@ -382,10 +440,13 @@ admin path.
 consumed by the validator path (§4.3):
 
 ```go
-// Drops the cache entry, re-reads from inner, stores the fresh result,
-// and returns it. Used by validators on "unknown schema element"
-// errors as a correctness safety net; bounded to one call per request
-// by the handler.
+// Drops the cache entry for ref, re-reads from inner, stores the
+// fresh result (with a freshly-jittered expiresAt), and returns it.
+// Concurrent RefreshAndGet calls on the same ref collapse via
+// singleflight — a post-partition gossip catch-up where every
+// in-flight request independently hits "unknown schema element"
+// produces exactly one source-of-truth read, not N. One refresh per
+// request is still enforced by the handler (§4.3).
 func (c *CachingModelStore) RefreshAndGet(ctx context.Context, ref ModelRef) (*spi.ModelDescriptor, error)
 ```
 
@@ -412,7 +473,10 @@ func (c *CachingModelStore) RefreshAndGet(ctx context.Context, ref ModelRef) (*s
    entry regardless of invalidation paths. Lease is generous (~1h) —
    short enough to reclaim memory for unused models and defend
    against unknown failure modes, long enough that it isn't on any
-   latency-sensitive path in steady state.
+   latency-sensitive path in steady state. **Per-entry ±10% jitter**
+   is applied to `expiresAt` so a burst of populates (cluster
+   restart, warm-up) does not produce a correlated expiry stampede
+   an hour later.
 
 **What's deliberately not present.** No epoch counter, no
 populate-during-invalidation race guard: staleness is not a
@@ -478,12 +542,16 @@ repositories.
 - Round-trip: `Apply(old, Diff(old, Extend(old, incoming)))` equals
   `Extend(old, incoming)` for every ChangeLevel and every sample of
   incoming shapes enumerated in the test data.
-- **Commutativity property tests:** for every op-kind pair
-  `(k1, k2)` (including `k1 == k2`), randomly generated deltas
-  `d1, d2` of those kinds over a shared base must satisfy
-  `Apply(Apply(b, d1), d2) ≡ Apply(Apply(b, d2), d1)`. Table-driven
-  with a small generator; fails noisily if an op-kind's merge rule is
-  not order-independent.
+- **Commutativity property tests:** the generator varies over
+  **three axes** — `(kind1, kind2) × path-relationship ×
+  payload-variation`, where path-relationship ∈
+  `{disjoint, equal, prefix}` (parent/child, ancestor/descendant,
+  sibling) and payload-variation includes same-value, set-member
+  overlap, and disjoint value sets. For every sample,
+  `Apply(Apply(b, d1), d2) ≡ Apply(Apply(b, d2), d1)`. Path overlap
+  is where the subtle bugs hide — `add_property /p` composed with
+  `add_enum_value /p/enum` is a case the earlier draft's kind-pair
+  axis alone would miss.
 - **Validation-monotonicity property tests:** for every op-kind `k`,
   every document that validates against some base `B` must also
   validate against `Apply(B, d)` for any delta `d` of kind `k`.
@@ -547,6 +615,24 @@ repositories.
   subsequent reads see the schema consistent with at-the-time
   authority. Documented in `CONSISTENCY.md` as accepted behaviour,
   not a bug to guard against.
+- **Extension log growth.** Nothing caps how large a single delta can
+  be, nor the lifetime-total count of deltas on a `LOCKED` model.
+  `Unlock` drains the log, but `Unlock` requires all live data to be
+  soft-deleted — for long-lived high-ingestion models it may never
+  fire. Savepoints keep read cost bounded (§4.1) but do not reclaim
+  row count. Log growth is therefore bounded by application-level
+  `Unlock` cadence, which is a deployment concern, not a storage
+  concern. A compaction hook (replace the log prefix up to the most
+  recent savepoint with a single consolidated row) is a plausible
+  later-phase addition; out of scope here.
+- **Cross-version log compatibility.** Phase 1 does not guarantee that
+  a log written by a cyoda-go version `v(n+1)` with a new op-kind
+  can be folded by a running `v(n)` node. Safe rolling upgrades
+  require version skew only across versions that share the op
+  catalog; adding an op-kind is a coordinated release. Pre-GA this is
+  fine; post-GA will need a compatibility story (e.g., op-kind
+  advertisement in cluster metadata, or a default-to-refresh fallback
+  when an unknown kind is encountered during fold).
 - **Gate 6 — resolving vs deferring.** Every item flagged during this
   brainstorm was addressed inline or scoped explicitly out. No silent
   TODOs.
@@ -558,9 +644,12 @@ repositories.
   first because the decorator's cross-cutting concern is the cluster.
 - Whether `N = 64` savepoint interval should be a config knob at all in
   Phase 1 or hardcoded. Lean hardcoded for simplicity; surface later.
-- Codec for the gossip payload: use existing cluster dispatch codec or
-  a new minimal one. Lean reuse if it's suitable; inspect at plan-time.
-- **SchemaOpKind enumeration.** The final set of op-kinds is derived by
+- Codec for the gossip payload: **reuse the existing cluster dispatch
+  codec** unless plan-time profiling shows it's heavyweight for this
+  two-field payload. Introducing a second wire format for one topic
+  is worse than the (tiny) overhead of the shared codec.
+- **Op catalog enumeration** (`internal/domain/model/schema`). The
+  final set of op-kinds is derived by
   auditing every code path through `schema.Extend` at every ChangeLevel
   and classifying its output. Plan-time task: produce a matrix of
   (ChangeLevel, input shape → Extend output diff) and confirm each row
