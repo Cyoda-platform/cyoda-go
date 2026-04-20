@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 
 // modelStore implements spi.ModelStore backed by PostgreSQL.
 type modelStore struct {
-	q        Querier
-	tenantID spi.TenantID
+	q         Querier
+	tenantID  spi.TenantID
+	applyFunc ApplyFunc // optional; required when the extension log is non-empty
 }
 
 // modelDoc is the JSON representation stored in the doc JSONB column.
@@ -60,12 +62,22 @@ func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 		`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, err)
 	}
-	return unmarshalModelDoc(raw)
+	desc, err := unmarshalModelDoc(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	folded, err := s.foldLocked(ctx, modelRef, desc.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("fold extension log for %s: %w", modelRef, err)
+	}
+	desc.Schema = folded
+	return desc, nil
 }
 
 func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
@@ -118,7 +130,7 @@ func (s *modelStore) IsLocked(ctx context.Context, modelRef spi.ModelRef) (bool,
 		`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
 		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return false, fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
 		}
 		return false, fmt.Errorf("failed to check lock status for model %s: %w", modelRef, err)
@@ -186,8 +198,73 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	}, nil
 }
 
-// ExtendSchema is a placeholder until Phase D (Task D4) implements
-// the delta log semantics for the postgres plugin.
+// ExtendSchema appends a delta row to model_schema_extensions. If the
+// resulting seq is a multiple of 64, a savepoint row (the fully-folded
+// schema as of the new seq) is inserted in the same transaction so
+// a future Get can start from there rather than replaying the entire
+// log. Empty or nil deltas are a no-op.
+//
+// The insert participates in the ambient entity transaction via the
+// plugin's Querier resolution (ctxQuerier), so visibility is
+// commit-bound.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
-	return fmt.Errorf("ExtendSchema not yet implemented")
+	if len(delta) == 0 {
+		return nil
+	}
+
+	txID := ""
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		txID = tx.ID
+	}
+
+	var newSeq int64
+	err := s.q.QueryRow(ctx,
+		`INSERT INTO model_schema_extensions
+		    (tenant_id, model_name, model_version, kind, payload, tx_id)
+		 VALUES ($1, $2, $3, 'delta', $4, $5)
+		 RETURNING seq`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion, []byte(delta), txID).Scan(&newSeq)
+	if err != nil {
+		return fmt.Errorf("failed to append schema delta for %s: %w", ref, err)
+	}
+
+	if newSeq%64 == 0 {
+		base, err := s.baseSchema(ctx, ref)
+		if err != nil {
+			return fmt.Errorf("savepoint base-schema read for %s: %w", ref, err)
+		}
+		folded, err := s.foldLocked(ctx, ref, base)
+		if err != nil {
+			return fmt.Errorf("savepoint fold for %s (seq=%d): %w", ref, newSeq, err)
+		}
+		if _, err := s.q.Exec(ctx,
+			`INSERT INTO model_schema_extensions
+			    (tenant_id, model_name, model_version, kind, payload, tx_id)
+			 VALUES ($1, $2, $3, 'savepoint', $4, $5)`,
+			string(s.tenantID), ref.EntityName, ref.ModelVersion, folded, txID); err != nil {
+			return fmt.Errorf("failed to write savepoint for %s (seq=%d): %w", ref, newSeq, err)
+		}
+	}
+	return nil
+}
+
+// baseSchema loads the stable base schema stored in models.doc.schema
+// for the given ref. Used both by Get (pre-fold) and by ExtendSchema's
+// savepoint branch.
+func (s *modelStore) baseSchema(ctx context.Context, ref spi.ModelRef) ([]byte, error) {
+	var raw []byte
+	err := s.q.QueryRow(ctx,
+		`SELECT doc FROM models WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+		}
+		return nil, fmt.Errorf("base schema lookup for %s: %w", ref, err)
+	}
+	desc, err := unmarshalModelDoc(raw)
+	if err != nil {
+		return nil, err
+	}
+	return desc.Schema, nil
 }

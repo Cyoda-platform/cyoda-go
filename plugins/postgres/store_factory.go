@@ -11,13 +11,30 @@ import (
 
 // StoreFactory implements spi.StoreFactory backed by PostgreSQL.
 type StoreFactory struct {
-	pool *pgxpool.Pool
-	tm   *TransactionManager // may be nil if transactions not configured
+	pool      *pgxpool.Pool
+	tm        *TransactionManager // may be nil if transactions not configured
+	applyFunc ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
 }
+
+// ApplyFunc replays an opaque SchemaDelta onto a base schema
+// represented in the plugin's canonical bytes. Callers (cmd/cyoda/main.go)
+// pass schema.Apply wrapped in a codec round-trip.
+type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
 
 // NewStoreFactory creates a new PostgreSQL-backed StoreFactory.
 func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 	return &StoreFactory{pool: pool}
+}
+
+// SetApplyFunc installs the replay function used by modelStore.Get
+// to fold the extension log. It may be called at most once —
+// typically at factory-construction time in cmd/cyoda/main.go.
+// Calling it twice is a programmer error (panic).
+func (f *StoreFactory) SetApplyFunc(fn ApplyFunc) {
+	if f.applyFunc != nil {
+		panic("postgres: SetApplyFunc called twice")
+	}
+	f.applyFunc = fn
 }
 
 // setTransactionManager wires the plugin's own TM into the factory. The
@@ -80,7 +97,7 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{q: f.querier(), tenantID: tid}, nil
+	return &modelStore{q: f.querier(), tenantID: tid, applyFunc: f.applyFunc}, nil
 }
 
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
