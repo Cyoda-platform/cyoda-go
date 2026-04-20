@@ -12,12 +12,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Parse arguments: accept both positional and --nodes flag
+# Parse arguments: accept both positional and --nodes/--profile flags
 NUM_NODES=3
+PROFILE="${PROFILE:-postgres}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --nodes)  NUM_NODES="$2"; shift 2 ;;
         --nodes=*) NUM_NODES="${1#*=}"; shift ;;
+        --profile)  PROFILE="$2"; shift 2 ;;
+        --profile=*) PROFILE="${1#*=}"; shift ;;
         -d|--detach) EXTRA_ARGS+=("$1"); shift ;;
         [0-9]*) NUM_NODES="$1"; shift ;;
         *) EXTRA_ARGS+=("$1"); shift ;;
@@ -47,20 +50,47 @@ if [[ "$NUM_NODES" -lt 1 || "$NUM_NODES" -gt 20 ]]; then
     exit 1
 fi
 
-log_info "Preparing cyoda cluster with $NUM_NODES node(s)"
+case "$PROFILE" in
+    postgres|sqlite|memory) ;;
+    *) log_error "--profile must be one of: postgres, sqlite, memory (got '$PROFILE')"; exit 1 ;;
+esac
+
+# sqlite and memory are single-node backends — each container gets isolated
+# storage, so multi-node would be N independent instances behind the LB, not
+# a real cluster. Only postgres shares state across nodes.
+if [[ "$NUM_NODES" -gt 1 && "$PROFILE" != "postgres" ]]; then
+    log_error "Profile '$PROFILE' does not support multi-node (per-node isolated storage)."
+    log_error "Use --nodes 1 with this profile, or --profile postgres for a real cluster."
+    exit 1
+fi
+
+log_info "Preparing cyoda cluster with $NUM_NODES node(s) — profile: $PROFILE"
 
 # ── Secrets (generate once, persist to .env, reuse on restart) ────────
+#
+# Load order matters: profile overlay BEFORE base .env so user-supplied
+# CYODA_* values take precedence over previously-persisted auto-generated
+# values. Precedence: overlay CYODA_* > persisted .env > auto-generated.
 ENV_FILE="$SCRIPT_DIR/.env"
+PROFILE_ENV_FILE="$SCRIPT_DIR/.env.$PROFILE"
+
+if [[ -f "$PROFILE_ENV_FILE" ]]; then
+    log_info "Loading profile overlay from $PROFILE_ENV_FILE"
+    # shellcheck disable=SC1090
+    source "$PROFILE_ENV_FILE"
+fi
+
 if [[ -f "$ENV_FILE" ]]; then
-    log_info "Loading secrets from $ENV_FILE"
+    log_info "Loading persisted secrets from $ENV_FILE"
+    # shellcheck disable=SC1090
     source "$ENV_FILE"
 else
     log_info "First run — generating secrets and saving to $ENV_FILE"
 fi
 
-# Env vars override persisted values; persisted values override defaults
-JWT_KEY_B64="${JWT_KEY_B64:-$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 | tr -d '\n')}"
-HMAC_SECRET="${HMAC_SECRET:-$(openssl rand -hex 32)}"
+# Resolve each with full precedence chain: overlay CYODA_* > persisted > default/generate.
+JWT_KEY_B64="${CYODA_JWT_SIGNING_KEY:-${JWT_KEY_B64:-$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 | tr -d '\n')}}"
+HMAC_SECRET="${CYODA_HMAC_SECRET:-${HMAC_SECRET:-$(openssl rand -hex 32)}}"
 BOOTSTRAP_CLIENT_ID="${CYODA_BOOTSTRAP_CLIENT_ID:-${BOOTSTRAP_CLIENT_ID:-m2m.user}}"
 BOOTSTRAP_CLIENT_SECRET="${CYODA_BOOTSTRAP_CLIENT_SECRET:-${BOOTSTRAP_CLIENT_SECRET:-$(openssl rand -hex 32)}}"
 BOOTSTRAP_TENANT_ID="${CYODA_BOOTSTRAP_TENANT_ID:-${BOOTSTRAP_TENANT_ID:-riskblocs}}"
@@ -83,6 +113,40 @@ GRPC_PORT="${CYODA_GRPC_PORT:-9123}"
 GOSSIP_PORT=7946
 LB_HTTP_PORT="$HTTP_PORT"
 LB_GRPC_PORT="$GRPC_PORT"
+
+# ── Build local image from source ────────────────────────────────────
+# The canonical Dockerfile (deploy/docker/Dockerfile) is a distroless runtime
+# that expects a pre-staged binary at $TARGETPLATFORM/cyoda — the goreleaser
+# convention. Mirror the staging pattern from scripts/dev/run-docker-dev.sh:
+# build the binary once for the host arch, stage it, then buildx the image
+# and reference it by tag from compose. One image, N containers share it.
+LOCAL_IMAGE_TAG="ghcr.io/cyoda-platform/cyoda:multi-node-dev"
+
+case "$(uname -m)" in
+    x86_64|amd64) HOST_ARCH=amd64 ;;
+    aarch64|arm64) HOST_ARCH=arm64 ;;
+    *) log_error "unsupported arch: $(uname -m)"; exit 1 ;;
+esac
+HOST_PLATFORM="linux/$HOST_ARCH"
+
+BUILDCTX="$PROJECT_ROOT/.buildctx"
+trap 'rm -rf "$BUILDCTX"' EXIT
+rm -rf "$BUILDCTX"
+mkdir -p "$BUILDCTX/$HOST_PLATFORM"
+
+log_info "Building cyoda binary for $HOST_PLATFORM..."
+# Build from PROJECT_ROOT so `go` discovers this repo's go.work, not one
+# that might exist in the invoker's cwd.
+(cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$HOST_ARCH" \
+    go build -ldflags="-s -w" -o "$BUILDCTX/$HOST_PLATFORM/cyoda" \
+    ./cmd/cyoda)
+
+log_info "Building image $LOCAL_IMAGE_TAG..."
+docker buildx build --load \
+    --platform "$HOST_PLATFORM" \
+    -t "$LOCAL_IMAGE_TAG" \
+    -f "$PROJECT_ROOT/deploy/docker/Dockerfile" \
+    "$BUILDCTX" > /dev/null
 
 # ── Seed nodes: first min(N,3) ──────────────────────────────────────
 SEED_COUNT=$((NUM_NODES < 3 ? NUM_NODES : 3))
@@ -202,6 +266,58 @@ NGINX_HTTP_FOOTER
 NGINX_FOOTER
 }
 
+# ── Profile → compose fragments ───────────────────────────────────────
+# Four variables parameterize the compose template:
+#   BACKEND_ENV      — CYODA_STORAGE_BACKEND + connection vars, indented 2sp.
+#   BACKEND_SERVICE  — extra top-level service (postgres) or empty.
+#   NODE_DEPENDS     — per-node depends_on block or empty.
+#   TOP_VOLUMES      — named volume declarations under the top-level volumes:.
+# NODE_VOLS (per-node volume mount) is computed inline per node.
+case "$PROFILE" in
+    postgres)
+        BACKEND_ENV='  CYODA_STORAGE_BACKEND: "postgres"
+  CYODA_POSTGRES_URL: "postgres://minicyoda:minicyoda@postgres:5432/minicyoda?sslmode=disable"
+  CYODA_POSTGRES_AUTO_MIGRATE: "true"'
+        BACKEND_SERVICE='  postgres:
+    image: postgres:17-alpine
+    container_name: minicyoda-postgres
+    environment:
+      POSTGRES_DB: minicyoda
+      POSTGRES_USER: minicyoda
+      POSTGRES_PASSWORD: minicyoda
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minicyoda -d minicyoda"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    networks:
+      - minicyoda-network
+'
+        NODE_DEPENDS='    depends_on:
+      postgres:
+        condition: service_healthy'
+        TOP_VOLUMES='  pgdata:'
+        ;;
+    sqlite)
+        BACKEND_ENV='  CYODA_STORAGE_BACKEND: "sqlite"
+  CYODA_SQLITE_PATH: "/var/lib/cyoda/cyoda.db"
+  CYODA_SQLITE_AUTO_MIGRATE: "true"'
+        BACKEND_SERVICE=''
+        NODE_DEPENDS=''
+        TOP_VOLUMES='  cyoda-data:'
+        ;;
+    memory)
+        BACKEND_ENV='  CYODA_STORAGE_BACKEND: "memory"'
+        BACKEND_SERVICE=''
+        NODE_DEPENDS=''
+        TOP_VOLUMES=''
+        ;;
+esac
+
 # ── Generate docker-compose.generated.yml ────────────────────────────
 generate_docker_compose() {
     local num_nodes=$1
@@ -211,11 +327,10 @@ generate_docker_compose() {
 
     cat > "$compose_file" << COMPOSE_HEADER
 # Auto-generated by start-cluster.sh — do not edit manually.
+# Profile: ${PROFILE}
 
 x-minicyoda-common: &minicyoda-common
-  build:
-    context: ${PROJECT_ROOT}
-    dockerfile: Dockerfile
+  image: ${LOCAL_IMAGE_TAG}
   networks:
     - minicyoda-network
 
@@ -223,9 +338,7 @@ x-minicyoda-env: &minicyoda-env
   CYODA_HTTP_PORT: "${HTTP_PORT}"
   CYODA_GRPC_PORT: "${GRPC_PORT}"
   CYODA_LOG_LEVEL: "info"
-  CYODA_STORAGE_BACKEND: "postgres"
-  CYODA_POSTGRES_URL: "postgres://minicyoda:minicyoda@postgres:5432/minicyoda?sslmode=disable"
-  CYODA_POSTGRES_AUTO_MIGRATE: "true"
+${BACKEND_ENV}
   CYODA_IAM_MODE: "jwt"
   CYODA_JWT_SIGNING_KEY: "${JWT_KEY_B64}"
   CYODA_BOOTSTRAP_CLIENT_ID: "${BOOTSTRAP_CLIENT_ID}"
@@ -248,25 +361,7 @@ services:
     networks:
       - minicyoda-network
 
-  postgres:
-    image: postgres:17-alpine
-    container_name: minicyoda-postgres
-    environment:
-      POSTGRES_DB: minicyoda
-      POSTGRES_USER: minicyoda
-      POSTGRES_PASSWORD: minicyoda
-    ports:
-      - "127.0.0.1:5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U minicyoda -d minicyoda"]
-      interval: 2s
-      timeout: 5s
-      retries: 10
-    networks:
-      - minicyoda-network
-
+${BACKEND_SERVICE}
   load-balancer:
     image: nginx:alpine
     container_name: minicyoda-lb
@@ -296,6 +391,15 @@ DEPENDS
 
 LB_FOOTER
 
+    # Per-node volume mount (sqlite needs a writable data dir; postgres/memory
+    # do not). Declared in the template so `yq` or a reader can see it per node.
+    if [[ "$PROFILE" == "sqlite" ]]; then
+        NODE_VOLS='    volumes:
+      - cyoda-data:/var/lib/cyoda'
+    else
+        NODE_VOLS=''
+    fi
+
     # Generate each node
     for i in $(seq 1 "$num_nodes"); do
         if [[ "$num_nodes" -gt 1 ]]; then
@@ -312,9 +416,8 @@ LB_FOOTER
       CYODA_SEED_NODES: "${SEED_LIST}"
       CYODA_HMAC_SECRET: "${HMAC_SECRET}"
       CYODA_TX_TTL: "60s"
-    depends_on:
-      postgres:
-        condition: service_healthy
+${NODE_VOLS}
+${NODE_DEPENDS}
 
 NODE_CLUSTER
         else
@@ -324,22 +427,29 @@ NODE_CLUSTER
     container_name: minicyoda-node${i}
     environment:
       <<: *minicyoda-env
-    depends_on:
-      postgres:
-        condition: service_healthy
+${NODE_VOLS}
+${NODE_DEPENDS}
 
 NODE_SINGLE
         fi
     done
 
-    cat >> "$compose_file" << 'FOOTER'
+    # Only emit the top-level `volumes:` block when there are volumes to
+    # declare — memory profile has none, and `volumes:` with no children
+    # trips some strict YAML parsers.
+    if [[ -n "$TOP_VOLUMES" ]]; then
+        cat >> "$compose_file" << VOLUMES_BLOCK
 volumes:
-  pgdata:
+${TOP_VOLUMES}
 
+VOLUMES_BLOCK
+    fi
+
+    cat >> "$compose_file" << 'NETWORKS_BLOCK'
 networks:
   minicyoda-network:
     driver: bridge
-FOOTER
+NETWORKS_BLOCK
 }
 
 # ── Generate ──────────────────────────────────────────────────────────
@@ -357,4 +467,4 @@ if [[ "$NUM_NODES" -gt 1 ]]; then
 fi
 
 cd "$SCRIPT_DIR"
-docker compose -f docker-compose.generated.yml up --build "${EXTRA_ARGS[@]}"
+docker compose -f docker-compose.generated.yml up "${EXTRA_ARGS[@]}"
