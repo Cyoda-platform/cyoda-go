@@ -54,6 +54,30 @@ go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Clou
 | `go test -coverprofile=coverage.out ./...` | Test coverage |
 | `./scripts/dev/run-docker-dev.sh` | Start with Docker + PostgreSQL |
 
+## CI checks
+
+Every PR must pass the following gates before it can be merged:
+
+| Job | Workflow | Purpose |
+|-----|----------|---------|
+| `test` | `ci.yml` | Unit + integration tests, race detector, `go build`. |
+| `per-module-hygiene` | `ci.yml` | Each plugin module builds and vets independently with `GOWORK=off` (protects downstream consumers). |
+| `security` | `ci.yml` | `govulncheck` against the root module and each plugin submodule; `actions/dependency-review-action` on PR diffs. |
+| `Analyze Go` | `codeql.yml` | CodeQL static analysis (`security-and-quality` pack). Findings surface in the Security tab and as PR annotations. Also runs on a weekly cron. |
+| `shellcheck` | `ci.yml` | Lint for shell scripts. |
+
+The `security` job is blocking: any vulnerability finding in the call graph, or any new dependency at `moderate` severity or above, fails the PR. To reproduce locally:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+govulncheck ./...
+(cd plugins/memory && govulncheck ./...)
+(cd plugins/postgres && govulncheck ./...)
+(cd plugins/sqlite && govulncheck ./...)
+```
+
+Release builds additionally run a Trivy scan against the published GHCR image (`.github/workflows/release.yml`). Results are surfaced in the release run's job summary. This is advisory — the tag is already published by the time Trivy runs; pre-merge gating is the `security` job's responsibility.
+
 ## Dependencies
 
 No external web frameworks. No DI frameworks. No ORM.
