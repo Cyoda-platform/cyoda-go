@@ -77,7 +77,7 @@ For each `(tenant, modelRef)` a plugin conceptually maintains:
   `updateDate`. Mutated by admin operations (import, lock/unlock,
   set-change-level). Rare concurrency pressure.
 - **Extension log.** Append-only sequence of entries, each either:
-  - A **delta** carrying a JSON merge-patch (RFC 7396-style) to apply on
+  - A **delta** carrying a typed-op schema delta (see §4.2) to apply on
     top of `baseSchema + preceding deltas`.
   - A **savepoint** carrying the fully-folded schema as of that point.
     Plugin-internal optimization; emitted in the same batch that creates
@@ -85,18 +85,50 @@ For each `(tenant, modelRef)` a plugin conceptually maintains:
 
 On read, a plugin folds `baseSchema` with the deltas back to (but not
 beyond) the most recent savepoint. With a savepoint every N=64 deltas,
-the worst-case fold is bounded at ~64 JSON merges per `Get`.
+the worst-case fold is bounded at ~64 apply-ops per `Get`.
+
+**Delta format choice: typed ops, not JSON merge-patch.** RFC 7396
+merge-patch replaces arrays wholesale, which would break commutativity
+for schema fields that are arrays (`required`, `enum`, `type`-as-union,
+`oneOf`/`anyOf`, tuple-`items`): two concurrent writers adding
+different elements to the same array could lose each other's addition
+depending on fold order. The typed-op format defined in §4.2 gives each
+op-kind an order-independent merge rule (set-union for arrays,
+idempotent-key-insert for object properties) so convergence is a
+contract property, not an observation.
 
 ### 4.2 SPI changes (`cyoda-go-spi`)
 
-A new method on `ModelStore` and a new small value type:
+A new method on `ModelStore` and typed-op value types. The SPI owns
+only the value shapes; apply semantics live in the main repo (§4.3).
 
 ```go
-// SchemaDelta is an additive change to a ModelDescriptor's schema,
-// expressed as an RFC 7396 JSON merge-patch. Plugins store it
-// opaquely; the patch is produced by the main repo's schema.Diff.
+// SchemaDelta is an ordered list of additive schema operations. The
+// SPI stores it opaquely; schema.Apply (main repo) replays it onto a
+// base schema. Each op-kind's merge is order-independent, making the
+// overall fold commutative.
 type SchemaDelta struct {
-    Patch []byte
+    Ops []SchemaOp
+}
+
+type SchemaOpKind string
+
+const (
+    SchemaOpAddProperty      SchemaOpKind = "add_property"
+    SchemaOpAddRequired      SchemaOpKind = "add_required"
+    SchemaOpAddEnumValue     SchemaOpKind = "add_enum_value"
+    SchemaOpBroadenType      SchemaOpKind = "broaden_type"
+    SchemaOpAddArrayItemType SchemaOpKind = "add_array_item_type"
+    SchemaOpExtendOneOf      SchemaOpKind = "extend_one_of"
+    SchemaOpExtendAnyOf      SchemaOpKind = "extend_any_of"
+    // Enumeration finalized at plan-time by auditing schema.Extend
+    // output classes (see §9).
+)
+
+type SchemaOp struct {
+    Kind    SchemaOpKind
+    Path    string // JSON pointer into the schema, e.g. "/properties/address"
+    Payload []byte // op-specific data; shape determined by Kind
 }
 
 type ModelStore interface {
@@ -111,24 +143,51 @@ type ModelStore interface {
     //     visible iff that transaction commits.
     //   - Concurrent ExtendSchema calls on distinct entity transactions
     //     targeting the same model MUST NOT conflict with each other at
-    //     the storage layer; extensions are commutative.
+    //     the storage layer.
+    //   - Any two well-formed deltas must fold commutatively into the
+    //     same final schema regardless of apply order. This is enforced
+    //     by the op-kind catalog (each kind's merge rule is documented
+    //     in schema.Apply).
     ExtendSchema(ctx context.Context, ref ModelRef, delta *SchemaDelta) error
 }
 ```
 
+**Why the SPI carries value types and not apply logic.** Plugins must
+not depend on `internal/domain/model/schema` (plugin submodule
+self-containment). The logic for `Diff` and `Apply` lives in the main
+repo. Plugins that need to fold during `Get` are handed a
+`schema.ApplyFunc` at construction time via their store-factory config
+— see §4.4. Plugins store `SchemaDelta` bytes opaquely and never
+interpret them.
+
 `Save` keeps its existing full-replace semantic. Plugins with an
 extension log clear the log on `Save`.
 
-### 4.3 Handler-side changes
+### 4.3 Handler-side changes (`internal/domain/model/schema`)
 
-**New function** in `internal/domain/model/schema`:
+Two new functions paired with the existing `Extend`:
 
 ```go
-// Diff returns the JSON merge-patch that carries `new` relative to `old`.
-// Caller guarantees `new` is an additive-only extension of `old`, as
-// produced by schema.Extend with a valid ChangeLevel.
-func Diff(old, new *ModelNode) ([]byte, error)
+// Diff emits the typed-op delta expressing `new` as an additive change
+// over `old`. Caller guarantees `new` is produced by schema.Extend with
+// a valid ChangeLevel. Diff returns an error if it encounters a change
+// that cannot be expressed commutatively — that is a contract bug in
+// Extend and should be caught by tests (see §7), not surface at runtime.
+func Diff(old, new *ModelNode) (*spi.SchemaDelta, error)
+
+// Apply replays the ops in `delta` onto `base`, producing the folded
+// schema. The same function is injected into plugins at store-factory
+// construction so they can fold during Get without importing internal
+// packages.
+func Apply(base *ModelNode, delta *spi.SchemaDelta) (*ModelNode, error)
 ```
+
+**Commutativity is a test obligation.** For each op-kind defined in
+§4.2, `schema/apply_test.go` contains a table-driven property check:
+for any pair of deltas `d1, d2` over the same base, `Apply(Apply(b, d1), d2)`
+must equal `Apply(Apply(b, d2), d1)` up to schema-equivalence. The op
+catalog grows only via adding new kinds with their rule — the rule must
+pass this test before being merged.
 
 **Rewritten `validateOrExtend`** (`internal/domain/entity/handler.go`):
 
@@ -141,9 +200,9 @@ if err != nil { return err }
 extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
 if err != nil { return err }          // non-additive for the level
 if extended == modelNode { return nil } // Extend short-circuits on no-op
-patch, err := schema.Diff(modelNode, extended)
+delta, err := schema.Diff(modelNode, extended)
 if err != nil { return err }
-return modelStore.ExtendSchema(ctx, desc.Ref, &spi.SchemaDelta{Patch: patch})
+return modelStore.ExtendSchema(ctx, desc.Ref, delta)
 ```
 
 The existing failure-mode translation in `classifyValidateOrExtendErr`
@@ -161,8 +220,9 @@ Two tables:
   (JSONB).
 - `model_schema_extensions` — append-only. Primary key
   `(tenant_id, model_name, model_version, seq BIGSERIAL)`. Columns: `kind`
-  (`'delta' | 'savepoint'`), `payload` (JSONB — the merge-patch for
-  deltas, the folded schema for savepoints), `tx_id`, `created_at`.
+  (`'delta' | 'savepoint'`), `payload` (JSONB — the serialized
+  `spi.SchemaDelta` for deltas, the folded schema for savepoints),
+  `tx_id`, `created_at`.
 
 `ExtendSchema` is an `INSERT` (plus, conditionally, a second `INSERT` for
 the savepoint) on the current `pgx.Tx`. Distinct inserts on distinct
@@ -171,9 +231,16 @@ entity transactions. The insert participates in the entity commit
 atomically.
 
 `Get` reads the `models` row, then scans `model_schema_extensions` in
-reverse to locate the most recent savepoint, then folds forward. A simple
+reverse to locate the most recent savepoint, then folds forward by
+invoking the injected `schema.Apply` for each subsequent delta. A
 covering index on `(tenant_id, model_name, model_version, seq DESC)`
 keeps the scan bounded.
+
+**Apply-func injection.** The postgres store factory grows an optional
+`ApplyFunc func(base *ModelNode, delta *spi.SchemaDelta) (*ModelNode, error)`
+configuration field; at initialization `StoreFactory` wires
+`schema.Apply` into it. Plugins unit-tested with a stub `ApplyFunc` so
+plugin tests don't depend on the main repo's schema package.
 
 #### External plugins
 
@@ -188,18 +255,17 @@ Memory and SQLite are documented single-node-only. They do not face the
 concurrency pressure the two-table split resolves, so they do not need a
 physical log:
 
-- `ExtendSchema` applies the merge-patch to the stored schema bytes and
-  replaces. The entry appears as a normal `Save` internally.
-- No savepoints, no log, no fold on read. Current implementations
-  require only a minimal wrapper to accept a `SchemaDelta` and perform
-  the apply.
+- `ExtendSchema` calls the injected `ApplyFunc` on the stored schema
+  and replaces. Internally the entry appears as a normal `Save`.
+- No savepoints, no log, no fold on read. Plugins accept the same
+  `ApplyFunc` injection as Postgres; implementations are ~10 lines
+  each beyond the SPI boilerplate.
 
 This keeps the simple plugins simple while honouring the SPI.
 
 ### 4.5 Cache — `CachingModelStore` decorator
 
-A new type in `internal/cluster/modelcache` (or equivalent; exact
-location bike-sheddable in the plan):
+A new type in `internal/cluster/modelcache` (lean, finalized at plan-time):
 
 ```go
 type CachingModelStore struct {
@@ -207,6 +273,7 @@ type CachingModelStore struct {
     broadcaster spi.ClusterBroadcaster // nil-safe
     mu          sync.RWMutex
     cache       map[cacheKey]*spi.ModelDescriptor // only LOCKED + ""
+    epochs      map[cacheKey]uint64              // bumped on any invalidation
 }
 ```
 
@@ -214,11 +281,67 @@ type CachingModelStore struct {
 
 - On `Get`: cache hit → return copy. Cache miss → delegate to `inner`;
   if the returned descriptor has `State == LOCKED && ChangeLevel == ""`,
-  store it; otherwise pass through uncached.
-- On every mutating call (`Save`, `Lock`, `Unlock`, `SetChangeLevel`,
-  `ExtendSchema`, `Delete`): delegate to `inner`, then drop the cache
-  entry for that ref, then (if broadcaster is non-nil) publish the
-  invalidation.
+  store it under the epoch-guard rule below; otherwise pass through
+  uncached.
+- On every local mutating call (`Save`, `Lock`, `Unlock`,
+  `SetChangeLevel`, `ExtendSchema`, `Delete`): delegate to `inner`
+  first, then bump the ref's epoch and drop the cache entry, then
+  (if broadcaster is non-nil) publish the invalidation.
+- On incoming gossip invalidation: bump the ref's epoch and drop the
+  entry. No further action.
+
+**Epoch-guarded populate.** A populate-during-invalidation race
+(reader issues DB read, invalidation arrives before reader stores the
+result, reader then caches stale data) is prevented by capturing the
+ref's current epoch *before* the underlying `Get` and re-checking
+after:
+
+```go
+func (c *CachingModelStore) Get(ctx context.Context, ref ModelRef) (*ModelDescriptor, error) {
+    if d := c.lookup(ref); d != nil {
+        return d, nil
+    }
+
+    c.mu.RLock()
+    snapshotEpoch := c.epochs[key(ref)]
+    c.mu.RUnlock()
+
+    desc, err := c.inner.Get(ctx, ref)
+    if err != nil || desc.State != ModelLocked || desc.ChangeLevel != "" {
+        return desc, err
+    }
+
+    c.mu.Lock()
+    if c.epochs[key(ref)] == snapshotEpoch {
+        c.cache[key(ref)] = desc
+    } // else: concurrent invalidation — drop result rather than cache stale
+    c.mu.Unlock()
+    return desc, nil
+}
+
+func (c *CachingModelStore) invalidate(ref ModelRef) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.epochs[key(ref)]++
+    delete(c.cache, key(ref))
+}
+```
+
+**Race coverage — all three orderings:**
+
+1. *Invalidation before the `Get` starts.* Epoch is already bumped;
+   reader captures the post-bump epoch; stores successfully with the
+   fresh DB result. Correct.
+2. *Invalidation during the DB read.* Reader captured pre-bump epoch;
+   invalidation bumps; reader's post-check sees mismatch; result is
+   returned to the caller but not cached. Next `Get` repopulates with
+   a new epoch snapshot. Correct.
+3. *Invalidation after the reader stores.* Reader stores under old
+   epoch; invalidation then bumps the epoch and deletes the entry.
+   Correct — the cache ends up empty, as intended.
+
+Epoch values only ever grow. Memory overhead is one `uint64` per
+distinct ref seen; bounded by the model catalog size.
 
 **Gossip topic:** `model.invalidate` (new constant).
 
@@ -226,11 +349,8 @@ type CachingModelStore struct {
 contents on the wire.
 
 **Subscription:** the decorator registers a handler on construction.
-Incoming invalidations drop the local cache entry and do nothing else.
-Ordering doesn't matter — the cache either has the entry or doesn't;
-staleness can only manifest if an admin operation interleaves with a
-just-in-flight `Get` on another node, and the worst case there is an
-immediate cache repopulation.
+The handler invokes `invalidate(ref)` — same path as local mutation
+post-write.
 
 **Wiring.** `StoreFactory.ModelStore(ctx)` returns
 `CachingModelStore{inner: pluginModelStore, broadcaster: ...}`. Call
@@ -280,11 +400,24 @@ repositories.
 - `Save` clears the extension log.
 - `Lock`, `Unlock`, `SetChangeLevel` unaffected.
 
-**Unit — schema (`internal/domain/model/schema/diff_test.go`):**
+**Unit — schema (`internal/domain/model/schema/{diff,apply}_test.go`):**
 
-- `Diff` produces merge-patches consumed correctly by apply.
-- Round-trip: `Diff(old, Extend(old, incoming)) == merge-patch` such that
-  applying to `old` yields `Extend(old, incoming)`.
+- `Diff` produces typed-op deltas; `Apply` folds them back to the
+  expected schema.
+- Round-trip: `Apply(old, Diff(old, Extend(old, incoming)))` equals
+  `Extend(old, incoming)` for every ChangeLevel and every sample of
+  incoming shapes enumerated in the test data.
+- **Commutativity property tests:** for every op-kind pair
+  `(k1, k2)` (including `k1 == k2`), randomly generated deltas
+  `d1, d2` of those kinds over a shared base must satisfy
+  `Apply(Apply(b, d1), d2) ≡ Apply(Apply(b, d2), d1)`. Table-driven
+  with a small generator; fails noisily if an op-kind's merge rule is
+  not order-independent.
+- **Extend-completeness test:** for every classified output of
+  `schema.Extend` (enumerated at plan-time per §9), `Diff` must be
+  able to express the change as a `SchemaDelta`. A change that
+  `Extend` permits but `Diff` cannot encode is a design bug and the
+  test fails.
 
 **Integration — concurrent update regression (`plugins/postgres`):**
 
@@ -294,10 +427,15 @@ repositories.
 
 **Integration — cache + gossip (`internal/cluster/modelcache`):**
 
-- Two decorators sharing a fake broadcaster. `ExtendSchema` on decorator
-  A drops the entry on decorator B.
+- Two decorators sharing a fake broadcaster. `ExtendSchema` on
+  decorator A drops the entry on decorator B.
 - Cache only stores `LOCKED + ""` entries; `UNLOCKED` and
   `ChangeLevel != ""` entries bypass.
+- **Populate race tests** — one test per ordering from §4.5:
+  (i) invalidation-before-read, (ii) invalidation-during-read (using a
+  hook on the inner store to block mid-`Get` while an invalidation is
+  published), (iii) invalidation-after-store. In every case the
+  decorator must not leave a stale entry visible to subsequent `Get`s.
 
 **E2E (`internal/e2e`):**
 
@@ -333,3 +471,10 @@ repositories.
   Phase 1 or hardcoded. Lean hardcoded for simplicity; surface later.
 - Codec for the gossip payload: use existing cluster dispatch codec or
   a new minimal one. Lean reuse if it's suitable; inspect at plan-time.
+- **SchemaOpKind enumeration.** The final set of op-kinds is derived by
+  auditing every code path through `schema.Extend` at every ChangeLevel
+  and classifying its output. Plan-time task: produce a matrix of
+  (ChangeLevel, input shape → Extend output diff) and confirm each row
+  maps to one or more op-kinds. Any unmappable row fails the
+  Extend-completeness test and must be resolved (add an op-kind, or
+  constrain Extend, or surface the constraint to the user).
