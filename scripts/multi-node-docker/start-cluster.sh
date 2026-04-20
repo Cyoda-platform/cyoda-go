@@ -67,17 +67,30 @@ fi
 log_info "Preparing cyoda cluster with $NUM_NODES node(s) — profile: $PROFILE"
 
 # ── Secrets (generate once, persist to .env, reuse on restart) ────────
+#
+# Load order matters: profile overlay BEFORE base .env so user-supplied
+# CYODA_* values take precedence over previously-persisted auto-generated
+# values. Precedence: overlay CYODA_* > persisted .env > auto-generated.
 ENV_FILE="$SCRIPT_DIR/.env"
+PROFILE_ENV_FILE="$SCRIPT_DIR/.env.$PROFILE"
+
+if [[ -f "$PROFILE_ENV_FILE" ]]; then
+    log_info "Loading profile overlay from $PROFILE_ENV_FILE"
+    # shellcheck disable=SC1090
+    source "$PROFILE_ENV_FILE"
+fi
+
 if [[ -f "$ENV_FILE" ]]; then
-    log_info "Loading secrets from $ENV_FILE"
+    log_info "Loading persisted secrets from $ENV_FILE"
+    # shellcheck disable=SC1090
     source "$ENV_FILE"
 else
     log_info "First run — generating secrets and saving to $ENV_FILE"
 fi
 
-# Env vars override persisted values; persisted values override defaults
-JWT_KEY_B64="${JWT_KEY_B64:-$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 | tr -d '\n')}"
-HMAC_SECRET="${HMAC_SECRET:-$(openssl rand -hex 32)}"
+# Resolve each with full precedence chain: overlay CYODA_* > persisted > default/generate.
+JWT_KEY_B64="${CYODA_JWT_SIGNING_KEY:-${JWT_KEY_B64:-$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 | tr -d '\n')}}"
+HMAC_SECRET="${CYODA_HMAC_SECRET:-${HMAC_SECRET:-$(openssl rand -hex 32)}}"
 BOOTSTRAP_CLIENT_ID="${CYODA_BOOTSTRAP_CLIENT_ID:-${BOOTSTRAP_CLIENT_ID:-m2m.user}}"
 BOOTSTRAP_CLIENT_SECRET="${CYODA_BOOTSTRAP_CLIENT_SECRET:-${BOOTSTRAP_CLIENT_SECRET:-$(openssl rand -hex 32)}}"
 BOOTSTRAP_TENANT_ID="${CYODA_BOOTSTRAP_TENANT_ID:-${BOOTSTRAP_TENANT_ID:-riskblocs}}"
@@ -93,16 +106,6 @@ BOOTSTRAP_CLIENT_SECRET=${BOOTSTRAP_CLIENT_SECRET}
 BOOTSTRAP_TENANT_ID=${BOOTSTRAP_TENANT_ID}
 BOOTSTRAP_ROLES=${BOOTSTRAP_ROLES}
 ENVEOF
-
-# Optional per-profile overlay (.env.postgres, .env.sqlite, .env.memory) —
-# user-supplied file for CYODA_* env overrides. Loaded AFTER base secrets so
-# it can only override cluster config, not regenerate keys.
-PROFILE_ENV_FILE="$SCRIPT_DIR/.env.$PROFILE"
-if [[ -f "$PROFILE_ENV_FILE" ]]; then
-    log_info "Loading profile overlay from $PROFILE_ENV_FILE"
-    # shellcheck disable=SC1090
-    source "$PROFILE_ENV_FILE"
-fi
 
 # ── Ports (from env, falling back to single-node defaults) ───────────
 HTTP_PORT="${CYODA_HTTP_PORT:-8123}"

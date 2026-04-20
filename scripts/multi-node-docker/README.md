@@ -24,11 +24,20 @@ each container has isolated storage, so `--nodes >1` is rejected.
 
 ## Per-profile overrides
 
-Drop a `.env.<profile>` file in this directory to override any `CYODA_*`
-env var for that profile. Example — `.env.postgres`:
+Drop a `.env.<profile>` file in this directory to pin cluster secrets
+and bootstrap creds instead of letting the script auto-generate them.
+Loaded *before* the base `.env`, so these override anything persisted
+from a previous run. Example — `.env.postgres`:
 
-    CYODA_POSTGRES_MAX_CONNS=25
-    CYODA_LOG_LEVEL=debug
+    CYODA_BOOTSTRAP_CLIENT_ID=my.client
+    CYODA_BOOTSTRAP_CLIENT_SECRET=...
+    CYODA_BOOTSTRAP_TENANT_ID=my-tenant
+    CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M
+    CYODA_JWT_SIGNING_KEY=...base64-PEM...
+    CYODA_HMAC_SECRET=...
 
-Base `.env` (auto-generated on first run) holds JWT/HMAC secrets and
-bootstrap creds — profile-agnostic, delete to regenerate.
+These are the only vars the overlay currently plumbs through — arbitrary
+`CYODA_*` vars beyond this list are not propagated to the container.
+
+Base `.env` (auto-generated on first run) caches the resolved values for
+stability across restarts. Delete it to regenerate.
