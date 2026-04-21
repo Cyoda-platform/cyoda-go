@@ -51,3 +51,43 @@ func ClassifyInteger(v *big.Int) DataType {
 	}
 	return UnboundInteger
 }
+
+// ClassifyDecimal classifies a non-whole-number decimal value into
+// DOUBLE, BIG_DECIMAL, or UNBOUND_DECIMAL. Input MUST be the result of
+// StripTrailingZeros. Per spec §4.2:
+//
+//   - DOUBLE if precision ≤ 15 AND |scale| ≤ 292.
+//   - BIG_DECIMAL definite if precision ≤ 38 AND (precision - scale) ≤ 20
+//     AND scale ≤ 18.
+//   - BIG_DECIMAL loose if precision ≤ 39 AND (precision - scale) ≤ 21
+//     AND scale ≤ 18 AND SetScale(18).Unscaled().IsInt128().
+//   - Otherwise UNBOUND_DECIMAL.
+func ClassifyDecimal(d Decimal) DataType {
+	precision := d.Precision()
+	scale := int(d.scale)
+	absScale := scale
+	if absScale < 0 {
+		absScale = -absScale
+	}
+	// DOUBLE envelope.
+	if precision <= doubleMaxPrecision && absScale <= doubleMaxAbsScale {
+		return Double
+	}
+	// BIG_DECIMAL definite fit.
+	if scale <= bigDecimalMaxScale &&
+		precision <= bigDecimalDefinitePrec &&
+		(precision-scale) <= bigDecimalDefiniteExp {
+		return BigDecimal
+	}
+	// BIG_DECIMAL loose fit.
+	if scale <= bigDecimalMaxScale &&
+		precision <= bigDecimalLoosePrec &&
+		(precision-scale) <= bigDecimalLooseExp {
+		// Verify the unscaled-at-scale-18 representation fits Int128.
+		aligned, err := d.SetScale(18)
+		if err == nil && aligned.IsInt128() {
+			return BigDecimal
+		}
+	}
+	return UnboundDecimal
+}

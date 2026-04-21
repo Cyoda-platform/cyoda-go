@@ -59,3 +59,132 @@ func TestClassifyInteger(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyDecimal(t *testing.T) {
+	mkD := func(s string) Decimal {
+		d, err := ParseDecimal(s)
+		if err != nil {
+			t.Fatalf("ParseDecimal(%q): %v", s, err)
+		}
+		return d.StripTrailingZeros()
+	}
+
+	t.Run("DOUBLE_samples", func(t *testing.T) {
+		cases := []struct {
+			in   string
+			want DataType
+		}{
+			{"0.1", Double},
+			{"1.5", Double},
+			{"0.123456789012345", Double}, // precision 15, boundary
+		}
+		for _, c := range cases {
+			t.Run(c.in, func(t *testing.T) {
+				got := ClassifyDecimal(mkD(c.in))
+				if got != c.want {
+					t.Errorf("ClassifyDecimal(%q): got %s, want %s", c.in, got, c.want)
+				}
+			})
+		}
+	})
+
+	t.Run("BIG_DECIMAL_precision_boundary", func(t *testing.T) {
+		// precision=16, scale=16 — exceeds DOUBLE precision limit.
+		got := ClassifyDecimal(mkD("0.1234567890123456"))
+		if got != BigDecimal {
+			t.Errorf("16-digit fractional: got %s, want BIG_DECIMAL", got)
+		}
+	})
+
+	t.Run("BIG_DECIMAL_pi_18_fractional", func(t *testing.T) {
+		got := ClassifyDecimal(mkD("3.141592653589793238"))
+		if got != BigDecimal {
+			t.Errorf("pi-18: got %s, want BIG_DECIMAL", got)
+		}
+	})
+
+	t.Run("UNBOUND_DECIMAL_pi_20_fractional", func(t *testing.T) {
+		got := ClassifyDecimal(mkD("3.14159265358979323846"))
+		if got != UnboundDecimal {
+			t.Errorf("pi-20: got %s, want UNBOUND_DECIMAL (scale=20 > 18)", got)
+		}
+	})
+
+	t.Run("UNBOUND_DECIMAL_underflow", func(t *testing.T) {
+		got := ClassifyDecimal(mkD("1e-400"))
+		if got != UnboundDecimal {
+			t.Errorf("1e-400: got %s, want UNBOUND_DECIMAL", got)
+		}
+	})
+
+	t.Run("UNBOUND_DECIMAL_overflow", func(t *testing.T) {
+		got := ClassifyDecimal(mkD("1e400"))
+		if got != UnboundDecimal {
+			t.Errorf("1e400: got %s, want UNBOUND_DECIMAL", got)
+		}
+	})
+
+	t.Run("BIG_DECIMAL_definite_boundary", func(t *testing.T) {
+		// unscaled = 10^37 (38 digits), scale=18 → precision=38, exp=20, scale=18.
+		tenToThe37 := new(big.Int).Exp(big.NewInt(10), big.NewInt(37), nil)
+		d := Decimal{unscaled: tenToThe37, scale: 18}
+		got := ClassifyDecimal(d)
+		if got != BigDecimal {
+			t.Errorf("definite boundary: got %s, want BIG_DECIMAL", got)
+		}
+	})
+
+	t.Run("BIG_DECIMAL_loose_passes_int128", func(t *testing.T) {
+		// unscaled = 2^127 - 1 (39 digits), scale=18 → precision=39, exp=21, IsInt128 true.
+		u := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 127), big.NewInt(1))
+		d := Decimal{unscaled: u, scale: 18}
+		got := ClassifyDecimal(d)
+		if got != BigDecimal {
+			t.Errorf("loose passes: got %s, want BIG_DECIMAL", got)
+		}
+	})
+
+	t.Run("UNBOUND_DECIMAL_loose_fails_int128", func(t *testing.T) {
+		// unscaled = 2^127 (39 digits), scale=18 → IsInt128 false.
+		u := new(big.Int).Lsh(big.NewInt(1), 127)
+		d := Decimal{unscaled: u, scale: 18}
+		got := ClassifyDecimal(d)
+		if got != UnboundDecimal {
+			t.Errorf("loose fails: got %s, want UNBOUND_DECIMAL", got)
+		}
+	})
+
+	t.Run("UNBOUND_DECIMAL_40_digits", func(t *testing.T) {
+		// unscaled = 10^39 (40 digits), scale=18 → precision > 39.
+		u := new(big.Int).Exp(big.NewInt(10), big.NewInt(39), nil)
+		d := Decimal{unscaled: u, scale: 18}
+		got := ClassifyDecimal(d)
+		if got != UnboundDecimal {
+			t.Errorf("40 digits: got %s, want UNBOUND_DECIMAL", got)
+		}
+	})
+
+	t.Run("UNBOUND_DECIMAL_exp_too_big", func(t *testing.T) {
+		// unscaled = 10^16 (17 digits), scale=-6 → precision=17, exp=23 (>21).
+		// precision > 15 bumps out of DOUBLE; exp > 21 blocks both BIG_DECIMAL tiers.
+		// NB: an earlier draft used unscaled=1, scale=-22 here, but that has
+		// precision=1 and |scale|=22, which correctly classifies as DOUBLE
+		// (1e22 is representable). We need precision>15 to exit DOUBLE and
+		// then exercise the exp cap.
+		u := new(big.Int).Exp(big.NewInt(10), big.NewInt(16), nil)
+		d := Decimal{unscaled: u, scale: -6}
+		got := ClassifyDecimal(d)
+		if got != UnboundDecimal {
+			t.Errorf("exp=23: got %s, want UNBOUND_DECIMAL", got)
+		}
+	})
+
+	t.Run("UNBOUND_DECIMAL_scale_too_big", func(t *testing.T) {
+		// unscaled = 10^37 (38 digits), scale=19 → precision=38, scale > 18.
+		u := new(big.Int).Exp(big.NewInt(10), big.NewInt(37), nil)
+		got := ClassifyDecimal(Decimal{unscaled: u, scale: 19})
+		if got != UnboundDecimal {
+			t.Errorf("scale=19: got %s, want UNBOUND_DECIMAL", got)
+		}
+	})
+}
