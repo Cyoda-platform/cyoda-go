@@ -243,6 +243,34 @@ func TestDecimal_SetScale(t *testing.T) {
 	})
 }
 
+func TestDecimal_Cmp(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1.5", "1.50", 0},
+		{"1.5", "1.6", -1},
+		{"1.6", "1.5", 1},
+		{"0", "-0", 0},
+		{"0.0", "-0.0", 0},
+		{"1e10", "9e9", 1},
+		{"1.5000000001", "1.5", 1},
+		{"1.5", "1.5000000001", -1},
+		{"-1", "1", -1},
+		{"1000", "1e3", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.a+"_vs_"+c.b, func(t *testing.T) {
+			a, _ := ParseDecimal(c.a)
+			b, _ := ParseDecimal(c.b)
+			got := a.Cmp(b)
+			if got != c.want {
+				t.Errorf("Cmp(%q, %q): got %d, want %d", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
 func TestDecimal_IsInt128(t *testing.T) {
 	cases := []struct {
 		label    string

@@ -220,6 +220,26 @@ var int128Max = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 127), big.NewIn
 // Implementation note: relies on pre-computed boundaries rather than
 // big.Int.BitLen() comparisons, because BitLen ignores sign and
 // BitLen(-2^127) == 128 — incorrectly excluding the valid minimum.
+// Cmp returns -1 if d < other, 0 if equal, 1 if d > other. Exact
+// comparison via scale alignment — no rounding modes.
+func (d Decimal) Cmp(other Decimal) int {
+	// Align to the larger scale by upward SetScale (always exact).
+	target := d.scale
+	if other.scale > target {
+		target = other.scale
+	}
+	dAligned, err := d.SetScale(target)
+	if err != nil {
+		// Should never happen — upward SetScale always succeeds.
+		panic(fmt.Sprintf("Decimal.Cmp: upward SetScale failed: %v", err))
+	}
+	oAligned, err := other.SetScale(target)
+	if err != nil {
+		panic(fmt.Sprintf("Decimal.Cmp: upward SetScale failed: %v", err))
+	}
+	return dAligned.unscaled.Cmp(oAligned.unscaled)
+}
+
 func (d Decimal) IsInt128() bool {
 	if d.unscaled == nil {
 		return true
