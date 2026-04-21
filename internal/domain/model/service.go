@@ -330,7 +330,9 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 	}
 
 	var parsedData any
-	if err := json.Unmarshal(data, &parsedData); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&parsedData); err != nil {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body")
 	}
 
