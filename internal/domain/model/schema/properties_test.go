@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -427,10 +428,18 @@ func TestValidationMonotonicity(t *testing.T) {
 // Note: the task plan's draft assumed Validate returned error; the
 // actual signature in validate.go returns []ValidationError. The
 // wrapper adapts that — an empty slice is "valid".
+//
+// Updated for A.1: decoder must use UseNumber() so numeric leaves arrive
+// as json.Number and the value-based classifier in inferDataType can
+// classify them correctly. Bare json.Unmarshal produces float64, which
+// the classifier now flags as String (intentional — see validate.go
+// default case) and validation fails spuriously.
 func validateDoc(t *testing.T, node *ModelNode, docJSON string) []ValidationError {
 	t.Helper()
 	var doc any
-	if err := json.Unmarshal([]byte(docJSON), &doc); err != nil {
+	dec := json.NewDecoder(bytes.NewReader([]byte(docJSON)))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
 		t.Fatalf("bad test doc %q: %v", docJSON, err)
 	}
 	return Validate(node, doc)

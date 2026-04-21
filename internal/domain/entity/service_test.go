@@ -293,7 +293,12 @@ func decodeJSONResponseUseNumber(t *testing.T, body []byte, v any) {
 // path must keep the literal exactly.
 func TestCreateEntity_PreservesLargeIntPrecision(t *testing.T) {
 	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "PrecisionCreate", 1, `{"id":1,"name":"x"}`)
+	// Updated for A.1: seed the schema with a 2^53+1 literal so the id
+	// leaf classifies as LONG. Post-A.1 the classifier no longer widens
+	// LONG values into an INTEGER schema; the sample fixture must advertise
+	// the LONG family upfront for this precision test to reach the service
+	// layer at all.
+	importAndLockModel(t, srv.URL, "PrecisionCreate", 1, `{"id":9007199254740993,"name":"x"}`)
 
 	// 9007199254740993 == 2^53 + 1, the smallest positive integer that is
 	// not exactly representable as a float64.
@@ -334,7 +339,9 @@ func TestCreateEntity_PreservesLargeIntPrecision(t *testing.T) {
 // preservation through the UpdateEntity HTTP path (service.go :781).
 func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
 	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "PrecisionUpdate", 1, `{"id":1,"name":"x"}`)
+	// Updated for A.1: seed with a LONG-family literal so the schema
+	// accepts the >2^53 update payload. See TestCreateEntity_PreservesLargeIntPrecision.
+	importAndLockModel(t, srv.URL, "PrecisionUpdate", 1, `{"id":9007199254740993,"name":"x"}`)
 
 	// Create with a small id, then update with a >2^53 id.
 	entityID := createEntityAndGetID(t, srv.URL, "PrecisionUpdate", 1, `{"id":1,"name":"orig"}`)
@@ -375,7 +382,9 @@ func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
 // TestCreateEntity_PreservesLargeIntPrecision.
 func TestCollectionCreate_PreservesLargeIntPrecision(t *testing.T) {
 	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "PrecisionCollection", 1, `{"id":1,"name":"x"}`)
+	// Updated for A.1: seed with a LONG-family literal so the schema
+	// accepts the >2^53 payload. See TestCreateEntity_PreservesLargeIntPrecision.
+	importAndLockModel(t, srv.URL, "PrecisionCollection", 1, `{"id":9007199254740993,"name":"x"}`)
 
 	// 9007199254740993 == 2^53 + 1, the smallest positive integer that is
 	// not exactly representable as a float64. The first item carries the

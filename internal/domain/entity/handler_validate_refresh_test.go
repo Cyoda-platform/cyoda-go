@@ -158,8 +158,14 @@ func TestValidateWithRefresh_TypeMismatch_NoRefresh(t *testing.T) {
 	desc := buildDescriptorWithFields(t, ref, "a") // 'a' is String
 	ms := &refreshingStore{getQueue: []*spi.ModelDescriptor{desc}}
 
-	// Data for 'a' is the wrong type — numeric not string.
-	err := h.ValidateWithRefresh(context.Background(), ms, ref, map[string]any{"a": 42})
+	// Data for 'a' is the wrong type — bool not string.
+	//
+	// Updated for A.1: the value-based classifier in validate.go only
+	// recognizes json.Number for numerics; raw Go ints leak through the
+	// default branch as String, which would coincidentally satisfy the
+	// String schema and mask the test's intent. Bool is classified
+	// unambiguously via inferDataType and mismatches String reliably.
+	err := h.ValidateWithRefresh(context.Background(), ms, ref, map[string]any{"a": true})
 	if err == nil {
 		t.Fatal("expected type-mismatch error")
 	}
