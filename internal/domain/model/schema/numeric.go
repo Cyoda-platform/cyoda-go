@@ -91,3 +91,51 @@ func ClassifyDecimal(d Decimal) DataType {
 	}
 	return UnboundDecimal
 }
+
+// wideningLattice is the reachability map ported from
+// DataType.wideningConversionMap (Cyoda Cloud DataType.kt:239-272),
+// minus the dropped types (BYTE, SHORT, FLOAT). Key: source DataType.
+// Value: set of DataTypes the source can widen to (not including
+// itself).
+var wideningLattice = map[DataType]map[DataType]bool{
+	Integer: {
+		Long: true, Double: true, BigInteger: true, BigDecimal: true,
+		UnboundInteger: true, UnboundDecimal: true,
+	},
+	Long: {
+		// Note: LONG → DOUBLE is NOT allowed per DataType.kt:253-268
+		// (2^63 exceeds Double's 53-bit mantissa).
+		BigInteger: true, BigDecimal: true,
+		UnboundInteger: true, UnboundDecimal: true,
+	},
+	BigInteger: {
+		UnboundInteger: true, UnboundDecimal: true,
+	},
+	UnboundInteger: {
+		UnboundDecimal: true,
+	},
+	Double: {
+		UnboundDecimal: true,
+	},
+	BigDecimal: {
+		UnboundDecimal: true,
+	},
+	// UnboundDecimal: no outgoing edges.
+}
+
+// IsAssignableTo reports whether a value classified as dataT can
+// losslessly assign into schemaT per the widening lattice. NULL assigns
+// to any type (absence is universally acceptable).
+func IsAssignableTo(dataT, schemaT DataType) bool {
+	if dataT == schemaT {
+		return true
+	}
+	if dataT == Null {
+		return true
+	}
+	reachable, ok := wideningLattice[dataT]
+	if !ok {
+		return false
+	}
+	return reachable[schemaT]
+}

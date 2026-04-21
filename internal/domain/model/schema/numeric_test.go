@@ -188,3 +188,53 @@ func TestClassifyDecimal(t *testing.T) {
 		}
 	})
 }
+
+func TestIsAssignableTo(t *testing.T) {
+	// Self-assignment: every non-null type assigns to itself.
+	for _, dt := range []DataType{Integer, Long, BigInteger, UnboundInteger, Double, BigDecimal, UnboundDecimal, String, Boolean} {
+		if !IsAssignableTo(dt, dt) {
+			t.Errorf("IsAssignableTo(%s, %s) = false, want true", dt, dt)
+		}
+	}
+	// NULL assigns to anything.
+	for _, dt := range []DataType{Integer, Long, Double, BigDecimal, String, Boolean, Null} {
+		if !IsAssignableTo(Null, dt) {
+			t.Errorf("NULL → %s: got false, want true", dt)
+		}
+	}
+	// Integer family widening.
+	allow := map[[2]DataType]bool{
+		{Integer, Long}:                  true,
+		{Integer, BigInteger}:            true,
+		{Integer, UnboundInteger}:        true,
+		{Integer, Double}:                true, // 2^31 fits Double mantissa
+		{Integer, BigDecimal}:            true,
+		{Integer, UnboundDecimal}:        true,
+		{Long, BigInteger}:               true,
+		{Long, UnboundInteger}:           true,
+		{Long, BigDecimal}:               true,
+		{Long, UnboundDecimal}:           true,
+		{Long, Double}:                   false, // precision — 2^63 exceeds Double mantissa
+		{BigInteger, UnboundInteger}:     true,
+		{BigInteger, UnboundDecimal}:     true,
+		{UnboundInteger, UnboundDecimal}: true,
+		// Decimal family.
+		{Double, UnboundDecimal}:     true,
+		{Double, BigDecimal}:         false, // envelopes differ
+		{BigDecimal, UnboundDecimal}: true,
+		// Cross-direction: decimal does not assign to integer.
+		{Double, Integer}:  false,
+		{BigDecimal, Long}: false,
+		// Non-numeric.
+		{String, Integer}: false,
+		{Integer, String}: false,
+	}
+	for pair, want := range allow {
+		t.Run(pair[0].String()+"_to_"+pair[1].String(), func(t *testing.T) {
+			got := IsAssignableTo(pair[0], pair[1])
+			if got != want {
+				t.Errorf("IsAssignableTo(%s, %s): got %v, want %v", pair[0], pair[1], got, want)
+			}
+		})
+	}
+}
