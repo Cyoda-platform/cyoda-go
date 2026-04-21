@@ -87,6 +87,16 @@ var allTests = []NamedTest{
 	// Phase 4b — distributed-safety contracts (Tasks 4b.9-10)
 	{"ConcurrentConflictingUpdate", RunConcurrentConflictingUpdate},
 	{"ConcurrentTransitionsDifferentEntities", RunConcurrentTransitionsDifferentEntities},
+
+	// A.1 — numeric classifier parity (HTTP round-trip)
+	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
+	{"NumericClassification20DigitDecimal", RunNumericClassification20DigitDecimal},
+	{"NumericClassificationLargeInteger", RunNumericClassificationLargeInteger},
+	{"NumericClassificationIntegerSchemaAcceptsInteger", RunNumericClassificationIntegerSchemaAcceptsInteger},
+	{"NumericClassificationIntegerSchemaRejectsDecimal", RunNumericClassificationIntegerSchemaRejectsDecimal},
+
+	// Schema extensions — sequential fold across requests
+	{"SchemaExtensionsSequentialFoldAcrossRequests", RunSchemaExtensionsSequentialFoldAcrossRequests},
 }
 
 // AllTests returns the canonical list of parity scenarios in registration

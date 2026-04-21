@@ -77,11 +77,16 @@ func buildBinary(moduleRoot, pkg, name string) (string, error) {
 	outPath := filepath.Join(tmpDir, name)
 	cmd := exec.Command("go", "build", "-o", outPath, pkg)
 	cmd.Dir = moduleRoot
-	// GOWORK=off: out-of-tree callers (cyoda-go-cassandra's e2e suite)
-	// resolve moduleRoot to cyoda-go's copy in the Go module cache, which
-	// may carry a go.work referencing sibling directories that don't exist
-	// in the cache. Force module-mode so the build uses go.mod alone.
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = os.Environ()
+	// Use the in-tree go.work when present so pre-release cross-module
+	// development (e.g. feature branches that depend on an unpublished
+	// sibling-module change) resolves against the local working copy.
+	// Only force GOWORK=off when moduleRoot has no go.work — which is
+	// the case for out-of-tree callers (cyoda-go-cassandra's e2e suite)
+	// that resolve moduleRoot to cyoda-go's copy in the Go module cache.
+	if _, statErr := os.Stat(filepath.Join(moduleRoot, "go.work")); os.IsNotExist(statErr) {
+		cmd.Env = append(cmd.Env, "GOWORK=off")
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

@@ -212,6 +212,38 @@ func (c *Client) LockModel(t *testing.T, modelName string, modelVersion int) err
 	return err
 }
 
+// SetChangeLevel issues POST /api/model/{name}/{version}/changeLevel/{level}.
+// Levels: STRUCTURAL, TYPE, ARRAY_ELEMENTS, ARRAY_LENGTH (or "" to unset).
+func (c *Client) SetChangeLevel(t *testing.T, modelName string, modelVersion int, level string) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/changeLevel/%s", modelName, modelVersion, level)
+	_, err := c.doJSON(t, http.MethodPost, path, nil, nil)
+	return err
+}
+
+// CreateEntityRaw issues POST /api/entity/JSON/{name}/{version} and returns
+// the HTTP status code without decoding the body. Used by tests that expect
+// non-200 responses (e.g., strict-validate rejections).
+func (c *Client) CreateEntityRaw(t *testing.T, modelName string, modelVersion int, body string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%d", modelName, modelVersion)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // ImportWorkflow issues POST /api/model/{name}/{version}/workflow/import
 // with the given workflow JSON as the body.
 func (c *Client) ImportWorkflow(t *testing.T, modelName string, modelVersion int, workflowJSON string) error {
