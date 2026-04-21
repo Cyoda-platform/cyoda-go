@@ -121,3 +121,38 @@ func TestDecimal_Scale(t *testing.T) {
 		t.Errorf("Scale: got %d, want -2", d.Scale())
 	}
 }
+
+func TestDecimal_StripTrailingZeros(t *testing.T) {
+	cases := []struct {
+		in       string
+		unscaled *big.Int
+		scale    int32
+	}{
+		// Java BigDecimal("1.200").stripTrailingZeros() → unscaled=12, scale=1.
+		{"1.200", bigInt("12"), 1},
+		// "100" → unscaled=1, scale=-2.
+		{"100", bigInt("1"), -2},
+		// "0" and "0.0" → unscaled=0, scale=0 (Java treats zero's stripped scale as 0).
+		{"0", bigInt("0"), 0},
+		{"0.0", bigInt("0"), 0},
+		// Unchanged when no trailing zeros.
+		{"1.5", bigInt("15"), 1},
+		{"1", bigInt("1"), 0},
+		// Negative values.
+		{"-1.200", bigInt("-12"), 1},
+		// Multiple trailing zeros on integer.
+		{"12000", bigInt("12"), -3},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			d, _ := ParseDecimal(c.in)
+			stripped := d.StripTrailingZeros()
+			if stripped.unscaled.Cmp(c.unscaled) != 0 {
+				t.Errorf("unscaled: got %s, want %s", stripped.unscaled.String(), c.unscaled.String())
+			}
+			if stripped.scale != c.scale {
+				t.Errorf("scale: got %d, want %d", stripped.scale, c.scale)
+			}
+		})
+	}
+}

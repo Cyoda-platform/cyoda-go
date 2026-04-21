@@ -142,3 +142,29 @@ func (d Decimal) Unscaled() *big.Int {
 	}
 	return new(big.Int).Set(d.unscaled)
 }
+
+// StripTrailingZeros returns a Decimal with trailing zeros removed
+// from the unscaled value. Matches Java BigDecimal.stripTrailingZeros
+// semantics: a non-zero unscaled value with trailing zero digits has
+// those digits removed and the scale decremented accordingly. A zero
+// value collapses to unscaled=0, scale=0.
+func (d Decimal) StripTrailingZeros() Decimal {
+	if d.unscaled == nil || d.unscaled.Sign() == 0 {
+		return Decimal{unscaled: new(big.Int), scale: 0}
+	}
+	u := new(big.Int).Set(d.unscaled)
+	scale := d.scale
+	ten := big.NewInt(10)
+	zero := big.NewInt(0)
+	q := new(big.Int)
+	r := new(big.Int)
+	for {
+		q.QuoRem(u, ten, r)
+		if r.Cmp(zero) != 0 {
+			break
+		}
+		u.Set(q)
+		scale--
+	}
+	return Decimal{unscaled: u, scale: scale}
+}
