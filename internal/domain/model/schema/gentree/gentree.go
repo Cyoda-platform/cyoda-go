@@ -6,7 +6,10 @@
 package gentree
 
 import (
+	"encoding/json"
 	"math/rand/v2"
+	"sort"
+	"strconv"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -64,4 +67,109 @@ func NewRNG(seed int64) *rand.Rand {
 	s1 := uint64(seed)
 	s2 := uint64(seed) ^ 0x9E3779B97F4A7C15
 	return rand.New(rand.NewPCG(s1, s2))
+}
+
+// GenValue produces a random JSON-ish value at bounded depth suitable
+// for feeding into importer.Walk. At depth=0, leaves only.
+func GenValue(r *rand.Rand, depth, maxWidth int, cfg GenConfig) any {
+	if depth <= 0 {
+		return genLeafValue(r, cfg)
+	}
+	w := cfg.KindWeights
+	total := w.Leaf + w.Object + w.Array
+	roll := r.Float64() * total
+	switch {
+	case roll < w.Leaf:
+		return genLeafValue(r, cfg)
+	case roll < w.Leaf+w.Object:
+		return genObjectValue(r, depth-1, maxWidth, cfg)
+	default:
+		return genArrayValue(r, depth-1, maxWidth, cfg)
+	}
+}
+
+func genLeafValue(r *rand.Rand, cfg GenConfig) any {
+	dt := pickWeightedType(r, cfg.PrimitiveWeights)
+	switch dt {
+	case schema.Integer:
+		return json.Number(strconv.FormatInt(int64(r.IntN(1<<20)-(1<<19)), 10))
+	case schema.Long:
+		return json.Number(strconv.FormatInt(int64(r.Uint64()>>1), 10))
+	case schema.BigInteger:
+		return json.Number("170141183460469231731687303715884105727") // 2^127-1
+	case schema.UnboundInteger:
+		return json.Number("12345678901234567890123456789012345678901234567890")
+	case schema.Double:
+		return json.Number("3.14159265358979")
+	case schema.BigDecimal:
+		return json.Number("1.234567890123456789")         // 18 digit
+	case schema.UnboundDecimal:
+		return json.Number("1.23456789012345678901") // 20 digit
+	case schema.String:
+		return randString(r, 1+r.IntN(8))
+	case schema.Boolean:
+		return r.IntN(2) == 1
+	case schema.Null:
+		if cfg.AllowNulls {
+			return nil
+		}
+		return "nullsub"
+	}
+	return nil
+}
+
+func genObjectValue(r *rand.Rand, depth, maxWidth int, cfg GenConfig) any {
+	// Use a sorted key slice — NEVER range over the map while emitting.
+	n := 1 + r.IntN(maxWidth)
+	keys := make([]string, n)
+	for i := 0; i < n; i++ {
+		keys[i] = "k" + strconv.Itoa(i)
+	}
+	// Iterate keys in slice order, not map order.
+	out := make(map[string]any, n)
+	for _, k := range keys {
+		out[k] = GenValue(r, depth, maxWidth, cfg)
+	}
+	return out
+}
+
+func genArrayValue(r *rand.Rand, depth, maxWidth int, cfg GenConfig) any {
+	n := r.IntN(maxWidth + 1) // allow empty
+	out := make([]any, n)
+	for i := 0; i < n; i++ {
+		out[i] = GenValue(r, depth, maxWidth, cfg)
+	}
+	return out
+}
+
+// pickWeightedType chooses a DataType by iterating a SORTED key slice
+// (deterministic). Never range over the map directly.
+func pickWeightedType(r *rand.Rand, w map[schema.DataType]float64) schema.DataType {
+	keys := make([]schema.DataType, 0, len(w))
+	for k := range w { // one-time build is fine; we immediately sort
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	var total float64
+	for _, k := range keys {
+		total += w[k]
+	}
+	roll := r.Float64() * total
+	var acc float64
+	for _, k := range keys {
+		acc += w[k]
+		if roll < acc {
+			return k
+		}
+	}
+	return keys[len(keys)-1]
+}
+
+func randString(r *rand.Rand, n int) string {
+	const alpha = "abcdefghijklmnopqrstuvwxyz"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alpha[r.IntN(len(alpha))]
+	}
+	return string(b)
 }
