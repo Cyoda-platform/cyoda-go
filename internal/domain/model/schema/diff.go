@@ -85,8 +85,30 @@ func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	oldElem := oldN.Element()
 	newElem := newN.Element()
-	if oldElem == nil || newElem == nil {
-		return fmt.Errorf("array element missing at %q", displayPath(path))
+	// Both nil: no element ever observed — nothing to emit.
+	if oldElem == nil && newElem == nil {
+		return nil
+	}
+	// Incoming element disappeared — not additive.
+	if newElem == nil {
+		return fmt.Errorf("array element removed at %q", displayPath(path))
+	}
+	// Old was an empty array (no observed element yet). Treat this as an
+	// "unobserved element" transitioning to a concrete one. Only the
+	// LEAF case is expressible via the current op catalog — descending
+	// into a synthesized OBJECT/ARRAY shell would require a non-additive
+	// kind installation that A.3 tracks separately.
+	if oldElem == nil {
+		if newElem.Kind() != KindLeaf {
+			return fmt.Errorf("array element materialization at %q requires LEAF element; got %s (extend to a LEAF element first)",
+				displayPath(path), newElem.Kind())
+		}
+		op, err := NewAddArrayItemType(path, newElem.Types().Types())
+		if err != nil {
+			return fmt.Errorf("add_array_item_type at %q: %w", displayPath(path), err)
+		}
+		*ops = append(*ops, op)
+		return nil
 	}
 	// LEAF-element arrays use the dedicated widening op (cheapest and
 	// most common shape from schema.Extend at ChangeLevelArrayElements).

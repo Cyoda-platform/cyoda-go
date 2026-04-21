@@ -107,16 +107,27 @@ func applyAddArrayItemType(root *ModelNode, op SchemaOp) error {
 	if target.Kind() != KindArray {
 		return fmt.Errorf("target at %q is not an array (kind=%s)", op.Path, target.Kind())
 	}
-	elem := target.Element()
-	if elem == nil {
-		return fmt.Errorf("array at %q has no element", op.Path)
-	}
-	if elem.Kind() != KindLeaf {
-		return fmt.Errorf("array element at %q is not a leaf (kind=%s)", op.Path, elem.Kind())
-	}
 	types, err := DecodeTypeNames(op.Payload)
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)
+	}
+	elem := target.Element()
+	if elem == nil {
+		// Target was an empty-array seed (no observed element yet).
+		// Materialize a fresh LEAF element seeded with the first
+		// payload type; the loop below unions in the remainder.
+		if len(types) == 0 {
+			return fmt.Errorf("array at %q has no element and payload is empty", op.Path)
+		}
+		elem = NewLeafNode(types[0])
+		target.element = elem
+		for _, dt := range types[1:] {
+			elem.Types().Add(dt)
+		}
+		return nil
+	}
+	if elem.Kind() != KindLeaf {
+		return fmt.Errorf("array element at %q is not a leaf (kind=%s)", op.Path, elem.Kind())
 	}
 	for _, dt := range types {
 		elem.Types().Add(dt)

@@ -63,9 +63,11 @@ func fromWire(w *wireNode) (*ModelNode, error) {
 			if err != nil {
 				return nil, fmt.Errorf("array element: %w", err)
 			}
-		} else {
-			elem = NewLeafNode(Null)
 		}
+		// When the wire form has no element, preserve that: an
+		// unobserved-element ARRAY round-trips to an ARRAY with
+		// Element()==nil. Diff/Apply handle this as the empty-array
+		// seed case (see diffArray/applyAddArrayItemType).
 		n = NewArrayNode(elem)
 
 	case "LEAF":
