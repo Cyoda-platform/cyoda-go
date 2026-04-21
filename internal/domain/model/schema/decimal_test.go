@@ -156,3 +156,31 @@ func TestDecimal_StripTrailingZeros(t *testing.T) {
 		})
 	}
 }
+
+func TestDecimal_Precision(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		// Java BigDecimal.precision() returns 1 for zero.
+		{"0", 1},
+		{"0.0", 1},
+		{"1", 1},
+		{"10", 2},
+		{"12345", 5},
+		{"-12345", 5},
+		{"0.1", 1},
+		{"1.5", 2},
+		{"123.456", 6},
+		{"1e10", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			d, _ := ParseDecimal(c.in)
+			got := d.Precision()
+			if got != c.want {
+				t.Errorf("Precision(%q): got %d, want %d", c.in, got, c.want)
+			}
+		})
+	}
+}

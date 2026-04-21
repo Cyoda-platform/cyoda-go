@@ -168,3 +168,13 @@ func (d Decimal) StripTrailingZeros() Decimal {
 	}
 	return Decimal{unscaled: u, scale: scale}
 }
+
+// Precision returns the number of significant digits in the unscaled
+// value. Matches Java BigDecimal.precision() — returns 1 for zero.
+func (d Decimal) Precision() int {
+	if d.unscaled == nil || d.unscaled.Sign() == 0 {
+		return 1
+	}
+	abs := new(big.Int).Abs(d.unscaled)
+	return len(abs.String())
+}
