@@ -84,46 +84,44 @@ If the private key is compromised or simply needs rotation:
 No release-workflow code changes are needed — the App ID is stable
 across rotations.
 
-## First-release checklist
+## Cutting a release
 
-Before pushing the first `v0.1.0` tag, execute these in order. Every
-step is validated by the release workflow's pre-flight; skipping one
-causes a clean abort, but the overall sequence is faster to get right
-once than to diagnose three failed releases.
+Releases are **intentional**, not per-merge. Merge PRs to `main`
+freely; when you decide to cut a release, push a `v*` tag. That
+fires `release.yml`, which builds artifacts, signs, and publishes.
 
-### 1. Version reset across coordinated repos
+### Versioning
 
-Existing pre-public tags in `cyoda-go-spi` and `cyoda-go-cassandra`
-are deleted and recreated at `v0.1.0`:
+Semver with a leading `v`: `v0.6.0`, `v1.2.3`. Pre-v1 allows
+breaking changes between minor versions. New version must be
+**strictly greater** than the previous tag — Go module tags are
+write-once-per-value on the proxy (`proxy.golang.org` caches the
+SHA of every tag it serves), so you cannot retag or reuse a
+version number, even on repos with no production consumers.
 
-```bash
-# In cyoda-go-spi repo:
-for tag in $(git tag --list 'v*'); do git push --delete origin "$tag"; done
-git tag v0.1.0
-git push origin v0.1.0
+"Greenfield" means we promise nothing about backward compatibility
+between versions yet. It does **not** mean we can reset version
+numbers — the one-way-ratchet applies from the first tag onward.
 
-# In cyoda-go-cassandra repo:
-git push --delete origin v0.1.1
-git tag v0.1.0
-git push origin v0.1.0
-```
+### 1. Plugin submodule tags first
 
-Safe because nothing has been consumed publicly; after first release,
-tags are immutable by convention (see the project's
-`feedback_go_module_tags_immutable.md`).
+Plugin modules (`plugins/memory`, `plugins/postgres`, `plugins/sqlite`)
+live in this repo but have their own `go.mod` files and their own
+tag namespaces (`plugins/<name>/vX.Y.Z`). They must be tagged
+**before** the root module's `go.mod` can pin them — otherwise
+`go mod tidy` at step 3 has nothing to resolve against.
 
-### 2. Cut plugin module tags
-
-Plugin modules are tagged at a commit on `cyoda-go`'s `main` branch.
-Must happen **before** step 3, otherwise `go mod tidy` in step 3 can't
-resolve the pinned versions.
+Tag each plugin submodule at the same commit as the forthcoming root
+release. Pick the same version number as the root tag to keep the
+mental model simple:
 
 ```bash
 # In cyoda-go (main branch, at the commit to be released):
-git tag plugins/memory/v0.1.0
-git tag plugins/postgres/v0.1.0
-git tag plugins/sqlite/v0.1.0
-git push origin plugins/memory/v0.1.0 plugins/postgres/v0.1.0 plugins/sqlite/v0.1.0
+V=v0.6.0   # pick per release
+git tag "plugins/memory/$V"
+git tag "plugins/postgres/$V"
+git tag "plugins/sqlite/$V"
+git push origin "plugins/memory/$V" "plugins/postgres/$V" "plugins/sqlite/$V"
 ```
 
 ### 3. Drop the `replace` directives and pin plugin module versions
@@ -142,13 +140,13 @@ go mod tidy
 ```
 
 `go mod tidy` pins the plugin modules to the tags you just cut in
-step 2. Review the diff to `go.mod` and `go.sum` — you should see
-the `require` block gain entries for each plugin at `v0.1.0`, and
-the `replace` directives should be gone.
+step 1. Review the diff to `go.mod` and `go.sum` — the `require`
+block should gain entries for each plugin at the release version,
+and the `replace` directives should be gone.
 
 ```bash
 git add go.mod go.sum
-git commit -m "chore: drop replace directives; pin plugin modules at v0.1.0"
+git commit -m "chore: drop replace directives; pin plugin modules at $V"
 git push origin main
 ```
 
@@ -220,23 +218,67 @@ manual step stays in the checklist as a final pre-release confirmation.
 
 ### 7. Cut the release
 
+Use `gh release create` rather than raw `git tag + git push`:
+
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+V=v0.6.0   # or whatever this release is
+gh release create "$V" \
+  --title "$V" \
+  --generate-notes \
+  --target main
 ```
 
-`release.yml` fires: pre-flight module verification, build binaries,
-multi-arch image to GHCR, keyless cosign signing, SBOM attachment,
-Homebrew formula commit to the tap, GitHub Release with all archives.
+`--generate-notes` drafts release notes from merged PR titles since
+the previous tag. Edit in the browser before publishing if you want
+a hand-written summary on top of the PR list. No separate
+`CHANGELOG.md` is maintained — GitHub Releases are the canonical
+changelog.
+
+The release creation pushes the tag, which fires `release.yml`:
+pre-flight module verification, build binaries, multi-arch image to
+GHCR, keyless cosign signing, SBOM attachment, Homebrew formula
+commit to the tap, GitHub Release artifacts attached.
 
 The workflow runs ~5 minutes. Watch it in the Actions tab and
 verify:
 
 - Release appears on the Releases page with all expected archives,
   `.deb`/`.rpm` packages, `SHA256SUMS`, cosign signatures, SBOMs.
-- `ghcr.io/cyoda-platform/cyoda:v0.1.0` and `:latest` manifests exist.
+- `ghcr.io/cyoda-platform/cyoda:$V` and `:latest` manifests exist.
 - `cyoda-platform/homebrew-cyoda-go` shows a new commit updating
-  `Formula/cyoda.rb` to `v0.1.0`.
+  `Formula/cyoda.rb` to `$V`.
+
+### Coordinated release across sibling repos
+
+Some features span `cyoda-go-spi`, `cyoda-go`, and `cyoda-go-cassandra`.
+The dependency chain is:
+
+```
+cyoda-go-spi   ← cyoda-go   ← cyoda-go-cassandra
+              ← cyoda-go-cassandra
+```
+
+Release in topological order:
+
+1. **`cyoda-go-spi`**: merge the feature branch, then
+   `gh release create $V --generate-notes`. No build workflow to fire;
+   the release is the tag itself. Wait 30s or so for `proxy.golang.org`
+   to be able to serve the new version.
+
+2. **`cyoda-go`**: on its feature branch, bump `go.mod`'s
+   `cyoda-go-spi` require line to the new `$V`; similarly for each
+   plugin submodule's `go.mod`. Remove the `go.work` entry pointing
+   at the local SPI checkout. Verify tests still pass. Merge to
+   `main`. Then run steps 1, 2, 3, 7 of this checklist (plugin
+   submodule tags, drop replace directives, cut root release) using
+   the same `$V`.
+
+3. **`cyoda-go-cassandra`**: on its feature branch, bump `go.mod`'s
+   `cyoda-go-spi`, `cyoda-go`, and `cyoda-go/plugins/*` require
+   lines to the new versions. Merge. `gh release create $V ...`.
+
+Each step waits for the prior tag to land before its `go mod tidy`
+can resolve. In practice: merge, tag, wait for CI, then move on.
 
 ### 8. (Optional) Smoke-test each install path
 
@@ -255,12 +297,12 @@ sudo dpkg -i cyoda_linux_amd64.deb
 
 ## Pre-release testing
 
-Before cutting `v0.1.0`, you can exercise the release pipeline via a
+Before cutting a release you can exercise the release pipeline via a
 prerelease tag:
 
 ```bash
-git tag v0.1.0-rc.1
-git push origin v0.1.0-rc.1
+git tag v0.6.0-rc.1
+git push origin v0.6.0-rc.1
 ```
 
 This fires the full release workflow, producing a prerelease GitHub
