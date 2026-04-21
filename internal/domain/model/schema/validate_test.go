@@ -12,7 +12,7 @@ func TestValidateConforming(t *testing.T) {
 	model.SetChild("name", schema.NewLeafNode(schema.String))
 	model.SetChild("age", schema.NewLeafNode(schema.Integer))
 
-	data := map[string]any{"name": "Alice", "age": float64(30)}
+	data := map[string]any{"name": "Alice", "age": json.Number("30")}
 	errs := schema.Validate(model, data)
 	if len(errs) != 0 {
 		t.Errorf("expected no errors, got %v", errs)
@@ -48,7 +48,7 @@ func TestValidateNestedObject(t *testing.T) {
 	model.SetChild("address", inner)
 
 	data := map[string]any{
-		"address": map[string]any{"city": 12345},
+		"address": map[string]any{"city": json.Number("12345")},
 	}
 	errs := schema.Validate(model, data)
 	if len(errs) == 0 {
@@ -63,7 +63,7 @@ func TestValidatePolymorphicAcceptsBothTypes(t *testing.T) {
 	model.SetChild("value", leaf)
 
 	// Integer should pass
-	errs := schema.Validate(model, map[string]any{"value": float64(42)})
+	errs := schema.Validate(model, map[string]any{"value": json.Number("42")})
 	if len(errs) != 0 {
 		t.Errorf("integer should be accepted: %v", errs)
 	}
@@ -94,7 +94,7 @@ func TestValidateArray(t *testing.T) {
 	}
 
 	// Invalid element type
-	errs = schema.Validate(model, map[string]any{"tags": []any{"a", float64(1)}})
+	errs = schema.Validate(model, map[string]any{"tags": []any{"a", json.Number("1")}})
 	if len(errs) == 0 {
 		t.Error("expected error for invalid array element type")
 	}
@@ -140,5 +140,60 @@ func TestValidateJSONNumberAgainstNumeric(t *testing.T) {
 	errs := schema.Validate(model, data)
 	if len(errs) != 0 {
 		t.Errorf("json.Number should be compatible with numeric model types, got: %v", errs)
+	}
+}
+
+func TestValidate_IntegerSchema_RejectsDecimalValue(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.Integer))
+	data := map[string]any{"x": json.Number("13.111")}
+	errs := schema.Validate(model, data)
+	if len(errs) == 0 {
+		t.Fatal("expected rejection")
+	}
+}
+
+func TestValidate_DoubleSchema_AcceptsIntegerValue(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.Double))
+	data := map[string]any{"x": json.Number("13")}
+	errs := schema.Validate(model, data)
+	if len(errs) != 0 {
+		t.Errorf("expected acceptance; got errors: %v", errs)
+	}
+}
+
+func TestValidate_BigDecimalSchema_AcceptsHighPrecision(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.BigDecimal))
+	data := map[string]any{"x": json.Number("3.141592653589793238")}
+	errs := schema.Validate(model, data)
+	if len(errs) != 0 {
+		t.Errorf("expected acceptance; got errors: %v", errs)
+	}
+}
+
+func TestValidate_IntegerSchema_AcceptsInteger(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.Integer))
+	data := map[string]any{"x": json.Number("13")}
+	errs := schema.Validate(model, data)
+	if len(errs) != 0 {
+		t.Errorf("expected acceptance; got errors: %v", errs)
+	}
+}
+
+func TestValidate_LongSchema_RejectsDouble(t *testing.T) {
+	// LONG → DOUBLE is blocked in the widening lattice, but this is
+	// about a data value classified as LONG landing in a DOUBLE schema
+	// (that's allowed: LONG → DOUBLE? actually no, LONG→DOUBLE is
+	// blocked). Assert what actually happens:
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.Long))
+	// A value classified as Double (has fractional part) against Long schema.
+	data := map[string]any{"x": json.Number("3.14")}
+	errs := schema.Validate(model, data)
+	if len(errs) == 0 {
+		t.Errorf("expected rejection; Double value cannot validate against Long schema")
 	}
 }
