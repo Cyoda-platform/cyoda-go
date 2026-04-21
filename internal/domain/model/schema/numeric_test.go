@@ -239,6 +239,34 @@ func TestIsAssignableTo(t *testing.T) {
 	}
 }
 
+func TestCollapseNumeric_CrossFamily(t *testing.T) {
+	cases := []struct {
+		label string
+		in    []DataType
+		want  DataType
+	}{
+		{"integer_double", []DataType{Integer, Double}, BigDecimal},
+		{"long_double", []DataType{Long, Double}, BigDecimal},
+		{"integer_bigdecimal", []DataType{Integer, BigDecimal}, BigDecimal},
+		{"biginteger_double", []DataType{BigInteger, Double}, BigDecimal},
+		{"biginteger_bigdecimal", []DataType{BigInteger, BigDecimal}, BigDecimal},
+		{"biginteger_unbounddecimal", []DataType{BigInteger, UnboundDecimal}, UnboundDecimal},
+		{"unboundinteger_double", []DataType{UnboundInteger, Double}, UnboundDecimal},
+		{"unboundinteger_bigdecimal", []DataType{UnboundInteger, BigDecimal}, UnboundDecimal},
+		{"unboundinteger_unbounddecimal", []DataType{UnboundInteger, UnboundDecimal}, UnboundDecimal},
+		{"long_unbounddecimal", []DataType{Long, UnboundDecimal}, UnboundDecimal},
+		{"three_way", []DataType{Integer, Long, Double}, BigDecimal},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			got := CollapseNumeric(c.in)
+			if got != c.want {
+				t.Errorf("CollapseNumeric(%v): got %s, want %s", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestCollapseNumeric_SameFamily(t *testing.T) {
 	cases := []struct {
 		label string

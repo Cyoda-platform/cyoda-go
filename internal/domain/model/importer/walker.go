@@ -3,8 +3,7 @@ package importer
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
+	"math/big"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
@@ -41,18 +40,9 @@ func (w *walker) walkValue(v any) (*schema.ModelNode, error) {
 	case string:
 		return schema.NewLeafNode(schema.String), nil
 	case json.Number:
-		// Transitional: coarse classification pending A.1 Task 15.
-		// Any integer literal → Integer/BigInteger only; fractionals → Double.
-		s := val.String()
-		if strings.ContainsAny(s, ".eE") {
-			return schema.NewLeafNode(schema.Double), nil
-		}
-		if _, err := strconv.ParseInt(s, 10, 64); err != nil {
-			return schema.NewLeafNode(schema.BigInteger), nil
-		}
-		return schema.NewLeafNode(schema.Integer), nil
+		return classifyNumber(val)
 	case float64:
-		return schema.NewLeafNode(schema.Double), nil
+		return nil, fmt.Errorf("walker received float64 value; callers must use json.UseNumber() decoding")
 	case bool:
 		return schema.NewLeafNode(schema.Boolean), nil
 	case nil:
@@ -72,6 +62,31 @@ func (w *walker) walkObject(m map[string]any) (*schema.ModelNode, error) {
 		node.SetChild(k, child)
 	}
 	return node, nil
+}
+
+func classifyNumber(n json.Number) (*schema.ModelNode, error) {
+	d, err := schema.ParseDecimal(n.String())
+	if err != nil {
+		return nil, fmt.Errorf("classify number %q: %w", n.String(), err)
+	}
+	stripped := d.StripTrailingZeros()
+	// Value-based classification (spec §2.3): any whole-number value routes
+	// to the integer branch regardless of source syntax. After
+	// StripTrailingZeros, scale <= 0 means the value is a whole number:
+	//   scale == 0 → unscaled itself (e.g. 42, "1.0" → 1)
+	//   scale <  0 → unscaled × 10^(-scale) (e.g. "100" → (1,-2) → 100;
+	//                "1e400" → (1,-400) → 10^400)
+	// Only a positive scale after stripping indicates a genuine fractional
+	// component that must go through ClassifyDecimal.
+	if stripped.Scale() <= 0 {
+		unscaled := stripped.Unscaled()
+		if s := stripped.Scale(); s < 0 {
+			mult := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-s)), nil)
+			unscaled = new(big.Int).Mul(unscaled, mult)
+		}
+		return schema.NewLeafNode(schema.ClassifyInteger(unscaled)), nil
+	}
+	return schema.NewLeafNode(schema.ClassifyDecimal(stripped)), nil
 }
 
 func (w *walker) walkArray(arr []any) (*schema.ModelNode, error) {

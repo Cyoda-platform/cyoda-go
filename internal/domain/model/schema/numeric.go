@@ -1,6 +1,9 @@
 package schema
 
-import "math/big"
+import (
+	"fmt"
+	"math/big"
+)
 
 // Numeric envelopes from Cyoda Cloud's ParserFunctions.kt:33-59.
 // The "exp" constants refer to precision - scale — the decimal
@@ -147,24 +150,39 @@ func CollapseNumeric(types []DataType) DataType {
 	if len(types) == 0 {
 		panic("CollapseNumeric: empty input")
 	}
-	// Same-family case: collapse by highest rank within the family.
-	fam := NumericFamily(types[0])
-	sameFamily := true
-	for _, dt := range types[1:] {
-		if NumericFamily(dt) != fam {
-			sameFamily = false
-			break
-		}
-	}
-	if sameFamily {
-		winner := types[0]
-		for _, dt := range types[1:] {
-			if NumericRank(dt) > NumericRank(winner) {
-				winner = dt
+	// Bucket by family, track widest in each.
+	const sentinel = DataType(-1)
+	widestInt := sentinel
+	widestDec := sentinel
+	for _, dt := range types {
+		switch NumericFamily(dt) {
+		case 1:
+			if widestInt == sentinel || NumericRank(dt) > NumericRank(widestInt) {
+				widestInt = dt
 			}
+		case 2:
+			if widestDec == sentinel || NumericRank(dt) > NumericRank(widestDec) {
+				widestDec = dt
+			}
+		default:
+			panic(fmt.Sprintf("CollapseNumeric: non-numeric input %s", dt))
 		}
-		return winner
 	}
-	// Cross-family case: Task 15 implements this.
-	panic("CollapseNumeric: cross-family case not yet implemented")
+	// Same-family fast paths.
+	if widestInt == sentinel {
+		return widestDec
+	}
+	if widestDec == sentinel {
+		return widestInt
+	}
+	// Cross-family: promote to the narrowest decimal that losslessly
+	// contains every integer member, per spec §5.2.
+	if widestInt == UnboundInteger {
+		return UnboundDecimal
+	}
+	if widestDec == UnboundDecimal {
+		return UnboundDecimal
+	}
+	// BigInteger, Long, Integer → BigDecimal (Trino Int128 fits these).
+	return BigDecimal
 }
