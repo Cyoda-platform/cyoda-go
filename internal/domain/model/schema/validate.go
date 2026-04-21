@@ -199,8 +199,8 @@ func isCompatible(dataT, modelT DataType) bool {
 // isNumeric returns true if dt is a numeric DataType.
 func isNumeric(dt DataType) bool {
 	switch dt {
-	case Byte, Short, Integer, Long, BigInteger, UnboundInteger,
-		Float, Double, BigDecimal, UnboundDecimal:
+	case Integer, Long, BigInteger, UnboundInteger,
+		Double, BigDecimal, UnboundDecimal:
 		return true
 	default:
 		return false

@@ -8,25 +8,19 @@ type DataType int
 const (
 	// Numeric types
 
-	// Byte is an 8-bit signed integer.
-	Byte DataType = iota
-	// Short is a 16-bit signed integer.
-	Short
 	// Integer is a 32-bit signed integer.
-	Integer
+	Integer DataType = iota
 	// Long is a 64-bit signed integer.
 	Long
-	// BigInteger is an arbitrary-precision integer.
+	// BigInteger is an arbitrary-precision integer fitting Int128.
 	BigInteger
-	// UnboundInteger is an integer with no declared bound.
+	// UnboundInteger is an integer of arbitrary magnitude.
 	UnboundInteger
-	// Float is a 32-bit IEEE 754 floating-point number.
-	Float
-	// Double is a 64-bit IEEE 754 floating-point number.
+	// Double is a decimal within the precision-15, scale-292 envelope.
 	Double
-	// BigDecimal is an arbitrary-precision decimal.
+	// BigDecimal is a decimal fitting Trino's fixed-scale Int128 encoding.
 	BigDecimal
-	// UnboundDecimal is a decimal with no declared bound.
+	// UnboundDecimal is a decimal of arbitrary precision and scale.
 	UnboundDecimal
 
 	// Text types
@@ -72,10 +66,10 @@ const (
 )
 
 var dataTypeNames = map[DataType]string{
-	Byte: "BYTE", Short: "SHORT", Integer: "INTEGER", Long: "LONG",
+	Integer: "INTEGER", Long: "LONG",
 	BigInteger: "BIG_INTEGER", UnboundInteger: "UNBOUND_INTEGER",
-	Float: "FLOAT", Double: "DOUBLE", BigDecimal: "BIG_DECIMAL",
-	UnboundDecimal: "UNBOUND_DECIMAL", String: "STRING", Character: "CHARACTER",
+	Double: "DOUBLE", BigDecimal: "BIG_DECIMAL", UnboundDecimal: "UNBOUND_DECIMAL",
+	String: "STRING", Character: "CHARACTER",
 	LocalDate: "LOCAL_DATE", LocalDateTime: "LOCAL_DATE_TIME",
 	LocalTime: "LOCAL_TIME", ZonedDateTime: "ZONED_DATE_TIME",
 	Year: "YEAR", YearMonth: "YEAR_MONTH",
@@ -152,9 +146,9 @@ func (ts *TypeSet) Add(dt DataType) {
 // NumericFamily returns 1 for integer types, 2 for decimal types, 0 for non-numeric.
 func NumericFamily(dt DataType) int {
 	switch dt {
-	case Byte, Short, Integer, Long, BigInteger, UnboundInteger:
+	case Integer, Long, BigInteger, UnboundInteger:
 		return 1
-	case Float, Double, BigDecimal, UnboundDecimal:
+	case Double, BigDecimal, UnboundDecimal:
 		return 2
 	default:
 		return 0
@@ -164,26 +158,20 @@ func NumericFamily(dt DataType) int {
 // NumericRank returns the position in the widening hierarchy within a family.
 func NumericRank(dt DataType) int {
 	switch dt {
-	case Byte:
-		return 0
-	case Short:
-		return 1
 	case Integer:
-		return 2
-	case Long:
-		return 3
-	case BigInteger:
-		return 4
-	case UnboundInteger:
-		return 5
-	case Float:
 		return 0
-	case Double:
+	case Long:
 		return 1
-	case BigDecimal:
+	case BigInteger:
 		return 2
-	case UnboundDecimal:
+	case UnboundInteger:
 		return 3
+	case Double:
+		return 0
+	case BigDecimal:
+		return 1
+	case UnboundDecimal:
+		return 2
 	default:
 		return -1
 	}

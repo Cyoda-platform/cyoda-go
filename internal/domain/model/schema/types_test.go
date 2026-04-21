@@ -128,7 +128,7 @@ func TestTypeSetEqual(t *testing.T) {
 
 func TestTypeSetNumericLatching(t *testing.T) {
 	ts := schema.NewTypeSet()
-	ts.Add(schema.Byte)
+	ts.Add(schema.Integer)
 	ts.Add(schema.Long)
 	types := ts.Types()
 	if len(types) != 1 {
@@ -141,14 +141,14 @@ func TestTypeSetNumericLatching(t *testing.T) {
 
 func TestTypeSetNumericLatchingDecimal(t *testing.T) {
 	ts := schema.NewTypeSet()
-	ts.Add(schema.Float)
 	ts.Add(schema.Double)
+	ts.Add(schema.BigDecimal)
 	types := ts.Types()
 	if len(types) != 1 {
 		t.Fatalf("expected 1 type after latching, got %d: %v", len(types), types)
 	}
-	if types[0] != schema.Double {
-		t.Errorf("expected Double, got %v", types[0])
+	if types[0] != schema.BigDecimal {
+		t.Errorf("expected BigDecimal, got %v", types[0])
 	}
 }
 
@@ -164,7 +164,7 @@ func TestTypeSetNumericCrossFamily(t *testing.T) {
 
 func TestTypeSetNumericLatchingViaUnion(t *testing.T) {
 	a := schema.NewTypeSet()
-	a.Add(schema.Short)
+	a.Add(schema.Integer)
 	b := schema.NewTypeSet()
 	b.Add(schema.Long)
 	c := schema.Union(a, b)
