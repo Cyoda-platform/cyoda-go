@@ -240,22 +240,30 @@ func TestIsAssignableTo(t *testing.T) {
 }
 
 func TestCollapseNumeric_CrossFamily(t *testing.T) {
+	// Invariant: every input type must be assignable to the result.
+	// The result is the narrowest decimal type to which all inputs widen.
 	cases := []struct {
 		label string
 		in    []DataType
 		want  DataType
 	}{
-		{"integer_double", []DataType{Integer, Double}, BigDecimal},
-		{"long_double", []DataType{Long, Double}, BigDecimal},
+		// Integer widens to Double; result is Double (narrowest common supertype).
+		{"integer_double", []DataType{Integer, Double}, Double},
+		// Long does NOT widen to Double; escalate to UnboundDecimal.
+		{"long_double", []DataType{Long, Double}, UnboundDecimal},
+		// Integer widens to BigDecimal; result is BigDecimal.
 		{"integer_bigdecimal", []DataType{Integer, BigDecimal}, BigDecimal},
-		{"biginteger_double", []DataType{BigInteger, Double}, BigDecimal},
-		{"biginteger_bigdecimal", []DataType{BigInteger, BigDecimal}, BigDecimal},
+		// BigInteger does NOT widen to Double; escalate.
+		{"biginteger_double", []DataType{BigInteger, Double}, UnboundDecimal},
+		// BigInteger does NOT widen to BigDecimal; escalate.
+		{"biginteger_bigdecimal", []DataType{BigInteger, BigDecimal}, UnboundDecimal},
 		{"biginteger_unbounddecimal", []DataType{BigInteger, UnboundDecimal}, UnboundDecimal},
 		{"unboundinteger_double", []DataType{UnboundInteger, Double}, UnboundDecimal},
 		{"unboundinteger_bigdecimal", []DataType{UnboundInteger, BigDecimal}, UnboundDecimal},
 		{"unboundinteger_unbounddecimal", []DataType{UnboundInteger, UnboundDecimal}, UnboundDecimal},
 		{"long_unbounddecimal", []DataType{Long, UnboundDecimal}, UnboundDecimal},
-		{"three_way", []DataType{Integer, Long, Double}, BigDecimal},
+		// Long does NOT widen to Double; escalate.
+		{"three_way", []DataType{Integer, Long, Double}, UnboundDecimal},
 	}
 	for _, c := range cases {
 		t.Run(c.label, func(t *testing.T) {
@@ -277,7 +285,10 @@ func TestCollapseNumeric_SameFamily(t *testing.T) {
 		{"integer_long", []DataType{Integer, Long}, Long},
 		{"long_biginteger", []DataType{Long, BigInteger}, BigInteger},
 		{"biginteger_unboundinteger", []DataType{BigInteger, UnboundInteger}, UnboundInteger},
-		{"double_bigdecimal", []DataType{Double, BigDecimal}, BigDecimal},
+		// DOUBLE and BIG_DECIMAL are incompatible branches of the decimal family:
+		// DOUBLE widens only to UnboundDecimal, not to BIG_DECIMAL. Their join
+		// in the widening lattice is UnboundDecimal.
+		{"double_bigdecimal", []DataType{Double, BigDecimal}, UnboundDecimal},
 		{"double_unbounddecimal", []DataType{Double, UnboundDecimal}, UnboundDecimal},
 		{"bigdecimal_unbounddecimal", []DataType{BigDecimal, UnboundDecimal}, UnboundDecimal},
 		{"all_integer_family", []DataType{Integer, Long, BigInteger, UnboundInteger}, UnboundInteger},

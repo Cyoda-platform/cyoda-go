@@ -146,6 +146,15 @@ func IsAssignableTo(dataT, schemaT DataType) bool {
 // CollapseNumeric reduces a numeric-only set to a single DataType per
 // spec §5. Preconditions: input is non-empty; every element satisfies
 // IsNumeric.
+// CollapseNumeric reduces a numeric-only set to a single DataType per
+// spec §5. Preconditions: input is non-empty; every element satisfies
+// IsNumeric.
+//
+// Invariant: every input type t satisfies IsAssignableTo(t, result) or
+// t == result. The result is the narrowest such type in the widening
+// lattice: the "widest" candidate within the decimal family is tried first
+// (it covers all upcast paths); UnboundDecimal is the fallback when no
+// narrower candidate accepts every member.
 func CollapseNumeric(types []DataType) DataType {
 	if len(types) == 0 {
 		panic("CollapseNumeric: empty input")
@@ -168,21 +177,20 @@ func CollapseNumeric(types []DataType) DataType {
 			panic(fmt.Sprintf("CollapseNumeric: non-numeric input %s", dt))
 		}
 	}
-	// Same-family fast paths.
-	if widestInt == sentinel {
-		return widestDec
-	}
+	// Integer-only: widen within family.
 	if widestDec == sentinel {
 		return widestInt
 	}
-	// Cross-family: promote to the narrowest decimal that losslessly
-	// contains every integer member, per spec §5.2.
-	if widestInt == UnboundInteger {
-		return UnboundDecimal
+	// Decimal-only or cross-family: the candidate is the widest decimal seen.
+	// Verify every input type can be assigned to it; escalate to UnboundDecimal
+	// when the candidate doesn't cover all members (e.g. DOUBLE is not
+	// assignable to BIG_DECIMAL; BIG_INTEGER is not assignable to DOUBLE or
+	// BIG_DECIMAL).
+	candidate := widestDec
+	for _, dt := range types {
+		if dt != candidate && !IsAssignableTo(dt, candidate) {
+			return UnboundDecimal
+		}
 	}
-	if widestDec == UnboundDecimal {
-		return UnboundDecimal
-	}
-	// BigInteger, Long, Integer → BigDecimal (Trino Int128 fits these).
-	return BigDecimal
+	return candidate
 }

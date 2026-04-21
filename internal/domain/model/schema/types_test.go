@@ -140,6 +140,8 @@ func TestTypeSetNumericLatching(t *testing.T) {
 }
 
 func TestTypeSetNumericLatchingDecimal(t *testing.T) {
+	// DOUBLE does not widen to BIG_DECIMAL (different decimal branches).
+	// Their join in the widening lattice is UNBOUND_DECIMAL.
 	ts := schema.NewTypeSet()
 	ts.Add(schema.Double)
 	ts.Add(schema.BigDecimal)
@@ -147,22 +149,23 @@ func TestTypeSetNumericLatchingDecimal(t *testing.T) {
 	if len(types) != 1 {
 		t.Fatalf("expected 1 type after latching, got %d: %v", len(types), types)
 	}
-	if types[0] != schema.BigDecimal {
-		t.Errorf("expected BigDecimal, got %v", types[0])
+	if types[0] != schema.UnboundDecimal {
+		t.Errorf("expected UnboundDecimal, got %v", types[0])
 	}
 }
 
 func TestTypeSetNumericCrossFamily(t *testing.T) {
+	// Integer widens to Double (IsAssignableTo(Integer, Double) = true).
+	// Double is the narrowest common supertype; no escalation needed.
 	ts := schema.NewTypeSet()
 	ts.Add(schema.Integer)
 	ts.Add(schema.Double)
 	types := ts.Types()
-	// Cross-family numerics now collapse to a single DataType via CollapseNumeric.
 	if len(types) != 1 {
 		t.Fatalf("expected 1 type after cross-family collapse, got %d: %v", len(types), types)
 	}
-	if types[0] != schema.BigDecimal {
-		t.Errorf("expected BigDecimal, got %v", types[0])
+	if types[0] != schema.Double {
+		t.Errorf("expected Double, got %v", types[0])
 	}
 }
 
@@ -207,12 +210,13 @@ func TestTypeSetAdd_NumericCollapse_SameFamily(t *testing.T) {
 }
 
 func TestTypeSetAdd_NumericCollapse_CrossFamily(t *testing.T) {
+	// Integer widens to Double; Double is the narrowest common supertype.
 	ts := schema.NewTypeSet()
 	ts.Add(schema.Integer)
 	ts.Add(schema.Double)
 	got := ts.Types()
-	if len(got) != 1 || got[0] != schema.BigDecimal {
-		t.Errorf("Integer+Double: got %v, want [BigDecimal]", got)
+	if len(got) != 1 || got[0] != schema.Double {
+		t.Errorf("Integer+Double: got %v, want [Double]", got)
 	}
 }
 
@@ -275,22 +279,23 @@ func TestTypeSetAdd_CrossKindWithNumericCollapse(t *testing.T) {
 	ts.Add(schema.String)
 	ts.Add(schema.Null)
 	got := ts.Types()
-	// Expected: [BigDecimal, String] — Null drops, numerics collapse.
+	// Expected: [Double, String] — Null drops, Integer+Double collapse to Double
+	// (Integer widens to Double; Double is the narrowest common supertype).
 	if len(got) != 2 {
 		t.Fatalf("got %v, want 2 elements", got)
 	}
-	hasBD := false
+	hasDbl := false
 	hasStr := false
 	for _, dt := range got {
-		if dt == schema.BigDecimal {
-			hasBD = true
+		if dt == schema.Double {
+			hasDbl = true
 		}
 		if dt == schema.String {
 			hasStr = true
 		}
 	}
-	if !hasBD || !hasStr {
-		t.Errorf("got %v, want [BigDecimal, String]", got)
+	if !hasDbl || !hasStr {
+		t.Errorf("got %v, want [Double, String]", got)
 	}
 }
 
