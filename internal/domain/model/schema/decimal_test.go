@@ -68,3 +68,56 @@ func TestParseDecimal_Invalid(t *testing.T) {
 		})
 	}
 }
+
+func TestDecimal_IsZero_Sign(t *testing.T) {
+	cases := []struct {
+		in     string
+		isZero bool
+		sign   int
+	}{
+		{"0", true, 0},
+		{"0.0", true, 0},
+		{"-0", true, 0},
+		{"1", false, 1},
+		{"-1", false, -1},
+		{"0.5", false, 1},
+		{"-0.5", false, -1},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			d, err := ParseDecimal(c.in)
+			if err != nil {
+				t.Fatalf("ParseDecimal: %v", err)
+			}
+			if d.IsZero() != c.isZero {
+				t.Errorf("IsZero: got %v, want %v", d.IsZero(), c.isZero)
+			}
+			if d.Sign() != c.sign {
+				t.Errorf("Sign: got %d, want %d", d.Sign(), c.sign)
+			}
+		})
+	}
+}
+
+func TestDecimal_Unscaled_DefensiveCopy(t *testing.T) {
+	d, err := ParseDecimal("42")
+	if err != nil {
+		t.Fatalf("ParseDecimal: %v", err)
+	}
+	u := d.Unscaled()
+	u.SetInt64(999)
+	if d.unscaled.Int64() != 42 {
+		t.Errorf("Unscaled() did not return a defensive copy; internal state mutated to %d", d.unscaled.Int64())
+	}
+}
+
+func TestDecimal_Scale(t *testing.T) {
+	d, _ := ParseDecimal("1.23")
+	if d.Scale() != 2 {
+		t.Errorf("Scale: got %d, want 2", d.Scale())
+	}
+	d, _ = ParseDecimal("1e2")
+	if d.Scale() != -2 {
+		t.Errorf("Scale: got %d, want -2", d.Scale())
+	}
+}

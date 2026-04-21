@@ -115,3 +115,30 @@ func ParseDecimal(s string) (Decimal, error) {
 	}
 	return Decimal{unscaled: unscaled, scale: int32(scale)}, nil
 }
+
+// IsZero reports whether d is numerically zero.
+func (d Decimal) IsZero() bool {
+	return d.unscaled != nil && d.unscaled.Sign() == 0
+}
+
+// Sign returns -1 for negative, 0 for zero, 1 for positive.
+func (d Decimal) Sign() int {
+	if d.unscaled == nil {
+		return 0
+	}
+	return d.unscaled.Sign()
+}
+
+// Scale returns the scale: number of digits after the decimal point.
+// Negative scale corresponds to scientific notation like 1e2.
+func (d Decimal) Scale() int32 {
+	return d.scale
+}
+
+// Unscaled returns a defensive copy of the unscaled big.Int.
+func (d Decimal) Unscaled() *big.Int {
+	if d.unscaled == nil {
+		return new(big.Int)
+	}
+	return new(big.Int).Set(d.unscaled)
+}
