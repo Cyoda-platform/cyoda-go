@@ -30,6 +30,59 @@ func roundTrip(t *testing.T, oldN, newN *ModelNode) {
 	}
 }
 
+// TestDiff_ArrayOfObjects_AddChildInElement reproduces a bug reported
+// against a live model: adding a property to an object that lives inside
+// an array was rejected with "array element ... is not a leaf; beyond
+// catalog". The catalog DOES support this — we just need to recurse
+// through the array into the element with a "[]" path segment.
+func TestDiff_ArrayOfObjects_AddChildInElement(t *testing.T) {
+	oldElem := NewObjectNode()
+	oldElem.SetChild("a", NewLeafNode(String))
+	oldRoot := NewObjectNode()
+	oldRoot.SetChild("items", NewArrayNode(oldElem))
+
+	newElem := NewObjectNode()
+	newElem.SetChild("a", NewLeafNode(String))
+	newElem.SetChild("b", NewLeafNode(Integer))
+	newRoot := NewObjectNode()
+	newRoot.SetChild("items", NewArrayNode(newElem))
+
+	roundTrip(t, oldRoot, newRoot)
+}
+
+// TestDiff_ArrayOfObjects_BroadenLeafInElement: array of OBJECT, the
+// element has a LEAF child whose TypeSet gets widened.
+func TestDiff_ArrayOfObjects_BroadenLeafInElement(t *testing.T) {
+	oldElem := NewObjectNode()
+	oldElem.SetChild("a", NewLeafNode(String))
+	oldRoot := NewObjectNode()
+	oldRoot.SetChild("items", NewArrayNode(oldElem))
+
+	newElem := NewObjectNode()
+	newA := NewLeafNode(String)
+	newA.Types().Add(Null)
+	newElem.SetChild("a", newA)
+	newRoot := NewObjectNode()
+	newRoot.SetChild("items", NewArrayNode(newElem))
+
+	roundTrip(t, oldRoot, newRoot)
+}
+
+// TestDiff_ArrayOfArray_WidenInnerLeaf: nested arrays — array of
+// array of LEAF — extend the inner leaf. Verifies that the "[]"
+// segment can appear multiple times in a path.
+func TestDiff_ArrayOfArray_WidenInnerLeaf(t *testing.T) {
+	oldRoot := NewObjectNode()
+	oldRoot.SetChild("grid", NewArrayNode(NewArrayNode(NewLeafNode(Integer))))
+
+	innerLeaf := NewLeafNode(Integer)
+	innerLeaf.Types().Add(Null)
+	newRoot := NewObjectNode()
+	newRoot.SetChild("grid", NewArrayNode(NewArrayNode(innerLeaf)))
+
+	roundTrip(t, oldRoot, newRoot)
+}
+
 func TestDiff_NoChange_ReturnsNil(t *testing.T) {
 	root := NewObjectNode()
 	root.SetChild("name", NewLeafNode(String))

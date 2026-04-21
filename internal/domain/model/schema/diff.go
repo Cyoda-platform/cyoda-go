@@ -88,23 +88,25 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	if oldElem == nil || newElem == nil {
 		return fmt.Errorf("array element missing at %q", displayPath(path))
 	}
-	if oldElem.Kind() != KindLeaf || newElem.Kind() != KindLeaf {
-		// Catalog today only widens LEAF-element arrays. Object/array
-		// elements would require add_property or deeper ops and are out
-		// of scope until Extend produces them.
-		return fmt.Errorf("array element at %q is not a leaf (got %s -> %s); beyond catalog",
-			displayPath(path), oldElem.Kind(), newElem.Kind())
-	}
-	added := typeSetDifference(newElem.Types(), oldElem.Types())
-	if len(added) == 0 {
+	// LEAF-element arrays use the dedicated widening op (cheapest and
+	// most common shape from schema.Extend at ChangeLevelArrayElements).
+	if oldElem.Kind() == KindLeaf && newElem.Kind() == KindLeaf {
+		added := typeSetDifference(newElem.Types(), oldElem.Types())
+		if len(added) == 0 {
+			return nil
+		}
+		op, err := NewAddArrayItemType(path, added)
+		if err != nil {
+			return fmt.Errorf("add_array_item_type at %q: %w", displayPath(path), err)
+		}
+		*ops = append(*ops, op)
 		return nil
 	}
-	op, err := NewAddArrayItemType(path, added)
-	if err != nil {
-		return fmt.Errorf("add_array_item_type at %q: %w", displayPath(path), err)
-	}
-	*ops = append(*ops, op)
-	return nil
+	// OBJECT- or ARRAY-element: descend into the element using the "[]"
+	// path segment. Subsequent ops (add_property, broaden_type, etc.)
+	// carry paths like "parent/[]/child" that Apply's resolvePath
+	// follows by traversing the array's Element().
+	return diffNode(joinSchemaPath(path, "[]"), oldElem, newElem, ops)
 }
 
 // typeSetDifference returns the DataTypes present in `b` but not in `a`,

@@ -138,6 +138,20 @@ func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 		if part == "" {
 			return nil, fmt.Errorf("empty path segment in %q", path)
 		}
+		// "[]" descends into an ARRAY's element. Produced by Diff when
+		// an additive change lives inside an array-of-objects or a
+		// nested array.
+		if part == "[]" {
+			if cur.Kind() != KindArray {
+				return nil, fmt.Errorf("cannot descend into element of non-array at segment %q (kind=%s)", part, cur.Kind())
+			}
+			elem := cur.Element()
+			if elem == nil {
+				return nil, fmt.Errorf("array has no element at segment %q", part)
+			}
+			cur = elem
+			continue
+		}
 		if cur.Kind() != KindObject {
 			return nil, fmt.Errorf("cannot descend through non-object at segment %q (kind=%s)", part, cur.Kind())
 		}
