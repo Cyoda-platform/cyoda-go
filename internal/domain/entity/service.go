@@ -557,17 +557,26 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
+	// The model must exist; a request to delete all entities of a model
+	// that was never registered is a 404. But a registered model with
+	// zero entities is a successful no-op (idempotent delete-before-
+	// recreate flows depend on this).
+	modelStore, err := h.factory.ModelStore(txCtx)
+	if err != nil {
+		h.txMgr.Rollback(txCtx, txID)
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if _, err := modelStore.Get(txCtx, ref); err != nil {
+		h.txMgr.Rollback(txCtx, txID)
+		return nil, common.Operational(404, common.ErrCodeModelNotFound,
+			fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+	}
+
 	// Get all entities before deleting (for verbose response and IDs).
 	entities, err := entityStore.GetAll(txCtx, ref)
 	if err != nil {
 		h.txMgr.Rollback(txCtx, txID)
 		return nil, common.Internal("failed to get entities", err)
-	}
-
-	if len(entities) == 0 {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, common.Operational(404, common.ErrCodeEntityNotFound,
-			fmt.Sprintf("no entities found for model %s/%s", entityName, modelVersion))
 	}
 
 	if err := entityStore.DeleteAll(txCtx, ref); err != nil {

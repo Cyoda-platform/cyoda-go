@@ -71,7 +71,20 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	ver := parseVersion(input.ModelVersion)
 	ref := modelRef(input.EntityName, ver)
 
-	existing, err := store.Get(ctx, ref)
+	// Bypass the per-request cache here: in a multi-node cluster the cache
+	// can briefly serve a stale LOCKED descriptor in the window between a
+	// peer's delete and its gossip-borne invalidation. Import is a
+	// low-frequency admin operation, so one forced round-trip is fine.
+	// Plugins without a caching wrapper fall back to Get.
+	type refresher interface {
+		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
+	}
+	var existing *spi.ModelDescriptor
+	if r, ok := store.(refresher); ok {
+		existing, err = r.RefreshAndGet(ctx, ref)
+	} else {
+		existing, err = store.Get(ctx, ref)
+	}
 	if err != nil {
 		existing = nil
 	}

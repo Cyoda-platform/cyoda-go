@@ -446,3 +446,45 @@ func TestCollectionCreate_PreservesLargeIntPrecision(t *testing.T) {
 		t.Fatalf("expected int64=9007199254740993, got %d", gotInt)
 	}
 }
+
+// TestDeleteAllEntities_EmptyModel_ReturnsZeroCount verifies that
+// DeleteAllEntities on a model with no entities returns a success result
+// with TotalCount=0 rather than a 404. Idempotent delete-before-recreate
+// smoke flows in multi-node clusters depend on this behavior.
+func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := statsTestCtx("tenant-delete-empty")
+
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil)
+
+	// Register a LOCKED model with zero entities.
+	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
+	mstore, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := mstore.Save(ctx, &spi.ModelDescriptor{Ref: mref, State: spi.ModelLocked}); err != nil {
+		t.Fatalf("ModelStore.Save: %v", err)
+	}
+
+	result, err := h.DeleteAllEntities(ctx, "EmptyModel", "1")
+	if err != nil {
+		t.Fatalf("DeleteAllEntities on empty model: expected no error, got %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.TotalCount != 0 {
+		t.Errorf("expected TotalCount=0, got %d", result.TotalCount)
+	}
+	if result.ModelID == "" {
+		t.Error("expected ModelID to be populated")
+	}
+	if result.EntityModelID == "" {
+		t.Error("expected EntityModelID to be populated")
+	}
+}
