@@ -94,6 +94,14 @@ func applyBroadenType(root *ModelNode, op SchemaOp) error {
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)
 	}
+	if target.Kind() != KindLeaf {
+		for _, dt := range types {
+			if dt != Null {
+				return fmt.Errorf("broaden_type on %s target at %q may only add NULL, got %s",
+					target.Kind(), op.Path, dt)
+			}
+		}
+	}
 	for _, dt := range types {
 		target.Types().Add(dt)
 	}

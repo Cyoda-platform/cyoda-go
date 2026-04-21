@@ -50,9 +50,6 @@ func TestRoundtripRandomSeeds(t *testing.T) {
 	cfg := gentree.DefaultConfig()
 	cfg.TargetLevel = spi.ChangeLevelStructural
 	const N = 1000
-	if testing.Short() {
-		// under -short keep the full count to match the runtime budget
-	}
 	for i := 0; i < N; i++ {
 		seed := int64(i + 1)
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {

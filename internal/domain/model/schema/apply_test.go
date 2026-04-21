@@ -166,6 +166,22 @@ func TestApply_BroadenType_OnObjectAddsNullableMarker(t *testing.T) {
 	}
 }
 
+func TestApply_BroadenType_RejectsNonNullOnObject(t *testing.T) {
+	root := NewObjectNode()
+	root.SetChild("addr", NewObjectNode())
+	op, err := NewBroadenType("addr", []DataType{String}) // non-NULL on OBJECT
+	if err != nil {
+		t.Fatalf("NewBroadenType: %v", err)
+	}
+	delta, err := MarshalDelta([]SchemaOp{op})
+	if err != nil {
+		t.Fatalf("MarshalDelta: %v", err)
+	}
+	if _, err := Apply(root, delta); err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+}
+
 func TestApply_AddArrayItemType_WidensElementLeaf(t *testing.T) {
 	arr := NewArrayNode(NewLeafNode(Integer))
 	root := NewObjectNode()

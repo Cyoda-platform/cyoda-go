@@ -96,9 +96,11 @@ func diffArray(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	}
 	// Old was an empty array (no observed element yet). Treat this as an
 	// "unobserved element" transitioning to a concrete one. Only the
-	// LEAF case is expressible via the current op catalog — descending
-	// into a synthesized OBJECT/ARRAY shell would require a non-additive
-	// kind installation that A.3 tracks separately.
+	// LEAF case is expressible via the current op catalog.
+	// TODO(A.3): when oldElem is nil and newElem is non-LEAF (OBJECT/ARRAY
+	// element first seen via polymorphic write), the transition needs a new
+	// op kind beyond add_array_item_type. Tracked in Sub-project A.3
+	// (polymorphic-slot kind conflicts).
 	if oldElem == nil {
 		if newElem.Kind() != KindLeaf {
 			return fmt.Errorf("array element materialization at %q requires LEAF element; got %s (extend to a LEAF element first)",

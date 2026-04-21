@@ -28,17 +28,19 @@ const (
 	// STRUCTURAL.
 	KindAddProperty SchemaOpKind = "add_property"
 
-	// KindBroadenType widens a LEAF node's TypeSet with the primitive
-	// data types carried in Payload. Payload is a JSON array of
-	// DataType.String() names (e.g. ["NULL","STRING"]). ChangeLevel:
-	// TYPE.
+	// KindBroadenType widens a node's TypeSet by unioning added primitive
+	// types. Payload is a JSON array of DataType.String() names
+	// (e.g. ["NULL","STRING"]). For LEAF nodes this broadens the allowed
+	// primitive types; for OBJECT and ARRAY nodes the only meaningful
+	// addition is NULL (nullable marker). ChangeLevel: TYPE.
 	KindBroadenType SchemaOpKind = "broaden_type"
 
 	// KindAddArrayItemType widens an ARRAY node's element LEAF with
 	// additional primitive data types. Payload shape matches
 	// KindBroadenType. The op's Path targets the ARRAY node; the
-	// widening applies to its .Element().Types(). ChangeLevel:
-	// ARRAY_ELEMENTS.
+	// widening applies to its .Element().Types(). An ARRAY whose
+	// Element() is nil at the time of Apply gains a fresh LEAF element
+	// with the payload types. ChangeLevel: ARRAY_ELEMENTS.
 	KindAddArrayItemType SchemaOpKind = "add_array_item_type"
 )
 
@@ -76,13 +78,15 @@ func NewAddProperty(parentPath, name string, subtree []byte) SchemaOp {
 }
 
 // NewBroadenType builds an op that unions the given primitive data
-// types into the LEAF node at `leafPath`.
-func NewBroadenType(leafPath string, added []DataType) (SchemaOp, error) {
+// types into the node at `targetPath`. For LEAF targets this broadens
+// the allowed primitive types; for OBJECT and ARRAY targets only NULL
+// is meaningful (adds a nullable marker).
+func NewBroadenType(targetPath string, added []DataType) (SchemaOp, error) {
 	payload, err := encodeTypeNames(added)
 	if err != nil {
 		return SchemaOp{}, fmt.Errorf("NewBroadenType: %w", err)
 	}
-	return SchemaOp{Kind: KindBroadenType, Path: leafPath, Payload: payload}, nil
+	return SchemaOp{Kind: KindBroadenType, Path: targetPath, Payload: payload}, nil
 }
 
 // NewAddArrayItemType builds an op that unions the given primitive
