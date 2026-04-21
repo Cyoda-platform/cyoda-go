@@ -178,3 +178,33 @@ func (d Decimal) Precision() int {
 	abs := new(big.Int).Abs(d.unscaled)
 	return len(abs.String())
 }
+
+// SetScale returns a Decimal at the requested scale. Upward scale
+// (adding fractional digits) multiplies the unscaled value by
+// 10^(n-scale) and always succeeds. Downward scale (removing
+// fractional digits) succeeds only if the unscaled value is divisible
+// by 10^(scale-n); otherwise returns a precision-loss error.
+func (d Decimal) SetScale(newScale int32) (Decimal, error) {
+	if d.scale == newScale {
+		u := new(big.Int)
+		if d.unscaled != nil {
+			u.Set(d.unscaled)
+		}
+		return Decimal{unscaled: u, scale: newScale}, nil
+	}
+	diff := int64(newScale) - int64(d.scale)
+	if diff > 0 {
+		factor := new(big.Int).Exp(big.NewInt(10), big.NewInt(diff), nil)
+		u := new(big.Int).Mul(d.unscaled, factor)
+		return Decimal{unscaled: u, scale: newScale}, nil
+	}
+	// diff < 0: divide by 10^(-diff); require exactness.
+	factor := new(big.Int).Exp(big.NewInt(10), big.NewInt(-diff), nil)
+	q := new(big.Int)
+	r := new(big.Int)
+	q.QuoRem(d.unscaled, factor, r)
+	if r.Sign() != 0 {
+		return Decimal{}, fmt.Errorf("SetScale: cannot reduce scale from %d to %d without precision loss", d.scale, newScale)
+	}
+	return Decimal{unscaled: q, scale: newScale}, nil
+}

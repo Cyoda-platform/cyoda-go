@@ -184,3 +184,61 @@ func TestDecimal_Precision(t *testing.T) {
 		})
 	}
 }
+
+func TestDecimal_SetScale(t *testing.T) {
+	t.Run("no_op_equal", func(t *testing.T) {
+		d, _ := ParseDecimal("1.5")
+		got, err := d.SetScale(1)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.unscaled.Cmp(bigInt("15")) != 0 || got.scale != 1 {
+			t.Errorf("got unscaled=%s scale=%d", got.unscaled, got.scale)
+		}
+	})
+	t.Run("upward_scale_adds_zeros", func(t *testing.T) {
+		d, _ := ParseDecimal("1.5") // unscaled=15, scale=1
+		got, err := d.SetScale(3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.unscaled.Cmp(bigInt("1500")) != 0 || got.scale != 3 {
+			t.Errorf("got unscaled=%s scale=%d, want unscaled=1500 scale=3", got.unscaled, got.scale)
+		}
+	})
+	t.Run("downward_scale_divisible", func(t *testing.T) {
+		// ParseDecimal("1500") gives unscaled=1500, scale=0.
+		d, _ := ParseDecimal("1500")
+		got, err := d.SetScale(-2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.unscaled.Cmp(bigInt("15")) != 0 || got.scale != -2 {
+			t.Errorf("got unscaled=%s scale=%d", got.unscaled, got.scale)
+		}
+	})
+	t.Run("downward_scale_lossy_errors", func(t *testing.T) {
+		d, _ := ParseDecimal("1.5")
+		_, err := d.SetScale(0)
+		if err == nil {
+			t.Fatal("expected error for lossy downward scale")
+		}
+	})
+	t.Run("negative_scale_lossy_errors", func(t *testing.T) {
+		d, _ := ParseDecimal("100")
+		_, err := d.SetScale(-3)
+		if err == nil {
+			t.Fatal("expected error for lossy negative scale")
+		}
+	})
+	t.Run("negative_scale_exact", func(t *testing.T) {
+		d, _ := ParseDecimal("1000") // unscaled=1000, scale=0
+		got, err := d.SetScale(-3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.unscaled.Cmp(bigInt("1")) != 0 || got.scale != -3 {
+			t.Errorf("got unscaled=%s scale=%d, want unscaled=1 scale=-3", got.unscaled, got.scale)
+		}
+	})
+}
