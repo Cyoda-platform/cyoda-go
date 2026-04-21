@@ -96,3 +96,48 @@ func TestGenExtensionPairProducesExtendableIncoming(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratorIsMapFree runs GenModelNode with the same seed twice
+// and asserts byte-identical ModelNode.Marshal output. A generator
+// that accidentally ranges over a map fails this with high probability.
+func TestGeneratorIsMapFree(t *testing.T) {
+	cfg := DefaultConfig()
+	for _, seed := range []int64{1, 2, 3, 100, 1000, 54321} {
+		n1 := GenModelNode(NewRNG(seed), cfg.MaxDepth, cfg.MaxWidth, cfg)
+		n2 := GenModelNode(NewRNG(seed), cfg.MaxDepth, cfg.MaxWidth, cfg)
+		b1, _ := schema.Marshal(n1)
+		b2, _ := schema.Marshal(n2)
+		if string(b1) != string(b2) {
+			t.Fatalf("seed %d: divergent output — generator is not map-free", seed)
+		}
+	}
+}
+
+// TestCoverageDistribution samples 10_000 GenModelNode outputs and
+// asserts each major shape class is produced at minimum frequency.
+func TestCoverageDistribution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("coverage distribution is a slow sanity check, skipped under -short")
+	}
+	cfg := DefaultConfig()
+	r := NewRNG(777)
+	const N = 10_000
+	var leaves, objects, arrays int
+	for i := 0; i < N; i++ {
+		n := GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
+		switch n.Kind() {
+		case schema.KindLeaf:
+			leaves++
+		case schema.KindObject:
+			objects++
+		case schema.KindArray:
+			arrays++
+		}
+	}
+	// Each class must be at least 1 in 50 (= 200 in 10k).
+	for name, count := range map[string]int{"leaf": leaves, "object": objects, "array": arrays} {
+		if count < N/50 {
+			t.Errorf("%s frequency %d < threshold %d", name, count, N/50)
+		}
+	}
+}
