@@ -139,3 +139,32 @@ func IsAssignableTo(dataT, schemaT DataType) bool {
 	}
 	return reachable[schemaT]
 }
+
+// CollapseNumeric reduces a numeric-only set to a single DataType per
+// spec §5. Preconditions: input is non-empty; every element satisfies
+// IsNumeric.
+func CollapseNumeric(types []DataType) DataType {
+	if len(types) == 0 {
+		panic("CollapseNumeric: empty input")
+	}
+	// Same-family case: collapse by highest rank within the family.
+	fam := NumericFamily(types[0])
+	sameFamily := true
+	for _, dt := range types[1:] {
+		if NumericFamily(dt) != fam {
+			sameFamily = false
+			break
+		}
+	}
+	if sameFamily {
+		winner := types[0]
+		for _, dt := range types[1:] {
+			if NumericRank(dt) > NumericRank(winner) {
+				winner = dt
+			}
+		}
+		return winner
+	}
+	// Cross-family case: Task 15 implements this.
+	panic("CollapseNumeric: cross-family case not yet implemented")
+}
