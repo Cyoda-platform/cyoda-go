@@ -33,9 +33,23 @@ func diffNode(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 		return fmt.Errorf("kind change at %q: %s -> %s (not additive)",
 			displayPath(path), oldN.Kind(), newN.Kind())
 	}
+	// Every kind carries its own TypeSet. LEAF uses it for the primitive
+	// data types; OBJECT and ARRAY use it for nullable markers (NULL
+	// added when the structural position is observed as nil). Diff the
+	// node-level TypeSet uniformly here so nullable-marker growth on
+	// OBJECT/ARRAY surfaces as a KindBroadenType op rather than being
+	// silently dropped.
+	if added := typeSetDifference(newN.Types(), oldN.Types()); len(added) > 0 {
+		op, err := NewBroadenType(path, added)
+		if err != nil {
+			return fmt.Errorf("broaden_type at %q: %w", displayPath(path), err)
+		}
+		*ops = append(*ops, op)
+	}
 	switch newN.Kind() {
 	case KindLeaf:
-		return diffLeaf(path, oldN, newN, ops)
+		// LEAF types already diffed above.
+		return nil
 	case KindObject:
 		return diffObject(path, oldN, newN, ops)
 	case KindArray:
@@ -43,19 +57,6 @@ func diffNode(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
 	default:
 		return fmt.Errorf("unknown kind at %q: %v", displayPath(path), newN.Kind())
 	}
-}
-
-func diffLeaf(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {
-	added := typeSetDifference(newN.Types(), oldN.Types())
-	if len(added) == 0 {
-		return nil
-	}
-	op, err := NewBroadenType(path, added)
-	if err != nil {
-		return fmt.Errorf("broaden_type at %q: %w", displayPath(path), err)
-	}
-	*ops = append(*ops, op)
-	return nil
 }
 
 func diffObject(path string, oldN, newN *ModelNode, ops *[]SchemaOp) error {

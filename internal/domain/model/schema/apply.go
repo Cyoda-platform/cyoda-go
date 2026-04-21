@@ -84,11 +84,12 @@ func applyAddProperty(root *ModelNode, op SchemaOp) error {
 func applyBroadenType(root *ModelNode, op SchemaOp) error {
 	target, err := resolvePath(root, op.Path)
 	if err != nil {
-		return fmt.Errorf("resolve leaf: %w", err)
+		return fmt.Errorf("resolve target: %w", err)
 	}
-	if target.Kind() != KindLeaf {
-		return fmt.Errorf("target at %q is not a leaf (kind=%s)", op.Path, target.Kind())
-	}
+	// broaden_type widens the target node's own TypeSet. For LEAF
+	// targets this widens the primitive data types; for OBJECT/ARRAY
+	// targets it adds nullable markers (typically NULL). Both
+	// semantics are additive and handled identically by TypeSet.Add.
 	types, err := DecodeTypeNames(op.Payload)
 	if err != nil {
 		return fmt.Errorf("decode payload: %w", err)

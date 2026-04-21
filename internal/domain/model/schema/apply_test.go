@@ -133,7 +133,11 @@ func TestApply_BroadenType_UnionsPrimitives(t *testing.T) {
 	}
 }
 
-func TestApply_BroadenType_MustTargetLeaf(t *testing.T) {
+func TestApply_BroadenType_OnObjectAddsNullableMarker(t *testing.T) {
+	// broaden_type widens the target node's own TypeSet. For OBJECT
+	// (and ARRAY) targets this is how a nullable marker (NULL) is
+	// added when an observation sees the structural position as nil.
+	// The round-trip property test drives this contract.
 	root := NewObjectNode()
 	root.SetChild("addr", NewObjectNode())
 
@@ -141,9 +145,24 @@ func TestApply_BroadenType_MustTargetLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBroadenType: %v", err)
 	}
-	_, err = Apply(root, mustMarshalDeltaT(t, []SchemaOp{op}))
-	if err == nil || !strings.Contains(err.Error(), "leaf") {
-		t.Errorf("expected leaf-target error, got: %v", err)
+	out := mustApply(t, root, []SchemaOp{op})
+
+	addr := out.Child("addr")
+	if addr == nil {
+		t.Fatalf("addr child missing after apply")
+	}
+	if addr.Kind() != KindObject {
+		t.Fatalf("addr kind changed: got %s, want OBJECT", addr.Kind())
+	}
+	found := false
+	for _, dt := range addr.Types().Types() {
+		if dt == Null {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected NULL in addr.Types(), got %v", addr.Types().Types())
 	}
 }
 
