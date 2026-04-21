@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 )
 
@@ -169,5 +170,47 @@ func TestImportModel_StaleCacheAfterRemoteDelete_ProceedsAfterRefresh(t *testing
 	}
 	if ms.Saved().State != spi.ModelUnlocked {
 		t.Errorf("expected saved descriptor State=UNLOCKED, got %s", ms.Saved().State)
+	}
+}
+
+// TestLockModel_StaleCacheAfterRemoteDelete_404Not409 verifies that
+// LockModel's existence pre-check goes through RefreshAndGet, not the
+// cached Get. When a peer has deleted the model but this node still
+// holds a stale LOCKED descriptor in its per-request cache, LockModel
+// must observe the authoritative "gone" state and return 404
+// (model-not-found), not 409 (already-locked).
+//
+// This test documents the pattern applied to LockModel, UnlockModel,
+// DeleteModel, and SetChangeLevel — all four sites have the same shape
+// and share the getModelFresh helper.
+func TestLockModel_StaleCacheAfterRemoteDelete_404Not409(t *testing.T) {
+	staleRef := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	stale := &spi.ModelDescriptor{
+		Ref:   staleRef,
+		State: spi.ModelLocked,
+	}
+	ms := &refreshingModelStore{
+		getDescriptor:     stale,
+		refreshDescriptor: nil, // peer's delete propagated authoritatively
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.LockModel(context.Background(), "Dataset", "1")
+	if err == nil {
+		t.Fatalf("LockModel: expected model-not-found error after refresh, got nil")
+	}
+	if ms.RefreshCount() == 0 {
+		t.Errorf("expected RefreshAndGet to be called at least once, got 0")
+	}
+	// The error must be a 404 (MODEL_NOT_FOUND), not a 409 (already-locked
+	// conflict). The exact error type comes from modelNotFound() in
+	// handler.go — we match on its code/status rather than the message.
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 404 {
+		t.Errorf("expected HTTP 404 (model-not-found), got %d: %s", appErr.Status, appErr.Message)
 	}
 }

@@ -57,6 +57,24 @@ func parseVersion(v string) int32 {
 	return int32(n)
 }
 
+// getModelFresh returns the model descriptor, bypassing any per-request
+// cache layer when the store supports RefreshAndGet. In multi-node
+// cluster deployments this eliminates a stale-cache race window
+// between a peer's mutation and its gossip-borne invalidation.
+// Admin-path gating reads (ImportModel, LockModel, UnlockModel,
+// DeleteModel, SetChangeLevel) use this; routine display/listing
+// reads (ExportModel, ListModels, ValidateModel) keep the cache for
+// throughput — eventual consistency is acceptable for those paths.
+func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+	type refresher interface {
+		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
+	}
+	if r, ok := store.(refresher); ok {
+		return r.RefreshAndGet(ctx, ref)
+	}
+	return store.Get(ctx, ref)
+}
+
 // ImportModel imports a model from sample data, merging with any existing schema.
 func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*ImportModelResult, error) {
 	if input.Converter != "SAMPLE_DATA" {
@@ -71,20 +89,11 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	ver := parseVersion(input.ModelVersion)
 	ref := modelRef(input.EntityName, ver)
 
-	// Bypass the per-request cache here: in a multi-node cluster the cache
+	// Bypass the per-request cache: in a multi-node cluster the cache
 	// can briefly serve a stale LOCKED descriptor in the window between a
-	// peer's delete and its gossip-borne invalidation. Import is a
-	// low-frequency admin operation, so one forced round-trip is fine.
-	// Plugins without a caching wrapper fall back to Get.
-	type refresher interface {
-		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
-	}
-	var existing *spi.ModelDescriptor
-	if r, ok := store.(refresher); ok {
-		existing, err = r.RefreshAndGet(ctx, ref)
-	} else {
-		existing, err = store.Get(ctx, ref)
-	}
+	// peer's delete and its gossip-borne invalidation. Admin operations
+	// are low-frequency, so one forced round-trip is fine.
+	existing, err := getModelFresh(ctx, store, ref)
 	if err != nil {
 		existing = nil
 	}
@@ -185,8 +194,10 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	desc, err := store.Get(ctx, ref)
-	if err != nil {
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, store, ref)
+	if err != nil || desc == nil {
 		return nil, modelNotFound(entityName, ver)
 	}
 
@@ -222,8 +233,10 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	desc, err := modelStore.Get(ctx, ref)
-	if err != nil {
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, modelStore, ref)
+	if err != nil || desc == nil {
 		return nil, modelNotFound(entityName, ver)
 	}
 
@@ -265,8 +278,10 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	_, err = modelStore.Get(ctx, ref)
-	if err != nil {
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, modelStore, ref)
+	if err != nil || desc == nil {
 		return modelNotFound(entityName, ver)
 	}
 
@@ -373,7 +388,9 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	if _, err := store.Get(ctx, ref); err != nil {
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	if desc, err := getModelFresh(ctx, store, ref); err != nil || desc == nil {
 		return modelNotFound(entityName, ver)
 	}
 
