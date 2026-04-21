@@ -157,8 +157,12 @@ func TestTypeSetNumericCrossFamily(t *testing.T) {
 	ts.Add(schema.Integer)
 	ts.Add(schema.Double)
 	types := ts.Types()
-	if len(types) != 2 {
-		t.Fatalf("expected 2 types (cross-family), got %d: %v", len(types), types)
+	// Cross-family numerics now collapse to a single DataType via CollapseNumeric.
+	if len(types) != 1 {
+		t.Fatalf("expected 1 type after cross-family collapse, got %d: %v", len(types), types)
+	}
+	if types[0] != schema.BigDecimal {
+		t.Errorf("expected BigDecimal, got %v", types[0])
 	}
 }
 
@@ -189,5 +193,113 @@ func TestTypeSetIsPolymorphic(t *testing.T) {
 	poly.Add(schema.Integer)
 	if !poly.IsPolymorphic() {
 		t.Error("two types should be polymorphic")
+	}
+}
+
+func TestTypeSetAdd_NumericCollapse_SameFamily(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.Integer)
+	ts.Add(schema.Long)
+	got := ts.Types()
+	if len(got) != 1 || got[0] != schema.Long {
+		t.Errorf("Integer+Long: got %v, want [Long]", got)
+	}
+}
+
+func TestTypeSetAdd_NumericCollapse_CrossFamily(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.Integer)
+	ts.Add(schema.Double)
+	got := ts.Types()
+	if len(got) != 1 || got[0] != schema.BigDecimal {
+		t.Errorf("Integer+Double: got %v, want [BigDecimal]", got)
+	}
+}
+
+func TestTypeSetAdd_NullDropsOnConcrete(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.Null)
+	ts.Add(schema.Integer)
+	got := ts.Types()
+	if len(got) != 1 || got[0] != schema.Integer {
+		t.Errorf("Null+Integer: got %v, want [Integer]", got)
+	}
+}
+
+func TestTypeSetAdd_ConcreteDropsNull(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.Integer)
+	ts.Add(schema.Null)
+	got := ts.Types()
+	if len(got) != 1 || got[0] != schema.Integer {
+		t.Errorf("Integer+Null: got %v, want [Integer]", got)
+	}
+}
+
+func TestTypeSetAdd_NullAlone(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.Null)
+	got := ts.Types()
+	if len(got) != 1 || got[0] != schema.Null {
+		t.Errorf("Null alone: got %v, want [Null]", got)
+	}
+}
+
+func TestTypeSetAdd_CrossKindPreserved(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.Integer)
+	ts.Add(schema.String)
+	got := ts.Types()
+	if len(got) != 2 {
+		t.Errorf("Integer+String: got %v, want 2 elements", got)
+	}
+	hasInt := false
+	hasStr := false
+	for _, dt := range got {
+		if dt == schema.Integer {
+			hasInt = true
+		}
+		if dt == schema.String {
+			hasStr = true
+		}
+	}
+	if !hasInt || !hasStr {
+		t.Errorf("Integer+String: expected both; got %v", got)
+	}
+}
+
+func TestTypeSetAdd_CrossKindWithNumericCollapse(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.Integer)
+	ts.Add(schema.Double)
+	ts.Add(schema.String)
+	ts.Add(schema.Null)
+	got := ts.Types()
+	// Expected: [BigDecimal, String] — Null drops, numerics collapse.
+	if len(got) != 2 {
+		t.Fatalf("got %v, want 2 elements", got)
+	}
+	hasBD := false
+	hasStr := false
+	for _, dt := range got {
+		if dt == schema.BigDecimal {
+			hasBD = true
+		}
+		if dt == schema.String {
+			hasStr = true
+		}
+	}
+	if !hasBD || !hasStr {
+		t.Errorf("got %v, want [BigDecimal, String]", got)
+	}
+}
+
+func TestTypeSetAdd_NonNumericOnlyUnchangedBehavior(t *testing.T) {
+	ts := schema.NewTypeSet()
+	ts.Add(schema.String)
+	ts.Add(schema.Boolean)
+	got := ts.Types()
+	if len(got) != 2 {
+		t.Errorf("String+Boolean: got %v, want 2 elements", got)
 	}
 }

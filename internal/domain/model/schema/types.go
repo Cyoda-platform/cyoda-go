@@ -110,36 +110,56 @@ func NewTypeSet() *TypeSet {
 	return &TypeSet{}
 }
 
-// Add inserts a DataType into the set. Duplicates are ignored.
-// When adding a numeric type, if an existing type belongs to the same numeric
-// family (integer or decimal), only the wider type is kept.
+// Add inserts a DataType into the set and applies the cyoda-go
+// collapse rule:
+//   - NULL is dropped when any concrete type is present.
+//   - Numeric members collapse to a single DataType per CollapseNumeric.
+//   - Non-numeric members (other than NULL) are preserved as-is.
 func (ts *TypeSet) Add(dt DataType) {
-	fam := NumericFamily(dt)
-	if fam != 0 {
-		rank := NumericRank(dt)
-		for i, existing := range ts.types {
-			if existing == dt {
-				return
-			}
-			if NumericFamily(existing) == fam {
-				if NumericRank(existing) >= rank {
-					// Existing is already wider; nothing to do.
-					return
-				}
-				// Replace narrower with wider.
-				ts.types[i] = dt
-				sort.Slice(ts.types, func(a, b int) bool { return ts.types[a] < ts.types[b] })
-				return
+	// Special case: NULL. If the set already has concrete types, skip.
+	if dt == Null {
+		for _, existing := range ts.types {
+			if existing != Null {
+				return // drop incoming NULL
 			}
 		}
-	} else {
-		for _, existing := range ts.types {
-			if existing == dt {
-				return
-			}
+		// All existing entries are NULL (or none); allow adding (dedup below).
+	}
+
+	// Insert dedup'd.
+	for _, existing := range ts.types {
+		if existing == dt {
+			return
 		}
 	}
 	ts.types = append(ts.types, dt)
+
+	// If the incoming is concrete, strip any pre-existing NULL.
+	if dt != Null {
+		filtered := ts.types[:0]
+		for _, existing := range ts.types {
+			if existing != Null {
+				filtered = append(filtered, existing)
+			}
+		}
+		ts.types = filtered
+	}
+
+	// Collapse numerics if more than one numeric member is present.
+	var numerics []DataType
+	var nonNumerics []DataType
+	for _, existing := range ts.types {
+		if IsNumeric(existing) {
+			numerics = append(numerics, existing)
+		} else {
+			nonNumerics = append(nonNumerics, existing)
+		}
+	}
+	if len(numerics) >= 2 {
+		collapsed := CollapseNumeric(numerics)
+		ts.types = append(nonNumerics, collapsed)
+	}
+	// Keep the set sorted for stable output.
 	sort.Slice(ts.types, func(i, j int) bool { return ts.types[i] < ts.types[j] })
 }
 

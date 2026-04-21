@@ -176,7 +176,7 @@ func TestDiff_MultipleOps(t *testing.T) {
 
 	newN := NewObjectNode()
 	aNew := NewLeafNode(String)
-	aNew.Types().Add(Null) // broaden
+	aNew.Types().Add(Boolean) // broaden with concrete type (NULL would drop)
 	newN.SetChild("a", aNew)
 	bElem := NewLeafNode(Integer)
 	bElem.Types().Add(String) // array-widen

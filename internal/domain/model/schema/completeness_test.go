@@ -29,7 +29,9 @@ var catalogCoverage = map[SchemaOpKind]struct {
 		new: func() *ModelNode {
 			n := NewObjectNode()
 			leaf := NewLeafNode(String)
-			leaf.Types().Add(Null)
+			// Add a concrete non-numeric type so the TypeSet actually broadens;
+			// NULL alone would drop under the collapse rule.
+			leaf.Types().Add(Integer)
 			n.SetChild("x", leaf)
 			return n
 		},

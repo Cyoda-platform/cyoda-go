@@ -115,7 +115,9 @@ func TestApply_BroadenType_UnionsPrimitives(t *testing.T) {
 	root := NewObjectNode()
 	root.SetChild("age", NewLeafNode(String))
 
-	op, err := NewBroadenType("age", []DataType{Null})
+	// Broaden with a concrete type so the union is observable; NULL now drops
+	// when any concrete type is present per the TypeSet.Add collapse rule.
+	op, err := NewBroadenType("age", []DataType{Integer})
 	if err != nil {
 		t.Fatalf("NewBroadenType: %v", err)
 	}
@@ -126,8 +128,8 @@ func TestApply_BroadenType_UnionsPrimitives(t *testing.T) {
 	for _, d := range types {
 		names = append(names, d.String())
 	}
-	if !sliceContains(names, "NULL") || !sliceContains(names, "STRING") {
-		t.Errorf("expected NULL+STRING in TypeSet, got %v", names)
+	if !sliceContains(names, "INTEGER") || !sliceContains(names, "STRING") {
+		t.Errorf("expected INTEGER+STRING in TypeSet, got %v", names)
 	}
 }
 
@@ -218,13 +220,16 @@ func TestApply_MultipleOps_Replays(t *testing.T) {
 		t.Error("email missing after multi-op Apply")
 	}
 	names := typeNames(out.Child("age").Types().Types())
-	// After broadening with NULL and INTEGER (on a STRING leaf), TypeSet logic
-	// should keep all three primitives since they are not in the same numeric
-	// family.
-	for _, want := range []string{"STRING", "NULL", "INTEGER"} {
+	// After broadening with NULL and INTEGER (on a STRING leaf), NULL drops
+	// because concrete types are present. STRING and INTEGER are preserved
+	// (cross-kind polymorphism).
+	for _, want := range []string{"STRING", "INTEGER"} {
 		if !sliceContains(names, want) {
 			t.Errorf("expected %s in age types after broadens, got %v", want, names)
 		}
+	}
+	if sliceContains(names, "NULL") {
+		t.Errorf("NULL should drop when concrete types present, got %v", names)
 	}
 }
 
