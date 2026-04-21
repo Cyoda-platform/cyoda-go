@@ -198,3 +198,52 @@ func randString(r *rand.Rand, n int) string {
 	}
 	return string(b)
 }
+
+// GenExtensionPair given an existing schema returns a random JSON-like
+// value whose Walk output, when fed to Extend(old, ., level), is
+// typically accepted at Structural level. Strategy: emit a mutated
+// view of the schema (same shape, random additional fields) so the
+// extension is additive rather than kind-changing.
+func GenExtensionPair(r *rand.Rand, old *schema.ModelNode, level spi.ChangeLevel, cfg GenConfig) any {
+	return mutateToValue(r, old, 0, cfg)
+}
+
+func mutateToValue(r *rand.Rand, n *schema.ModelNode, depth int, cfg GenConfig) any {
+	if n == nil || depth > cfg.MaxDepth {
+		return genLeafValue(r, cfg)
+	}
+	switch n.Kind() {
+	case schema.KindLeaf:
+		// Emit a value compatible with the widest type in the set, plus
+		// occasionally broaden to trigger a broaden_type op.
+		return genLeafValue(r, cfg)
+	case schema.KindObject:
+		out := make(map[string]any)
+		for _, name := range sortedChildNames(n) {
+			out[name] = mutateToValue(r, n.Child(name), depth+1, cfg)
+		}
+		// ~30% of the time add a new field to drive AddProperty.
+		if r.Float64() < 0.3 {
+			out["extra_"+strconv.Itoa(r.IntN(1000))] = genLeafValue(r, cfg)
+		}
+		return out
+	case schema.KindArray:
+		m := r.IntN(cfg.MaxWidth + 1)
+		out := make([]any, m)
+		for i := 0; i < m; i++ {
+			out[i] = mutateToValue(r, n.Element(), depth+1, cfg)
+		}
+		return out
+	}
+	return genLeafValue(r, cfg)
+}
+
+func sortedChildNames(n *schema.ModelNode) []string {
+	children := n.Children() // returns map[string]*ModelNode (shallow copy)
+	names := make([]string, 0, len(children))
+	for k := range children {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}

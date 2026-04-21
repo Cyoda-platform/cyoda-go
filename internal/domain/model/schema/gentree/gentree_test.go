@@ -76,3 +76,23 @@ func TestGenModelNodeDeterministicMarshal(t *testing.T) {
 		t.Fatalf("seed 11 produced divergent ModelNode marshal:\n  n1=%s\n  n2=%s", b1, b2)
 	}
 }
+
+func TestGenExtensionPairProducesExtendableIncoming(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TargetLevel = spi.ChangeLevelStructural
+	r := NewRNG(23)
+	for i := 0; i < 30; i++ {
+		old := GenModelNode(r, 3, 4, cfg)
+		incoming := GenExtensionPair(r, old, cfg.TargetLevel, cfg)
+		incomingNode, err := importer.Walk(incoming)
+		if err != nil {
+			t.Fatalf("sample %d: Walk incoming failed: %v", i, err)
+		}
+		if _, err := schema.Extend(old, incomingNode, cfg.TargetLevel); err != nil {
+			// Extend may reject when GenExtensionPair randomly produces
+			// incompatible shapes at lower levels; at Structural, everything
+			// additive must succeed.
+			t.Fatalf("sample %d: Extend at Structural rejected: %v", i, err)
+		}
+	}
+}
