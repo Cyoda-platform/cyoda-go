@@ -1,10 +1,12 @@
 # Sub-project A.1 — Numeric Classifier Parity with Cyoda Cloud
 
 **Date:** 2026-04-21
-**Revision:** 2 (post-review, 2026-04-21)
+**Revision:** 3 (post-review-02, 2026-04-21)
 **Parent initiative:** Data-ingestion QA (Option 1 decomposition: sub-projects A, B, C, D)
 **Predecessor context:** `docs/numeric-type-classification-analysis.md` — authoritative algorithm spec for Cyoda Cloud's numeric classifier.
-**Review:** `docs/superpowers/reviews/2026-04-21-data-ingestion-qa-subproject-a1-review-01.md` (incorporated).
+**Reviews:**
+- `docs/superpowers/reviews/2026-04-21-data-ingestion-qa-subproject-a1-review-01.md` (incorporated in rev 2)
+- `docs/superpowers/reviews/2026-04-21-data-ingestion-qa-subproject-a1-review-02.md` (incorporated in rev 3)
 
 ## 1. Purpose
 
@@ -212,11 +214,13 @@ The branching logic is value-based, not syntactic:
 5. Otherwise, the value has a non-zero fractional part: call `ClassifyDecimal`.
 
 Under this rule:
-- `"1.00"` → `StripTrailingZeros` → unscaled=1, scale=-2 → whole number → `ClassifyInteger(100)` → `INTEGER`. **Not** a decimal branch.
+- `"1.00"` → `StripTrailingZeros` starts at scale=2, strips two zeros → unscaled=1, scale=0 → whole number → `ClassifyInteger(1)` → `INTEGER`. **Not** a decimal branch.
+- `"100"` → `StripTrailingZeros` starts at scale=0, strips two zeros → unscaled=1, scale=-2 → whole number → big.Int = 1 × 10^2 = 100 → `ClassifyInteger(100)` → `INTEGER`.
 - `"1e0"` → unscaled=1, scale=0 → whole number → `INTEGER`.
 - `"10e-1"` → stripped → unscaled=1, scale=0 → `INTEGER`.
 - `"0.1"` → unscaled=1, scale=1 → fractional → `ClassifyDecimal` → `DOUBLE`.
-- `"3.14159265358979323846"` → 20-digit unscaled, scale=19 → fractional → `ClassifyDecimal` → `BIG_DECIMAL`.
+- `"3.141592653589793238"` (18 fractional digits) → unscaled = 19-digit integer, scale=18 → fractional → `ClassifyDecimal` → precision=19, exp=1 — fails DOUBLE (precision > 15), definite fit passes (precision ≤ 38, exp ≤ 20, scale ≤ 18) → `BIG_DECIMAL`.
+- `"3.14159265358979323846"` (20 fractional digits) → unscaled = 21-digit integer, scale=20 → fractional → `ClassifyDecimal` → scale=20 > 18 fails BIG_DECIMAL's scale bound (both definite and loose) → `UNBOUND_DECIMAL`.
 
 No `PromoteToScope` call anywhere. No `float64` fallback. No `WalkConfig.IntScope` / `DecimalScope` fields — those configurations disappear with BYTE/SHORT/FLOAT.
 
@@ -370,21 +374,23 @@ Input `Decimal` (assume already `StripTrailingZeros`'d and fractional — whole 
 |---|---|---|---|
 | `"0.1"` | 1 / 1 | 1 / 0 | `DOUBLE` |
 | `"1.5"` | 15 / 1 | 2 / 1 | `DOUBLE` |
-| `"0.123456789012345"` | ... / 15 | 15 / 0 | `DOUBLE` (precision boundary: == 15) |
-| `"0.1234567890123456"` | ... / 16 | 16 / 0 | `BIG_DECIMAL` (precision > 15) |
-| `"3.14159265358979323846"` | 20-digit / 19 | 20 / 1 | `BIG_DECIMAL` |
-| `"1e-400"` | 1 / 400 | 1 / -399 | `UNBOUND_DECIMAL` (scale exceeds BIG_DECIMAL 18-max *and* DOUBLE 292-max) |
-| `"1e400"` | 1 / -400 | 1 / 401 | `UNBOUND_DECIMAL` (exp way past DOUBLE and BIG_DECIMAL loose) |
+| `"0.123456789012345"` (15 fractional) | 15-digit / 15 | 15 / 0 | `DOUBLE` (precision boundary: == 15) |
+| `"0.1234567890123456"` (16 fractional) | 16-digit / 16 | 16 / 0 | `BIG_DECIMAL` (precision > 15, scale ≤ 18) |
+| `"3.141592653589793238"` (18 fractional) | 19-digit / 18 | 19 / 1 | `BIG_DECIMAL` (definite fit: precision ≤ 38, exp ≤ 20, scale ≤ 18) |
+| `"3.14159265358979323846"` (20 fractional) | 21-digit / 20 | 21 / 1 | `UNBOUND_DECIMAL` (scale=20 > 18 — both definite and loose BIG_DECIMAL fits require scale ≤ 18) |
+| `"1e-400"` | 1 / 400 | 1 / -399 | `UNBOUND_DECIMAL` (scale=400 exceeds DOUBLE 292-max *and* BIG_DECIMAL 18-max) |
+| `"1e400"` | 1 / -400 | 1 / 401 | `UNBOUND_DECIMAL` (exp=401 way past DOUBLE and BIG_DECIMAL loose exp=21) |
 
-Boundary tests for the definite/loose `BIG_DECIMAL` fit:
+Boundary tests for the definite/loose `BIG_DECIMAL` fit (concrete values so the "is this combination even possible?" question is moot):
 
-| Case | Expected |
-|---|---|
-| 38-digit unscaled, scale=18, exp=20 → definite fit | `BIG_DECIMAL` |
-| 38-digit unscaled, scale=18, exp > 20 | Loose test: precision 38 ≤ 39, exp > 21 → `UNBOUND_DECIMAL` (exp fails loose) |
-| 39-digit unscaled, scale=18, exp=21, `SetScale(18).Unscaled().IsInt128()` passes | `BIG_DECIMAL` |
-| 39-digit unscaled, scale=18, exp=21, `SetScale(18).Unscaled().IsInt128()` fails | `UNBOUND_DECIMAL` |
-| 40-digit unscaled anywhere | `UNBOUND_DECIMAL` (precision exceeds loose 39) |
+| Specific input | Expected | Why |
+|---|---|---|
+| unscaled = `10^37` (38 digits), scale=18 | `BIG_DECIMAL` | precision=38, exp=20, scale=18 — definite fit |
+| unscaled = `2^127 - 1` (39 digits), scale=18, `IsInt128()` → true | `BIG_DECIMAL` | precision=39, exp=21, scale=18 — loose fit: Int128 check passes |
+| unscaled = `2^127` (39 digits), scale=18, `IsInt128()` → false | `UNBOUND_DECIMAL` | loose fails Int128 |
+| unscaled = `10^39` (40 digits), scale=18 | `UNBOUND_DECIMAL` | precision exceeds loose cap 39 |
+| unscaled = `1`, scale=-22 (exp=23) | `UNBOUND_DECIMAL` | both definite (exp > 20) and loose (exp > 21) fail on exp |
+| unscaled = `10^37` (38 digits), scale=19 | `UNBOUND_DECIMAL` | precision=38, scale=19 > 18 — scale bound fails |
 
 ### 6.4 `CollapseNumeric` tests
 
@@ -431,7 +437,8 @@ Lattice subset for the remaining DataTypes, from `DataType.kt:239-272` minus dro
 
 ### 6.7 Walker integration tests (`walker_test.go` additions)
 
-- `"3.14159265358979323846"` → `BIG_DECIMAL`. *(Regression: current code returns `DOUBLE`.)*
+- `"3.141592653589793238"` (18 fractional digits, JSON number) → `BIG_DECIMAL`. *(Regression: current code returns `DOUBLE`.)*
+- `"3.14159265358979323846"` (20 fractional digits, JSON number) → `UNBOUND_DECIMAL`. *(Regression: current code returns `DOUBLE` via `strconv.ParseFloat` silent rounding.)*
 - `"42"` (unquoted, JSON number) → `INTEGER`.
 - `"9223372036854775808"` (2^63) → `BIG_INTEGER`.
 - `"1e400"` → `UNBOUND_DECIMAL`.
@@ -454,9 +461,12 @@ Lattice subset for the remaining DataTypes, from `DataType.kt:239-272` minus dro
 - CloudEvent payload with `{"x": 12345678901234567890}` (exceeds int64):
   - Before fix: decoded as `float64`, loss of precision.
   - After fix: preserved; walker classifies as `BIG_INTEGER` or `UNBOUND_INTEGER` depending on Int128 fit.
-- CloudEvent payload with `{"x": "3.14159265358979323846"}` (decimal literal, 20 digits):
+- CloudEvent payload with `{"x": 3.141592653589793238}` (unquoted JSON number, 18 fractional digits):
   - Before fix: decoded as `float64`, truncated to ~15 digits.
   - After fix: preserved; walker classifies as `BIG_DECIMAL`.
+- CloudEvent payload with `{"x": 3.14159265358979323846}` (unquoted JSON number, 20 fractional digits):
+  - Before fix: decoded as `float64`, truncated to ~15 digits.
+  - After fix: preserved; walker classifies as `UNBOUND_DECIMAL` (scale=20 exceeds BIG_DECIMAL's scale-18 bound).
 
 ### 6.9 Validation tests (`validate_test.go` additions)
 
@@ -493,6 +503,7 @@ Each step is a RED/GREEN TDD cycle. Each step ends with a commit. The PR assembl
 
 - **Walker behavior change visible to API clients.** A value previously classified `DOUBLE` may now classify `BIG_DECIMAL` or `INTEGER` (the latter for `"1.0"`-style inputs under value-based classification). This is intentional and documented; existing integration tests may need updates. Audit `internal/e2e/`, `plugins/*/conformance_test.go`, `e2e/parity/`, and `test/recon/` during implementation.
 - **Asymmetric validation breaks clients that relied on lenient numeric matching.** `13.111` against an `INTEGER` schema previously validated; now rejected. Intentional, aligns with Cyoda Cloud. The old lenient behavior was a latent bug (silent precision loss); the rejection is correct. Release notes must call this out.
+- **A.1 ships independently of A.2** (decided). A.2 adds the extension-via-widen behavior at `ChangeLevel != ""` but does not soften A.1's strict-validate rejection at `ChangeLevel = ""` — a decimal value against an `INTEGER` schema stays rejected at strict validate regardless of A.2. Bundling therefore buys nothing for the strict-validate case, and blocking A.1 on A.2's larger scope (generator infrastructure, property tests, Axis-2 matrix) would delay the correctness fix without mitigating the client-visible behavior change. Release notes accompany A.1 to flag the intended behavior shift.
 - **DataType enum value removal is a cyoda-go-internal change only.** No external consumers of the module (confirmed). Enum-iota renumbering affects any test that pattern-matches on integer DataType values rather than constant names; audit at step 3.
 - **`math/big.Int` performance.** Not a concern for classification (one parse + one envelope check per value). Would be a concern if we did arithmetic — we don't.
 - **No library ≠ no bugs.** Hand-rolled `Decimal` must have exhaustive test coverage on parse edge cases (leading zeros, scientific notation, negative zero, precision boundaries, signed-Int128 boundary). §6.1 lists the critical ones; implementation must add any additional boundary cases the hand-roll exposes.
@@ -505,7 +516,7 @@ Each step is a RED/GREEN TDD cycle. Each step ends with a commit. The PR assembl
 - All tests in §6 pass.
 - `go vet ./...`, `go test -race -short ./...` clean.
 - `docs/numeric-classification.md` committed. Documents: the policy, references to `docs/numeric-type-classification-analysis.md` as the raw-classifier source, the two cyoda-go divergences from §2.3 + §5.
-- At least one end-to-end ingestion test (existing `internal/e2e/model_extension_test.go` style) confirms a 20-digit decimal value round-trips as `BIG_DECIMAL` through the full HTTP stack.
+- At least one end-to-end ingestion test (existing `internal/e2e/model_extension_test.go` style) confirms an 18-fractional-digit decimal value round-trips as `BIG_DECIMAL` through the full HTTP stack, and a 20-fractional-digit decimal value round-trips as `UNBOUND_DECIMAL` (both diverging from the pre-A.1 `DOUBLE` classification).
 - At least one end-to-end gRPC test confirms a `9007199254740993` integer value round-trips as `LONG` through the CloudEvent dispatch (proves the UseNumber fix is live).
 - No regressions in existing tests that aren't justified by an intentional divergence documented in §8.
 
