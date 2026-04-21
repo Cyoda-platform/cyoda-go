@@ -208,3 +208,21 @@ func (d Decimal) SetScale(newScale int32) (Decimal, error) {
 	}
 	return Decimal{unscaled: q, scale: newScale}, nil
 }
+
+// int128Min = -2^127, int128Max = 2^127 - 1.
+// Pre-computed once at package init to avoid recomputing per call.
+var int128Min = new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 127))
+var int128Max = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 127), big.NewInt(1))
+
+// IsInt128 reports whether the unscaled value fits the signed Int128
+// range [-2^127, 2^127-1]. Scale is not considered.
+//
+// Implementation note: relies on pre-computed boundaries rather than
+// big.Int.BitLen() comparisons, because BitLen ignores sign and
+// BitLen(-2^127) == 128 — incorrectly excluding the valid minimum.
+func (d Decimal) IsInt128() bool {
+	if d.unscaled == nil {
+		return true
+	}
+	return d.unscaled.Cmp(int128Min) >= 0 && d.unscaled.Cmp(int128Max) <= 0
+}

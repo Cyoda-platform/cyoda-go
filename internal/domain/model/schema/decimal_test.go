@@ -242,3 +242,28 @@ func TestDecimal_SetScale(t *testing.T) {
 		}
 	})
 }
+
+func TestDecimal_IsInt128(t *testing.T) {
+	cases := []struct {
+		label    string
+		unscaled *big.Int
+		want     bool
+	}{
+		{"2^127-1", new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 127), big.NewInt(1)), true},
+		{"2^127", new(big.Int).Lsh(big.NewInt(1), 127), false},
+		{"-2^127", new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 127)), true},
+		{"-2^127-1", new(big.Int).Sub(new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 127)), big.NewInt(1)), false},
+		{"0", big.NewInt(0), true},
+		{"1", big.NewInt(1), true},
+		{"-1", big.NewInt(-1), true},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			d := Decimal{unscaled: c.unscaled, scale: 0}
+			got := d.IsInt128()
+			if got != c.want {
+				t.Errorf("IsInt128(%s): got %v, want %v", c.label, got, c.want)
+			}
+		})
+	}
+}
