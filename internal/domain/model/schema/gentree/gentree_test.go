@@ -6,6 +6,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 func TestDefaultConfigSane(t *testing.T) {
@@ -56,5 +57,22 @@ func TestGenValueSameSeedSameOutput(t *testing.T) {
 	b2, _ := json.Marshal(v2)
 	if string(b1) != string(b2) {
 		t.Fatalf("seed 99 produced divergent output:\n  v1=%s\n  v2=%s", b1, b2)
+	}
+}
+
+func TestGenModelNodeDeterministicMarshal(t *testing.T) {
+	cfg := DefaultConfig()
+	n1 := GenModelNode(NewRNG(11), cfg.MaxDepth, cfg.MaxWidth, cfg)
+	n2 := GenModelNode(NewRNG(11), cfg.MaxDepth, cfg.MaxWidth, cfg)
+	b1, err := schema.Marshal(n1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := schema.Marshal(n2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b1) != string(b2) {
+		t.Fatalf("seed 11 produced divergent ModelNode marshal:\n  n1=%s\n  n2=%s", b1, b2)
 	}
 }

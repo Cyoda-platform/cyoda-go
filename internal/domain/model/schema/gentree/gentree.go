@@ -165,6 +165,31 @@ func pickWeightedType(r *rand.Rand, w map[schema.DataType]float64) schema.DataTy
 	return keys[len(keys)-1]
 }
 
+// GenModelNode returns a random *schema.ModelNode at bounded depth.
+// Determinism discipline: sorted keys only; never range maps.
+func GenModelNode(r *rand.Rand, depth, maxWidth int, cfg GenConfig) *schema.ModelNode {
+	if depth <= 0 {
+		return schema.NewLeafNode(pickWeightedType(r, cfg.PrimitiveWeights))
+	}
+	w := cfg.KindWeights
+	total := w.Leaf + w.Object + w.Array
+	roll := r.Float64() * total
+	switch {
+	case roll < w.Leaf:
+		return schema.NewLeafNode(pickWeightedType(r, cfg.PrimitiveWeights))
+	case roll < w.Leaf+w.Object:
+		n := schema.NewObjectNode()
+		count := 1 + r.IntN(maxWidth)
+		for i := 0; i < count; i++ {
+			key := "f" + strconv.Itoa(i)
+			n.SetChild(key, GenModelNode(r, depth-1, maxWidth, cfg))
+		}
+		return n
+	default:
+		return schema.NewArrayNode(GenModelNode(r, depth-1, maxWidth, cfg))
+	}
+}
+
 func randString(r *rand.Rand, n int) string {
 	const alpha = "abcdefghijklmnopqrstuvwxyz"
 	b := make([]byte, n)
