@@ -1,6 +1,10 @@
 package gentree
 
-import "testing"
+import (
+	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
 
 func TestDefaultConfigSane(t *testing.T) {
 	cfg := DefaultConfig()
@@ -12,6 +16,9 @@ func TestDefaultConfigSane(t *testing.T) {
 	}
 	if cfg.Seed == 0 {
 		t.Fatalf("DefaultConfig.Seed=0, want non-zero default")
+	}
+	if cfg.TargetLevel == "" {
+		t.Fatalf("DefaultConfig.TargetLevel is empty; want a valid level (got %q, want e.g. %q)", cfg.TargetLevel, spi.ChangeLevelStructural)
 	}
 }
 

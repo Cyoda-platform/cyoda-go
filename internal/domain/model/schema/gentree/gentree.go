@@ -14,10 +14,12 @@ import (
 
 // GenConfig holds all configurable knobs for the random tree generator.
 type GenConfig struct {
-	Seed             int64
-	MaxDepth         int
-	MaxWidth         int
-	KindWeights      KindWeights
+	Seed        int64
+	MaxDepth    int
+	MaxWidth    int
+	KindWeights KindWeights
+	// PrimitiveWeights maps each DataType to a relative weight; the generator
+	// normalises them — values need not sum to 1.0.
 	PrimitiveWeights map[schema.DataType]float64
 	AllowNulls       bool
 	TargetLevel      spi.ChangeLevel
@@ -25,6 +27,7 @@ type GenConfig struct {
 
 // KindWeights controls the relative probability of generating a leaf,
 // object, or array node at each position in the tree.
+// KindWeights are relative; the generator normalises them — they need not sum to 1.0.
 type KindWeights struct {
 	Leaf, Object, Array float64
 }
@@ -49,7 +52,8 @@ func DefaultConfig() GenConfig {
 			schema.Boolean:        2,
 			schema.Null:           1,
 		},
-		AllowNulls: true,
+		AllowNulls:  true,
+		TargetLevel: spi.ChangeLevelStructural,
 	}
 }
 
