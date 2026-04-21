@@ -246,3 +246,61 @@ func (d Decimal) IsInt128() bool {
 	}
 	return d.unscaled.Cmp(int128Min) >= 0 && d.unscaled.Cmp(int128Max) <= 0
 }
+
+// Canonical returns a plain-decimal string representation (no
+// scientific notation). Round-trippable through ParseDecimal.
+func (d Decimal) Canonical() string {
+	if d.unscaled == nil || d.unscaled.Sign() == 0 {
+		return "0"
+	}
+	unscaledStr := d.unscaled.String() // includes leading "-" if negative
+	neg := false
+	digits := unscaledStr
+	if unscaledStr[0] == '-' {
+		neg = true
+		digits = unscaledStr[1:]
+	}
+	var result string
+	switch {
+	case d.scale == 0:
+		result = digits
+	case d.scale > 0:
+		// Insert decimal point (len(digits) - scale) from the left;
+		// pad with leading zeros if needed.
+		pad := int(d.scale) - len(digits)
+		if pad >= 0 {
+			result = "0." + strings.Repeat("0", pad) + digits
+		} else {
+			split := len(digits) - int(d.scale)
+			result = digits[:split] + "." + digits[split:]
+		}
+	case d.scale < 0:
+		// Append (|scale|) trailing zeros.
+		result = digits + strings.Repeat("0", int(-d.scale))
+	}
+	if neg {
+		result = "-" + result
+	}
+	return result
+}
+
+// MarshalJSON encodes the Decimal as a JSON number (not string) using
+// Canonical form.
+func (d Decimal) MarshalJSON() ([]byte, error) {
+	return []byte(d.Canonical()), nil
+}
+
+// UnmarshalJSON decodes a JSON number or string into the Decimal.
+func (d *Decimal) UnmarshalJSON(data []byte) error {
+	s := string(data)
+	// Strip surrounding quotes if present (accept both number and string forms).
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	parsed, err := ParseDecimal(s)
+	if err != nil {
+		return err
+	}
+	*d = parsed
+	return nil
+}

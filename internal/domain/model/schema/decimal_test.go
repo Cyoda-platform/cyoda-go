@@ -2,6 +2,7 @@ package schema
 
 import (
 	"math/big"
+	"strings"
 	"testing"
 )
 
@@ -268,6 +269,50 @@ func TestDecimal_Cmp(t *testing.T) {
 				t.Errorf("Cmp(%q, %q): got %d, want %d", c.a, c.b, got, c.want)
 			}
 		})
+	}
+}
+
+func TestDecimal_Canonical_RoundTrip(t *testing.T) {
+	inputs := []string{
+		"0", "1", "-1", "123.456", "-123.456", "0.1", "1.5", "1000",
+		"0.00000001", "123456789012345",
+	}
+	for _, in := range inputs {
+		t.Run(in, func(t *testing.T) {
+			d1, err := ParseDecimal(in)
+			if err != nil {
+				t.Fatalf("ParseDecimal: %v", err)
+			}
+			s := d1.Canonical()
+			if strings.ContainsAny(s, "eE") {
+				t.Errorf("Canonical contains scientific notation: %q", s)
+			}
+			d2, err := ParseDecimal(s)
+			if err != nil {
+				t.Fatalf("ParseDecimal(Canonical): %v", err)
+			}
+			if d1.Cmp(d2) != 0 {
+				t.Errorf("round-trip value mismatch: %q → %q", in, s)
+			}
+		})
+	}
+}
+
+func TestDecimal_JSON_RoundTrip(t *testing.T) {
+	d, err := ParseDecimal("3.14159265358979323846")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	raw, err := d.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var d2 Decimal
+	if err := d2.UnmarshalJSON(raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if d.Cmp(d2) != 0 {
+		t.Errorf("JSON round-trip value mismatch: %s -> %s", d.Canonical(), d2.Canonical())
 	}
 }
 
