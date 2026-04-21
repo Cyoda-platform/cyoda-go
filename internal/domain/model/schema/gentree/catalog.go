@@ -60,7 +60,7 @@ var Catalog = []Fixture{
 		Old:           schema.NewArrayNode(leaf(schema.Integer)),
 		Incoming:      []any{json.Number("1"), json.Number("9223372036854000000")},
 		Level:         spi.ChangeLevelType,
-		ExpectedKinds: []schema.SchemaOpKind{schema.KindBroadenType},
+		ExpectedKinds: []schema.SchemaOpKind{schema.KindAddArrayItemType},
 	},
 	{
 		Name:          "ArrayOfObjectAddFieldInElement",
@@ -341,7 +341,7 @@ var Catalog = []Fixture{
 		Old:           schema.NewArrayNode(leaf(schema.Integer)),
 		Incoming:      []any{json.Number("1.1"), json.Number("2.2"), json.Number("3.3")},
 		Level:         spi.ChangeLevelType,
-		ExpectedKinds: []schema.SchemaOpKind{schema.KindBroadenType},
+		ExpectedKinds: []schema.SchemaOpKind{schema.KindAddArrayItemType},
 	},
 
 	// 18. Nested object containing an array of objects.
