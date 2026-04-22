@@ -50,6 +50,14 @@ func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path s
 		return false, nil
 	}
 
+	// Kind mismatches are not additive — Diff already documents this contract.
+	// Silently accepting them would let Merge union TypeSets across kinds,
+	// producing e.g. an OBJECT node carrying primitive DataTypes, which
+	// violates the OBJECT-only-NULL invariant that Apply enforces at replay.
+	if existing.Kind() != incoming.Kind() {
+		return false, fmt.Errorf("kind mismatch at %q: %s vs %s", path, existing.Kind(), incoming.Kind())
+	}
+
 	changed := false
 
 	// Check children: new fields in incoming that don't exist in existing
