@@ -257,6 +257,45 @@ func TestSQLite_ExtendSchema_SaveOnLock(t *testing.T) {
 	}
 }
 
+// TestSQLite_ExtendSchema_UpgradeFromPreBDeployment — asserts that
+// an existing sqlite database with a populated models.doc.schema and
+// an empty model_schema_extensions table opens cleanly under the
+// new log-based plugin. The first Get returns the base schema
+// verbatim (zero deltas ⇒ identity fold).
+//
+// The "pre-B deployment" scenario is simulated by calling Save() (which
+// writes a proper models row via the canonical marshal path) and NOT
+// calling ExtendSchema, so the model_schema_extensions table stays empty.
+func TestSQLite_ExtendSchema_UpgradeFromPreBDeployment(t *testing.T) {
+	fx := newSQLiteFixture(t)
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	baseSchema := []byte(`{"type":"object","pre_b":true}`)
+
+	// Seed a pre-B model row: populated doc.schema, no extension rows.
+	fx.SaveModel(t, ref, baseSchema)
+
+	// Confirm the extension log is empty for this (tenant, model, version).
+	var count int
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&count); err != nil {
+		t.Fatalf("count extension rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("pre-B fixture has %d extension rows, want 0", count)
+	}
+
+	// Get returns the base schema verbatim (zero deltas ⇒ identity fold).
+	desc, err := fx.store.Get(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("Get on pre-B model: %v", err)
+	}
+	if !bytes.Equal(desc.Schema, baseSchema) {
+		t.Errorf("pre-B Get returned %q, want verbatim %q", desc.Schema, baseSchema)
+	}
+}
+
 // TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint — §5.3 asymmetry.
 // Unlock clears the extension log wholesale (Task 18) but MUST NOT write
 // a savepoint. In Task 17 we assert the weaker property: Unlock does not
