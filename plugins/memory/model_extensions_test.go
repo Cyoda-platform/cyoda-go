@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,6 +249,83 @@ func TestMemory_ExtendSchema_RejectionLeavesDescriptorUnmutated(t *testing.T) {
 	}
 	if !bytes.Equal(beforeBytes, after.Schema) {
 		t.Errorf("schema mutated on rejection: before=%q after=%q", beforeBytes, after.Schema)
+	}
+}
+
+// TestMemory_ExtendSchema_ConvergenceUnderConcurrency asserts B-I7
+// for memory: N goroutines extending the same model concurrently
+// produce a final schema identical to a single-goroutine replay of
+// the same deltas in any serial order (by A.2's I2 commutativity).
+// The assertion is on state equivalence across orderings, not on
+// "no torn writes" — which would be circular given the mutex.
+func TestMemory_ExtendSchema_ConvergenceUnderConcurrency(t *testing.T) {
+	const N = 8
+
+	// sortedApply represents "schema" as a sorted concatenation of
+	// delta bytes so the result is commutative under set-union.
+	sortedApply := func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		m := map[string]struct{}{}
+		for _, chunk := range bytes.Split(base, []byte{'\n'}) {
+			if len(chunk) > 0 {
+				m[string(chunk)] = struct{}{}
+			}
+		}
+		m[string(delta)] = struct{}{}
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return []byte(strings.Join(keys, "\n")), nil
+	}
+
+	// Build expected: single-goroutine serial replay of deltas.
+	deltas := make([]spi.SchemaDelta, N)
+	for i := 0; i < N; i++ {
+		deltas[i] = spi.SchemaDelta(fmt.Sprintf("d%02d", i))
+	}
+	expected := []byte{}
+	for _, d := range deltas {
+		v, _ := sortedApply(expected, d)
+		expected = v
+	}
+
+	// Run N goroutines against a fresh factory.
+	f := memory.NewStoreFactory(memory.WithApplyFunc(sortedApply))
+	defer f.Close()
+	ctx := extTestCtx("t1")
+	ms, _ := f.ModelStore(ctx)
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	if err := ms.Save(ctx, &spi.ModelDescriptor{
+		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
+		Schema: []byte{}, UpdateDate: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			if err := ms.ExtendSchema(ctx, ref, deltas[i]); err != nil {
+				t.Errorf("goroutine %d ExtendSchema: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Read final state and compare to serial-replay expected.
+	got, err := ms.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Equal(got.Schema, expected) {
+		t.Errorf("concurrent final state != serial replay\n  got:  %q\n  want: %q", got.Schema, expected)
 	}
 }
 
