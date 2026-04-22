@@ -623,3 +623,40 @@ func TestExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
 		t.Errorf("cancelled ctx → non-ctx error; err = %v", err)
 	}
 }
+
+// TestExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical — B-I2 local.
+// Run the same 150-delta sequence twice: once with interval=64 (multiple
+// savepoints fire mid-log) and once with interval=1_000_000 (no savepoint
+// ever fires, pure delta replay). The savepoint row is an internal
+// optimisation; the fold observed by callers must be byte-identical
+// regardless.
+//
+// The two sub-runs share one PostgreSQL database. They run sequentially
+// and `newPGFixtureWithInterval` drops + re-migrates the schema on
+// construction, so the interval=64 fold is read before the second
+// fixture is built.
+func TestExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testing.T) {
+	a := newPGFixture(t) // default interval 64
+	a.store.applyFunc = setUnionApplyFunc
+	refA := spi.ModelRef{EntityName: "A", ModelVersion: "1"}
+	a.SaveModel(t, refA, []byte{})
+	for i := 0; i < 150; i++ {
+		_ = a.store.ExtendSchema(a.ctx, refA, spi.SchemaDelta(fmt.Sprintf(`"d%03d"`, i)))
+	}
+	got, _ := a.store.Get(a.ctx, refA)
+	gotSorted := sortNewlineTokens(got.Schema)
+
+	b := newPGFixtureWithInterval(t, 1_000_000)
+	b.store.applyFunc = setUnionApplyFunc
+	refB := spi.ModelRef{EntityName: "B", ModelVersion: "1"}
+	b.SaveModel(t, refB, []byte{})
+	for i := 0; i < 150; i++ {
+		_ = b.store.ExtendSchema(b.ctx, refB, spi.SchemaDelta(fmt.Sprintf(`"d%03d"`, i)))
+	}
+	want, _ := b.store.Get(b.ctx, refB)
+	wantSorted := sortNewlineTokens(want.Schema)
+
+	if !bytes.Equal(gotSorted, wantSorted) {
+		t.Errorf("fold with savepoints != fold without\n  with savepoints:    %q\n  without savepoints: %q", gotSorted, wantSorted)
+	}
+}
