@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +17,61 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
+
+// setUnionApplyFunc is an associative-commutative-idempotent apply used
+// by B-I7 and B-I2 tests. The "schema" representation is a JSON array of
+// unique string tokens, an ExtendSchema delta is a JSON-encoded string
+// token (e.g. `"d00"`), and fold = sorted union.
+//
+// The persistence layer stores delta and savepoint payloads as JSONB, so
+// both deltas and folded results must be valid JSON — hence the choice
+// of JSON array over a newline-joined byte blob. With this apply, any
+// interleaving/permutation of deltas yields the same fold, so any
+// divergence observed by the tests is attributable to the persistence
+// layer.
+func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	m := map[string]struct{}{}
+	if len(base) > 0 {
+		var existing []string
+		if err := json.Unmarshal(base, &existing); err != nil {
+			return nil, fmt.Errorf("setUnionApplyFunc: decode base %q: %w", base, err)
+		}
+		for _, tok := range existing {
+			m[tok] = struct{}{}
+		}
+	}
+	var tok string
+	if err := json.Unmarshal([]byte(delta), &tok); err != nil {
+		return nil, fmt.Errorf("setUnionApplyFunc: decode delta %q: %w", delta, err)
+	}
+	m[tok] = struct{}{}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return json.Marshal(keys)
+}
+
+// sortNewlineTokens canonicalises a set-union schema (JSON array of
+// strings, as produced by setUnionApplyFunc) so two folds produced under
+// different orderings (or with/without interior savepoints) can be
+// byte-compared. Decodes, sorts, and re-encodes.
+func sortNewlineTokens(b []byte) []byte {
+	if len(b) == 0 {
+		return []byte("[]")
+	}
+	var toks []string
+	if err := json.Unmarshal(b, &toks); err != nil {
+		// Fallback: plain newline-joined form (used in some error paths).
+		parts := strings.Split(string(b), "\n")
+		sort.Strings(parts)
+		return []byte(strings.Join(parts, "\n"))
+	}
+	sort.Strings(toks)
+	out, _ := json.Marshal(toks)
+	return out
+}
 
 // pgFixture is the internal-package fixture for modelStore tests that
 // need access to unexported methods (lastSavepointSeq, etc.) and to the
@@ -86,6 +144,71 @@ func newPGFixture(t *testing.T) *pgFixture {
 		ctx:      ctx,
 		tenantID: tenantID,
 		cfg:      store.cfg,
+	}
+}
+
+// newPGFixtureWithInterval constructs a fixture like newPGFixture but
+// with cfg.SchemaSavepointInterval overridden at factory-construction
+// time — used by B-I2 to compare interval=64 vs interval=1_000_000.
+func newPGFixtureWithInterval(t *testing.T, interval int) *pgFixture {
+	t.Helper()
+	dbURL := os.Getenv("CYODA_TEST_DB_URL")
+	if dbURL == "" {
+		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
+	}
+	poolCfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatalf("parse pool config: %v", err)
+	}
+	poolCfg.MaxConns = 5
+	poolCfg.MinConns = 0
+	poolCfg.MaxConnIdleTime = 60 * time.Second
+	poolCfg.HealthCheckPeriod = 24 * time.Hour
+
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	if err := dropSchema(pool); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	if err := Migrate(pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = dropSchema(pool) })
+
+	cfg := defaultStoreConfig()
+	cfg.SchemaSavepointInterval = interval
+	factory := newStoreFactoryWithConfig(pool, cfg)
+	factory.SetApplyFunc(fixtureApplyFunc())
+
+	tenantID := spi.TenantID("t1")
+	uc := &spi.UserContext{
+		UserID:   "test-user",
+		UserName: "Test User",
+		Tenant:   spi.Tenant{ID: tenantID, Name: string(tenantID)},
+		Roles:    []string{"USER"},
+	}
+	ctx := spi.WithUserContext(context.Background(), uc)
+
+	ms, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	store, ok := ms.(*modelStore)
+	if !ok {
+		t.Fatalf("ModelStore did not return *modelStore; got %T", ms)
+	}
+	return &pgFixture{
+		factory:  factory,
+		pool:     pool,
+		db:       pool,
+		store:    store,
+		ctx:      ctx,
+		tenantID: tenantID,
+		cfg:      cfg,
 	}
 }
 
@@ -406,5 +529,70 @@ func TestExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	if seqAfterUnlock > seqAfterLock {
 		t.Errorf("Unlock wrote a new savepoint: before=%d after=%d (save-on-unlock is deliberately omitted)",
 			seqAfterLock, seqAfterUnlock)
+	}
+}
+
+// TestExtendSchema_CommutativeAppend_ConvergesUnderConcurrency — B-I7.
+// N goroutines extend the same model concurrently. Postgres has no retry
+// loop (REPEATABLE READ gives no schema-write conflict surface), so all
+// writers are expected to commit. The set-union apply is associative,
+// commutative, and idempotent — so the fold must equal the fold of any
+// serial replay regardless of interleaving. The test also asserts that
+// exactly N delta rows exist: no writer was silently dropped.
+//
+// The fixture wires its default applyFunc at construction and the factory's
+// SetApplyFunc panics on re-entry, so we swap the store-level applyFunc
+// directly. This is the same effective wiring the production path
+// resolves: modelStore holds the applyFunc that foldLocked invokes.
+func TestExtendSchema_CommutativeAppend_ConvergesUnderConcurrency(t *testing.T) {
+	const N = 8
+	fx := newPGFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+
+	deltas := make([]string, N)
+	for i := 0; i < N; i++ {
+		deltas[i] = fmt.Sprintf(`"d%02d"`, i)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(deltas[i]))
+			if err != nil {
+				t.Errorf("ExtendSchema #%d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	expected := []byte{}
+	for _, d := range deltas {
+		expected, _ = setUnionApplyFunc(expected, spi.SchemaDelta(d))
+	}
+	expectedSorted := sortNewlineTokens(expected)
+
+	got, err := fx.store.Get(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	gotSorted := sortNewlineTokens(got.Schema)
+	if !bytes.Equal(gotSorted, expectedSorted) {
+		t.Errorf("concurrent fold != serial-replay fold\n  got:  %q\n  want: %q", gotSorted, expectedSorted)
+	}
+
+	var count int
+	if err := fx.db.QueryRow(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id=$1 AND model_name=$2 AND model_version=$3 AND kind='delta'`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&count); err != nil {
+		t.Fatalf("delta count query: %v", err)
+	}
+	if count != N {
+		t.Errorf("delta row count = %d, want %d (all writers must commit)", count, N)
 	}
 }
