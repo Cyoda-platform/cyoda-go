@@ -10,6 +10,27 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+// lastSavepointSeq returns the seq of the most-recent savepoint row
+// for ref, or 0 if no savepoint rows exist. Used by ExtendSchema to
+// drive the savepoint trigger without a separate round-trip at
+// extension time.
+func (s *modelStore) lastSavepointSeq(ctx context.Context, ref spi.ModelRef) (int64, error) {
+	var seq int64
+	err := s.q.QueryRow(ctx, `
+		SELECT seq FROM model_schema_extensions
+		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND kind = 'savepoint'
+		ORDER BY seq DESC LIMIT 1`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&seq)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, nil
+	case err != nil:
+		return 0, fmt.Errorf("lastSavepointSeq: %w", err)
+	default:
+		return seq, nil
+	}
+}
+
 // foldLocked returns the fully-folded schema for ref. It starts from
 // the most recent savepoint row (if any), else from the caller-supplied
 // baseSchema (models.doc.schema), and applies every subsequent delta
