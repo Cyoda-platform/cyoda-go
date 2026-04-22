@@ -15,6 +15,7 @@ type modelStore struct {
 	db        *sql.DB
 	tenantID  spi.TenantID
 	applyFunc ApplyFunc
+	cfg       config // plugin config — read SchemaSavepointInterval from here
 }
 
 // modelDoc is the JSON representation stored in the doc BLOB column.
@@ -117,8 +118,117 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	return nil
 }
 
+// Lock transitions the model to the LOCKED state and, on the UNLOCKED→LOCKED
+// edge, atomically writes a savepoint row capturing the current fold. This
+// materialises the ExtendSchema delta log into a single payload so downstream
+// Get calls do not replay a growing log.
+//
+// Idempotence: calling Lock on an already-locked model is a no-op — no
+// second savepoint is written.
+//
+// De-dup: if no new deltas have landed since the most recent savepoint
+// (or there is no base schema and no deltas at all), the savepoint is
+// skipped — there is nothing new to persist.
+//
+// Asymmetry with Unlock: Unlock does NOT write a savepoint. The operator
+// contract drains the extension log wholesale on unlock (Task 18), so any
+// savepoint written there would be load-bearing-free noise.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
-	return s.updateStateField(ctx, modelRef, spi.ModelLocked, "lock")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return classifyError(fmt.Errorf("begin lock tx: %w", err))
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Read current doc inside the tx.
+	var raw []byte
+	err = tx.QueryRowContext(ctx,
+		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("model %s not found: %w", modelRef, spi.ErrNotFound)
+		}
+		return fmt.Errorf("failed to lock model %s: %w", modelRef, classifyError(err))
+	}
+
+	var doc modelDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("failed to unmarshal model doc: %w", err)
+	}
+
+	// Idempotence: already-locked is a no-op — no second savepoint.
+	if doc.State == spi.ModelLocked {
+		if err := tx.Commit(); err != nil {
+			return classifyError(fmt.Errorf("commit lock (no-op): %w", err))
+		}
+		return nil
+	}
+
+	// Flip state to LOCKED.
+	doc.State = spi.ModelLocked
+	updated, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal model doc: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE models SET doc = jsonb(?) WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		updated, string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion); err != nil {
+		return fmt.Errorf("failed to lock model %s: %w", modelRef, classifyError(err))
+	}
+
+	// Decide whether to write a savepoint. Skip when there's nothing new
+	// to persist beyond the most recent savepoint.
+	lastSP, err := s.lastSavepointSeqInTx(ctx, tx, modelRef)
+	if err != nil {
+		return classifyError(err)
+	}
+	var maxSeq int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&maxSeq); err != nil {
+		return classifyError(fmt.Errorf("lock: max seq lookup: %w", err))
+	}
+
+	// De-dup: the last savepoint already reflects the current state.
+	// This also covers the "no base, no deltas" case (both are 0).
+	if maxSeq == lastSP {
+		if err := tx.Commit(); err != nil {
+			return classifyError(fmt.Errorf("commit lock: %w", err))
+		}
+		return nil
+	}
+
+	folded, err := s.foldLockedInTx(ctx, tx, modelRef, doc.Schema)
+	if err != nil {
+		return classifyError(fmt.Errorf("lock fold for %s: %w", modelRef, err))
+	}
+	// If the fold yields nothing meaningful (no base and no deltas
+	// resolvable into bytes), skip — there is nothing to persist.
+	if len(folded) == 0 {
+		if err := tx.Commit(); err != nil {
+			return classifyError(fmt.Errorf("commit lock: %w", err))
+		}
+		return nil
+	}
+
+	txID := ""
+	if sptx := spi.GetTransaction(ctx); sptx != nil {
+		txID = sptx.ID
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO model_schema_extensions
+		    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
+		 VALUES (?, ?, ?, ?, 'savepoint', ?, ?)`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, maxSeq+1, folded, txID); err != nil {
+		return classifyError(fmt.Errorf("lock savepoint for %s: %w", modelRef, err))
+	}
+
+	if err := tx.Commit(); err != nil {
+		return classifyError(fmt.Errorf("commit lock: %w", err))
+	}
+	return nil
 }
 
 func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
@@ -273,13 +383,12 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Verify the model exists and capture base schema (used by Task 17's
-	// savepoint-fold branch; silenced for Task 16).
+	// Verify the model exists and capture base schema (used by the
+	// savepoint-fold branch below).
 	base, err := s.baseSchemaInTx(ctx, tx, ref)
 	if err != nil {
 		return err
 	}
-	_ = base
 
 	// Determine next seq for this (tenant, model, version).
 	var nextSeq int64
@@ -301,6 +410,30 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 		 VALUES (?, ?, ?, ?, 'delta', ?, ?)`,
 		string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq, []byte(delta), txID); err != nil {
 		return classifyError(fmt.Errorf("append delta for %s: %w", ref, err))
+	}
+
+	// Savepoint trigger. Fires when (nextSeq - lastSavepointSeq) crosses
+	// the configured interval. The savepoint row sits at nextSeq+1 so it
+	// clusters immediately after the delta it is folding, avoiding a PK
+	// collision on (tenant, name, version, seq).
+	if s.cfg.SchemaSavepointInterval > 0 {
+		lastSP, err := s.lastSavepointSeqInTx(ctx, tx, ref)
+		if err != nil {
+			return classifyError(err)
+		}
+		if nextSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
+			folded, err := s.foldLockedInTx(ctx, tx, ref, base)
+			if err != nil {
+				return classifyError(fmt.Errorf("savepoint fold for %s (seq=%d): %w", ref, nextSeq, err))
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO model_schema_extensions
+				    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
+				 VALUES (?, ?, ?, ?, 'savepoint', ?, ?)`,
+				string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq+1, folded, txID); err != nil {
+				return classifyError(fmt.Errorf("append savepoint for %s (seq=%d): %w", ref, nextSeq+1, err))
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

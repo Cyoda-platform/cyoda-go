@@ -13,6 +13,14 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+// withSavepointInterval is a test-only Option that overrides
+// cfg.SchemaSavepointInterval on the factory. Production wiring reads
+// this from CYODA_SCHEMA_SAVEPOINT_INTERVAL via parseConfig; tests use
+// this option to exercise the savepoint trigger deterministically.
+func withSavepointInterval(n int) Option {
+	return func(f *StoreFactory) { f.cfg.SchemaSavepointInterval = n }
+}
+
 // setUnionApplyFunc is an associative-commutative-idempotent apply used
 // by Sub-project B tests. The "schema" representation is a JSON array of
 // unique string tokens, an ExtendSchema delta is a JSON-encoded string
@@ -60,9 +68,22 @@ type sqliteFixture struct {
 }
 
 func newSQLiteFixture(t *testing.T) *sqliteFixture {
+	return newSQLiteFixtureWithInterval(t, 0)
+}
+
+// newSQLiteFixtureWithInterval constructs a fixture like newSQLiteFixture
+// but with cfg.SchemaSavepointInterval overridden at factory-construction
+// time — used by B-I3/B-I4 tests that need a small interval to exercise
+// the savepoint trigger deterministically. Passing interval=0 means "use
+// the factory default" (64).
+func newSQLiteFixtureWithInterval(t *testing.T, interval int) *sqliteFixture {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	f, err := NewStoreFactoryForTest(context.Background(), dbPath)
+	var opts []Option
+	if interval > 0 {
+		opts = append(opts, withSavepointInterval(interval))
+	}
+	f, err := NewStoreFactoryForTest(context.Background(), dbPath, opts...)
 	if err != nil {
 		t.Fatalf("NewStoreFactoryForTest: %v", err)
 	}
@@ -179,5 +200,87 @@ func TestSQLite_foldLocked_MultipleDeltas_AppliesInOrder(t *testing.T) {
 	expected, _ = setUnionApplyFunc(expected, spi.SchemaDelta(`"d03"`))
 	if !bytes.Equal(got, expected) {
 		t.Errorf("foldLocked = %q, want %q", got, expected)
+	}
+}
+
+// TestSQLite_ExtendSchema_SavepointAtConfigInterval — B-I4 for sqlite.
+// With interval=10, the 10th ExtendSchema MUST write a savepoint row.
+// (The savepoint is written at nextSeq+1 so its seq = 11 in that run.)
+func TestSQLite_ExtendSchema_SavepointAtConfigInterval(t *testing.T) {
+	fx := newSQLiteFixtureWithInterval(t, 10)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+
+	for i := 0; i < 10; i++ {
+		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i))); err != nil {
+			t.Fatalf("ExtendSchema %d: %v", i, err)
+		}
+	}
+
+	seq, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq: %v", err)
+	}
+	if seq == 0 {
+		t.Errorf("savepoint seq after 10 deltas with interval=10 = 0, want nonzero")
+	}
+}
+
+// TestSQLite_ExtendSchema_SaveOnLock — B-I3 for sqlite.
+// Lock on a model with pending (unfolded) deltas MUST write a savepoint.
+func TestSQLite_ExtendSchema_SaveOnLock(t *testing.T) {
+	fx := newSQLiteFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+	if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"d1"`)); err != nil {
+		t.Fatalf("ExtendSchema: %v", err)
+	}
+
+	before, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq pre-lock: %v", err)
+	}
+	if before != 0 {
+		t.Fatalf("pre-lock lastSavepointSeq = %d, want 0", before)
+	}
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	after, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq post-lock: %v", err)
+	}
+	if after == 0 {
+		t.Error("post-lock lastSavepointSeq = 0, want nonzero")
+	}
+}
+
+// TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint — §5.3 asymmetry.
+// Unlock clears the extension log wholesale (Task 18) but MUST NOT write
+// a savepoint. In Task 17 we assert the weaker property: Unlock does not
+// add a new savepoint beyond whatever Lock already wrote.
+func TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
+	fx := newSQLiteFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`["base"]`))
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	beforeUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq pre-unlock: %v", err)
+	}
+	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	afterUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq post-unlock: %v", err)
+	}
+	if beforeUnlock != afterUnlock {
+		t.Errorf("Unlock mutated lastSavepointSeq: before=%d after=%d", beforeUnlock, afterUnlock)
 	}
 }
