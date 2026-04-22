@@ -18,6 +18,7 @@ type modelStore struct {
 	q         Querier
 	tenantID  spi.TenantID
 	applyFunc ApplyFunc // optional; required when the extension log is non-empty
+	cfg       config    // plugin config — read SchemaSavepointInterval from here
 }
 
 // modelDoc is the JSON representation stored in the doc JSONB column.
@@ -243,15 +244,19 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	}, nil
 }
 
-// ExtendSchema appends a delta row to model_schema_extensions. If the
-// resulting seq is a multiple of 64, a savepoint row (the fully-folded
-// schema as of the new seq) is inserted in the same transaction so
-// a future Get can start from there rather than replaying the entire
-// log. Empty or nil deltas are a no-op.
+// ExtendSchema appends a delta row to model_schema_extensions. When
+// the count of deltas since the most recent savepoint reaches the
+// configured interval (cfg.SchemaSavepointInterval, default 64),
+// a savepoint row holding the fully-folded schema is inserted in
+// the same transaction so future Gets can start from there rather
+// than replaying the entire log.
 //
-// The insert participates in the ambient entity transaction via the
-// plugin's Querier resolution (ctxQuerier), so visibility is
-// commit-bound.
+// Under REPEATABLE READ there is no schema-write conflict surface:
+// concurrent writers both succeed, and A.2 I2 (commutativity)
+// guarantees the fold is equivalent regardless of interleaving.
+// No retry wrapper.
+//
+// Empty or nil deltas are a no-op.
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	if len(delta) == 0 {
 		return nil
@@ -273,7 +278,11 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		return fmt.Errorf("failed to append schema delta for %s: %w", ref, err)
 	}
 
-	if newSeq%64 == 0 {
+	lastSP, err := s.lastSavepointSeq(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("savepoint trigger lookup for %s: %w", ref, err)
+	}
+	if newSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
 		base, err := s.baseSchema(ctx, ref)
 		if err != nil {
 			return fmt.Errorf("savepoint base-schema read for %s: %w", ref, err)

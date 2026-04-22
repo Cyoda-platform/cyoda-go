@@ -137,11 +137,12 @@ func newPool(ctx context.Context, cfg config) (*pgxpool.Pool, error) {
 // parseConfig(getenv). Tests can construct a DBConfig, convert to config,
 // and call NewPool as a thin wrapper.
 type DBConfig struct {
-	URL             string
-	MaxConns        int32
-	MinConns        int32
-	MaxConnIdleTime string
-	AutoMigrate     bool
+	URL                     string
+	MaxConns                int32
+	MinConns                int32
+	MaxConnIdleTime         string
+	AutoMigrate             bool
+	SchemaSavepointInterval int // 0 falls back to the internal default (64)
 }
 
 func (d DBConfig) toInternal() config {
@@ -149,9 +150,14 @@ func (d DBConfig) toInternal() config {
 	if idle == 0 {
 		idle = 5 * time.Minute
 	}
+	interval := d.SchemaSavepointInterval
+	if interval < 1 {
+		interval = 64
+	}
 	return config{
 		URL: d.URL, MaxConns: d.MaxConns, MinConns: d.MinConns,
 		MaxConnIdleTime: idle, AutoMigrate: d.AutoMigrate,
+		SchemaSavepointInterval: interval,
 	}
 }
 
