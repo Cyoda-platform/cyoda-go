@@ -431,8 +431,12 @@ func TestEntityLifecycle_PreservesLargeIntPrecision(t *testing.T) {
 	const model = "e2e-precision-bigint"
 
 	// Sample data must include the `id` field so the inferred schema
-	// accepts it on entity create (unknown fields are rejected).
-	sample := `{"id":1,"name":"sample","amount":50,"status":"new"}`
+	// accepts it on entity create (unknown fields are rejected). The
+	// seed value 9007199254740993 exceeds 2^31 so the inferred schema
+	// is LEAF(LONG), not LEAF(INTEGER); validation under strict
+	// ChangeLevel accepts same-type LONG values without requiring
+	// schema extension.
+	sample := `{"id":9007199254740993,"name":"sample","amount":50,"status":"new"}`
 	importPath := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/%d", model, 1)
 	if r := doAuth(t, http.MethodPost, importPath, sample); r.StatusCode != http.StatusOK {
 		t.Fatalf("import model: %d: %s", r.StatusCode, readBody(t, r))
