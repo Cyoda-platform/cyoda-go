@@ -294,11 +294,12 @@ func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
 // given path. Intended for test use only.
 func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) (*StoreFactory, error) {
 	cfg := config{
-		Path:            dbPath,
-		AutoMigrate:     true,
-		BusyTimeout:     5 * time.Second,
-		CacheSizeKiB:    64000,
-		SearchScanLimit: 100_000,
+		Path:                   dbPath,
+		AutoMigrate:            true,
+		BusyTimeout:            5 * time.Second,
+		CacheSizeKiB:           64000,
+		SearchScanLimit:        100_000,
+		SchemaExtendMaxRetries: 8,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {
@@ -312,11 +313,12 @@ func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) 
 // limit for testing scan budget exhaustion. Intended for test use only.
 func NewStoreFactoryForTestWithScanLimit(ctx context.Context, dbPath string, scanLimit int, opts ...Option) (*StoreFactory, error) {
 	cfg := config{
-		Path:            dbPath,
-		AutoMigrate:     true,
-		BusyTimeout:     5 * time.Second,
-		CacheSizeKiB:    64000,
-		SearchScanLimit: scanLimit,
+		Path:                   dbPath,
+		AutoMigrate:            true,
+		BusyTimeout:            5 * time.Second,
+		CacheSizeKiB:           64000,
+		SearchScanLimit:        scanLimit,
+		SchemaExtendMaxRetries: 8,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {

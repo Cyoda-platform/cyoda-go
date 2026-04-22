@@ -372,8 +372,38 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	if s.applyFunc == nil {
 		return fmt.Errorf("sqlite: ApplyFunc not wired (call WithApplyFunc when creating StoreFactory)")
 	}
-	// Task 19 will add SQLITE_BUSY retry; Task 16 does a single attempt.
-	return s.extendSchemaAttempt(ctx, ref, delta)
+	// Transparent retry loop (B-I7 / §4.2 / §5.3).
+	//
+	// SQLite's per-connection busy_timeout already absorbs most
+	// contention between concurrent writers; this loop handles the
+	// residual SQLITE_BUSY that surfaces once the timeout is exceeded
+	// (classifyError maps SQLITE_BUSY → spi.ErrConflict).
+	//
+	// Ctx semantics: cancellation observed between attempts returns
+	// ctx.Err() wrapped with the attempt count — not ErrRetryExhausted.
+	// Cancellation observed mid-attempt bubbles up from the driver; it
+	// is not spi.ErrConflict, so the loop exits on the first iteration.
+	// Only conflict-classified errors are retried. Budget exhaustion
+	// without cancellation returns spi.ErrRetryExhausted wrapping the
+	// last conflict.
+	var lastErr error
+	for attempt := 1; attempt <= s.cfg.SchemaExtendMaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("ExtendSchema cancelled after %d attempts: %w", attempt-1, err)
+		}
+		err := s.extendSchemaAttempt(ctx, ref, delta)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, spi.ErrConflict) {
+			// Non-retryable (including ctx-cancellation bubbling up
+			// from the driver mid-attempt). Surface immediately.
+			return err
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("%w after %d attempts: %w",
+		spi.ErrRetryExhausted, s.cfg.SchemaExtendMaxRetries, lastErr)
 }
 
 func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {

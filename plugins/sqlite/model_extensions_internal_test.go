@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -321,5 +323,76 @@ func TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	}
 	if beforeUnlock != afterUnlock {
 		t.Errorf("Unlock mutated lastSavepointSeq: before=%d after=%d", beforeUnlock, afterUnlock)
+	}
+}
+
+// TestSQLite_ExtendSchema_TransparentRetry_ConvergesUnderBusy — B-I7 for
+// sqlite. N goroutines extending concurrently all commit within the retry
+// budget. Depending on SQLite's busy_timeout absorbing contention, the
+// retry wrapper may or may not fire; either way all N deltas must land.
+func TestSQLite_ExtendSchema_TransparentRetry_ConvergesUnderBusy(t *testing.T) {
+	const N = 8
+	fx := newSQLiteFixture(t)
+	// NOTE: fx.factory.SetApplyFunc would panic (fixture already installed
+	// fixtureApplyFunc); override directly on the store instead.
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`[]`))
+
+	var wg sync.WaitGroup
+	errs := make([]error, N)
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			errs[i] = fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i)))
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("ExtendSchema #%d failed: %v", i, err)
+		}
+	}
+
+	// All N deltas landed. Scope to this tenant + model for defensive parity
+	// with the rest of the extension-table assertions in this file.
+	var count int
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'delta'`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion,
+	).Scan(&count); err != nil {
+		t.Fatalf("count delta rows: %v", err)
+	}
+	if count != N {
+		t.Errorf("delta row count = %d, want %d", count, N)
+	}
+}
+
+// TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr — §4.2.
+// Cancelling ctx before ExtendSchema must return context.Canceled
+// (wrapped) — not ErrRetryExhausted — since the retry loop checks
+// ctx.Err() at the top of each attempt.
+func TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
+	fx := newSQLiteFixture(t)
+	fx.store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`[]`))
+
+	ctx, cancel := context.WithCancel(fx.ctx)
+	cancel()
+
+	err := fx.store.ExtendSchema(ctx, ref, spi.SchemaDelta(`"d1"`))
+	if err == nil {
+		t.Fatal("ExtendSchema with cancelled ctx must fail")
+	}
+	if errors.Is(err, spi.ErrRetryExhausted) {
+		t.Errorf("cancelled ctx → ErrRetryExhausted (want ctx.Err()); err = %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled ctx → non-context error; err = %v", err)
 	}
 }
