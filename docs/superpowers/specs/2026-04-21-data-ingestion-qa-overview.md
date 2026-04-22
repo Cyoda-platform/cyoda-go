@@ -142,8 +142,14 @@ Invariants established by each sub-project. Later sub-projects inherit and must 
 | N-permutation invariance of extension sequence | A.2 | I5 — Permutation |
 | Every non-no-op Extend produces a non-nil Diff with in-catalog ops | A.2 | I6 — Extend-completeness |
 | `Extend` rejection does not mutate `old` in memory | A.2 | I7 — Atomicity (in-memory) |
-| TBD | B | Cross-plugin byte-identical fold |
-| TBD | B | Single-node cross-storage atomicity |
+| `schema.Marshal(Load(...))` byte-identical across plugins for identical history | B | B-I1 — Cross-plugin byte-identical fold |
+| Savepoint additions do not change the observable fold | B | B-I2 — Savepoint transparency |
+| Lock commits lock-state + savepoint atomically or neither | B | B-I3 — Save-on-lock atomicity |
+| Savepoint at (newSeq - lastSavepointSeq) >= interval, atomic with the triggering op | B | B-I4 — Save-on-size-threshold atomicity |
+| Extensions apply in commit order; fold is deterministic per history | B | B-I5 — Causal-order preservation |
+| Rejected `ExtendSchema` leaves no persisted trace across storage | B | B-I6 — Cross-storage atomicity on rejection |
+| Concurrent extensions converge to an order-independent final fold | B | B-I7 — Concurrent-extension convergence |
+| Local cache invalidation on commit — subsequent Gets see post-extension state | B | B-I8 — Local cache invalidation |
 | TBD | C | Cross-node schema consistency |
 | TBD | D | Error-surface determinism |
 
