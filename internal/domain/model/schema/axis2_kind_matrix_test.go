@@ -22,9 +22,9 @@ type axis2Cell struct {
 	SkipMsg string
 }
 
-// TrackingIssue references the polymorphic-slot tracking issue; filled
-// when GitHub issue is created (Task 14). Leave as placeholder until then.
-const polymorphicSlotIssue = "polymorphic-slot semantics pending — see issue #<N>"
+// polymorphicSlotIssue references the A.3 tracking issue for kind-conflict
+// (LEAF↔OBJECT, LEAF↔ARRAY, OBJECT↔ARRAY) Extend/Diff/Apply semantics.
+const polymorphicSlotIssue = "polymorphic-slot semantics pending — see issue #85"
 
 func TestAxis2KindMatrix(t *testing.T) {
 	leaf := func(dt schema.DataType) *schema.ModelNode { return schema.NewLeafNode(dt) }
