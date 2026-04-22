@@ -1,7 +1,7 @@
 # Sub-project B — Plugin Persistence + Fold Correctness
 
 **Date:** 2026-04-21 (rev 2 on 2026-04-22)
-**Revision:** 2 — post fresh-context review 2026-04-22 (file paths corrected; postgres retry dropped after verification of commutative-append; B-I4 semantics clarified as "since last savepoint" with query reuse; B-I8 added for local cache invalidation; property-test harness relocated to `e2e/parity/`; sqlite scope expanded with upgrade-path test; B-I3/B-I4 de-dup rule stated; "vacuously satisfies" replaces "exempt")
+**Revision:** 3 — unlock-savepoint asymmetry disclosed explicitly (§5.2, §5.3); ErrRetryExhausted vs ctx cancellation contract specified in §4.2; ctx-cancellation test added to postgres/sqlite gray-box lists. Rev 2 changes: post fresh-context review 2026-04-22 — file paths corrected; postgres retry dropped after verification of commutative-append; B-I4 semantics clarified as "since last savepoint" with query reuse; B-I8 added for local cache invalidation; property-test harness relocated to `e2e/parity/`; sqlite scope expanded with upgrade-path test; B-I3/B-I4 de-dup rule stated; "vacuously satisfies" replaces "exempt".
 **Parent initiative:** Data-Ingestion QA (`docs/superpowers/specs/2026-04-21-data-ingestion-qa-overview.md`)
 **Prior work:**
 - `docs/superpowers/specs/2026-04-20-model-schema-extensions-design.md` — the ExtendSchema pipeline.
@@ -121,10 +121,18 @@ ExtendSchema(ctx context.Context, ref ModelRef, delta SchemaDelta) error
 
 **Contract (new wording in godoc):**
 
-- Implementations handle backend-native conflict detection internally with bounded transparent retry.
-- Success (`nil` return) means the extension is durably committed and visible to subsequent reads on this and other nodes.
+- Implementations handle backend-native conflict detection internally with bounded retry where a conflict surface exists (see §5 for per-backend specifics).
+- Success (`nil` return) means the extension is durably committed and visible to subsequent reads on this node. Cross-node visibility depends on gossip (C's concern).
 - Non-nil error means **no persisted effect** — no log entry, no savepoint, no partial state.
-- `ErrRetryExhausted` surfaces only when all configured retries have been consumed. `ErrConflict` is reserved for the single-attempt case.
+- `ErrRetryExhausted` is returned *only* when all configured retries have been consumed without success **and** `ctx` was not cancelled. It is never returned under cancellation.
+- `ErrConflict` is reserved for single-attempt conflicts surfaced by backends that don't wrap retry internally (not currently produced by any B backend — postgres and memory never conflict; sqlite and cassandra wrap their own retries). It remains in the SPI for future use.
+
+**Context-cancellation behavior:**
+
+- `ctx.Err()` is checked at the start of each retry attempt. If `ctx` is cancelled or expired between attempts, the loop returns `ctx.Err()` wrapped with context about the attempt count (e.g., `fmt.Errorf("schema extension cancelled after %d attempts: %w", n, ctx.Err())`).
+- Mid-attempt cancellation follows backend-native behavior: postgres's `pgx` and Cassandra's `gocql` cancel the in-flight query; sqlite's local execution runs to completion. In either case, the plugin surfaces the resulting error (which may be `ctx.Err()` or a backend error) and does **not** wrap it as `ErrRetryExhausted`.
+- If an attempt commits successfully *and* `ctx` expires before the wrapper returns, the commit is durable and the plugin returns success. No "undo" is attempted; durable writes stay durable.
+- Callers treating `ctx.Err()` as "outcome unknown" and re-checking state via `Get` is the safe pattern under cancellation races; the plugin does not re-check commit status on its own behalf.
 
 ### 4.3 Plugin-construction config
 
@@ -167,7 +175,7 @@ The entity-store FCW machinery (`commit_validator.go`, `transaction_manager.go`)
 **B changes:**
 
 1. **Refactor hardcoded `64`** at `model_store.go:276` (the `newSeq % 64 == 0` literal; there is no named constant today) to a config-driven check. Per B-I4's "since-last-savepoint" semantics, the trigger becomes `(newSeq - lastSavepointSeq) >= cfg.SchemaSavepointInterval`. `lastSavepointSeq` is already queried inside `foldLocked` (line 29-33 of `model_extensions.go`) on the savepoint path — the check lifts that value with no extra query.
-2. **Add save-on-lock** — on the `Lock` transition (unlocked → locked), write a savepoint row atomically with the lock-state change in the same postgres transaction. Implements B-I3. The B-I3/B-I4 de-dup rule applies.
+2. **Add save-on-lock** — on the `Lock` transition (unlocked → locked), write a savepoint row atomically with the lock-state change in the same postgres transaction. Implements B-I3. The B-I3/B-I4 de-dup rule applies. **Asymmetry:** `Unlock` deliberately does *not* write a savepoint. The extension log is unchanged by an unlock transition, fold cost is identical before and after, and the B-I4 size trigger continues to fire on further extensions in the new draft phase. A savepoint on unlock would be load-bearing-free noise.
 3. **No retry wrapper.** Postgres's `ExtendSchema` has no conflict surface on schema writes (verified above); `CYODA_SCHEMA_EXTEND_MAX_RETRIES` is not consumed by postgres. The spec's retry contract applies *where a conflict surface exists* — postgres simply never conflicts.
 4. **Test adjustments.** `TestExtendSchema_SavepointEvery64` is renamed and parameterized by `cfg.SchemaSavepointInterval`; existing assertions at default 64 pass unchanged. Existing `TestExtendSchema_RolledBack_NotVisible` continues to cover atomicity of append within a transaction.
 
@@ -177,6 +185,8 @@ The entity-store FCW machinery (`commit_validator.go`, `transaction_manager.go`)
 - `TestPostgres_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical` (B-I1/B-I2 local).
 - `TestPostgres_ExtendSchema_RejectionLeavesNoSavepointOrOp` (B-I6 tightening).
 - `TestPostgres_ExtendSchema_SavepointTriggerRespectsIntervalChange` (B-I4 — start with interval 64, commit past the first savepoint, change interval to 128, confirm next savepoint fires at `(newSeq - lastSavepointSeq) >= 128` rather than at the next multiple of 128).
+- `TestPostgres_ExtendSchema_ContextCancellation_ReturnsCtxErr` (§4.2 contract — cancel ctx between attempts, assert `ctx.Err()` is returned, not `ErrRetryExhausted`; not particularly load-bearing on postgres which doesn't retry, but asserts the cancellation contract uniformly).
+- `TestPostgres_ExtendSchema_UnlockDoesNotWriteSavepoint` (§5.2 asymmetry — lock, verify savepoint row exists, unlock, assert no new savepoint row appended).
 
 **No migration** — existing table schema supports both kinds already.
 
@@ -190,7 +200,7 @@ The entity-store FCW machinery (`commit_validator.go`, `transaction_manager.go`)
 
 1. **Log-based `ExtendSchema`.** Replace apply-in-place in `plugins/sqlite/model_store.go`:238–285 with `INSERT INTO model_schema_extensions (kind='delta', ...)` under `BEGIN IMMEDIATE`. On savepoint-trigger (same formula as postgres: `(newSeq - lastSavepointSeq) >= cfg.SchemaSavepointInterval`), append a `(kind='savepoint', payload=<folded>)` row in the same transaction.
 2. **Fold-on-read.** New `foldLocked` implementation mirroring postgres's algorithm adapted for SQLite dialect (same reverse-scan-for-savepoint + forward-apply pattern; no backend-specific quirks).
-3. **Save-on-lock.** On `Lock` transition, write savepoint row atomically with the lock state change in the same SQLite transaction. The B-I3/B-I4 de-dup rule applies: if the lock transition coincides with the interval threshold, only the lock savepoint is written.
+3. **Save-on-lock.** On `Lock` transition, write savepoint row atomically with the lock state change in the same SQLite transaction. The B-I3/B-I4 de-dup rule applies: if the lock transition coincides with the interval threshold, only the lock savepoint is written. `Unlock` deliberately does not write a savepoint — same asymmetry as postgres (§5.2 point 2).
 4. **Transparent retry on `SQLITE_BUSY`.** sqlite's single-writer lock produces `SQLITE_BUSY` under contention; the plugin's existing error mapping at `errors.go:22-50` classifies this as `spi.ErrConflict`. B adds retry *inside* `ExtendSchema`: catch the classified conflict, reopen the transaction, re-read current state, re-append, up to `cfg.SchemaExtendMaxRetries`. No explicit Go-level backoff — sqlite's own `busy_timeout` provides serialization delay.
 5. **Base-schema handling on upgrade.** Pre-B sqlite deployments have populated `models.doc.schema` (the folded state) and an empty `model_schema_extensions` table. Post-B `foldLocked` must treat the populated `models.doc.schema` as the base and the empty extension table as "no deltas yet" — same semantics as a fresh post-B model with no extensions. Verified: postgres's `foldLocked` already does this (queries `baseSchema` when no savepoint exists, returns base verbatim when no deltas — `plugins/postgres/model_extensions.go:34-78`). SQLite inherits the same pattern, so existing sqlite deployments open cleanly post-upgrade without a data migration.
 6. **Upgrade-path test.** New test that seeds a sqlite database in the pre-B state (populated `models.doc.schema`, empty extension table), opens it with the post-B plugin, and asserts `Get` returns the base schema verbatim (zero deltas → identity fold).
@@ -204,6 +214,8 @@ The entity-store FCW machinery (`commit_validator.go`, `transaction_manager.go`)
    - `TestSQLite_ExtendSchema_TransparentRetry_ConvergesUnderBusy` (B-I7 local).
    - `TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace` (B-I6).
    - `TestSQLite_ExtendSchema_UpgradeFromPreBDeployment` (the upgrade-path case).
+   - `TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr` (§4.2 contract — cancel ctx between `SQLITE_BUSY` retry attempts, assert `ctx.Err()` returned rather than `ErrRetryExhausted`).
+   - `TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint` (§5.3 asymmetry).
 
 **No migration needed** — `model_schema_extensions` already in `000001_initial_schema.up.sql`. Existing deployments open cleanly via the base-schema fallback in (5).
 
