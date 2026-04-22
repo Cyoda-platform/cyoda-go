@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +64,29 @@ func setUnionApplyFunc(base []byte, delta spi.SchemaDelta) ([]byte, error) {
 	}
 	sort.Strings(keys)
 	return json.Marshal(keys)
+}
+
+// sortNewlineTokens canonicalises a set-union schema (JSON array of
+// strings, as produced by setUnionApplyFunc) so two folds produced under
+// different orderings (or with/without interior savepoints) can be
+// byte-compared. Decodes, sorts, and re-encodes.
+//
+// Copied verbatim from plugins/postgres/model_extensions_internal_test.go
+// so the sqlite fold tests remain self-contained.
+func sortNewlineTokens(b []byte) []byte {
+	if len(b) == 0 {
+		return []byte("[]")
+	}
+	var toks []string
+	if err := json.Unmarshal(b, &toks); err != nil {
+		// Fallback: plain newline-joined form (used in some error paths).
+		parts := strings.Split(string(b), "\n")
+		sort.Strings(parts)
+		return []byte(strings.Join(parts, "\n"))
+	}
+	sort.Strings(toks)
+	out, _ := json.Marshal(toks)
+	return out
 }
 
 // sqliteFixture is the internal-package fixture for modelStore tests
@@ -548,5 +572,136 @@ func TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled ctx → non-context error; err = %v", err)
+	}
+}
+
+// TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace — B-I6 for sqlite.
+// At the savepoint-interval boundary, ExtendSchema is forced to fold the log
+// and write a savepoint row. If that fold fails (applyFunc rejects the
+// delta — e.g. a simulated ChangeLevel violation), the entire operation
+// must roll back: neither the delta row that triggered the fold nor the
+// would-be savepoint row may persist.
+//
+// Without an ambient caller-supplied tx, atomicity requires ExtendSchema
+// to self-wrap — otherwise the initial delta INSERT auto-commits before
+// the fold is attempted.
+//
+// Construction uses newSQLiteFixtureWithInterval(t, 10) directly so that
+// the 10th ExtendSchema call triggers the savepoint fold path. This
+// sidesteps the need for a mid-test reopen — the state reached after 9
+// warmup deltas at interval=10 is identical whether or not the interval
+// was changed at construction.
+func TestSQLite_ExtendSchema_RejectionLeavesNoPersistedTrace(t *testing.T) {
+	fx := newSQLiteFixtureWithInterval(t, 10)
+	// The fixture already installed fixtureApplyFunc on the factory;
+	// SetApplyFunc would panic on re-entry. Override the store-level
+	// applyFunc directly — the same pattern Tasks 15-19 use.
+	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
+			return nil, fmt.Errorf("simulated ChangeLevel violation")
+		}
+		return setUnionApplyFunc(base, delta)
+	}
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+
+	// Warm the log to one row below the interval boundary (9 deltas at
+	// interval=10). The 10th ExtendSchema will drive the savepoint fold.
+	for i := 0; i < 9; i++ {
+		if err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i))); err != nil {
+			t.Fatalf("warmup ExtendSchema #%d: %v", i, err)
+		}
+	}
+
+	var preDeltaCount, preSPCount int
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'delta'`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&preDeltaCount); err != nil {
+		t.Fatalf("pre delta count: %v", err)
+	}
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'savepoint'`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&preSPCount); err != nil {
+		t.Fatalf("pre savepoint count: %v", err)
+	}
+
+	// Attempt the 10th delta — the RESTRICT delta triggers the savepoint
+	// path where applyFunc is called and rejects.
+	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"RESTRICT-d9"`))
+	if err == nil {
+		t.Fatal("ExtendSchema with rejecting applyFunc on savepoint path must fail")
+	}
+
+	var postDeltaCount, postSPCount int
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'delta'`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&postDeltaCount); err != nil {
+		t.Fatalf("post delta count: %v", err)
+	}
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = 'savepoint'`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&postSPCount); err != nil {
+		t.Fatalf("post savepoint count: %v", err)
+	}
+
+	if postDeltaCount != preDeltaCount {
+		t.Errorf("rejected extension added a delta row: before=%d after=%d", preDeltaCount, postDeltaCount)
+	}
+	if postSPCount != preSPCount {
+		t.Errorf("rejected extension added a savepoint row: before=%d after=%d", preSPCount, postSPCount)
+	}
+}
+
+// TestSQLite_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical — B-I2
+// local. Run the same 30-delta sequence twice: once with interval=10
+// (multiple savepoints fire mid-log) and once with interval=1_000_000 (no
+// savepoint ever fires, pure delta replay). The savepoint row is an
+// internal optimisation; the fold observed by callers must be
+// byte-identical regardless.
+//
+// Each fixture constructs its own sqlite file under t.TempDir(), so the
+// two runs are fully isolated — no schema-reset gymnastics required.
+func TestSQLite_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testing.T) {
+	a := newSQLiteFixtureWithInterval(t, 10)
+	a.store.applyFunc = setUnionApplyFunc
+	refA := spi.ModelRef{EntityName: "A", ModelVersion: "1"}
+	a.SaveModel(t, refA, []byte{})
+	for i := 0; i < 30; i++ {
+		if err := a.store.ExtendSchema(a.ctx, refA, spi.SchemaDelta(fmt.Sprintf(`"d%03d"`, i))); err != nil {
+			t.Fatalf("with-savepoints ExtendSchema #%d: %v", i, err)
+		}
+	}
+	got, err := a.store.Get(a.ctx, refA)
+	if err != nil {
+		t.Fatalf("with-savepoints Get: %v", err)
+	}
+
+	b := newSQLiteFixtureWithInterval(t, 1_000_000)
+	b.store.applyFunc = setUnionApplyFunc
+	refB := spi.ModelRef{EntityName: "B", ModelVersion: "1"}
+	b.SaveModel(t, refB, []byte{})
+	for i := 0; i < 30; i++ {
+		if err := b.store.ExtendSchema(b.ctx, refB, spi.SchemaDelta(fmt.Sprintf(`"d%03d"`, i))); err != nil {
+			t.Fatalf("no-savepoints ExtendSchema #%d: %v", i, err)
+		}
+	}
+	want, err := b.store.Get(b.ctx, refB)
+	if err != nil {
+		t.Fatalf("no-savepoints Get: %v", err)
+	}
+
+	// setUnionApplyFunc emits a canonical sorted JSON array, so both folds
+	// should already be byte-identical. Route through sortNewlineTokens
+	// for defensive parity with the postgres counterpart (B-I2) — any
+	// future apply-func swap that produces unsorted output still passes
+	// this test as long as the multiset of tokens matches.
+	gotSorted := sortNewlineTokens(got.Schema)
+	wantSorted := sortNewlineTokens(want.Schema)
+	if !bytes.Equal(gotSorted, wantSorted) {
+		t.Errorf("fold with savepoints != fold without\n  with savepoints:    %q\n  without savepoints: %q", gotSorted, wantSorted)
 	}
 }
