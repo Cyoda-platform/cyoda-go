@@ -102,6 +102,7 @@ var allTests = []NamedTest{
 	{"SchemaExtensionConcurrentConvergence", RunSchemaExtensionConcurrentConvergence},
 	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
+	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 }
 
 // AllTests returns the canonical list of parity scenarios in registration
