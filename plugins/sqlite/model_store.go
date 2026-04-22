@@ -420,6 +420,23 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 		return err
 	}
 
+	// Pre-persist Apply check: reject deltas that applyFunc refuses
+	// before they reach the extension log. Mirrors the memory plugin's
+	// apply-inline behavior (plugins/memory/model_store.go:ExtendSchema)
+	// so all three plugins share the same contract: malformed deltas fail
+	// fast at ExtendSchema-time rather than lying dormant in the log until
+	// a later fold-on-Get surfaces the error.
+	//
+	// applyFunc nil-guard lives in the public ExtendSchema wrapper (fails
+	// fast), so by this point applyFunc is guaranteed non-nil.
+	current, err := s.foldLockedInTx(ctx, tx, ref, base)
+	if err != nil {
+		return classifyError(fmt.Errorf("pre-persist fold for %s: %w", ref, err))
+	}
+	if _, err := s.applyFunc(current, delta); err != nil {
+		return fmt.Errorf("applyFunc rejected delta for %s: %w", ref, err)
+	}
+
 	// Determine next seq for this (tenant, model, version).
 	var nextSeq int64
 	if err := tx.QueryRowContext(ctx,

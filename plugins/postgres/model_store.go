@@ -380,6 +380,39 @@ func (s *modelStore) extendSchemaBody(ctx context.Context, q Querier, ref spi.Mo
 		txID = tx.ID
 	}
 
+	// Use a shadow modelStore bound to q so the helpers (lastSavepointSeq,
+	// baseSchema, foldLocked) see the same transactional view as the
+	// delta INSERT below. Copying by value is cheap and keeps the helpers
+	// unchanged.
+	shadow := *s
+	shadow.q = q
+
+	// Pre-persist Apply check: reject deltas that applyFunc refuses before
+	// they reach the extension log. Mirrors the memory plugin's
+	// apply-inline behavior (plugins/memory/model_store.go:ExtendSchema)
+	// so all three plugins share the same contract: malformed deltas fail
+	// fast at ExtendSchema-time rather than lying dormant in the log until
+	// a later fold-on-Get surfaces the error.
+	//
+	// Only run the check when applyFunc is wired. An unwired applyFunc is
+	// valid on factories with zero-delta models; the log-empty case is
+	// indistinguishable here from "applyFunc not needed yet", so we skip
+	// the check and let the downstream fold-on-Get detect the wiring gap
+	// (same as today's foldLocked behaviour).
+	if s.applyFunc != nil {
+		base, err := shadow.baseSchema(ctx, ref)
+		if err != nil {
+			return fmt.Errorf("pre-persist base read for %s: %w", ref, err)
+		}
+		current, err := shadow.foldLocked(ctx, ref, base)
+		if err != nil {
+			return fmt.Errorf("pre-persist fold for %s: %w", ref, err)
+		}
+		if _, err := s.applyFunc(current, delta); err != nil {
+			return fmt.Errorf("applyFunc rejected delta for %s: %w", ref, err)
+		}
+	}
+
 	var newSeq int64
 	err := q.QueryRow(ctx,
 		`INSERT INTO model_schema_extensions
@@ -390,13 +423,6 @@ func (s *modelStore) extendSchemaBody(ctx context.Context, q Querier, ref spi.Mo
 	if err != nil {
 		return fmt.Errorf("failed to append schema delta for %s: %w", ref, err)
 	}
-
-	// Use a shadow modelStore bound to q so the helpers (lastSavepointSeq,
-	// baseSchema, foldLocked) see the same transactional view as the
-	// delta INSERT above. Copying by value is cheap and keeps the helpers
-	// unchanged.
-	shadow := *s
-	shadow.q = q
 
 	lastSP, err := shadow.lastSavepointSeq(ctx, ref)
 	if err != nil {

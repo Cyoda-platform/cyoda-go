@@ -705,3 +705,45 @@ func TestSQLite_ExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testin
 		t.Errorf("fold with savepoints != fold without\n  with savepoints:    %q\n  without savepoints: %q", gotSorted, wantSorted)
 	}
 }
+
+// TestSQLite_ExtendSchema_RejectsDeltaThatApplyRefuses — persist-time
+// Apply check. A delta that applyFunc rejects must not reach
+// model_schema_extensions. Exercises the FIRST-delta code path (no
+// savepoint fold involved): rejection must come from the apply-check,
+// not from the savepoint-fold boundary. This closes the asymmetry with
+// the memory plugin, which runs applyFunc inline on every ExtendSchema.
+func TestSQLite_ExtendSchema_RejectsDeltaThatApplyRefuses(t *testing.T) {
+	fx := newSQLiteFixture(t)
+	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		if bytes.Contains([]byte(delta), []byte("POISON")) {
+			return nil, fmt.Errorf("applyFunc rejected delta: poison")
+		}
+		return setUnionApplyFunc(base, delta)
+	}
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+
+	var preCount int
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&preCount); err != nil {
+		t.Fatalf("pre count: %v", err)
+	}
+
+	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"POISON-d1"`))
+	if err == nil {
+		t.Fatal("ExtendSchema with rejecting applyFunc must fail")
+	}
+
+	var postCount int
+	if err := fx.store.db.QueryRowContext(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&postCount); err != nil {
+		t.Fatalf("post count: %v", err)
+	}
+	if postCount != preCount {
+		t.Errorf("rejected delta persisted: before=%d after=%d", preCount, postCount)
+	}
+}

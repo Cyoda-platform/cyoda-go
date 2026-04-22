@@ -716,3 +716,46 @@ func TestExtendSchema_RejectionLeavesNoSavepointOrOp(t *testing.T) {
 		t.Errorf("rejected extension added a savepoint row: before=%d after=%d", preSPCount, postSPCount)
 	}
 }
+
+// TestExtendSchema_RejectsDeltaThatApplyRefuses — persist-time Apply check.
+// A delta that applyFunc rejects must not reach model_schema_extensions.
+// Exercises the FIRST-delta code path (no savepoint fold involved): the
+// rejection must come from the apply-check, not from the savepoint-fold
+// check. Matches memory's apply-inline behavior so all three plugins give
+// the same timing/contract: reject at ExtendSchema, not at later fold-on-Get.
+func TestExtendSchema_RejectsDeltaThatApplyRefuses(t *testing.T) {
+	fx := newPGFixture(t)
+	// ApplyFunc that rejects any delta containing the sentinel.
+	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		if bytes.Contains([]byte(delta), []byte("POISON")) {
+			return nil, fmt.Errorf("applyFunc rejected delta: poison")
+		}
+		return setUnionApplyFunc(base, delta)
+	}
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+
+	var preCount int
+	if err := fx.db.QueryRow(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&preCount); err != nil {
+		t.Fatalf("pre count: %v", err)
+	}
+
+	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"POISON-d1"`))
+	if err == nil {
+		t.Fatal("ExtendSchema with rejecting applyFunc must fail")
+	}
+
+	var postCount int
+	if err := fx.db.QueryRow(fx.ctx,
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&postCount); err != nil {
+		t.Fatalf("post count: %v", err)
+	}
+	if postCount != preCount {
+		t.Errorf("rejected delta persisted: before=%d after=%d", preCount, postCount)
+	}
+}
