@@ -159,6 +159,56 @@ func TestCache_InvalidateOnExtendSchema(t *testing.T) {
 	}
 }
 
+// TestCachingModelStore_ExtendSchema_ReturnsPostExtensionSchema — B-I8.
+// Stronger than TestCache_InvalidateOnExtendSchema (which only asserts the
+// cache was bypassed via inner.getCount): this test verifies the
+// user-observable invariant that the post-ExtendSchema Get returns the NEW
+// schema bytes, not the stale cached ones.
+func TestCachingModelStore_ExtendSchema_ReturnsPostExtensionSchema(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	v1 := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelLocked,
+		Schema: []byte(`{"v":1}`),
+	}
+	v2 := &spi.ModelDescriptor{
+		Ref:    ref,
+		State:  spi.ModelLocked,
+		Schema: []byte(`{"v":2,"extended":true}`),
+	}
+	inner := &stubStore{desc: v1}
+	clk := &manualClock{now: time.Now()}
+	c := modelcache.New(inner, nil, clk, time.Hour)
+
+	// Warm the cache with v1.
+	desc1, err := c.Get(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("warm Get: %v", err)
+	}
+	if got, want := string(desc1.Schema), string(v1.Schema); got != want {
+		t.Fatalf("warm Get schema = %q, want %q", got, want)
+	}
+
+	// Simulate the inner store now holding the post-extension schema.
+	inner.mu.Lock()
+	inner.desc = v2
+	inner.mu.Unlock()
+
+	// ExtendSchema through the cache — invalidation must fire.
+	if err := c.ExtendSchema(context.Background(), ref, spi.SchemaDelta(`[]`)); err != nil {
+		t.Fatalf("ExtendSchema: %v", err)
+	}
+
+	// Next Get must see v2 (cache was invalidated → reload from inner).
+	desc2, err := c.Get(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("post-extend Get: %v", err)
+	}
+	if got, want := string(desc2.Schema), string(v2.Schema); got != want {
+		t.Errorf("post-extend Get returned stale cached schema: got %q, want %q", got, want)
+	}
+}
+
 func TestCache_RefreshAndGet_Singleflight(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
 	inner := &stubStore{
