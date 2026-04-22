@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -594,5 +595,31 @@ func TestExtendSchema_CommutativeAppend_ConvergesUnderConcurrency(t *testing.T) 
 	}
 	if count != N {
 		t.Errorf("delta row count = %d, want %d (all writers must commit)", count, N)
+	}
+}
+
+// TestExtendSchema_ContextCancellation_ReturnsCtxErr — §4.2 contract.
+// Postgres's ExtendSchema has no retry loop (REPEATABLE READ presents
+// no schema-write conflict surface) so there is no retry-budget path
+// that could turn a ctx cancellation into ErrRetryExhausted. Assert
+// that the pgx-native cancellation behavior surfaces the context error
+// — the same observable contract every plugin must honour.
+func TestExtendSchema_ContextCancellation_ReturnsCtxErr(t *testing.T) {
+	fx := newPGFixture(t)
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`{"base":true}`))
+
+	ctx, cancel := context.WithCancel(fx.ctx)
+	cancel() // cancel before calling
+
+	err := fx.store.ExtendSchema(ctx, ref, spi.SchemaDelta(`"d1"`))
+	if err == nil {
+		t.Fatal("ExtendSchema with cancelled ctx must fail")
+	}
+	if errors.Is(err, spi.ErrRetryExhausted) {
+		t.Errorf("cancelled ctx → ErrRetryExhausted (want ctx.Err()); err = %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled ctx → non-ctx error; err = %v", err)
 	}
 }
