@@ -3,6 +3,7 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,16 @@ import (
 // this option to exercise the savepoint trigger deterministically.
 func withSavepointInterval(n int) Option {
 	return func(f *StoreFactory) { f.cfg.SchemaSavepointInterval = n }
+}
+
+// withExtendMaxRetries is a test-only Option that overrides
+// cfg.SchemaExtendMaxRetries on the factory. Production wiring reads
+// this from CYODA_SCHEMA_EXTEND_MAX_RETRIES via parseConfig; tests use
+// this option to squeeze the retry budget down to a handful of attempts
+// so the exhaustion path surfaces deterministically under forced
+// SQLITE_BUSY contention.
+func withExtendMaxRetries(n int) Option {
+	return func(f *StoreFactory) { f.cfg.SchemaExtendMaxRetries = n }
 }
 
 // setUnionApplyFunc is an associative-commutative-idempotent apply used
@@ -370,6 +381,149 @@ func TestSQLite_ExtendSchema_TransparentRetry_ConvergesUnderBusy(t *testing.T) {
 	if count != N {
 		t.Errorf("delta row count = %d, want %d", count, N)
 	}
+}
+
+// TestSQLite_ExtendSchema_RetryExhaustion_ReturnsErrRetryExhausted — B-I7.
+// Forces deterministic SQLITE_BUSY contention by holding an uncommitted
+// write transaction on a second *sql.DB handle to the same database file,
+// then invokes ExtendSchema with a tight retry budget and a tight
+// busy_timeout. The retry loop MUST exhaust and return
+// spi.ErrRetryExhausted wrapping the last spi.ErrConflict.
+//
+// This is the counterpart to TransparentRetry_ConvergesUnderBusy: that
+// test proves the happy path (retries converge under the default 5s
+// busy_timeout), this one proves the exhaustion path is actually wired
+// — i.e. that the classifier + retry loop + ErrRetryExhausted wrap all
+// work when contention genuinely overflows the budget.
+//
+// Implementation notes:
+//   - The factory-level flock guards against a second StoreFactory on
+//     the same file, but it does NOT prevent a raw *sql.DB handle from
+//     opening the file. That's what we exploit here: a bare lock-holder
+//     DB with its own connection pool, independent of fx.store.db.
+//   - fx.store.db.SetMaxOpenConns(1) means the ExtendSchema attempt's
+//     BeginTx grabs the sole pool connection and then tries to acquire
+//     the write (RESERVED) lock inside SQLite — which the holder's
+//     uncommitted IMMEDIATE tx is keeping. After busy_timeout, the
+//     driver returns SQLITE_BUSY, which classifyError maps to
+//     spi.ErrConflict, which the retry loop catches.
+//   - busy_timeout=10ms keeps the whole test snappy; three attempts
+//     bound total wait at ~30ms per test run before exhaustion.
+func TestSQLite_ExtendSchema_RetryExhaustion_ReturnsErrRetryExhausted(t *testing.T) {
+	const maxRetries = 3
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	f, err := NewStoreFactoryForTest(
+		context.Background(),
+		dbPath,
+		withExtendMaxRetries(maxRetries),
+	)
+	if err != nil {
+		t.Fatalf("NewStoreFactoryForTest: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	f.SetApplyFunc(fixtureApplyFunc())
+
+	// Shrink busy_timeout on the shared connection so each retry
+	// attempt fails fast under contention. SQLite PRAGMAs are
+	// per-connection; with MaxOpenConns=1 this covers all writes.
+	if _, err := f.db.ExecContext(context.Background(),
+		"PRAGMA busy_timeout = 10"); err != nil {
+		t.Fatalf("override busy_timeout: %v", err)
+	}
+
+	tenantID := spi.TenantID("t1")
+	uc := &spi.UserContext{
+		UserID:   "test-user",
+		UserName: "Test User",
+		Tenant:   spi.Tenant{ID: tenantID, Name: string(tenantID)},
+		Roles:    []string{"USER"},
+	}
+	ctx := spi.WithUserContext(context.Background(), uc)
+
+	ms, err := f.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	store := ms.(*modelStore)
+	store.applyFunc = setUnionApplyFunc
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+
+	// Seed a base model row using the main factory BEFORE opening the
+	// lock-holder — saves us from interleaving writes against the held
+	// write lock during setup.
+	desc := &spi.ModelDescriptor{
+		Ref:         ref,
+		State:       spi.ModelUnlocked,
+		ChangeLevel: spi.ChangeLevelStructural,
+		Schema:      []byte(`[]`),
+		UpdateDate:  time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if err := store.Save(ctx, desc); err != nil {
+		t.Fatalf("Save seed model: %v", err)
+	}
+
+	// Open a SECOND *sql.DB handle to the same file. This handle has
+	// its own connection pool, independent of the factory's pool, so
+	// its write lock is visible to — and blocks — fx.store.db.
+	// Use _txlock=immediate so BeginTx acquires the RESERVED lock
+	// straight away (matching production factory wiring).
+	holderDSN := fmt.Sprintf("file:%s?_txlock=immediate&_busy_timeout=10", dbPath)
+	holderDB, err := sql.Open("sqlite3", holderDSN)
+	if err != nil {
+		t.Fatalf("open holder DB: %v", err)
+	}
+	t.Cleanup(func() { _ = holderDB.Close() })
+
+	// BEGIN IMMEDIATE (via _txlock=immediate default) acquires the
+	// RESERVED write lock. Do NOT commit — the lock is held until
+	// Rollback in cleanup.
+	holderTx, err := holderDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("holder BeginTx: %v", err)
+	}
+	defer func() { _ = holderTx.Rollback() }()
+
+	// Sanity: write something inside the holder tx to ensure the
+	// lock is actually RESERVED (BEGIN IMMEDIATE acquires RESERVED
+	// by default, but an explicit write is a belt-and-braces guarantee
+	// across driver implementations).
+	if _, err := holderTx.ExecContext(context.Background(),
+		`INSERT INTO model_schema_extensions
+		    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
+		 VALUES (?, ?, ?, ?, 'delta', ?, '')`,
+		"holder-tenant", "holder-model", "1", 1, []byte(`"holder"`)); err != nil {
+		t.Fatalf("holder insert: %v", err)
+	}
+
+	// Now invoke ExtendSchema on the main factory. Each attempt's
+	// BeginTx → BEGIN IMMEDIATE must wait for the RESERVED lock,
+	// time out at ~10ms, return SQLITE_BUSY → ErrConflict. After
+	// maxRetries attempts the loop exhausts.
+	//
+	// Use a generous ctx deadline so ctx cancellation doesn't
+	// pre-empt the retry loop before exhaustion.
+	extendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	err = store.ExtendSchema(extendCtx, ref, spi.SchemaDelta(`"d1"`))
+	if err == nil {
+		t.Fatal("ExtendSchema under held write lock: got nil, want ErrRetryExhausted")
+	}
+	if !errors.Is(err, spi.ErrRetryExhausted) {
+		t.Errorf("ExtendSchema error = %v, want errors.Is(_, ErrRetryExhausted)", err)
+	}
+	// Multi-%w wrap preserves the last conflict in the chain, so
+	// ErrConflict must also be observable. This guards against a
+	// regression where someone "cleans up" the wrap and loses the
+	// retryable-class signal.
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Errorf("ExtendSchema error = %v, want errors.Is(_, ErrConflict)", err)
+	}
+
+	// Cleanup: rollback the holder so the extensions table has no
+	// stale rows. (t.Cleanup on holderDB.Close also covers this.)
+	_ = holderTx.Rollback()
 }
 
 // TestSQLite_ExtendSchema_ContextCancellation_ReturnsCtxErr — §4.2.
