@@ -297,9 +297,9 @@ func TestSQLite_ExtendSchema_UpgradeFromPreBDeployment(t *testing.T) {
 }
 
 // TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint — §5.3 asymmetry.
-// Unlock clears the extension log wholesale (Task 18) but MUST NOT write
-// a savepoint. In Task 17 we assert the weaker property: Unlock does not
-// add a new savepoint beyond whatever Lock already wrote.
+// Unlock changes state back to UNLOCKED but MUST NOT write a savepoint.
+// The extension log is not drained on Unlock; subsequent Lock calls
+// with no new deltas are correctly de-duped via (maxSeq == lastSP).
 func TestSQLite_ExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 	fx := newSQLiteFixture(t)
 	fx.store.applyFunc = setUnionApplyFunc
