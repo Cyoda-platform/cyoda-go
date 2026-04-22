@@ -214,3 +214,58 @@ func TestLockModel_StaleCacheAfterRemoteDelete_404Not409(t *testing.T) {
 		t.Errorf("expected HTTP 404 (model-not-found), got %d: %s", appErr.Status, appErr.Message)
 	}
 }
+
+// TestExportModel_ClassifiesModelStoreErrors verifies that ExportModel
+// distinguishes spi.ErrNotFound (a legitimate 404) from other infrastructure
+// errors returned by ModelStore.Get (which must be 5xx). Blanket-mapping every
+// Get error to 404 MODEL_NOT_FOUND hides real failures — a schema fold or a
+// transient pgx connection blip would look indistinguishable from a genuine
+// missing model.
+func TestExportModel_ClassifiesModelStoreErrors(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+
+	t.Run("ErrNotFound maps to 404", func(t *testing.T) {
+		ms := &refreshingModelStore{getErr: spi.ErrNotFound}
+		h := model.New(&fakeStoreFactory{modelStore: ms})
+
+		_, err := h.ExportModel(context.Background(), "Dataset", "1", "JSON_SCHEMA")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != 404 {
+			t.Errorf("expected 404 for ErrNotFound, got %d: %s", appErr.Status, appErr.Message)
+		}
+	})
+
+	t.Run("arbitrary error maps to 5xx", func(t *testing.T) {
+		synthetic := errors.New("synthetic fold failure")
+		ms := &refreshingModelStore{getErr: synthetic}
+		h := model.New(&fakeStoreFactory{modelStore: ms})
+
+		_, err := h.ExportModel(context.Background(), "Dataset", "1", "JSON_SCHEMA")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status == 404 {
+			t.Errorf("non-ErrNotFound infra error must not be 404 MODEL_NOT_FOUND; got %d: %s", appErr.Status, appErr.Message)
+		}
+		if appErr.Status < 500 || appErr.Status >= 600 {
+			t.Errorf("expected 5xx for non-ErrNotFound error, got %d: %s", appErr.Status, appErr.Message)
+		}
+		// The original error must be preserved in the chain for logging /
+		// correlation via the ticket UUID.
+		if !errors.Is(err, synthetic) {
+			t.Errorf("expected wrapped error to satisfy errors.Is(synthetic), got %v", err)
+		}
+	})
+
+	_ = ref // silence unused in case future expansion needs it
+}

@@ -60,6 +60,78 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 	}
 }
 
+// TestCreateEntity_ClassifiesModelStoreErrors verifies that CreateEntity
+// distinguishes spi.ErrNotFound (a legitimate 404 MODEL_NOT_FOUND) from
+// other infrastructure errors returned by ModelStore.Get (which must be 5xx).
+// Blanket-mapping every Get error to 404 hides real failures — a schema
+// fold/apply failure, a pgx connection blip, or a bug in a new schema op
+// would look indistinguishable from a genuinely missing model.
+func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
+	uc := &spi.UserContext{
+		UserID:   "test-user",
+		UserName: "test",
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test"},
+		Roles:    []string{"user"},
+	}
+	ctx := spi.WithUserContext(context.Background(), uc)
+
+	input := entity.CreateEntityInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Data:         json.RawMessage(`{"field":"value"}`),
+	}
+
+	t.Run("ErrNotFound maps to 404", func(t *testing.T) {
+		h := entity.New(
+			&modelGetErrFactory{getErr: spi.ErrNotFound},
+			nil,
+			common.NewDefaultUUIDGenerator(),
+			nil,
+		)
+
+		_, err := h.CreateEntity(ctx, input)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusNotFound {
+			t.Errorf("expected 404 for ErrNotFound, got %d: %s", appErr.Status, appErr.Message)
+		}
+	})
+
+	t.Run("arbitrary error maps to 5xx", func(t *testing.T) {
+		synthetic := errors.New("synthetic fold failure")
+		h := entity.New(
+			&modelGetErrFactory{getErr: synthetic},
+			nil,
+			common.NewDefaultUUIDGenerator(),
+			nil,
+		)
+
+		_, err := h.CreateEntity(ctx, input)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status == http.StatusNotFound {
+			t.Errorf("non-ErrNotFound infra error must not be 404 MODEL_NOT_FOUND; got %d: %s", appErr.Status, appErr.Message)
+		}
+		if appErr.Status < 500 || appErr.Status >= 600 {
+			t.Errorf("expected 5xx for non-ErrNotFound error, got %d: %s", appErr.Status, appErr.Message)
+		}
+		if !errors.Is(err, synthetic) {
+			t.Errorf("expected wrapped error to satisfy errors.Is(synthetic), got %v", err)
+		}
+	})
+}
+
 // TestGetEntity_NotFoundReturns404 verifies that ErrNotFound from the entity store
 // results in a 404.
 func TestGetEntity_NotFoundReturns404(t *testing.T) {

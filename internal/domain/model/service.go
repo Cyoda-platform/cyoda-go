@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,6 +17,18 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
+
+// classifyGetErr maps ModelStore.Get errors to AppError: genuine not-found
+// → 404 MODEL_NOT_FOUND (via modelNotFound), everything else → 5xx with
+// the original error preserved in the chain for ticket-correlated logging.
+// Callers pass the per-operation verb (e.g. "export model") for the 5xx
+// message so operators can identify the failing path from the ticket log.
+func classifyGetErr(verb string, entityName string, ver int32, err error) *common.AppError {
+	if errors.Is(err, spi.ErrNotFound) {
+		return modelNotFound(entityName, ver)
+	}
+	return common.Internal(fmt.Sprintf("failed to %s", verb), err)
+}
 
 // ImportModelInput carries the parameters for importing a model.
 type ImportModelInput struct {
@@ -158,7 +171,7 @@ func (h *Handler) ExportModel(ctx context.Context, entityName, modelVersion, con
 	ref := modelRef(entityName, ver)
 	desc, err := store.Get(ctx, ref)
 	if err != nil {
-		return nil, modelNotFound(entityName, ver)
+		return nil, classifyGetErr("export model", entityName, ver, err)
 	}
 
 	node, err := schema.Unmarshal(desc.Schema)
@@ -197,7 +210,10 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	// Admin-path gating read — bypass the per-request cache; see
 	// getModelFresh for the multi-node rationale.
 	desc, err := getModelFresh(ctx, store, ref)
-	if err != nil || desc == nil {
+	if err != nil {
+		return nil, classifyGetErr("lock model", entityName, ver, err)
+	}
+	if desc == nil {
 		return nil, modelNotFound(entityName, ver)
 	}
 
@@ -236,7 +252,10 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	// Admin-path gating read — bypass the per-request cache; see
 	// getModelFresh for the multi-node rationale.
 	desc, err := getModelFresh(ctx, modelStore, ref)
-	if err != nil || desc == nil {
+	if err != nil {
+		return nil, classifyGetErr("unlock model", entityName, ver, err)
+	}
+	if desc == nil {
 		return nil, modelNotFound(entityName, ver)
 	}
 
@@ -281,7 +300,10 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	// Admin-path gating read — bypass the per-request cache; see
 	// getModelFresh for the multi-node rationale.
 	desc, err := getModelFresh(ctx, modelStore, ref)
-	if err != nil || desc == nil {
+	if err != nil {
+		return classifyGetErr("delete model", entityName, ver, err)
+	}
+	if desc == nil {
 		return modelNotFound(entityName, ver)
 	}
 
@@ -349,7 +371,7 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 	ref := modelRef(entityName, ver)
 	desc, err := store.Get(ctx, ref)
 	if err != nil {
-		return modelNotFound(entityName, ver)
+		return classifyGetErr("validate model", entityName, ver, err)
 	}
 
 	modelNode, err := schema.Unmarshal(desc.Schema)
@@ -390,7 +412,11 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 
 	// Admin-path gating read — bypass the per-request cache; see
 	// getModelFresh for the multi-node rationale.
-	if desc, err := getModelFresh(ctx, store, ref); err != nil || desc == nil {
+	desc, err := getModelFresh(ctx, store, ref)
+	if err != nil {
+		return classifyGetErr("set change level", entityName, ver, err)
+	}
+	if desc == nil {
 		return modelNotFound(entityName, ver)
 	}
 
