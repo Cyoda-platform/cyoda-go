@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func extTestCtx(tenant string) context.Context {
 	return spi.WithUserContext(context.Background(), uc)
 }
 
-func setupSQLiteExt(t *testing.T) *sqlite.StoreFactory {
+func setupSQLiteExt(t *testing.T) (*sqlite.StoreFactory, string) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	f, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath, sqlite.WithApplyFunc(recordingApplyFunc()))
@@ -39,11 +40,40 @@ func setupSQLiteExt(t *testing.T) *sqlite.StoreFactory {
 		t.Fatalf("NewStoreFactoryForTest: %v", err)
 	}
 	t.Cleanup(func() { _ = f.Close() })
-	return f
+	return f, dbPath
 }
 
-func TestSQLite_ExtendSchema_AppliesInPlace(t *testing.T) {
-	f := setupSQLiteExt(t)
+// openRawDB opens a read-only handle on the plugin DB so tests can
+// inspect the model_schema_extensions table directly. Using a second
+// handle avoids reaching into unexported fields on StoreFactory while
+// still letting the external test file assert log-level invariants.
+func openRawDB(t *testing.T, dbPath string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func countExtensionRows(t *testing.T, db *sql.DB, tenant string, ref spi.ModelRef, kind string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND kind = ?`,
+		tenant, ref.EntityName, ref.ModelVersion, kind).Scan(&n); err != nil {
+		t.Fatalf("count %s rows: %v", kind, err)
+	}
+	return n
+}
+
+// TestSQLite_ExtendSchema_AppendsToLog asserts that ExtendSchema writes a
+// delta row to model_schema_extensions (rather than mutating models.doc)
+// and that Get returns the folded result.
+func TestSQLite_ExtendSchema_AppendsToLog(t *testing.T) {
+	f, dbPath := setupSQLiteExt(t)
 	ctx := extTestCtx("t1")
 	ms, err := f.ModelStore(ctx)
 	if err != nil {
@@ -67,17 +97,37 @@ func TestSQLite_ExtendSchema_AppliesInPlace(t *testing.T) {
 		t.Fatalf("ExtendSchema: %v", err)
 	}
 
+	// A delta row must now exist in the log.
+	db := openRawDB(t, dbPath)
+	if got := countExtensionRows(t, db, "t1", ref, "delta"); got != 1 {
+		t.Errorf("expected 1 delta row, got %d", got)
+	}
+
+	// The base row in models.doc must NOT have been mutated — apply-in-place
+	// is explicitly out. Verify by scanning the raw doc directly.
+	var doc []byte
+	if err := db.QueryRow(
+		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		"t1", ref.EntityName, ref.ModelVersion).Scan(&doc); err != nil {
+		t.Fatalf("read doc: %v", err)
+	}
+	if bytes.Contains(doc, []byte(`"delta"`)) {
+		t.Errorf("models.doc leaked delta payload (apply-in-place regression): %s", doc)
+	}
+
+	// Get must fold: the folded schema should carry both base and delta
+	// markers (recordingApplyFunc preserves both).
 	got, err := ms.Get(ctx, ref)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if !bytes.Contains(got.Schema, []byte(`"delta"`)) || !bytes.Contains(got.Schema, []byte(`"initial"`)) {
-		t.Errorf("expected applied schema to contain both initial and delta, got %s", got.Schema)
+		t.Errorf("expected folded schema to contain both initial and delta, got %s", got.Schema)
 	}
 }
 
 func TestSQLite_ExtendSchema_EmptyDeltaIsNoop(t *testing.T) {
-	f := setupSQLiteExt(t)
+	f, dbPath := setupSQLiteExt(t)
 	ctx := extTestCtx("t1")
 	ms, _ := f.ModelStore(ctx)
 	ref := spi.ModelRef{EntityName: "Book", ModelVersion: "1"}
@@ -92,6 +142,12 @@ func TestSQLite_ExtendSchema_EmptyDeltaIsNoop(t *testing.T) {
 	if err := ms.ExtendSchema(ctx, ref, spi.SchemaDelta{}); err != nil {
 		t.Fatalf("empty delta: %v", err)
 	}
+	// No delta row should have been appended.
+	db := openRawDB(t, dbPath)
+	if got := countExtensionRows(t, db, "t1", ref, "delta"); got != 0 {
+		t.Errorf("expected 0 delta rows after empty extends, got %d", got)
+	}
+	// Get still returns the base (no deltas to fold).
 	got, _ := ms.Get(ctx, ref)
 	if !bytes.Equal(got.Schema, []byte(`{"s":1}`)) {
 		t.Errorf("expected schema unchanged, got %s", got.Schema)
@@ -119,7 +175,7 @@ func TestSQLite_ExtendSchema_MissingApplyFunc_Errors(t *testing.T) {
 }
 
 func TestSQLite_ExtendSchema_ModelNotFound(t *testing.T) {
-	f := setupSQLiteExt(t)
+	f, _ := setupSQLiteExt(t)
 	ctx := extTestCtx("t1")
 	ms, _ := f.ModelStore(ctx)
 	ref := spi.ModelRef{EntityName: "Missing", ModelVersion: "1"}
@@ -130,10 +186,9 @@ func TestSQLite_ExtendSchema_ModelNotFound(t *testing.T) {
 }
 
 // TestSQLite_ExtendSchema_MultiDeltaFold asserts three sequential ExtendSchema
-// calls all appear in the folded schema on Get. The recordingApplyFunc nests
-// each delta inside the next, so all three delta payloads remain byte-findable.
+// calls each write a delta row and the folded Get surfaces all three payloads.
 func TestSQLite_ExtendSchema_MultiDeltaFold(t *testing.T) {
-	f := setupSQLiteExt(t)
+	f, dbPath := setupSQLiteExt(t)
 	ctx := extTestCtx("t1")
 	ms, err := f.ModelStore(ctx)
 	if err != nil {
@@ -162,6 +217,12 @@ func TestSQLite_ExtendSchema_MultiDeltaFold(t *testing.T) {
 		}
 	}
 
+	// Three log rows must exist.
+	db := openRawDB(t, dbPath)
+	if got := countExtensionRows(t, db, "t1", ref, "delta"); got != 3 {
+		t.Errorf("expected 3 delta rows, got %d", got)
+	}
+
 	desc, err := ms.Get(ctx, ref)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -174,9 +235,10 @@ func TestSQLite_ExtendSchema_MultiDeltaFold(t *testing.T) {
 }
 
 // TestSQLite_ExtendSchema_CrossTenantIsolation asserts extending one tenant's
-// model never affects another tenant's same-ref model.
+// model never affects another tenant's same-ref model; the invariant is
+// preserved under log-based semantics (delta rows are tenant-scoped).
 func TestSQLite_ExtendSchema_CrossTenantIsolation(t *testing.T) {
-	f := setupSQLiteExt(t)
+	f, dbPath := setupSQLiteExt(t)
 	ctxA := extTestCtx("tenantA")
 	ctxB := extTestCtx("tenantB")
 
@@ -211,6 +273,16 @@ func TestSQLite_ExtendSchema_CrossTenantIsolation(t *testing.T) {
 
 	if err := msA.ExtendSchema(ctxA, ref, spi.SchemaDelta(`[{"kind":"broaden_type","path":"x","payload":["A_DELTA"]}]`)); err != nil {
 		t.Fatalf("ExtendSchema A: %v", err)
+	}
+
+	// Log-row-level isolation: tenantA has exactly one delta row;
+	// tenantB has zero.
+	db := openRawDB(t, dbPath)
+	if got := countExtensionRows(t, db, "tenantA", ref, "delta"); got != 1 {
+		t.Errorf("tenantA: expected 1 delta row, got %d", got)
+	}
+	if got := countExtensionRows(t, db, "tenantB", ref, "delta"); got != 0 {
+		t.Errorf("tenantB: expected 0 delta rows (isolation breach), got %d", got)
 	}
 
 	descA, err := msA.Get(ctxA, ref)

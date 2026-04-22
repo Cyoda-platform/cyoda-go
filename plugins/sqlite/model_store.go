@@ -64,7 +64,17 @@ func (s *modelStore) Get(ctx context.Context, modelRef spi.ModelRef) (*spi.Model
 		}
 		return nil, fmt.Errorf("failed to get model %s: %w", modelRef, classifyError(err))
 	}
-	return unmarshalModelDoc(raw)
+	desc, err := unmarshalModelDoc(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	folded, err := s.foldLocked(ctx, modelRef, desc.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("fold extension log for %s: %w", modelRef, err)
+	}
+	desc.Schema = folded
+	return desc, nil
 }
 
 func (s *modelStore) GetAll(ctx context.Context) ([]spi.ModelRef, error) {
@@ -230,11 +240,21 @@ func unmarshalModelDoc(raw []byte) (*spi.ModelDescriptor, error) {
 	}, nil
 }
 
-// ExtendSchema is SQLite's thin apply-in-place realization: read the
-// current schema, call ApplyFunc, write the result back. Single-writer
-// serialization (BEGIN IMMEDIATE) means no concurrent writers can
-// interleave — this is correct without the Postgres plugin's append-
-// only log + fold machinery.
+// ExtendSchema appends a 'delta' row to model_schema_extensions.
+// Apply-in-place has been retired: the schema stored in models.doc is
+// treated as an immutable base, and Get folds the extension log on top
+// of it via foldLocked. This mirrors the postgres plugin's semantics
+// (see plugins/postgres/model_store.go) adapted for sqlite's database/sql
+// API and the single-writer transaction model (BEGIN IMMEDIATE).
+//
+// The whole operation runs inside a single internal sql.Tx so the
+// delta append and (in Task 17) the savepoint fold are all-or-nothing.
+// The ambient spi.Transaction, if any, does not wrap this tx — its ID
+// is recorded in the tx_id column purely for diagnostic traceability.
+//
+// Empty or nil deltas are a no-op. Missing ApplyFunc fails fast so
+// consumers notice wiring mistakes at extend-time rather than later
+// at Get-time (even though foldLocked would also surface the error).
 func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	if len(delta) == 0 {
 		return nil
@@ -242,44 +262,69 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 	if s.applyFunc == nil {
 		return fmt.Errorf("sqlite: ApplyFunc not wired (call WithApplyFunc when creating StoreFactory)")
 	}
+	// Task 19 will add SQLITE_BUSY retry; Task 16 does a single attempt.
+	return s.extendSchemaAttempt(ctx, ref, delta)
+}
 
-	// Read current doc.
-	var raw []byte
-	err := s.db.QueryRowContext(ctx,
-		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
-		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&raw)
+func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
-		}
-		return fmt.Errorf("ExtendSchema: read %s: %w", ref, err)
+		return classifyError(fmt.Errorf("begin tx: %w", err))
 	}
+	defer func() { _ = tx.Rollback() }()
 
-	var doc modelDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("ExtendSchema: unmarshal doc: %w", err)
-	}
-
-	newSchema, err := s.applyFunc(doc.Schema, delta)
+	// Verify the model exists and capture base schema (used by Task 17's
+	// savepoint-fold branch; silenced for Task 16).
+	base, err := s.baseSchemaInTx(ctx, tx, ref)
 	if err != nil {
-		return fmt.Errorf("ExtendSchema: apply delta for %s: %w", ref, err)
+		return err
 	}
-	doc.Schema = newSchema
+	_ = base
 
-	updated, err := json.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("ExtendSchema: marshal doc: %w", err)
+	// Determine next seq for this (tenant, model, version).
+	var nextSeq int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) + 1 FROM model_schema_extensions
+		 WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&nextSeq); err != nil {
+		return classifyError(fmt.Errorf("next seq lookup: %w", err))
 	}
 
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE models SET doc = jsonb(?) WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
-		updated, string(s.tenantID), ref.EntityName, ref.ModelVersion)
-	if err != nil {
-		return fmt.Errorf("ExtendSchema: update %s: %w", ref, err)
+	txID := ""
+	if sptx := spi.GetTransaction(ctx); sptx != nil {
+		txID = sptx.ID
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO model_schema_extensions
+		    (tenant_id, model_name, model_version, seq, kind, payload, tx_id)
+		 VALUES (?, ?, ?, ?, 'delta', ?, ?)`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion, nextSeq, []byte(delta), txID); err != nil {
+		return classifyError(fmt.Errorf("append delta for %s: %w", ref, err))
+	}
+
+	if err := tx.Commit(); err != nil {
+		return classifyError(fmt.Errorf("commit: %w", err))
 	}
 	return nil
+}
+
+// baseSchemaInTx reads models.doc.schema within the given tx. Returns
+// spi.ErrNotFound wrapped when the model row is absent.
+func (s *modelStore) baseSchemaInTx(ctx context.Context, tx *sql.Tx, ref spi.ModelRef) ([]byte, error) {
+	var raw []byte
+	err := tx.QueryRowContext(ctx,
+		`SELECT json(doc) FROM models WHERE tenant_id = ? AND model_name = ? AND model_version = ?`,
+		string(s.tenantID), ref.EntityName, ref.ModelVersion).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+	}
+	if err != nil {
+		return nil, classifyError(fmt.Errorf("base schema lookup for %s: %w", ref, err))
+	}
+	var doc modelDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("base schema unmarshal for %s: %w", ref, err)
+	}
+	return doc.Schema, nil
 }
