@@ -660,3 +660,59 @@ func TestExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical(t *testing.T) {
 		t.Errorf("fold with savepoints != fold without\n  with savepoints:    %q\n  without savepoints: %q", gotSorted, wantSorted)
 	}
 }
+
+// TestExtendSchema_RejectionLeavesNoSavepointOrOp — B-I6. At the
+// savepoint-interval boundary, ExtendSchema is forced to fold the log
+// and write a savepoint row. If that fold fails (applyFunc rejects the
+// delta — e.g., simulated ChangeLevel violation), the entire operation
+// must roll back: neither the delta row that triggered the fold nor
+// the would-be savepoint row may persist.
+//
+// Without an ambient caller-supplied tx, atomicity requires ExtendSchema
+// to self-wrap — otherwise the initial delta INSERT auto-commits before
+// the fold is attempted.
+func TestExtendSchema_RejectionLeavesNoSavepointOrOp(t *testing.T) {
+	fx := newPGFixture(t)
+	fx.store.applyFunc = func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		if bytes.Contains([]byte(delta), []byte("RESTRICT")) {
+			return nil, fmt.Errorf("simulated ChangeLevel violation")
+		}
+		return setUnionApplyFunc(base, delta)
+	}
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte{})
+
+	// Commit 63 valid deltas — just below the 64 interval.
+	for i := 0; i < 63; i++ {
+		_ = fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(fmt.Sprintf(`"d%d"`, i)))
+	}
+
+	var preDeltaCount, preSPCount int
+	if err := fx.db.QueryRow(fx.ctx, `SELECT COUNT(*) FROM model_schema_extensions WHERE kind='delta'`).Scan(&preDeltaCount); err != nil {
+		t.Fatalf("pre delta count: %v", err)
+	}
+	if err := fx.db.QueryRow(fx.ctx, `SELECT COUNT(*) FROM model_schema_extensions WHERE kind='savepoint'`).Scan(&preSPCount); err != nil {
+		t.Fatalf("pre savepoint count: %v", err)
+	}
+
+	// Attempt the 64th delta — the RESTRICT delta triggers the savepoint path where applyFunc is called.
+	err := fx.store.ExtendSchema(fx.ctx, ref, spi.SchemaDelta(`"RESTRICT-d63"`))
+	if err == nil {
+		t.Fatal("ExtendSchema with rejecting applyFunc on savepoint path must fail")
+	}
+
+	var postDeltaCount, postSPCount int
+	if err := fx.db.QueryRow(fx.ctx, `SELECT COUNT(*) FROM model_schema_extensions WHERE kind='delta'`).Scan(&postDeltaCount); err != nil {
+		t.Fatalf("post delta count: %v", err)
+	}
+	if err := fx.db.QueryRow(fx.ctx, `SELECT COUNT(*) FROM model_schema_extensions WHERE kind='savepoint'`).Scan(&postSPCount); err != nil {
+		t.Fatalf("post savepoint count: %v", err)
+	}
+
+	if postDeltaCount != preDeltaCount {
+		t.Errorf("rejected extension added a delta row: before=%d after=%d", preDeltaCount, postDeltaCount)
+	}
+	if postSPCount != preSPCount {
+		t.Errorf("rejected extension added a savepoint row: before=%d after=%d", preSPCount, postSPCount)
+	}
+}

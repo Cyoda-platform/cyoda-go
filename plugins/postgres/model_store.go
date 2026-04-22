@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -16,6 +17,7 @@ import (
 // modelStore implements spi.ModelStore backed by PostgreSQL.
 type modelStore struct {
 	q         Querier
+	pool      *pgxpool.Pool // used by ExtendSchema to self-wrap a pgx.Tx when no ambient tx is in ctx
 	tenantID  spi.TenantID
 	applyFunc ApplyFunc // optional; required when the extension log is non-empty
 	cfg       config    // plugin config — read SchemaSavepointInterval from here
@@ -341,13 +343,45 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		return nil
 	}
 
+	// Atomicity (B-I6): the delta INSERT and the triggered savepoint
+	// fold/INSERT must be all-or-nothing. If the fold fails (applyFunc
+	// rejects — e.g. simulated ChangeLevel violation), neither row
+	// may persist. When the caller supplies an ambient transaction via
+	// spi.GetTransaction(ctx), rely on the caller's boundary. Otherwise
+	// self-wrap in a pgx.Tx so the boundary exists.
+	if spi.GetTransaction(ctx) != nil {
+		return s.extendSchemaBody(ctx, s.q, ref, delta)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin self-wrap tx for ExtendSchema(%s): %w", ref, err)
+	}
+	// Rollback is idempotent in pgx: no-op once Commit has landed.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := s.extendSchemaBody(ctx, tx, ref, delta); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit self-wrap tx for ExtendSchema(%s): %w", ref, err)
+	}
+	return nil
+}
+
+// extendSchemaBody is the transactional body of ExtendSchema, parameterised
+// on an explicit Querier (pgx.Tx when self-wrapping, or s.q when deferring
+// to a caller-supplied ambient tx). It inserts the delta row and, if the
+// savepoint interval has been crossed, folds + inserts a savepoint row —
+// all using the same q so both writes succeed or fail together.
+func (s *modelStore) extendSchemaBody(ctx context.Context, q Querier, ref spi.ModelRef, delta spi.SchemaDelta) error {
 	txID := ""
 	if tx := spi.GetTransaction(ctx); tx != nil {
 		txID = tx.ID
 	}
 
 	var newSeq int64
-	err := s.q.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`INSERT INTO model_schema_extensions
 		    (tenant_id, model_name, model_version, kind, payload, tx_id)
 		 VALUES ($1, $2, $3, 'delta', $4, $5)
@@ -357,20 +391,27 @@ func (s *modelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta s
 		return fmt.Errorf("failed to append schema delta for %s: %w", ref, err)
 	}
 
-	lastSP, err := s.lastSavepointSeq(ctx, ref)
+	// Use a shadow modelStore bound to q so the helpers (lastSavepointSeq,
+	// baseSchema, foldLocked) see the same transactional view as the
+	// delta INSERT above. Copying by value is cheap and keeps the helpers
+	// unchanged.
+	shadow := *s
+	shadow.q = q
+
+	lastSP, err := shadow.lastSavepointSeq(ctx, ref)
 	if err != nil {
 		return fmt.Errorf("savepoint trigger lookup for %s: %w", ref, err)
 	}
 	if newSeq-lastSP >= int64(s.cfg.SchemaSavepointInterval) {
-		base, err := s.baseSchema(ctx, ref)
+		base, err := shadow.baseSchema(ctx, ref)
 		if err != nil {
 			return fmt.Errorf("savepoint base-schema read for %s: %w", ref, err)
 		}
-		folded, err := s.foldLocked(ctx, ref, base)
+		folded, err := shadow.foldLocked(ctx, ref, base)
 		if err != nil {
 			return fmt.Errorf("savepoint fold for %s (seq=%d): %w", ref, newSeq, err)
 		}
-		if _, err := s.q.Exec(ctx,
+		if _, err := q.Exec(ctx,
 			`INSERT INTO model_schema_extensions
 			    (tenant_id, model_name, model_version, kind, payload, tx_id)
 			 VALUES ($1, $2, $3, 'savepoint', $4, $5)`,

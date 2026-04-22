@@ -132,7 +132,7 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{q: f.querier(), tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
+	return &modelStore{q: f.querier(), pool: f.pool, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
