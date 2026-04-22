@@ -97,6 +97,7 @@ var allTests = []NamedTest{
 
 	// Schema extensions — sequential fold across requests
 	{"SchemaExtensionsSequentialFoldAcrossRequests", RunSchemaExtensionsSequentialFoldAcrossRequests},
+	{"SchemaExtensionCrossBackendByteIdentity", RunSchemaExtensionCrossBackendByteIdentity},
 }
 
 // AllTests returns the canonical list of parity scenarios in registration
