@@ -1,10 +1,12 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -303,5 +305,106 @@ func TestLastSavepointSeq_ReturnsMostRecent(t *testing.T) {
 	}
 	if spCount != 2 {
 		t.Errorf("savepoint count after 128 deltas (interval=64) = %d, want 2", spCount)
+	}
+}
+
+// TestExtendSchema_SaveOnLock — B-I3. Lock transition writes a
+// savepoint row atomically with the lock state change.
+func TestExtendSchema_SaveOnLock(t *testing.T) {
+	fx := newPGFixture(t)
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`{"base":true}`))
+
+	// Pre-lock: no savepoint.
+	before, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq pre-lock: %v", err)
+	}
+	if before != 0 {
+		t.Fatalf("pre-lock lastSavepointSeq = %d, want 0", before)
+	}
+
+	// Lock.
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+
+	// Post-lock: a savepoint exists.
+	after, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq post-lock: %v", err)
+	}
+	if after == 0 {
+		t.Error("post-lock lastSavepointSeq = 0, want nonzero (savepoint must be written on lock)")
+	}
+
+	// Savepoint payload equals the folded schema (which, with zero deltas,
+	// equals the base schema verbatim). JSONB storage normalises whitespace
+	// and may reorder keys, so compare semantically.
+	var payload []byte
+	if err := fx.db.QueryRow(fx.ctx,
+		`SELECT payload FROM model_schema_extensions
+		 WHERE tenant_id=$1 AND model_name=$2 AND model_version=$3 AND kind='savepoint'
+		 ORDER BY seq DESC LIMIT 1`,
+		string(fx.tenantID), ref.EntityName, ref.ModelVersion).Scan(&payload); err != nil {
+		t.Fatalf("read savepoint payload: %v", err)
+	}
+	var got, want any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal savepoint payload %q: %v", payload, err)
+	}
+	if err := json.Unmarshal([]byte(`{"base":true}`), &want); err != nil {
+		t.Fatalf("unmarshal want: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("savepoint payload = %q, want base schema %q (semantically)", payload, `{"base":true}`)
+	}
+	_ = bytes.Equal // keep bytes import live for future assertions
+
+	// Lock state flipped.
+	locked, err := fx.store.IsLocked(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("IsLocked: %v", err)
+	}
+	if !locked {
+		t.Error("expected model to be locked after Lock()")
+	}
+}
+
+// TestExtendSchema_UnlockDoesNotWriteSavepoint — §5.2 asymmetry.
+// Unlock must not write a savepoint. The test is slightly awkward
+// because Unlock clears the extension log entirely (operator-contract
+// drain); we assert that after the lock→unlock sequence the savepoint
+// log is no different from the "was never locked" state — i.e. empty.
+func TestExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
+	fx := newPGFixture(t)
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+	fx.SaveModel(t, ref, []byte(`{"base":true}`))
+
+	if err := fx.store.Lock(fx.ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	seqAfterLock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq after lock: %v", err)
+	}
+	if seqAfterLock == 0 {
+		t.Fatal("precondition: expected a savepoint row after Lock")
+	}
+
+	if err := fx.store.Unlock(fx.ctx, ref); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	// Unlock drains the extension log (including savepoints) per the
+	// operator contract — so lastSavepointSeq drops to 0. The assertion
+	// is that Unlock did NOT *add* a new savepoint: the post-unlock
+	// savepoint seq is strictly not greater than the pre-unlock seq.
+	seqAfterUnlock, err := fx.store.lastSavepointSeq(fx.ctx, ref)
+	if err != nil {
+		t.Fatalf("lastSavepointSeq after unlock: %v", err)
+	}
+	if seqAfterUnlock > seqAfterLock {
+		t.Errorf("Unlock wrote a new savepoint: before=%d after=%d (save-on-unlock is deliberately omitted)",
+			seqAfterLock, seqAfterUnlock)
 	}
 }

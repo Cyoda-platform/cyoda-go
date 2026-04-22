@@ -140,8 +140,79 @@ func (s *modelStore) Delete(ctx context.Context, modelRef spi.ModelRef) error {
 	return nil
 }
 
+// Lock transitions the model to the LOCKED state and, atomically in the
+// same context (= same ambient entity transaction), writes a savepoint
+// row holding the pre-lock folded schema. Post-lock Gets start from the
+// savepoint rather than replaying the full log, keeping fold cost
+// bounded independent of the pre-lock extension count.
+//
+// Lock is idempotent: if the model is already locked, it is a no-op
+// (no duplicate savepoint is written). If the base schema is absent
+// (nil/empty), no savepoint is written either — there is nothing to
+// replay from and a null JSONB payload would violate the column's
+// NOT NULL constraint.
+//
+// Save-on-lock is deliberately asymmetric with Unlock (no save-on-unlock):
+// Unlock drains the extension log wholesale per the operator contract,
+// so a second savepoint at that moment would be load-bearing-free noise.
 func (s *modelStore) Lock(ctx context.Context, modelRef spi.ModelRef) error {
-	return s.updateStateField(ctx, modelRef, spi.ModelLocked, "lock")
+	// Check pre-state so we can skip the savepoint write on the
+	// idempotent re-lock path (already-locked model).
+	wasUnlocked, err := s.isCurrentlyUnlocked(ctx, modelRef)
+	if err != nil {
+		return err
+	}
+
+	// Compute the fold BEFORE flipping state so the savepoint captures
+	// the schema as-of pre-lock. ExtendSchema is the only writer to
+	// model_schema_extensions and it is disjoint from the LOCKED phase
+	// by the state machine, so there is no concurrent writer to race.
+	var folded []byte
+	if wasUnlocked {
+		base, err := s.baseSchema(ctx, modelRef)
+		if err != nil {
+			return fmt.Errorf("lock fold base for %s: %w", modelRef, err)
+		}
+		folded, err = s.foldLocked(ctx, modelRef, base)
+		if err != nil {
+			return fmt.Errorf("lock fold for %s: %w", modelRef, err)
+		}
+	}
+
+	txID := ""
+	if tx := spi.GetTransaction(ctx); tx != nil {
+		txID = tx.ID
+	}
+
+	if err := s.updateStateField(ctx, modelRef, spi.ModelLocked, "lock"); err != nil {
+		return err
+	}
+
+	// Only write the savepoint on the first Lock (unlocked → locked)
+	// and only when we have a non-empty folded payload to persist.
+	if !wasUnlocked || len(folded) == 0 {
+		return nil
+	}
+
+	if _, err := s.q.Exec(ctx,
+		`INSERT INTO model_schema_extensions
+		    (tenant_id, model_name, model_version, kind, payload, tx_id)
+		 VALUES ($1, $2, $3, 'savepoint', $4, $5)`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, folded, txID); err != nil {
+		return fmt.Errorf("lock savepoint for %s: %w", modelRef, err)
+	}
+	return nil
+}
+
+// isCurrentlyUnlocked reports whether the model exists and is currently
+// in the UNLOCKED state. Used by Lock to gate the save-on-lock path
+// behind the unlocked→locked transition edge.
+func (s *modelStore) isCurrentlyUnlocked(ctx context.Context, modelRef spi.ModelRef) (bool, error) {
+	locked, err := s.IsLocked(ctx, modelRef)
+	if err != nil {
+		return false, err
+	}
+	return !locked, nil
 }
 
 func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
@@ -149,23 +220,31 @@ func (s *modelStore) Unlock(ctx context.Context, modelRef spi.ModelRef) error {
 		return err
 	}
 	// Operator contract: all writers (ExtendSchema) must be drained
-	// before Unlock. If rows remain, something bypassed the state
-	// machine. Dev builds surface this as an error; production logs a
-	// warning and proceeds (the log is cleared unconditionally — the
-	// caller has committed to leaving LOCKED state).
-	tag, err := s.q.Exec(ctx, `
+	// before Unlock. Lifecycle savepoints (including the one Lock
+	// writes) are expected and not operator-contract violations —
+	// only stale DELTA rows indicate a writer that bypassed the state
+	// machine. Both are cleared here; the dev-mode assertion only
+	// fires on delta remnants.
+	var staleDeltas int
+	if err := s.q.QueryRow(ctx, `
+		SELECT COUNT(*) FROM model_schema_extensions
+		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND kind = 'delta'`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion).Scan(&staleDeltas); err != nil {
+		return fmt.Errorf("Unlock: count stale deltas for %s: %w", modelRef, err)
+	}
+
+	if _, err := s.q.Exec(ctx, `
 		DELETE FROM model_schema_extensions
 		WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
-	if err != nil {
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion); err != nil {
 		return fmt.Errorf("Unlock: clear extension log for %s: %w", modelRef, err)
 	}
-	if n := tag.RowsAffected(); n != 0 {
+	if staleDeltas != 0 {
 		if buildIsDev() {
-			return fmt.Errorf("Unlock found %d live extension rows for %s; operator-contract violation — concurrent writers did not drain before Unlock", n, modelRef)
+			return fmt.Errorf("Unlock found %d live extension rows for %s; operator-contract violation — concurrent writers did not drain before Unlock", staleDeltas, modelRef)
 		}
 		slog.Warn("Unlock drained stale extension rows",
-			"pkg", "postgres", "ref", modelRef, "count", n)
+			"pkg", "postgres", "ref", modelRef, "count", staleDeltas)
 	}
 	return nil
 }
