@@ -143,18 +143,29 @@ func IsAssignableTo(dataT, schemaT DataType) bool {
 	return reachable[schemaT]
 }
 
-// CollapseNumeric reduces a numeric-only set to a single DataType per
-// spec §5. Preconditions: input is non-empty; every element satisfies
-// IsNumeric.
-// CollapseNumeric reduces a numeric-only set to a single DataType per
-// spec §5. Preconditions: input is non-empty; every element satisfies
-// IsNumeric.
+// CollapseNumeric reduces a numeric-only set to a single DataType that
+// every input widens to, using the Cyoda-compatible widening lattice
+// (see wideningLattice above, matching DataType.kt:240-287).
 //
-// Invariant: every input type t satisfies IsAssignableTo(t, result) or
-// t == result. The result is the narrowest such type in the widening
-// lattice: the "widest" candidate within the decimal family is tried first
-// (it covers all upcast paths); UnboundDecimal is the fallback when no
-// narrower candidate accepts every member.
+// Preconditions: input is non-empty; every element satisfies IsNumeric.
+// Panics on either violation.
+//
+// Invariant: for every input t, IsAssignableTo(t, result) || t == result.
+// This guarantees that validation of a pre-collapse value against the
+// post-collapse schema succeeds — see A.2 §I3 monotonicity.
+//
+// Algorithm (equivalent to Cyoda's findCommonDataType at DataType.kt:293,
+// restricted to numeric inputs):
+//   - Integer-only inputs → widest integer in input (same-family widen).
+//   - Otherwise candidate = widest decimal in input. If some input does
+//     not widen to the candidate, escalate to UnboundDecimal (which every
+//     numeric type reaches).
+//
+// Divergence from Cyoda: Cyoda's findCommonDataType returns STRING as a
+// universal fallback for non-widening pairs. That is Cyoda-internal
+// (every leaf is also stored as a string for search). CollapseNumeric is
+// scoped to numerics where UnboundDecimal is the universal sink — STRING
+// fallback is never needed.
 func CollapseNumeric(types []DataType) DataType {
 	if len(types) == 0 {
 		panic("CollapseNumeric: empty input")

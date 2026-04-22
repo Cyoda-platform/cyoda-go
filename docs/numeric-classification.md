@@ -54,15 +54,23 @@ A field's `TypeSet` always collapses its numeric members to exactly one `DataTyp
 
 **Same-family collapse:** keep the widest rank observed.
 
-**Cross-family collapse:** the narrowest decimal type that losslessly contains every integer-family member observed:
+**Cross-family collapse** uses the widening lattice (DataType.kt:240-287). The result is the narrowest type in the lattice that every input widens to. Because several cross-family pairs have no direct widening edge, the result is often `UnboundDecimal`:
 
-- `{Integer|Long, Double|BigDecimal}` → `BigDecimal`
-- `{Integer|Long, UnboundDecimal}` → `UnboundDecimal`
-- `{BigInteger, Double|BigDecimal}` → `BigDecimal` (BigInteger fits Int128 at scale 0)
-- `{BigInteger, UnboundDecimal}` → `UnboundDecimal`
-- `{UnboundInteger, any decimal}` → `UnboundDecimal`
+| Input set | Result | Reason |
+|---|---|---|
+| `{Integer, Double}` | `Double` | `Integer → Double` is a direct lattice edge |
+| `{Integer, BigDecimal}` | `BigDecimal` | `Integer → BigDecimal` direct |
+| `{Integer, UnboundDecimal}` | `UnboundDecimal` | direct |
+| `{Long, Double}` | `UnboundDecimal` | `Long → Double` blocked (precision loss); intersect = `{UnboundDecimal}` |
+| `{Long, BigDecimal}` | `BigDecimal` | `Long → BigDecimal` direct |
+| `{Long, UnboundDecimal}` | `UnboundDecimal` | direct |
+| `{BigInteger, Double}` | `UnboundDecimal` | no direct edge; intersect = `{UnboundDecimal}` |
+| `{BigInteger, BigDecimal}` | `UnboundDecimal` | `BigInteger → BigDecimal` blocked; intersect = `{UnboundDecimal}` |
+| `{BigInteger, UnboundDecimal}` | `UnboundDecimal` | direct |
+| `{UnboundInteger, any decimal}` | `UnboundDecimal` | `UnboundInteger → UnboundDecimal` is its only outgoing edge |
+| `{Double, BigDecimal}` | `UnboundDecimal` | `Double → BigDecimal` blocked (scale mismatch); intersect = `{UnboundDecimal}` |
 
-Cyoda Cloud's polymorphic numeric sets are replaced by this single-type collapse. A field Cyoda Cloud represents as `{FLOAT, DOUBLE, BIG_DECIMAL}` becomes `BigDecimal` in cyoda-go. No information is lost — every observed value remains representable.
+This matches Cyoda Cloud's `findCommonDataType` (`DataType.kt:293-309`) restricted to numeric inputs. Cyoda additionally falls back to `STRING` for incompatible non-numeric pairs; cyoda-go does not — STRING fallback is a Cyoda-internal plumbing choice (every leaf is also stored as a string ValueMap for search indexing), not semantic behavior cyoda-go replicates. For cross-kind polymorphic cases, cyoda-go keeps the TypeSet as a union (tracked under A.3).
 
 ## Validation compatibility
 
