@@ -100,6 +100,7 @@ var allTests = []NamedTest{
 	{"SchemaExtensionCrossBackendByteIdentity", RunSchemaExtensionCrossBackendByteIdentity},
 	{"SchemaExtensionAtomicRejection", RunSchemaExtensionAtomicRejection},
 	{"SchemaExtensionConcurrentConvergence", RunSchemaExtensionConcurrentConvergence},
+	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 }
 
 // AllTests returns the canonical list of parity scenarios in registration
