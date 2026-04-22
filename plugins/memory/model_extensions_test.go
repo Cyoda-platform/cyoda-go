@@ -3,6 +3,7 @@ package memory_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -197,3 +198,54 @@ func TestMemory_ExtendSchema_CrossTenantIsolation(t *testing.T) {
 		t.Errorf("tenant B lost base: %s", descB.Schema)
 	}
 }
+
+// TestMemory_ExtendSchema_RejectionLeavesDescriptorUnmutated asserts
+// B-I6 for the memory backend: when the injected ApplyFunc returns
+// an error, the model descriptor's schema bytes are unchanged.
+// Memory has no extension log, so "no persisted trace" reduces to
+// "descriptor unmutated."
+func TestMemory_ExtendSchema_RejectionLeavesDescriptorUnmutated(t *testing.T) {
+	rejectingApply := func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		return nil, fmt.Errorf("simulated ChangeLevel violation")
+	}
+	f := memory.NewStoreFactory(memory.WithApplyFunc(rejectingApply))
+	defer f.Close()
+
+	ctx := extTestCtx("t1")
+	ms, _ := f.ModelStore(ctx)
+	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
+
+	// Seed a descriptor with a known schema.
+	if err := ms.Save(ctx, &spi.ModelDescriptor{
+		Ref: ref, State: spi.ModelUnlocked, ChangeLevel: spi.ChangeLevelStructural,
+		Schema: []byte(`{"type":"object"}`), UpdateDate: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := ms.Lock(ctx, ref); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+
+	// Capture before-state.
+	before, err := ms.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get (before): %v", err)
+	}
+	beforeBytes := append([]byte(nil), before.Schema...)
+
+	// Attempt the extension; it must fail.
+	err = ms.ExtendSchema(ctx, ref, spi.SchemaDelta(`{"op":"add-field"}`))
+	if err == nil {
+		t.Fatal("ExtendSchema with rejecting applyFunc must return error")
+	}
+
+	// Assert the descriptor schema is byte-identical to the before-state.
+	after, err := ms.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get (after): %v", err)
+	}
+	if !bytes.Equal(beforeBytes, after.Schema) {
+		t.Errorf("schema mutated on rejection: before=%q after=%q", beforeBytes, after.Schema)
+	}
+}
+
