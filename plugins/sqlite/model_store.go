@@ -416,6 +416,11 @@ func (s *modelStore) extendSchemaAttempt(ctx context.Context, ref spi.ModelRef, 
 	// the configured interval. The savepoint row sits at nextSeq+1 so it
 	// clusters immediately after the delta it is folding, avoiding a PK
 	// collision on (tenant, name, version, seq).
+	//
+	// An interval of 0 disables the size-based trigger entirely (only
+	// save-on-lock writes savepoints). Production configs enforce a
+	// minimum of 1 via envIntMin1Fn; the 0 path is exercised by the
+	// default test fixture to isolate save-on-lock behavior.
 	if s.cfg.SchemaSavepointInterval > 0 {
 		lastSP, err := s.lastSavepointSeqInTx(ctx, tx, ref)
 		if err != nil {
