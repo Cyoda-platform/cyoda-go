@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,21 +12,25 @@ import (
 
 // config holds parsed plugin configuration from CYODA_SQLITE_* env vars.
 type config struct {
-	Path            string
-	AutoMigrate     bool
-	BusyTimeout     time.Duration
-	CacheSizeKiB    int
-	SearchScanLimit int
+	Path                    string
+	AutoMigrate             bool
+	BusyTimeout             time.Duration
+	CacheSizeKiB            int
+	SearchScanLimit         int
+	SchemaSavepointInterval int // default 64; read from CYODA_SCHEMA_SAVEPOINT_INTERVAL; min 1
+	SchemaExtendMaxRetries  int // default 8; read from CYODA_SCHEMA_EXTEND_MAX_RETRIES; min 1
 }
 
 // parseConfig reads CYODA_SQLITE_* env vars via the injected getenv.
 func parseConfig(getenv func(string) string) (config, error) {
 	cfg := config{
-		Path:            envStringFn(getenv, "CYODA_SQLITE_PATH", DefaultDBPath()),
-		AutoMigrate:     envBoolFn(getenv, "CYODA_SQLITE_AUTO_MIGRATE", true),
-		BusyTimeout:     envDurationFn(getenv, "CYODA_SQLITE_BUSY_TIMEOUT", 5*time.Second),
-		CacheSizeKiB:    envIntFn(getenv, "CYODA_SQLITE_CACHE_SIZE", 64000),
-		SearchScanLimit: envIntFn(getenv, "CYODA_SQLITE_SEARCH_SCAN_LIMIT", 100_000),
+		Path:                    envStringFn(getenv, "CYODA_SQLITE_PATH", DefaultDBPath()),
+		AutoMigrate:             envBoolFn(getenv, "CYODA_SQLITE_AUTO_MIGRATE", true),
+		BusyTimeout:             envDurationFn(getenv, "CYODA_SQLITE_BUSY_TIMEOUT", 5*time.Second),
+		CacheSizeKiB:            envIntFn(getenv, "CYODA_SQLITE_CACHE_SIZE", 64000),
+		SearchScanLimit:         envIntFn(getenv, "CYODA_SQLITE_SEARCH_SCAN_LIMIT", 100_000),
+		SchemaSavepointInterval: envIntMin1Fn(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
+		SchemaExtendMaxRetries:  envIntMin1Fn(getenv, "CYODA_SCHEMA_EXTEND_MAX_RETRIES", 8),
 	}
 	if cfg.Path == "" {
 		return cfg, fmt.Errorf("CYODA_SQLITE_PATH resolved to empty string")
@@ -83,6 +88,18 @@ func envIntFn(getenv func(string) string, key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// envIntMin1Fn reads an integer env var, applies the default when unset
+// or invalid, and also applies the default when the value is < 1.
+// Used for interval-style config where 0 is not a meaningful value.
+func envIntMin1Fn(getenv func(string) string, key string, dflt int) int {
+	v := envIntFn(getenv, key, dflt)
+	if v < 1 {
+		slog.Warn("env var below minimum; using default", "key", key, "value", v, "default", dflt)
+		return dflt
+	}
+	return v
 }
 
 func envBoolFn(getenv func(string) string, key string, fallback bool) bool {
