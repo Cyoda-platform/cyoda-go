@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -13,11 +14,12 @@ import (
 
 // config holds parsed plugin configuration.
 type config struct {
-	URL             string
-	MaxConns        int32
-	MinConns        int32
-	MaxConnIdleTime time.Duration
-	AutoMigrate     bool
+	URL                     string
+	MaxConns                int32
+	MinConns                int32
+	MaxConnIdleTime         time.Duration
+	AutoMigrate             bool
+	SchemaSavepointInterval int // default 64; read from CYODA_SCHEMA_SAVEPOINT_INTERVAL; min 1
 }
 
 // parseConfig reads CYODA_POSTGRES_* env vars via the injected getenv.
@@ -29,11 +31,12 @@ func parseConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	cfg := config{
-		URL:             url,
-		MaxConns:        int32(envInt(getenv, "CYODA_POSTGRES_MAX_CONNS", 25)),
-		MinConns:        int32(envInt(getenv, "CYODA_POSTGRES_MIN_CONNS", 5)),
-		MaxConnIdleTime: envDuration(getenv, "CYODA_POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute),
-		AutoMigrate:     envBool(getenv, "CYODA_POSTGRES_AUTO_MIGRATE", true),
+		URL:                     url,
+		MaxConns:                int32(envInt(getenv, "CYODA_POSTGRES_MAX_CONNS", 25)),
+		MinConns:                int32(envInt(getenv, "CYODA_POSTGRES_MIN_CONNS", 5)),
+		MaxConnIdleTime:         envDuration(getenv, "CYODA_POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute),
+		AutoMigrate:             envBool(getenv, "CYODA_POSTGRES_AUTO_MIGRATE", true),
+		SchemaSavepointInterval: envIntMin1(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
 	}
 	if cfg.URL == "" {
 		return cfg, fmt.Errorf("CYODA_POSTGRES_URL is required")
@@ -70,6 +73,18 @@ func envInt(getenv func(string) string, key string, dflt int) int {
 		return dflt
 	}
 	return n
+}
+
+// envIntMin1 reads an integer env var, applies the default when unset
+// or invalid, and also applies the default when the value is < 1.
+// Used for interval-style config where 0 is not a meaningful value.
+func envIntMin1(getenv func(string) string, key string, dflt int) int {
+	v := envInt(getenv, key, dflt)
+	if v < 1 {
+		slog.Warn("env var below minimum; using default", "key", key, "value", v, "default", dflt)
+		return dflt
+	}
+	return v
 }
 
 func envBool(getenv func(string) string, key string, dflt bool) bool {
