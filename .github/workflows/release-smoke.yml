@@ -13,6 +13,7 @@ on:
       - '.goreleaser.yaml'
       - 'deploy/docker/Dockerfile'
       - 'cmd/cyoda/**'
+      - '.github/workflows/release-smoke.yml'
 
 permissions:
   contents: read
@@ -114,3 +115,34 @@ jobs:
           else:
               print("OK: :latest emitted on non-prerelease, as expected.")
           PY
+
+      - name: Assert help release assets generated
+        run: |
+          set -e
+          echo "--- .release-extras contents ---"
+          ls -la .release-extras/ 2>/dev/null || { echo "FAIL: .release-extras/ directory missing"; exit 1; }
+          tar_file=$(ls .release-extras/cyoda_help_*.tar.gz 2>/dev/null | head -1)
+          json_file=$(ls .release-extras/cyoda_help_*.json 2>/dev/null | head -1)
+          test -n "$tar_file" || { echo "FAIL: cyoda_help_*.tar.gz missing from .release-extras/"; exit 1; }
+          test -n "$json_file" || { echo "FAIL: cyoda_help_*.json missing from .release-extras/"; exit 1; }
+          echo "Found: $tar_file"
+          echo "Found: $json_file"
+
+          echo "--- validate help JSON is well-formed ---"
+          jq '.schema, .version, (.topics | length)' "$json_file" \
+            || { echo "FAIL: help JSON is not valid or missing required fields"; exit 1; }
+
+          echo "--- validate tar contents start with content/ ---"
+          tar -tzf "$tar_file" | head -1 | grep -q '^content/' \
+            || { echo "FAIL: help tarball root is not content/"; exit 1; }
+
+          echo "--- validate SHA256SUMS covers both assets ---"
+          test -f dist/SHA256SUMS || { echo "FAIL: dist/SHA256SUMS missing"; exit 1; }
+          tar_basename=$(basename "$tar_file")
+          json_basename=$(basename "$json_file")
+          grep -q "$tar_basename" dist/SHA256SUMS \
+            || { echo "FAIL: SHA256SUMS missing entry for $tar_basename"; exit 1; }
+          grep -q "$json_basename" dist/SHA256SUMS \
+            || { echo "FAIL: SHA256SUMS missing entry for $json_basename"; exit 1; }
+
+          echo "OK: help assets generated and checksummed."
