@@ -32,11 +32,19 @@ var (
 	buildDate = "unknown"
 )
 
+// printVersion writes a one-line parse-friendly version summary.
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "cyoda version %s (commit %s, built %s)\n", version, commit, buildDate)
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--help", "-h":
 			printHelp()
+			return
+		case "--version", "-v":
+			printVersion(os.Stdout)
 			return
 		case "init":
 			os.Exit(runInit(os.Args[2:]))
