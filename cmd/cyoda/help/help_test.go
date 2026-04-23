@@ -409,3 +409,18 @@ ab
 		t.Errorf("parent Children = %+v, want [a.b]", got[0].Children)
 	}
 }
+
+// topLevelTopicsV061 is the authoritative list of top-level topics
+// for v0.6.1. Task 12 authors the stubs; this list pins them.
+var topLevelTopicsV061 = []string{
+	"cli", "config", "errors", "crud", "search", "analytics",
+	"models", "workflows", "run", "helm", "telemetry",
+	"openapi", "grpc", "quickstart",
+}
+
+// TestAllTopLevelTopicsPresent guards against accidental deletion of a
+// top-level topic. Skipped here — Task 12 lands the actual content
+// files and flips this to real assertions.
+func TestAllTopLevelTopicsPresent(t *testing.T) {
+	t.Skip("skipped until the top-level content stubs land in Task 12")
+}
