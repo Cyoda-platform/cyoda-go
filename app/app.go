@@ -16,6 +16,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -442,6 +443,8 @@ func New(cfg Config) *App {
 		outerMux.Handle(contextPath+"/", http.StripPrefix(contextPath, mux))
 		// Discovery routes at root (no auth, no context path)
 		internalapi.RegisterDiscoveryRoutes(outerMux, contextPath)
+		// Help routes — unauthenticated, public content embedded in the binary
+		internalapi.RegisterHelpRoutes(outerMux, help.DefaultTree, contextPath)
 		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
@@ -451,6 +454,8 @@ func New(cfg Config) *App {
 	} else {
 		// No context path — discovery routes on the main mux
 		internalapi.RegisterDiscoveryRoutes(mux, "")
+		// Help routes — unauthenticated, public content embedded in the binary
+		internalapi.RegisterHelpRoutes(mux, help.DefaultTree, "")
 		// Internal dispatch routes (AEAD-authenticated)
 		if cfg.Cluster.Enabled {
 			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
