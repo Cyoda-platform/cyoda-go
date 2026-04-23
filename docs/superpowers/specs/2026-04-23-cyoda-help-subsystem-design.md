@@ -36,7 +36,7 @@ The same topic has four string representations. One rule: **dots for identifiers
 | Filesystem | `cli/serve.md` | `cmd/cyoda/help/content/**` — where authors edit |
 | Front-matter `topic:` | `cli.serve` | YAML header of each `.md` |
 | JSON `topic` field | `cli.serve` | `cyoda help --format json`, `/api/help`, release JSON asset |
-| REST path parameter | `cli.serve` | `GET /api/help/cli.serve` (dots on the URL; no slash segments) |
+| REST path parameter | `cli.serve` | `GET {ContextPath}/help/cli.serve` (dots on the URL; no slash segments) |
 | CLI argv | `cli serve` | `cyoda help cli serve` |
 | Go `Topic.Path` | `[]string{"cli","serve"}` | internal representation; converters in both directions |
 
@@ -92,6 +92,10 @@ see_also:                     # optional: list of topic paths (dotted)
   - config
   - run
 version_added: "0.6.1"        # optional
+see_also_replace: false       # optional, default false; Enterprise-overlay only:
+                              # when true, this topic's see_also REPLACES rather
+                              # than unions with the OSS counterpart. Opt-in to
+                              # advertised divergence.
 ---
 ```
 
@@ -253,10 +257,10 @@ Sort: alphabetical within each stability group. Stability groups in order: stabl
 ```markdown
 # crud
 
-**Content pending in v0.6.1** — see https://cyoda.net/docs/ for current CRUD coverage, or `cyoda help openapi` (when available) for the REST reference.
+**Content pending in v0.6.1.** See the cyoda-go README for links to current external documentation while this topic is authored.
 ```
 
-No NAME/SYNOPSIS/DESCRIPTION sections. User sees immediately that this is a placeholder, not polished-but-thin documentation.
+No external URL hardcoded in stubs — stubs ship on every release and an outdated link becomes a broken link. The README is the authoritative external-links directory and is updated alongside releases via Gate 4. No NAME/SYNOPSIS/DESCRIPTION sections either — user sees immediately that this is a placeholder, not polished-but-thin documentation.
 
 **Error behavior:**
 
@@ -268,16 +272,20 @@ No NAME/SYNOPSIS/DESCRIPTION sections. User sees immediately that this is a plac
 
 Help is accessible over HTTP on any running cyoda server. Zero auth (read-only, public by construction — the binary ships the content openly).
 
+**Mount point: `{ContextPath}/help`**. The operator-configurable `CYODA_CONTEXT_PATH` (default `/api`, see `app/config.go:ContextPath`) prefixes this endpoint like every other API route, so an operator who sets `CYODA_CONTEXT_PATH=/v1/api` gets `/v1/api/help`. Help is an API resource — it honors the API prefix.
+
 | Method | Path | Response |
 |---|---|---|
-| `GET` | `/api/help` | `200 application/json` — full `HelpPayload` (same shape as release JSON asset) |
-| `GET` | `/api/help/{topic}` | `200 application/json` — single `TopicDescriptor` |
+| `GET` | `{ContextPath}/help` | `200 application/json` — full `HelpPayload` (same shape as release JSON asset) |
+| `GET` | `{ContextPath}/help/{topic}` | `200 application/json` — single `TopicDescriptor` |
 
-`{topic}` uses the dotted form: `/api/help/cli.serve`. No slash segments — keeps routing flat and unambiguous with the existing API prefix scheme.
+`{topic}` uses the dotted form: `{ContextPath}/help/cli.serve`. No slash segments.
 
-**Error responses:**
+**Path validation.** `{topic}` is regex-validated against `^[A-Za-z0-9._-]+$` at handler entry. Non-matches return `400` (RFC 7807), not `404` — the distinction matters: malformed input vs. well-formed-but-unknown topic.
 
-- Unknown topic → `404 application/json` with RFC 7807 Problem Details:
+**Error responses (both RFC 7807 Problem Details):**
+
+- Unknown topic → `404`:
   ```json
   { "type": "about:blank",
     "title": "Not Found",
@@ -285,15 +293,22 @@ Help is accessible over HTTP on any running cyoda server. Zero auth (read-only, 
     "detail": "no such help topic: widgetry",
     "code": "HELP_TOPIC_NOT_FOUND" }
   ```
-  (New error code `ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"` added to `internal/common/error_codes.go`.)
+- Malformed topic path → `400`:
+  ```json
+  { "type": "about:blank",
+    "title": "Bad Request",
+    "status": 400,
+    "detail": "invalid topic path: contains disallowed characters",
+    "code": "BAD_REQUEST" }
+  ```
 
-**No path encoding edge cases** — dotted identifiers are URL-safe by construction (`[A-Za-z0-9_.-]`).
+**Bundled errors-catalog additions:** this change adds `ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"` to `internal/common/error_codes.go` AND `cmd/cyoda/help/content/errors/HELP_TOPIC_NOT_FOUND.md` in the same PR. Test #12 (ErrCode parity) gates this — the code and its doc must ship together.
 
-**CORS:** default GET-from-anywhere is acceptable for help content. Nothing sensitive. Header: `Access-Control-Allow-Origin: *` on help endpoints only.
+**CORS:** default GET-from-anywhere acceptable for help content. Nothing sensitive. Header: `Access-Control-Allow-Origin: *` on help endpoints only.
 
-**OpenAPI:** the endpoints are added to the generated OpenAPI spec at `api/openapi.yaml` (generator path — depends on the current pipeline) so they appear in any future #81 release asset.
+**OpenAPI:** the endpoints are added to the generated OpenAPI spec so they appear in any future #81 release asset.
 
-**Handlers live in `internal/api/handlers/help/`** — separate package; ~40 LOC. Uses `help.DefaultTree`.
+**Handler location:** `internal/api/help.go` + `RegisterHelpRoutes(mux http.Handler, tree *help.Tree)` — matching the existing flat layout of `internal/api/` (e.g. `health.go`, `admin.go`, `scalar.go`). No new subdirectory. ~60 LOC including path validation + test file.
 
 ### Forward compatibility for Enterprise builds
 
@@ -307,9 +322,18 @@ tree, _ := help.Load(ossContent)
 tree, _ := help.Load(ossContent, enterpriseContent)
 ```
 
-Enterprise content overlay adds topics; if a topic path collides between OSS and Enterprise, Enterprise wins (replacement, not merge — simpler contract, matches the "Enterprise carries richer content" goal). `fs.FS` is the input type; Enterprise build plumbs in its own embed as a second argument.
+**Collision semantics for a topic path that exists in both inputs:**
 
-**Unit test `TestLoad_OverlayMerge`** constructs two synthetic `fs.FS` trees, one with `topic-a.md`, one with `topic-b.md` + a conflicting `topic-a.md`; asserts the merged tree has both topics and that Enterprise's `topic-a` won. Proves the seam is real.
+- `Body`, `Title`, `Stability`, `version_added` — later argument wins (Enterprise replaces).
+- `SeeAlso` — **union**, OSS order preserved, later-argument's entries appended, deduplicated. Prevents the OSS cross-topic navigation graph from being silently lost when Enterprise authors forget to copy-forward `see_also` entries. Enterprise authors can opt into replacement by setting `see_also_replace: true` in front-matter (deliberately verbose, advertises the divergence).
+- `Children` — merged by path; collision rules recurse.
+
+**Unit test `TestLoad_OverlayMerge`** constructs two synthetic `fstest.MapFS` trees:
+
+- One with `topic-a.md` (see_also: `[x, y]`) + `topic-c.md`
+- One with `topic-a.md` (see_also: `[z]`, different body) + `topic-b.md`
+
+Asserts: merged tree has `topic-a`, `topic-b`, `topic-c`; `topic-a.Body` is from the second argument; `topic-a.SeeAlso == [x, y, z]` (union, dedup-aware). Second sub-test passes `see_also_replace: true` front-matter and asserts `topic-a.SeeAlso == [z]`.
 
 v0.6.1 OSS build calls `help.Load(ossContent)` with a single arg. Enterprise wiring lands with the cyoda-go-cassandra integration, not in this release.
 
@@ -322,17 +346,18 @@ Two artifacts per `v*` tag, attached to the GitHub Release:
 | `cyoda_help_<version>.tar.gz` | `https://github.com/Cyoda-platform/cyoda-go/releases/download/v<version>/cyoda_help_<version>.tar.gz` | `cmd/cyoda/help/content/` tree, verbatim |
 | `cyoda_help_<version>.json` | `https://github.com/Cyoda-platform/cyoda-go/releases/download/v<version>/cyoda_help_<version>.json` | `HelpPayload` JSON |
 
-**Generation step** in `release.yml`, after `checkout` but before `goreleaser`:
+**Generation is a goreleaser `before.hooks:` entry** so the assets appear inside `dist/` after `--clean` has run, and before `release.extra_files` globs them:
 
 ```yaml
-- name: Build help release assets
-  run: |
-    VERSION="${GITHUB_REF_NAME#v}"
-    tar -czf "dist/cyoda_help_${VERSION}.tar.gz" -C cmd/cyoda/help content/
-    go run ./cmd/cyoda help --format json > "dist/cyoda_help_${VERSION}.json"
+# .goreleaser.yaml
+before:
+  hooks:
+    - go mod tidy
+    - bash -c 'mkdir -p dist && tar -czf "dist/cyoda_help_${VERSION#v}.tar.gz" -C cmd/cyoda/help content/'
+    - bash -c 'go run ./cmd/cyoda help --format json > "dist/cyoda_help_${VERSION#v}.json"'
 ```
 
-Using `go run ./cmd/cyoda help --format json` as the JSON generator. This runs the same code the binary will run in production — no separate tool to maintain.
+Goreleaser populates `$VERSION` (the current tag) automatically in `before.hooks`. Using `go run ./cmd/cyoda help --format json` as the JSON generator means the release asset is byte-identical to what the installed binary emits — same code, no separate tool.
 
 **`.goreleaser.yaml` addition** in the top-level `release:` block:
 
@@ -343,16 +368,16 @@ release:
     - glob: ./dist/cyoda_help_*.json
 ```
 
-**Checksum coverage.** Goreleaser's `checksum:` config at `.goreleaser.yaml:97-99` hashes `archives:` artifacts by default — not `release.extra_files`. The pre-release step appends a custom hash:
+**Checksum coverage.** Goreleaser's `checksum:` config at `.goreleaser.yaml:97-99` hashes `archives:` artifacts only, not `release.extra_files`. Extended via an `after:` hook, which runs once goreleaser has written `SHA256SUMS` but before the release is published:
 
 ```yaml
-- name: Extend SHA256SUMS with help assets
-  run: |
-    cd dist/
-    sha256sum cyoda_help_*.tar.gz cyoda_help_*.json >> SHA256SUMS
+# .goreleaser.yaml
+after:
+  hooks:
+    - bash -c 'cd dist && sha256sum cyoda_help_*.tar.gz cyoda_help_*.json >> SHA256SUMS'
 ```
 
-Run after goreleaser (since SHA256SUMS is created by goreleaser), before the release is finalized. The goreleaser action writes SHA256SUMS into dist/ before returning, so an `after:` step works.
+No signature exists on `SHA256SUMS` today (only `docker_signs:` at `.goreleaser.yaml:138`), so append-in-place is safe. If that changes in the future the hook moves to run before the signing step.
 
 **Naming convention `cyoda_<artifact>_<version>.<ext>`** sets the pattern for #81 (openapi) and #82 (proto) to follow.
 
@@ -388,19 +413,50 @@ Run after goreleaser (since SHA256SUMS is created by goreleaser), before the rel
 8. **See-also targets exist.** Every `see_also` entry resolves to a topic in the tree.
 9. **All 13 top-level frames present.** Hardcoded list — catches accidental deletion.
 10. **Markdown-subset linter.** Reject any file using disallowed markdown constructs (tables, nested lists, HTML, reference-style links, etc.). Enforces tokenizer's pinned scope.
-11. **`CYODA_*` env vars covered in `config/**/*.md`.** Extract `grep -oE 'CYODA_[A-Z_]+' cmd app plugins | sort -u`, compare against `grep -oE 'CYODA_[A-Z_]+' cmd/cyoda/help/content/config/*.md | sort -u`. Missing var = test failure.
+11. **`CYODA_*` env vars covered in `config/**/*.md`.** Scope: `cmd app plugins internal` — NOT just `cmd app plugins`. Many operational vars (`CYODA_CLUSTER_ENABLED`, `CYODA_MODEL_CACHE_LEASE`, `CYODA_SEARCH_*`, `CYODA_TX_*`, `CYODA_DISPATCH_*`, cluster-member IDs, compute-node creds) live in `internal/`. Exclude `_test.go` files to keep test-fixture vars out of the doc surface. An explicit allow-list excludes known test-only prefixes: `CYODA_TEST_*`, `CYODA_MARKER`, `CYODA_DEBUG`. Extracted set must be a subset of vars documented under `config/**/*.md`; each missing var is a test failure.
+
+    Implementation sketch:
+    ```go
+    //go:build !short
+    func TestConfig_EnvVarCoverage(t *testing.T) {
+        referenced := extractEnvVars(t, "cmd", "app", "plugins", "internal") // excludes _test.go + allow-list
+        documented := extractEnvVars(t, "cmd/cyoda/help/content/config")
+        for v := range referenced {
+            if _, ok := documented[v]; !ok {
+                t.Errorf("CYODA_* var %q referenced in source but not documented in config/**/*.md", v)
+            }
+        }
+    }
+    ```
+
+11b. **`printHelp()` content-migration parity.** `printHelp()` contains more than env vars — subcommand descriptions, `_FILE` secret-pattern documentation, quick-start examples, Docker/compose wrappers. A must-appear phrase list asserts post-migration coverage:
+
+    ```go
+    var mustAppearSomewhereUnderCLIOrConfig = []string{
+        "_FILE",                 // secret-from-file pattern
+        "--force",               // cyoda init flag
+        "--timeout",             // cyoda health flag
+        "CYODA_PROFILES",        // env-var profile loader (app/profiles.go)
+        "mock",                  // mock-IAM default warning
+        "docker",                // run-docker.sh reference
+    }
+    ```
+
+    Trivially extended when future migrations surface gaps. Purpose: close the confidence gap that test #11 (env-vars-only) leaves open.
 12. **`ErrCode*` parity with `errors/*.md`.** Extract `grep -oE 'ErrCode[A-Z][A-Za-z]+\s*=\s*"([A-Z_]+)"' internal/common/error_codes.go` → set of codes. Compare against `ls cmd/cyoda/help/content/errors/*.md` stripped of `.md` extension. Missing code = test failure. This is the C-level defense against error-catalog drift.
 
 ### Overlay test (`cmd/cyoda/help/help_test.go`)
 
 13. **`TestLoad_OverlayMerge`.** Construct two `fstest.MapFS` trees; assert merged tree has both topics and that the second argument's content wins on path collision.
 
-### REST API tests (`internal/api/handlers/help/*_test.go`)
+### REST API tests (`internal/api/help_test.go`)
 
-14. **`TestGetFullTree`.** `httptest.Server` serves `/api/help`; assert `HelpPayload` JSON + `schema: 1`.
-15. **`TestGetSingleTopic`.** `/api/help/cli.serve` returns one descriptor.
-16. **`TestGetUnknownTopic_404_RFC7807`.** `/api/help/widgetry` returns 404 with correct problem-details shape and `HELP_TOPIC_NOT_FOUND` code.
-17. **`TestCORSHeadersPresent`.** GET response includes `Access-Control-Allow-Origin: *`.
+14. **`TestGetFullTree`.** `httptest.Server` serves `{ContextPath}/help`; assert `HelpPayload` JSON + `schema: 1`.
+15. **`TestGetSingleTopic`.** `{ContextPath}/help/cli.serve` returns one descriptor.
+16. **`TestGetUnknownTopic_404_RFC7807`.** `{ContextPath}/help/widgetry` returns 404 with correct problem-details shape and `HELP_TOPIC_NOT_FOUND` code.
+17. **`TestMalformedTopicPath_400`.** `{ContextPath}/help/foo%20bar` (or any input containing chars outside `[A-Za-z0-9._-]`) returns 400 with RFC 7807 body and `BAD_REQUEST` code. Distinct from 404 — validates input hygiene.
+18. **`TestCORSHeadersPresent`.** GET response includes `Access-Control-Allow-Origin: *`.
+19. **`TestRespectsContextPath`.** Run handler with `CYODA_CONTEXT_PATH=/v1/api`; assert full tree is reachable at `/v1/api/help` and `/api/help` returns 404.
 
 ### No integration/e2e tests beyond the REST unit tests
 
@@ -447,11 +503,14 @@ cmd/cyoda/
         └── json_test.go
 
 internal/
-├── api/handlers/help/
-│   ├── handler.go                         # GET /api/help[, /{topic}]
-│   └── handler_test.go                    # 4 REST tests (14-17)
+├── api/
+│   ├── help.go                            # RegisterHelpRoutes(mux, tree) — flat, matches existing handlers
+│   └── help_test.go                       # REST tests (14-19)
 └── common/
     └── error_codes.go                     # +ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
+
+cmd/cyoda/help/content/errors/
+└── HELP_TOPIC_NOT_FOUND.md                # bundled with the ErrCode* addition; test #12 enforces
 ```
 
 Outside `cmd/cyoda/help/` and `internal/`:
@@ -478,15 +537,17 @@ Outside `cmd/cyoda/help/` and `internal/`:
 - [ ] All three formats (`text`, `markdown`, `json`) produce equivalent content from a single source
 - [ ] `cyoda help --format json` (no topic) emits `HelpPayload` with `schema: 1` and all descriptors
 - [ ] Per-topic `stability` marker is present in all formats
-- [ ] `GET /api/help` returns the same `HelpPayload` shape; `GET /api/help/{topic}` returns one descriptor; 404 uses RFC 7807
-- [ ] Release CI attaches `cyoda_help_<version>.tar.gz` and `cyoda_help_<version>.json`; both included in `SHA256SUMS`
+- [ ] `GET {ContextPath}/help` returns `HelpPayload` with `schema: 1`; `GET {ContextPath}/help/{topic}` returns one descriptor; 404 on unknown, 400 on malformed path, both RFC 7807
+- [ ] `CYODA_CONTEXT_PATH=/v1/api` correctly relocates the help endpoint to `/v1/api/help` (test #19)
+- [ ] Release CI attaches `cyoda_help_<version>.tar.gz` and `cyoda_help_<version>.json` via goreleaser `before.hooks:`; both included in `SHA256SUMS` via `after.hooks:`
 - [ ] Topic-tree stability contract documented in `CONTRIBUTING.md` and in the `cli.help` topic body
 - [ ] `cyoda --version` prints ldflag-injected version + commit + build date
 - [ ] `cyoda --help` renders `cyoda help cli` — no separate `printHelp()` maintained
 - [ ] Markdown-subset linter rejects disallowed constructs (test #10)
-- [ ] `CYODA_*` env var coverage test (test #11) passes
-- [ ] `ErrCode*` parity test (test #12) passes
-- [ ] Overlay-merge loader test (test #13) passes
+- [ ] `CYODA_*` env var coverage test (test #11) — scope `cmd app plugins internal` minus `_test.go` minus allow-listed test-only vars — passes
+- [ ] `printHelp()` content-migration parity (test #11b) — must-appear phrase list asserts subcommand descriptions, `_FILE`, `--force`, profile loader, etc. all survived the migration
+- [ ] `ErrCode*` parity test (test #12) passes — including the newly-added `HELP_TOPIC_NOT_FOUND`
+- [ ] Overlay-merge loader test (test #13) passes — both union-`see_also` and explicit `see_also_replace: true` paths covered
 
 ## Out of scope for v0.6.1 (tracked for later)
 
