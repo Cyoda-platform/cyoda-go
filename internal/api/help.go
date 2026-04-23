@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -11,7 +12,24 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-var topicPathPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+// topicPathPattern rejects leading/trailing dots and hyphens.
+// First char: [A-Za-z0-9]; optional middle + final [A-Za-z0-9] for multi-char paths.
+var topicPathPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+
+// handleHelpPreflight writes a CORS preflight response and returns true if the
+// request was an OPTIONS preflight. The caller should return immediately when
+// this function returns true.
+func handleHelpPreflight(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodOptions {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
 
 // RegisterHelpRoutes mounts GET {contextPath}/help and
 // GET {contextPath}/help/{topic} on the given mux. contextPath must NOT
@@ -20,6 +38,9 @@ var topicPathPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, version string) {
 	prefix := strings.TrimRight(contextPath, "/") + "/help"
 	mux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
+		if handleHelpPreflight(w, r) {
+			return
+		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.URL.Path != prefix {
 			common.WriteError(w, r, common.Operational(
@@ -29,9 +50,20 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 			))
 			return
 		}
-		serveFullHelpTree(w, tree, version)
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		if err := enc.Encode(renderer.HelpPayload{
+			Schema:  1,
+			Version: version,
+			Topics:  tree.WalkDescriptors(),
+		}); err != nil {
+			slog.Error("help: failed to encode response", "error", err, "path", r.URL.Path)
+		}
 	})
 	mux.HandleFunc(prefix+"/", func(w http.ResponseWriter, r *http.Request) {
+		if handleHelpPreflight(w, r) {
+			return
+		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		topic := strings.TrimPrefix(r.URL.Path, prefix+"/")
 		if !topicPathPattern.MatchString(topic) {
@@ -52,22 +84,10 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 			))
 			return
 		}
-		serveSingleHelpTopic(w, node)
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		if err := enc.Encode(node.Descriptor()); err != nil {
+			slog.Error("help: failed to encode response", "error", err, "path", r.URL.Path)
+		}
 	})
-}
-
-func serveFullHelpTree(w http.ResponseWriter, tree *help.Tree, version string) {
-	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	_ = enc.Encode(renderer.HelpPayload{
-		Schema:  1,
-		Version: version,
-		Topics:  tree.WalkDescriptors(),
-	})
-}
-
-func serveSingleHelpTopic(w http.ResponseWriter, t *help.Topic) {
-	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	_ = enc.Encode(t.Descriptor())
 }

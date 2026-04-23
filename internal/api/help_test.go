@@ -114,6 +114,69 @@ func TestCORSHeadersPresent(t *testing.T) {
 	}
 }
 
+func TestMalformedTopicPath_400_LeadingDot(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/help/.foo")
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400 (leading dot)", resp.StatusCode)
+	}
+}
+
+func TestMalformedTopicPath_400_TrailingDot(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/help/foo.")
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400 (trailing dot)", resp.StatusCode)
+	}
+}
+
+func TestMalformedTopicPath_BareDot_RedirectsToCanonical(t *testing.T) {
+	// Go's http.ServeMux always redirects dot-path segments (e.g. /help/.) to
+	// the canonical path (/help) via 307 before our handler runs. The Go HTTP
+	// client follows that redirect, so the observable status is 200 (full tree).
+	// We document this here rather than asserting 400 (which we cannot produce
+	// through the standard http.Client because URL normalization strips the dot
+	// before transmission). The topicPathPattern regex does reject a bare "."
+	// if it were ever delivered directly.
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/help/.")
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// After redirect the client ends up at /api/help and receives the full tree.
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (after ServeMux dot-redirect to /api/help)", resp.StatusCode)
+	}
+}
+
+func TestCORSPreflight_204(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/api/help", nil)
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+	if resp.Header.Get("Access-Control-Allow-Methods") == "" {
+		t.Error("missing Access-Control-Allow-Methods")
+	}
+}
+
 func TestRespectsContextPath(t *testing.T) {
 	srv := helpTestServer(t, "/v1/api")
 	defer srv.Close()
