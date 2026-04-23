@@ -1,7 +1,12 @@
 package help
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -427,4 +432,129 @@ func TestAllTopLevelTopicsPresent(t *testing.T) {
 			t.Errorf("top-level topic %q missing from embedded content", name)
 		}
 	}
+}
+
+var envVarPattern = regexp.MustCompile(`CYODA_[A-Z][A-Z0-9_]*`)
+
+// Test-only env var prefixes — referenced in tests but not meant to be
+// documented in config/*.md.
+var testOnlyEnvPrefixes = []string{"CYODA_TEST_", "CYODA_MARKER", "CYODA_DEBUG_"}
+
+func isTestOnlyEnv(v string) bool {
+	for _, p := range testOnlyEnvPrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestConfig_EnvVarCoverage asserts every CYODA_* env var referenced in
+// source also appears in cmd/cyoda/help/content/config/**/*.md (or
+// config.md). Scope: cmd, app, plugins, internal (excluding _test.go).
+func TestConfig_EnvVarCoverage(t *testing.T) {
+	// Walk up from getwd until we find go.mod.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	root := wd
+	for {
+		if _, statErr := os.Stat(filepath.Join(root, "go.mod")); statErr == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Skip("cannot locate repo root; test skipped")
+			return
+		}
+		root = parent
+	}
+
+	referenced := scanEnvVarsInGoSource(t, root, []string{"cmd", "app", "plugins", "internal"})
+	documented := scanEnvVarsInConfigDocs(t, filepath.Join(root, "cmd/cyoda/help/content"))
+
+	var missing []string
+	for v := range referenced {
+		if isTestOnlyEnv(v) {
+			continue
+		}
+		if !documented[v] {
+			missing = append(missing, v)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("CYODA_* vars referenced in source but not documented under config/**/*.md:\n  %s",
+			strings.Join(missing, "\n  "))
+	}
+}
+
+// scanEnvVarsInGoSource walks dirs under root, finds every CYODA_*
+// identifier in *.go files (excluding *_test.go).
+func scanEnvVarsInGoSource(t *testing.T, root string, dirs []string) map[string]bool {
+	out := map[string]bool{}
+	for _, d := range dirs {
+		base := filepath.Join(root, d)
+		err := filepath.WalkDir(base, func(p string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fs.SkipDir
+				}
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+				return nil
+			}
+			data, readErr := os.ReadFile(p)
+			if readErr != nil {
+				return readErr
+			}
+			for _, m := range envVarPattern.FindAll(data, -1) {
+				out[string(m)] = true
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("walk %s: %v", base, err)
+		}
+	}
+	return out
+}
+
+// scanEnvVarsInConfigDocs walks the help content directory and extracts
+// every CYODA_* mention from config.md and config/**/*.md.
+func scanEnvVarsInConfigDocs(t *testing.T, contentRoot string) map[string]bool {
+	out := map[string]bool{}
+	scan := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+			return
+		}
+		for _, m := range envVarPattern.FindAll(data, -1) {
+			out[string(m)] = true
+		}
+	}
+	// Top-level config.md (if present).
+	configMd := filepath.Join(contentRoot, "config.md")
+	if _, err := os.Stat(configMd); err == nil {
+		scan(configMd)
+	}
+	// Everything under config/.
+	configDir := filepath.Join(contentRoot, "config")
+	_ = filepath.WalkDir(configDir, func(p string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() || !strings.HasSuffix(p, ".md") {
+			return nil
+		}
+		scan(p)
+		return nil
+	})
+	return out
 }
