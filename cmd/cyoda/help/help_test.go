@@ -190,3 +190,97 @@ func TestTreeFind_EmptyPathReturnsRoot(t *testing.T) {
 		t.Errorf("Find with empty path must return Root")
 	}
 }
+
+func TestLoad_OverlayMerge_UnionSeeAlso(t *testing.T) {
+	oss := fstest.MapFS{
+		"content/topic-a.md": &fstest.MapFile{Data: []byte(`---
+topic: topic-a
+title: oss-a
+stability: stable
+see_also: [x, y]
+---
+
+oss body
+`)},
+		"content/topic-c.md": &fstest.MapFile{Data: []byte(`---
+topic: topic-c
+title: oss-c
+stability: stable
+---
+
+oss c
+`)},
+	}
+	ent := fstest.MapFS{
+		"content/topic-a.md": &fstest.MapFile{Data: []byte(`---
+topic: topic-a
+title: ent-a
+stability: stable
+see_also: [z]
+---
+
+ent body
+`)},
+		"content/topic-b.md": &fstest.MapFile{Data: []byte(`---
+topic: topic-b
+title: ent-b
+stability: stable
+---
+
+ent b
+`)},
+	}
+	tree, err := Load(oss, ent)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, name := range []string{"topic-a", "topic-b", "topic-c"} {
+		if tree.Find([]string{name}) == nil {
+			t.Errorf("topic %q missing from merged tree", name)
+		}
+	}
+	a := tree.Find([]string{"topic-a"})
+	if a.Title != "ent-a" {
+		t.Errorf("topic-a.Title = %q, want %q (Enterprise wins)", a.Title, "ent-a")
+	}
+	if string(a.Body) != "ent body\n" {
+		t.Errorf("topic-a.Body = %q, want ent body", a.Body)
+	}
+	wantSeeAlso := []string{"x", "y", "z"}
+	if !reflect.DeepEqual(a.SeeAlso, wantSeeAlso) {
+		t.Errorf("topic-a.SeeAlso = %v, want %v (union)", a.SeeAlso, wantSeeAlso)
+	}
+}
+
+func TestLoad_OverlayMerge_ReplaceSeeAlso(t *testing.T) {
+	oss := fstest.MapFS{
+		"content/topic-a.md": &fstest.MapFile{Data: []byte(`---
+topic: topic-a
+title: oss-a
+stability: stable
+see_also: [x, y]
+---
+body
+`)},
+	}
+	ent := fstest.MapFS{
+		"content/topic-a.md": &fstest.MapFile{Data: []byte(`---
+topic: topic-a
+title: ent-a
+stability: stable
+see_also_replace: true
+see_also: [z]
+---
+body
+`)},
+	}
+	tree, err := Load(oss, ent)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	a := tree.Find([]string{"topic-a"})
+	want := []string{"z"}
+	if !reflect.DeepEqual(a.SeeAlso, want) {
+		t.Errorf("topic-a.SeeAlso = %v, want %v (replace)", a.SeeAlso, want)
+	}
+}
