@@ -43,6 +43,17 @@ High-complexity, high-consistency enterprise domains where correctness is non-ne
 
 See [OVERVIEW.md](OVERVIEW.md) for the full architecture and feature details.
 
+## Documentation
+
+Authoritative reference for flags, env vars, endpoints, and error codes ships in the binary itself:
+
+    cyoda help                  # topic index
+    cyoda help cli              # CLI reference
+    cyoda help config database  # database config vars
+    cyoda help errors MODEL_NOT_FOUND
+
+A running server exposes the same tree over HTTP at `{ContextPath}/help` (default `/api/help`). Release assets include `cyoda_help_<version>.{tar.gz,json}` for offline / tooling consumption.
+
 ## Requirements
 
 - **Go 1.26+**

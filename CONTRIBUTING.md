@@ -98,3 +98,27 @@ Canonical provisioning artifacts (Helm chart, Docker Compose files) live under `
 1. [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) with [superpowers](https://github.com/obra/superpowers)
 2. [agent-safehouse](https://github.com/eugene1g/safehouse) — `brew install eugene1g/safehouse/agent-safehouse`
 3. [Zed editor](https://zed.dev) — `brew install --cask zed`
+
+## Help topic tree
+
+The `cyoda help` topic tree is a stable interface. Topic paths (e.g. `config.database`, `errors.MODEL_NOT_FOUND`) are committed for the duration of a major version — tooling, documentation sites, and AI agents rely on them.
+
+### Additions
+
+New topics may be added freely at any point under existing parent paths. Adding a top-level topic is also permitted but update the hardcoded list in `cmd/cyoda/help/help_test.go` (`topLevelTopicsV061`) at the same time.
+
+### Renames / removals
+
+A rename or removal requires:
+
+1. A deprecation window of at least one minor release — the old path continues to work (renders the new topic's content with a deprecation notice).
+2. An entry in the release notes calling out the change.
+3. An update to CONTRIBUTING.md that documents the new path.
+
+### Stability markers
+
+Per-topic `stability:` value governs what consumers should expect:
+
+- `stable` — content semantics locked. Wording may evolve; structure does not.
+- `evolving` — may be reorganised between minors. No path changes without deprecation.
+- `experimental` — may be reorganised or removed without deprecation. Used for stubs and early drafts.
