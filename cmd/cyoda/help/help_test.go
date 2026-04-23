@@ -49,6 +49,23 @@ body
 	}
 }
 
+func TestParseFrontMatter_RejectsMissingTitle(t *testing.T) {
+	src := []byte(`---
+topic: cli
+stability: stable
+---
+
+body
+`)
+	_, _, err := parseFrontMatter(src)
+	if err == nil {
+		t.Fatal("parseFrontMatter must reject missing title field")
+	}
+	if !strings.Contains(err.Error(), "title") {
+		t.Errorf("error must mention 'title': %v", err)
+	}
+}
+
 func TestParseFrontMatter_RejectsInvalidStability(t *testing.T) {
 	src := []byte(`---
 topic: cli
@@ -61,6 +78,9 @@ body
 	_, _, err := parseFrontMatter(src)
 	if err == nil {
 		t.Fatal("parseFrontMatter must reject unknown stability")
+	}
+	if !strings.Contains(err.Error(), "stability") {
+		t.Errorf("error must mention 'stability': %v", err)
 	}
 }
 
