@@ -68,7 +68,7 @@ jobs:
         id: homebrew-tap-token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.HOMEBREW_TAP_APP_ID }}
+          app-id: ${{ vars.HOMEBREW_TAP_APP_ID }}
           private-key: ${{ secrets.HOMEBREW_TAP_APP_KEY }}
           owner: cyoda-platform
           repositories: homebrew-cyoda-go
