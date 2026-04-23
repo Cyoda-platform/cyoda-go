@@ -149,6 +149,22 @@ func isNullOnlyLeaf(n *ModelNode) bool {
 
 // checkElementWidening checks if array element types differ and whether the change is permitted.
 func checkElementWidening(existingElem, incomingElem *ModelNode, level spi.ChangeLevel, path string) (bool, error) {
+	// Kind mismatches between array elements carry the same contract as at
+	// the root (checkAndExtend): reject unless one side is a LEAF[NULL]
+	// nullable marker, which Merge promotes to the concrete kind. Without
+	// this check, kind-mismatched elements silently passed through and
+	// Merge absorbed them into the existing kind — losing the incoming
+	// element's type information entirely.
+	if existingElem.Kind() != incomingElem.Kind() {
+		if isNullOnlyLeaf(existingElem) || isNullOnlyLeaf(incomingElem) {
+			if !levelPermits(level, spi.ChangeLevelArrayElements) {
+				return false, fmt.Errorf("nullable marker on array element at %s requires ARRAY_ELEMENTS level, but level is %q", path, level)
+			}
+			return true, nil
+		}
+		return false, fmt.Errorf("kind mismatch at %s[]: %s vs %s", path, existingElem.Kind(), incomingElem.Kind())
+	}
+
 	// For leaf elements, check type widening at the ARRAY_ELEMENTS level
 	if existingElem.Kind() == KindLeaf && incomingElem.Kind() == KindLeaf {
 		if !existingElem.Types().Equal(incomingElem.Types()) {
@@ -162,6 +178,13 @@ func checkElementWidening(existingElem, incomingElem *ModelNode, level spi.Chang
 	// For object elements, recurse into children
 	if existingElem.Kind() == KindObject && incomingElem.Kind() == KindObject {
 		return checkAndExtend(existingElem, incomingElem, level, path+"[]")
+	}
+
+	// For array-of-array elements, recurse into the inner element.
+	if existingElem.Kind() == KindArray && incomingElem.Kind() == KindArray {
+		if existingElem.Element() != nil && incomingElem.Element() != nil {
+			return checkElementWidening(existingElem.Element(), incomingElem.Element(), level, path+"[]")
+		}
 	}
 
 	return false, nil
