@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
 )
 
 // FrontMatter is the YAML header on every help topic source file.
@@ -215,4 +217,45 @@ func sortTree(t *Topic) {
 	for _, c := range t.Children {
 		sortTree(c)
 	}
+}
+
+// Descriptor builds a renderer.TopicDescriptor for this topic. SeeAlso
+// is always a non-nil slice so the JSON representation is consistently
+// an array even when front-matter see_also is absent.
+func (t *Topic) Descriptor() renderer.TopicDescriptor {
+	seeAlso := []string{}
+	if len(t.SeeAlso) > 0 {
+		seeAlso = append(seeAlso, t.SeeAlso...)
+	}
+	desc := renderer.TopicDescriptor{
+		Topic:     t.DottedPath(),
+		Path:      append([]string(nil), t.Path...),
+		Title:     t.Title,
+		Synopsis:  renderer.ExtractSynopsis(t.Body),
+		Body:      string(t.Body),
+		Sections:  renderer.ExtractSections(t.Body),
+		SeeAlso:   seeAlso,
+		Stability: t.Stability,
+	}
+	for _, c := range t.Children {
+		desc.Children = append(desc.Children, c.DottedPath())
+	}
+	return desc
+}
+
+// WalkDescriptors returns every topic's descriptor, depth-first,
+// parents before children. The synthetic root is not included.
+func (t *Tree) WalkDescriptors() []renderer.TopicDescriptor {
+	var out []renderer.TopicDescriptor
+	var visit func(*Topic)
+	visit = func(n *Topic) {
+		if len(n.Path) > 0 {
+			out = append(out, n.Descriptor())
+		}
+		for _, c := range n.Children {
+			visit(c)
+		}
+	}
+	visit(t.Root)
+	return out
 }

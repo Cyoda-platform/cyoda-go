@@ -37,11 +37,11 @@ type HelpPayload struct {
 	Topics  []TopicDescriptor `json:"topics"`
 }
 
-// extractSynopsis returns the first paragraph under the DESCRIPTION
+// ExtractSynopsis returns the first paragraph under the DESCRIPTION
 // H2 section. If absent, falls back to the first paragraph anywhere
 // after the H1.
-func extractSynopsis(body []byte) string {
-	secs := extractSections(body)
+func ExtractSynopsis(body []byte) string {
+	secs := ExtractSections(body)
 	for _, s := range secs {
 		if s.Name == "DESCRIPTION" {
 			return firstParagraph(s.Body)
@@ -61,10 +61,10 @@ func firstParagraph(s string) string {
 	return ""
 }
 
-// extractSections splits body into H2-delimited sections. The section
+// ExtractSections splits body into H2-delimited sections. The section
 // Name is the H2 text as-is; Body is everything between this H2 and the
 // next H2 or end-of-file. H1 is ignored.
-func extractSections(body []byte) []Section {
+func ExtractSections(body []byte) []Section {
 	var out []Section
 	sc := bufio.NewScanner(bytes.NewReader(body))
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)

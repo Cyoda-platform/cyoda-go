@@ -56,7 +56,7 @@ This is the first paragraph.
 
 This is the second paragraph.
 `)
-	syn := extractSynopsis(body)
+	syn := ExtractSynopsis(body)
 	if syn != "This is the first paragraph." {
 		t.Errorf("got %q", syn)
 	}
@@ -77,7 +77,7 @@ body text
 
 example
 `)
-	secs := extractSections(body)
+	secs := ExtractSections(body)
 	if len(secs) != 3 {
 		t.Fatalf("got %d sections, want 3: %+v", len(secs), secs)
 	}
