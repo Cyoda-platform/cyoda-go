@@ -3,6 +3,7 @@ package help
 
 import (
 	"bytes"
+	"embed"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -12,6 +13,21 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
 )
+
+//go:embed content
+var embeddedContent embed.FS
+
+// DefaultTree is the tree loaded from embedded OSS content. Populated
+// at package init; panics if content is malformed (a compile-time
+// guarantee would be preferable, but go:embed can't enforce topic
+// structure).
+var DefaultTree = func() *Tree {
+	t, err := Load(embeddedContent)
+	if err != nil {
+		panic(fmt.Sprintf("help: failed to load embedded content: %v", err))
+	}
+	return t
+}()
 
 // FrontMatter is the YAML header on every help topic source file.
 type FrontMatter struct {

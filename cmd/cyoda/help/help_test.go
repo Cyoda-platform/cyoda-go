@@ -419,8 +419,12 @@ var topLevelTopicsV061 = []string{
 }
 
 // TestAllTopLevelTopicsPresent guards against accidental deletion of a
-// top-level topic. Skipped here — Task 12 lands the actual content
-// files and flips this to real assertions.
+// top-level topic.
 func TestAllTopLevelTopicsPresent(t *testing.T) {
-	t.Skip("skipped until the top-level content stubs land in Task 12")
+	tree := DefaultTree
+	for _, name := range topLevelTopicsV061 {
+		if tree.Find([]string{name}) == nil {
+			t.Errorf("top-level topic %q missing from embedded content", name)
+		}
+	}
 }
