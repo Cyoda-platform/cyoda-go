@@ -84,6 +84,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOWORK: "off"
           HOMEBREW_TAP_TOKEN: ${{ steps.homebrew-tap-token.outputs.token }}
+          # Force goreleaser to use the tag that triggered this run.
+          # Without this, goreleaser's default `git describe` resolution
+          # can pick the wrong tag when multiple tags point at the same
+          # commit — e.g. picking v0.6.0-rc.1 over v0.6.0 when both tag
+          # the same HEAD. github.ref_name is authoritative for the
+          # tag that fired the workflow.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
       # Post-build image scan (issue #67). Scans the GHCR image goreleaser
       # just pushed for OS-package and third-party CVEs. Advisory at release
