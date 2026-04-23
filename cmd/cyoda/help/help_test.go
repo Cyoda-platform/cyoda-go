@@ -176,3 +176,17 @@ func TestLoad_MissingFrontMatter_IsError(t *testing.T) {
 		t.Fatal("Load must error on missing front-matter")
 	}
 }
+
+func TestTreeFind_NilRoot(t *testing.T) {
+	tree := &Tree{}
+	if got := tree.Find([]string{"anything"}); got != nil {
+		t.Errorf("Find on nil Root must return nil; got %v", got)
+	}
+}
+
+func TestTreeFind_EmptyPathReturnsRoot(t *testing.T) {
+	tree := &Tree{Root: &Topic{}}
+	if got := tree.Find([]string{}); got != tree.Root {
+		t.Errorf("Find with empty path must return Root")
+	}
+}

@@ -616,7 +616,7 @@ ent b
 	if a.Title != "ent-a" {
 		t.Errorf("topic-a.Title = %q, want %q (Enterprise wins)", a.Title, "ent-a")
 	}
-	if string(a.Body) != "\nent body\n" {
+	if string(a.Body) != "ent body\n" {
 		t.Errorf("topic-a.Body = %q, want ent body", a.Body)
 	}
 	wantSeeAlso := []string{"x", "y", "z"}

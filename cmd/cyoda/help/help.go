@@ -74,8 +74,13 @@ func (t *Topic) DottedPath() string { return strings.Join(t.Path, ".") }
 // Tree holds the synthetic root and provides lookup.
 type Tree struct{ Root *Topic }
 
-// Find returns the topic at path, or nil if not present.
+// Find returns the topic at path, or nil if not present. An empty
+// path returns the synthetic Root node (useful for rendering the
+// top-level summary of children).
 func (t *Tree) Find(path []string) *Topic {
+	if t.Root == nil {
+		return nil
+	}
 	cur := t.Root
 	for _, seg := range path {
 		var next *Topic
@@ -125,7 +130,7 @@ func loadInto(tree *Tree, root fs.FS) error {
 		}
 		raw, err := fs.ReadFile(root, p)
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: read: %w", p, err)
 		}
 		fm, body, err := parseFrontMatter(raw)
 		if err != nil {
