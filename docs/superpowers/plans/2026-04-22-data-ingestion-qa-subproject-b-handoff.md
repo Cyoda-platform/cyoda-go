@@ -7,14 +7,22 @@
 | Repo | Worktree | Branch | Origin | Progress |
 |---|---|---|---|---|
 | cyoda-go-spi | `/Users/paul/go-projects/cyoda-light/cyoda-go-spi/` | `main` (merged) | **`v0.6.0` tagged + pushed** | ✅ Complete |
-| cyoda-go | `/Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence/` | `feat/subproject-b-persistence` | Pushed, tracking `origin/feat/subproject-b-persistence` | ✅ **31 / 31 tasks + 3 bugfixes** |
+| cyoda-go | `/Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence/` | local: `feat/subproject-b-persistence` | pushes to `origin/feat/model-schema-extensions` (PR #78) | ✅ **31 / 31 B tasks + 3 property-test-surfaced fixes + 2 CodeQL security fixes** |
 | cyoda-go-cassandra | `/Users/paul/go-projects/cyoda-light/cyoda-go-cassandra/.worktrees/subproject-b-persistence/` | `feat/subproject-b-persistence` | Not yet pushed | **0 / 15 tasks** |
+
+**Important branch-mapping note:** the local worktree branch name (`feat/subproject-b-persistence`) differs from the remote branch name (`feat/model-schema-extensions`) because B's work was consolidated into the existing PR #78 rather than shipped as a separate PR. When pushing, use an explicit refspec:
+
+```bash
+git push origin HEAD:refs/heads/feat/model-schema-extensions
+```
+
+PR #78 is **the single PR covering the entire data-ingestion-QA initiative** (A.1 + A.2 + B). Rename the local branch to match if you prefer — see "Cleanup for the resumer" below.
 
 ---
 
-## cyoda-go: COMPLETE
+## cyoda-go: COMPLETE — PR #78 fully green
 
-All 31 plan tasks done across Phases 1-10. All pushed. Branch `feat/subproject-b-persistence` tracks origin and is clean.
+All 31 plan tasks done across Phases 1-10. All pushed to `origin/feat/model-schema-extensions`. **PR #78 is mergeable, state=CLEAN, all 8 CI checks green** (test, Analyze (go), Analyze Go, smoke, per-module-hygiene, shellcheck, security, CodeQL).
 
 ### Gate 5 verification results (end-of-deliverable)
 
@@ -53,11 +61,26 @@ The property-based parity test (Task 27) surfaced three real bugs en route — a
 | `f4a7728` | postgres and sqlite persisted delta rows without running Apply — malformed deltas only failed at fold-on-read time | Added pre-persist `applyFunc(current, delta)` check in both plugins, matching memory's apply-inline behavior. Symmetric contract across plugins. |
 | `c965f23` | handler service layer blanket-mapped every `modelStore.Get` error to 404 MODEL_NOT_FOUND — fold/apply failures looked identical to missing rows | `CreateEntity` and `ExportModel` (+ 6 other sites) now do `errors.Is(err, spi.ErrNotFound)` → 404, everything else → 5xx with standard `common.Internal` ticket |
 
+### CodeQL security fixes (after PR open, resolved before merge)
+
+When PR #78's CI expanded scope after the B commits landed, CodeQL flagged 3 HIGH-severity pre-existing findings. Fixed rather than dismissed (Gate 6 + Gate 3).
+
+| Commit | CWE | Finding | Fix |
+|---|---|---|---|
+| `ba3d887` | CWE-681 | `plugins/postgres/config.go:35-36` silently wrapped `int32(envInt(...))` on out-of-range env values (e.g. `MAX_CONNS=9999999999` → `-2147483648`) | New `envInt32` helper clamps to default with logged WARN on out-of-range, same pattern as existing `envIntMin1` |
+| `0981a16` | CWE-190 | `internal/cluster/registry/gossip_broadcast.go:47` `make([]byte, 0, n+len(topic)+len(payload))` could overflow int for attacker-crafted payloads | `encodeTopicMsg` widens sum to int64, enforces `MaxTopicMsgSize=64MiB`, returns nil with logged ERROR on oversize; Broadcast drops nil |
+
+Plus a go.work fix (`e34db6f`) removing a hardcoded local dev path that had broken CI since commit `b7085b6` (2026-04-20) — discovered when PR #78's CI finally ran against B's go.mod bumps. The original commit message had explicitly noted "Task Z1 will remove this workspace entry", but the entry had been overlooked during cyoda-go Task 30. Caught before merge.
+
 ### Commit range (cyoda-go)
 
-The B work is on branch `feat/subproject-b-persistence`. Top commits (newest first):
+The B work is on branch `feat/model-schema-extensions` on origin (local: `feat/subproject-b-persistence`). Top commits (newest first):
 
 ```
+0981a16 fix(registry): bounds-check gossip topic-message size (CWE-190)   # CodeQL fix 2
+ba3d887 fix(postgres): bounds-check int→int32 conversion in env config   # CodeQL fix 1
+e34db6f fix(go.work): drop absolute local path to cyoda-go-spi           # CI unblock
+c22a600 docs: update Sub-project B handoff for end-of-cyoda-go state
 6427fa3 chore: bump cyoda-go-spi to v0.6.0
 79fa20d docs: env vars in printHelp/README + overview §6 invariant table
 c636f7f test(parity): runtime-budget meta-test for property suite (§7.3)
@@ -88,7 +111,7 @@ c0118a1 test(postgres): B-I2 — fold across savepoint boundary byte-identical
 ... [Phase 1-3 commits below]
 ```
 
-Full range: from `a473163` (first B commit — spec rev 1) through `6427fa3` (final chore: cyoda-go-spi bump). All pushed to `origin/feat/subproject-b-persistence`.
+Full range: from `a473163` (first B commit — spec rev 1) through `0981a16` (CodeQL gossip size fix). All pushed to `origin/feat/model-schema-extensions` (PR #78).
 
 ### Notable non-plan commits you should know about
 
@@ -205,8 +228,30 @@ Do NOT read the conversation transcript — this doc is the authoritative resume
 
 ```bash
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence
-git log --oneline -3   # should show 6427fa3 at top (chore: bump cyoda-go-spi to v0.6.0)
-git status             # should be clean, tracking origin
+git log --oneline -3   # should show 0981a16 or later at top
+git status             # should be clean
+gh pr view 78 --json state,mergeStateStatus  # should be OPEN / CLEAN (or MERGED)
+```
+
+### Cleanup for the resumer (optional, local-only)
+
+The local branch is named `feat/subproject-b-persistence` but pushes to `origin/feat/model-schema-extensions`. This mismatch is functional (explicit refspec) but confusing. To align names:
+
+```bash
+# From another worktree first: delete the stale local feat/model-schema-extensions
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/model-schema-extensions && cd .. && git worktree remove model-schema-extensions
+git branch -d feat/model-schema-extensions
+
+# Then in the B worktree, rename the local branch
+cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence
+git branch -m feat/model-schema-extensions
+git branch --set-upstream-to=origin/feat/model-schema-extensions
+```
+
+Also: there's a stale remote branch `origin/feat/subproject-b-persistence` left over from my earlier mistake (I originally pushed there before realizing PR #78 was the right target). Safe to delete:
+
+```bash
+git push origin --delete feat/subproject-b-persistence
 ```
 
 ### Start Cassandra work
@@ -242,19 +287,19 @@ Total: ~9-11 hours in a focused session. Can be done in a single session if Dock
 
 ## Open questions for the resumer
 
-1. **Task 1 go.mod pinning:** Cassandra's Task 1 needs to bump `cyoda-go` to a version that includes the B changes. Since `feat/subproject-b-persistence` is NOT yet merged to cyoda-go's `main`, Task 1 may need to:
-   - Use a `replace` directive pointing at the local worktree (dev-mode), OR
-   - Wait until cyoda-go's PR is merged and a new version is tagged.
+1. **Task 1 go.mod pinning:** Cassandra's Task 1 needs to bump `cyoda-go` to a version that includes the B changes. PR #78 is now CLEAN + MERGEABLE but has NOT yet been merged to `main` (awaiting user review). Task 1 may need to:
+   - Use a `replace` directive pointing at the local cyoda-go worktree (dev-mode), OR
+   - Wait until PR #78 merges and a new version is tagged.
    
-   Decide which approach fits the current state of the cyoda-go PR. The plan (rev 3) proposes starting with `replace` for Tasks 4-12 and switching to published versions for Task 13.
+   The plan (rev 3) proposes starting with `replace` for Tasks 4-12 and switching to published versions for Task 13.
 
 2. **Cassandra container startup cost** for Gate 5 is ~30s per run. Budget accordingly.
 
-3. **cyoda-go PR status:** the branch `feat/subproject-b-persistence` has NOT yet been opened as a PR. When to PR is a user decision — could be before or after Cassandra. Ask.
+3. **cyoda-go PR status:** PR #78 is OPEN, state=CLEAN, all 8 CI checks green. User must review and merge. Coordinate timing with Cassandra work.
 
 ## Summary
 
-**cyoda-go: DONE.** Branch `feat/subproject-b-persistence` on origin, ready for PR review whenever the user decides.
+**cyoda-go: DONE.** PR #78 (`feat/model-schema-extensions`) is OPEN, mergeable, all 8 CI checks green. Awaiting user review/merge.
 
 **cyoda-go-cassandra: 0/15 tasks.** Next session's focus.
 
