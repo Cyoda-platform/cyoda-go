@@ -39,13 +39,16 @@ func stripSeeAlsoSection(src []byte) []byte {
 	for sc.Scan() {
 		line := sc.Text()
 		trimmed := strings.TrimSpace(line)
-		if !skipping && trimmed == "## SEE ALSO" {
+		// A "## SEE ALSO" heading always starts a skip section —
+		// including a second one inside an already-skipping region.
+		if trimmed == "## SEE ALSO" {
 			skipping = true
 			continue
 		}
+		// Any other H1/H2 ends the skip section and falls through
+		// so the heading itself is written.
 		if skipping && (strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ")) {
 			skipping = false
-			// don't consume this line; fall through to write it
 		}
 		if skipping {
 			continue
