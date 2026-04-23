@@ -54,7 +54,20 @@ func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path s
 	// Silently accepting them would let Merge union TypeSets across kinds,
 	// producing e.g. an OBJECT node carrying primitive DataTypes, which
 	// violates the OBJECT-only-NULL invariant that Apply enforces at replay.
+	//
+	// Exception: a LEAF carrying ONLY {NULL} is a nullable marker. JSON null
+	// against an existing ARRAY/OBJECT path (or an existing null slot later
+	// seeing a concrete array/object) is a legitimate TYPE-level change —
+	// Merge promotes to the non-LEAF kind and Union adds NULL to the target's
+	// TypeSet. The exception is strictly null-only: LEAF carrying any other
+	// primitive type is still a genuine kind mismatch and is rejected.
 	if existing.Kind() != incoming.Kind() {
+		if isNullOnlyLeaf(existing) || isNullOnlyLeaf(incoming) {
+			if !levelPermits(level, spi.ChangeLevelType) {
+				return false, fmt.Errorf("nullable marker at %s requires TYPE level, but level is %q", path, level)
+			}
+			return true, nil
+		}
 		return false, fmt.Errorf("kind mismatch at %q: %s vs %s", path, existing.Kind(), incoming.Kind())
 	}
 
@@ -118,6 +131,20 @@ func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path s
 	}
 
 	return changed, nil
+}
+
+// isNullOnlyLeaf returns true when n is a LEAF whose TypeSet contains
+// exactly {NULL}. Such a node is a nullable marker: merging it against a
+// concrete ARRAY/OBJECT promotes to the concrete kind and adds NULL to
+// the target's TypeSet via Union. Guards the LEAF[NULL] exception in
+// checkAndExtend against genuine kind conflicts (LEAF[primitive] vs
+// OBJECT/ARRAY), which must still reject.
+func isNullOnlyLeaf(n *ModelNode) bool {
+	if n == nil || n.Kind() != KindLeaf {
+		return false
+	}
+	types := n.Types().Types()
+	return len(types) == 1 && types[0] == Null
 }
 
 // checkElementWidening checks if array element types differ and whether the change is permitted.
