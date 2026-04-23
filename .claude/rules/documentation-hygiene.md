@@ -6,10 +6,10 @@ When making changes that affect the public interface or developer workflow, chec
 
 - **`README.md`** — what the project is, how to run it, configuration reference
 - **`CONTRIBUTING.md`** — how to develop, test, and submit changes
-- **`cmd/cyoda/main.go` (`printHelp()`)** — CLI help text
+- **`cmd/cyoda/help/content/`** — CLI help topic tree (`cli/*.md`, `config/*.md`, etc.)
 - **`CLAUDE.md`** — AI developer context, development gates, workflow
 
-When adding or changing environment variables, update `printHelp()`, `README.md`, and `DefaultConfig()` together.
+When adding or changing environment variables, update the relevant `config/*.md` help topic, `README.md`, and `DefaultConfig()` together.
 
 ## What not to update
 

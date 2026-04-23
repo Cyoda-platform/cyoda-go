@@ -26,32 +26,30 @@ func TestHelpSubcommand_ExistsAndDispatches(t *testing.T) {
 	}
 }
 
-// TestPrintStorageHelp_ListsPluginsAndRequired exercises the plugin-driven
-// storage section rendered by printStorageHelp. Previously covered by the
-// integration test TestHelp_StorageSection which ran --help; now that --help
-// delegates to the help subsystem (Task 13), this unit test preserves the
-// storage-section coverage.
-func TestPrintStorageHelp_ListsPluginsAndRequired(t *testing.T) {
-	// Capture stdout (printStorageHelp writes to os.Stdout via fmt.Println).
+// TestHelpConfigDatabase_ListsStorageBackends verifies that the config.database
+// help topic (rendered via the help CLI entrypoint) describes all storage
+// backends and CYODA_POSTGRES_URL. This replaces the former
+// TestPrintStorageHelp_ListsPluginsAndRequired which called the now-deleted
+// printStorageHelp() function.
+func TestHelpConfigDatabase_ListsStorageBackends(t *testing.T) {
 	origStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 	defer func() { os.Stdout = origStdout }()
 
-	printStorageHelp()
+	code := runHelpCmd([]string{"config", "database"})
 	w.Close()
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(r)
 	s := buf.String()
 
-	if !strings.Contains(s, "memory") || !strings.Contains(s, "postgres") {
-		t.Errorf("expected sorted plugin list; got:\n%s", s)
+	if code != 0 {
+		t.Errorf("runHelpCmd(config database) exit = %d", code)
 	}
-	if !strings.Contains(s, "CYODA_POSTGRES_URL") || !strings.Contains(s, "(required)") {
-		t.Errorf("expected CYODA_POSTGRES_URL to appear with (required); got:\n%s", s)
-	}
-	if !strings.Contains(s, "No configuration required.") {
-		t.Errorf("expected memory plugin to be listed with 'No configuration required.'; got:\n%s", s)
+	for _, want := range []string{"memory", "postgres", "sqlite", "CYODA_POSTGRES_URL"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("config.database help missing %q:\n%s", want, s)
+		}
 	}
 }
 

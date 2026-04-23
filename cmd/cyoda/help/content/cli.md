@@ -54,6 +54,9 @@ cyoda --version
 
 # Run with profiles: postgres storage + observability
 CYODA_PROFILES=postgres,otel cyoda
+
+# Run via docker compose (dev helper)
+./scripts/dev/run-docker-dev.sh
 ```
 
 ## SEE ALSO

@@ -577,6 +577,57 @@ func TestErrCode_Parity(t *testing.T) {
 	}
 }
 
+// Phrases that MUST appear somewhere under cli/*.md or config/*.md
+// after the printHelp() migration. Pins content that the env-var
+// grep (test #11) alone doesn't cover.
+var printHelpMustAppearPhrases = []string{
+	"_FILE",          // secret-from-file pattern
+	"--force",        // cyoda init flag
+	"--timeout",      // cyoda health/migrate flag
+	"CYODA_PROFILES", // profile loader (config.md covers this)
+	"mock",           // mock IAM default warning
+	"docker",         // run-docker.sh reference or docker run example
+}
+
+func TestPrintHelp_ContentMigrationParity(t *testing.T) {
+	wd, _ := os.Getwd()
+	root := wd
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Skip("cannot locate repo root")
+			return
+		}
+		root = parent
+	}
+	var combined strings.Builder
+	for _, dir := range []string{"cmd/cyoda/help/content/cli", "cmd/cyoda/help/content/config"} {
+		_ = filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+				return nil
+			}
+			b, _ := os.ReadFile(p)
+			combined.Write(b)
+			combined.WriteString("\n")
+			return nil
+		})
+	}
+	for _, rel := range []string{"cmd/cyoda/help/content/cli.md", "cmd/cyoda/help/content/config.md"} {
+		b, _ := os.ReadFile(filepath.Join(root, rel))
+		combined.Write(b)
+		combined.WriteString("\n")
+	}
+	text := combined.String()
+	for _, phrase := range printHelpMustAppearPhrases {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("phrase %q missing from cli/*.md + config/*.md — printHelp content not fully migrated", phrase)
+		}
+	}
+}
+
 // scanEnvVarsInConfigDocs walks the help content directory and extracts
 // every CYODA_* mention from config.md and config/**/*.md.
 func scanEnvVarsInConfigDocs(t *testing.T, contentRoot string) map[string]bool {
