@@ -22,6 +22,11 @@ import (
 // slot: Extend accepts LEAF[NULL] against an existing ARRAY/OBJECT (and
 // vice versa) as a nullable marker, matching the Diff/Apply broaden_type
 // contract.
+//
+// TODO(#85): decommission this sentinel + common.ErrCodePolymorphicSlot +
+// the isNullOnlyLeaf carve-outs in checkAndExtend/checkElementWidening
+// once Sub-project A.3 lands Cloud-parity polymorphic-slot semantics.
+// Grep this identifier to find all transitional surfaces that must go.
 var ErrPolymorphicSlot = errors.New("polymorphic slot not yet supported")
 
 // changeLevelRank maps each ChangeLevel to its position in the permission hierarchy.
