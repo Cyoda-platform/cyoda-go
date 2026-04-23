@@ -85,3 +85,74 @@ example
 		t.Errorf("section names: %+v", secs)
 	}
 }
+
+func TestExtractTagline_PrefersNameSection(t *testing.T) {
+	body := []byte(`# cli
+
+## NAME
+
+cli — the cyoda command-line interface.
+
+## DESCRIPTION
+
+A long paragraph that should NOT be used.
+`)
+	got := ExtractTagline(body)
+	want := "the cyoda command-line interface."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExtractTagline_StripsInlineMarkers(t *testing.T) {
+	body := []byte(`## NAME
+
+config — uses **bold** and ` + "`" + `code` + "`" + ` markers.
+`)
+	got := ExtractTagline(body)
+	want := "uses bold and code markers."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExtractTagline_CollapsesWhitespace(t *testing.T) {
+	body := []byte(`## DESCRIPTION
+
+Line one wraps
+across multiple
+newlines.
+`)
+	got := ExtractTagline(body)
+	want := "Line one wraps across multiple newlines."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExtractTagline_TruncatesLongText(t *testing.T) {
+	long := strings.Repeat("abc ", 40) // 160 chars
+	body := []byte("## NAME\n\ntopic — " + long + "\n")
+	got := ExtractTagline(body)
+	if len([]rune(got)) != 80 {
+		t.Errorf("got len %d, want 80: %q", len([]rune(got)), got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("got %q, want trailing …", got)
+	}
+}
+
+func TestExtractTagline_StubWithoutName(t *testing.T) {
+	body := []byte(`# topic
+
+**Content pending in v0.6.1.** See the cyoda-go README for current external documentation while this topic is authored.
+`)
+	got := ExtractTagline(body)
+	// Should strip markers, collapse whitespace, truncate.
+	if strings.Contains(got, "**") {
+		t.Errorf("should strip bold markers: %q", got)
+	}
+	if !strings.HasPrefix(got, "Content pending in v0.6.1.") {
+		t.Errorf("should start with first sentence: %q", got)
+	}
+}

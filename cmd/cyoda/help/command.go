@@ -143,7 +143,7 @@ func writeTreeSummary(tree *Tree, out io.Writer, isTTY bool) int {
 		title := bucketTitle(stab)
 		fmt.Fprintln(out, title)
 		for _, t := range list {
-			fmt.Fprintf(out, "  %-16s %s\n", t.Path[0], renderer.ExtractSynopsis(t.Body))
+			fmt.Fprintf(out, "  %-16s %s\n", t.Path[0], renderer.ExtractTagline(t.Body))
 		}
 		fmt.Fprintln(out)
 	}

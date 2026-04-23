@@ -3,8 +3,65 @@ package renderer
 import (
 	"bufio"
 	"bytes"
+	"regexp"
 	"strings"
 )
+
+// namePrefixPattern matches the leading "<topic> — " or "<topic> - " in a
+// NAME section so it can be stripped; the topic name is already shown in the
+// summary's first column.
+var namePrefixPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+\s*[—-]\s*`)
+
+// flattenToPlainText strips inline markdown markers and collapses all
+// whitespace (including newlines) into single spaces.
+func flattenToPlainText(s string) string {
+	// Strip inline markers in the same order as applyInline: code before bold.
+	s = reCode.ReplaceAllString(s, "$1")
+	s = reBold.ReplaceAllString(s, "$1")
+	s = reItalic.ReplaceAllString(s, "$1")
+	s = reLink.ReplaceAllString(s, "$1")
+	// Collapse any whitespace run (spaces, tabs, newlines) into a single space.
+	s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+// stripTopicPrefix removes the leading "<topic> — " or "<topic> - " prefix
+// from a NAME section body, leaving just the description.
+func stripTopicPrefix(s string) string {
+	return namePrefixPattern.ReplaceAllString(s, "")
+}
+
+// truncate returns s if it fits within max runes, otherwise clips at max-1
+// runes and appends "…".
+func truncate(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return strings.TrimRight(string(runes[:max-1]), " ") + "…"
+}
+
+// ExtractTagline returns a short single-line description suitable for the
+// summary view. Preference order:
+//  1. First paragraph of the NAME section, with "<topic> — " prefix stripped
+//  2. First paragraph of the DESCRIPTION section (via ExtractSynopsis)
+//  3. First non-heading paragraph anywhere (fallback of fallbacks)
+//
+// Output always has inline markers stripped, whitespace collapsed to single
+// spaces, and is truncated to 80 runes with a trailing "…" if cut.
+func ExtractTagline(body []byte) string {
+	secs := ExtractSections(body)
+	for _, s := range secs {
+		if s.Name == "NAME" {
+			p := firstParagraph(s.Body)
+			if p != "" {
+				return truncate(flattenToPlainText(stripTopicPrefix(p)), 80)
+			}
+		}
+	}
+	// Fallback to the existing synopsis logic.
+	return truncate(flattenToPlainText(ExtractSynopsis(body)), 80)
+}
 
 // TopicDescriptor is the stable JSON shape consumed by release assets,
 // the REST API, and external tooling. Field additions are allowed
