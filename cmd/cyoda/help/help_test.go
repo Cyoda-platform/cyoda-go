@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
 )
 
 func TestParseFrontMatter_ValidMinimal(t *testing.T) {
@@ -625,6 +627,34 @@ func TestPrintHelp_ContentMigrationParity(t *testing.T) {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("phrase %q missing from cli/*.md + config/*.md — printHelp content not fully migrated", phrase)
 		}
+	}
+}
+
+// TestContentMarkdownSubsetLinter rejects any help file using markdown
+// constructs outside the pinned subset. Enforces the tokenizer's scope
+// — tables, nested lists, HTML blocks, blockquotes.
+func TestContentMarkdownSubsetLinter(t *testing.T) {
+	err := fs.WalkDir(embeddedContent, "content", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+			return nil
+		}
+		raw, rerr := fs.ReadFile(embeddedContent, p)
+		if rerr != nil {
+			return rerr
+		}
+		_, body, ferr := parseFrontMatter(raw)
+		if ferr != nil {
+			// Front-matter parse errors are caught by other tests; skip.
+			return nil
+		}
+		issues := renderer.FindUnsupported(body)
+		for _, iss := range issues {
+			t.Errorf("%s: %s", p, iss)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
 	}
 }
 
