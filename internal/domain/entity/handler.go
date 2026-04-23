@@ -3,6 +3,7 @@ package entity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -83,6 +84,12 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	}
 	extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
 	if err != nil {
+		// Polymorphic-slot rejections cannot be resolved by raising ChangeLevel
+		// and so must not wear the "change level violation" prefix — the phrase
+		// misleads clients into tuning a setting that wouldn't help.
+		if errors.Is(err, schema.ErrPolymorphicSlot) {
+			return err
+		}
 		return fmt.Errorf("change level violation: %w", err)
 	}
 
@@ -165,6 +172,13 @@ func validationErrorsToError(errs []schema.ValidationError) error {
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
 // internal (5xx) or operational (4xx) and returns the appropriate AppError.
 func classifyValidateOrExtendErr(err error) *common.AppError {
+	// Polymorphic-slot rejections are a specific operational case — they're
+	// not a change-level issue (the level is honored), and they're not a
+	// server fault. Surface with a dedicated error code so SDKs can detect
+	// and document the limitation.
+	if errors.Is(err, schema.ErrPolymorphicSlot) {
+		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
+	}
 	msg := err.Error()
 	if strings.Contains(msg, "failed to unmarshal") ||
 		strings.Contains(msg, "failed to marshal") ||

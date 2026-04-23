@@ -1,7 +1,7 @@
 package schema
 
 import (
-	"strings"
+	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -140,8 +140,8 @@ func TestExtend_GenuineKindMismatch_StillRejected(t *testing.T) {
 			if err == nil {
 				t.Fatal("genuine kind mismatch must still be rejected after nullable-marker exception")
 			}
-			if !strings.Contains(err.Error(), "kind mismatch") {
-				t.Errorf("unexpected error (want 'kind mismatch'): %v", err)
+			if !errors.Is(err, ErrPolymorphicSlot) {
+				t.Errorf("unexpected error (want ErrPolymorphicSlot): %v", err)
 			}
 		})
 	}

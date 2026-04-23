@@ -11,6 +11,7 @@ const (
 	ErrCodeConflict           = "CONFLICT"
 	ErrCodeEpochMismatch      = "EPOCH_MISMATCH"
 	ErrCodeBadRequest         = "BAD_REQUEST"
+	ErrCodePolymorphicSlot    = "POLYMORPHIC_SLOT"
 	ErrCodeUnauthorized       = "UNAUTHORIZED"
 	ErrCodeForbidden          = "FORBIDDEN"
 	ErrCodeServerError        = "SERVER_ERROR"

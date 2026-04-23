@@ -1,7 +1,7 @@
 package schema
 
 import (
-	"strings"
+	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -19,28 +19,24 @@ import (
 // clear error, with the same isNullOnlyLeaf carve-out.
 func TestExtend_ArrayElementKindMismatch_Rejected(t *testing.T) {
 	cases := []struct {
-		name            string
-		existingElem    *ModelNode
-		incomingElem    *ModelNode
-		wantErrContains string
+		name         string
+		existingElem *ModelNode
+		incomingElem *ModelNode
 	}{
 		{
-			name:            "OBJECT elem vs LEAF[String] elem",
-			existingElem:    NewObjectNode(),
-			incomingElem:    NewLeafNode(String),
-			wantErrContains: "kind mismatch",
+			name:         "OBJECT elem vs LEAF[String] elem",
+			existingElem: NewObjectNode(),
+			incomingElem: NewLeafNode(String),
 		},
 		{
-			name:            "LEAF[String] elem vs OBJECT elem",
-			existingElem:    NewLeafNode(String),
-			incomingElem:    NewObjectNode(),
-			wantErrContains: "kind mismatch",
+			name:         "LEAF[String] elem vs OBJECT elem",
+			existingElem: NewLeafNode(String),
+			incomingElem: NewObjectNode(),
 		},
 		{
-			name:            "OBJECT elem vs ARRAY elem",
-			existingElem:    NewObjectNode(),
-			incomingElem:    NewArrayNode(NewLeafNode(String)),
-			wantErrContains: "kind mismatch",
+			name:         "OBJECT elem vs ARRAY elem",
+			existingElem: NewObjectNode(),
+			incomingElem: NewArrayNode(NewLeafNode(String)),
 		},
 	}
 	for _, tc := range cases {
@@ -54,8 +50,8 @@ func TestExtend_ArrayElementKindMismatch_Rejected(t *testing.T) {
 			if err == nil {
 				t.Fatal("array element kind mismatch must reject, not silently absorb")
 			}
-			if !strings.Contains(err.Error(), tc.wantErrContains) {
-				t.Errorf("unexpected error: %v; want to contain %q", err, tc.wantErrContains)
+			if !errors.Is(err, ErrPolymorphicSlot) {
+				t.Errorf("unexpected error: %v; want ErrPolymorphicSlot", err)
 			}
 		})
 	}

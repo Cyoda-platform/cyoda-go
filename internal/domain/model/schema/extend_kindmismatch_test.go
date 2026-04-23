@@ -1,7 +1,7 @@
 package schema
 
 import (
-	"strings"
+	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -10,7 +10,9 @@ import (
 // TestExtend_RejectsLeafToObjectKindMismatch asserts that attempting to
 // extend a LEAF node at path P with an OBJECT node at the same path
 // returns an error, rather than silently producing an OBJECT-with-
-// primitive-types that Apply cannot replay.
+// primitive-types that Apply cannot replay. The error wraps the
+// ErrPolymorphicSlot sentinel so the handler can surface a clear
+// polymorphism-specific message.
 func TestExtend_RejectsLeafToObjectKindMismatch(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("f0", NewLeafNode(Integer))
@@ -24,8 +26,8 @@ func TestExtend_RejectsLeafToObjectKindMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("Extend accepted LEAF->OBJECT kind change without error")
 	}
-	if !strings.Contains(err.Error(), "kind mismatch") {
-		t.Errorf("unexpected error: %v; want 'kind mismatch'", err)
+	if !errors.Is(err, ErrPolymorphicSlot) {
+		t.Errorf("unexpected error: %v; want ErrPolymorphicSlot", err)
 	}
 }
 
@@ -43,7 +45,7 @@ func TestExtend_RejectsObjectToLeafKindMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("Extend accepted OBJECT->LEAF kind change without error")
 	}
-	if !strings.Contains(err.Error(), "kind mismatch") {
-		t.Errorf("unexpected error: %v; want 'kind mismatch'", err)
+	if !errors.Is(err, ErrPolymorphicSlot) {
+		t.Errorf("unexpected error: %v; want ErrPolymorphicSlot", err)
 	}
 }
