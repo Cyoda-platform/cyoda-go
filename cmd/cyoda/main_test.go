@@ -2,9 +2,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
+	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help/renderer"
+	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 )
 
 func TestHelpSubcommand_ExistsAndDispatches(t *testing.T) {
@@ -50,6 +57,34 @@ func TestHelpConfigDatabase_ListsStorageBackends(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("config.database help missing %q:\n%s", want, s)
 		}
+	}
+}
+
+func TestHelpRestEndpointReportsInjectedVersion(t *testing.T) {
+	origVersion := version
+	version = "9.9.9-test"
+	internalapi.SetHelpBinaryVersion(version)
+	defer func() {
+		version = origVersion
+		internalapi.SetHelpBinaryVersion(origVersion)
+	}()
+
+	mux := http.NewServeMux()
+	internalapi.RegisterHelpRoutes(mux, help.DefaultTree, "/api")
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var payload renderer.HelpPayload
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Version != "9.9.9-test" {
+		t.Errorf("Version = %q, want %q (SetHelpBinaryVersion not wired from main.go)", payload.Version, "9.9.9-test")
 	}
 }
 

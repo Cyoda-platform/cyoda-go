@@ -17,6 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
 	"github.com/cyoda-platform/cyoda-go/internal/admin"
+	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 
@@ -45,6 +46,9 @@ func runHelpCmd(args []string) int {
 }
 
 func main() {
+	// Wire ldflag version into REST /help endpoint.
+	internalapi.SetHelpBinaryVersion(version)
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--help", "-h":
