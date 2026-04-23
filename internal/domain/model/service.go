@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,6 +17,18 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
+
+// classifyGetErr maps ModelStore.Get errors to AppError: genuine not-found
+// → 404 MODEL_NOT_FOUND (via modelNotFound), everything else → 5xx with
+// the original error preserved in the chain for ticket-correlated logging.
+// Callers pass the per-operation verb (e.g. "export model") for the 5xx
+// message so operators can identify the failing path from the ticket log.
+func classifyGetErr(verb string, entityName string, ver int32, err error) *common.AppError {
+	if errors.Is(err, spi.ErrNotFound) {
+		return modelNotFound(entityName, ver)
+	}
+	return common.Internal(fmt.Sprintf("failed to %s", verb), err)
+}
 
 // ImportModelInput carries the parameters for importing a model.
 type ImportModelInput struct {
@@ -57,6 +70,24 @@ func parseVersion(v string) int32 {
 	return int32(n)
 }
 
+// getModelFresh returns the model descriptor, bypassing any per-request
+// cache layer when the store supports RefreshAndGet. In multi-node
+// cluster deployments this eliminates a stale-cache race window
+// between a peer's mutation and its gossip-borne invalidation.
+// Admin-path gating reads (ImportModel, LockModel, UnlockModel,
+// DeleteModel, SetChangeLevel) use this; routine display/listing
+// reads (ExportModel, ListModels, ValidateModel) keep the cache for
+// throughput — eventual consistency is acceptable for those paths.
+func getModelFresh(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
+	type refresher interface {
+		RefreshAndGet(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error)
+	}
+	if r, ok := store.(refresher); ok {
+		return r.RefreshAndGet(ctx, ref)
+	}
+	return store.Get(ctx, ref)
+}
+
 // ImportModel imports a model from sample data, merging with any existing schema.
 func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*ImportModelResult, error) {
 	if input.Converter != "SAMPLE_DATA" {
@@ -71,7 +102,11 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	ver := parseVersion(input.ModelVersion)
 	ref := modelRef(input.EntityName, ver)
 
-	existing, err := store.Get(ctx, ref)
+	// Bypass the per-request cache: in a multi-node cluster the cache
+	// can briefly serve a stale LOCKED descriptor in the window between a
+	// peer's delete and its gossip-borne invalidation. Admin operations
+	// are low-frequency, so one forced round-trip is fine.
+	existing, err := getModelFresh(ctx, store, ref)
 	if err != nil {
 		existing = nil
 	}
@@ -136,7 +171,7 @@ func (h *Handler) ExportModel(ctx context.Context, entityName, modelVersion, con
 	ref := modelRef(entityName, ver)
 	desc, err := store.Get(ctx, ref)
 	if err != nil {
-		return nil, modelNotFound(entityName, ver)
+		return nil, classifyGetErr("export model", entityName, ver, err)
 	}
 
 	node, err := schema.Unmarshal(desc.Schema)
@@ -172,8 +207,13 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	desc, err := store.Get(ctx, ref)
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, store, ref)
 	if err != nil {
+		return nil, classifyGetErr("lock model", entityName, ver, err)
+	}
+	if desc == nil {
 		return nil, modelNotFound(entityName, ver)
 	}
 
@@ -209,8 +249,13 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	desc, err := modelStore.Get(ctx, ref)
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, modelStore, ref)
 	if err != nil {
+		return nil, classifyGetErr("unlock model", entityName, ver, err)
+	}
+	if desc == nil {
 		return nil, modelNotFound(entityName, ver)
 	}
 
@@ -252,8 +297,13 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	_, err = modelStore.Get(ctx, ref)
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, modelStore, ref)
 	if err != nil {
+		return classifyGetErr("delete model", entityName, ver, err)
+	}
+	if desc == nil {
 		return modelNotFound(entityName, ver)
 	}
 
@@ -321,7 +371,7 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 	ref := modelRef(entityName, ver)
 	desc, err := store.Get(ctx, ref)
 	if err != nil {
-		return modelNotFound(entityName, ver)
+		return classifyGetErr("validate model", entityName, ver, err)
 	}
 
 	modelNode, err := schema.Unmarshal(desc.Schema)
@@ -330,7 +380,9 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 	}
 
 	var parsedData any
-	if err := json.Unmarshal(data, &parsedData); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&parsedData); err != nil {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body")
 	}
 
@@ -358,7 +410,13 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 	ver := parseVersion(modelVersion)
 	ref := modelRef(entityName, ver)
 
-	if _, err := store.Get(ctx, ref); err != nil {
+	// Admin-path gating read — bypass the per-request cache; see
+	// getModelFresh for the multi-node rationale.
+	desc, err := getModelFresh(ctx, store, ref)
+	if err != nil {
+		return classifyGetErr("set change level", entityName, ver, err)
+	}
+	if desc == nil {
 		return modelNotFound(entityName, ver)
 	}
 

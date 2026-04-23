@@ -63,6 +63,24 @@ func TestRoundTripNestedWithArray(t *testing.T) {
 	}
 }
 
+func TestRoundTripEmptyArrayElementNil(t *testing.T) {
+	n := schema.NewArrayNode(nil)
+	b, err := schema.Marshal(n)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	decoded, err := schema.Unmarshal(b)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.Kind() != schema.KindArray {
+		t.Fatalf("decoded kind = %v, want KindArray", decoded.Kind())
+	}
+	if decoded.Element() != nil {
+		t.Fatalf("decoded.Element() = %v, want nil (preserved across round-trip)", decoded.Element())
+	}
+}
+
 func TestRoundTripPolymorphic(t *testing.T) {
 	node := schema.NewObjectNode()
 	leaf := schema.NewLeafNode(schema.Integer)

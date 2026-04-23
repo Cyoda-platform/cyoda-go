@@ -40,3 +40,7 @@ func TestParity(t *testing.T) {
 		})
 	}
 }
+
+func TestParity_SchemaExtensionPropertyBudget(t *testing.T) {
+	parity.RunSchemaExtensionPropertyBudget(t, sharedFixture)
+}

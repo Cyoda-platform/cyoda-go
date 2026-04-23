@@ -352,6 +352,13 @@ Secrets to the pod without exposing them in `env` output.
 | `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for the bootstrap client |
 | `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 
+### Schema extension log
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_SCHEMA_SAVEPOINT_INTERVAL` | `64` | Number of extensions between savepoint rows. Honored by: postgres, sqlite, cassandra. Ignored by memory (no log). |
+| `CYODA_SCHEMA_EXTEND_MAX_RETRIES` | `8` | Plugin-layer retry budget for ExtendSchema. Honored by: sqlite (SQLITE_BUSY), cassandra (LWT). Ignored by memory, postgres (no conflict surface on schema writes). |
+
 ### SQLite
 
 | Variable | Default | Description |

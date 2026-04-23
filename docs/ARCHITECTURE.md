@@ -276,6 +276,15 @@ against any managed PostgreSQL 14+ platform (RDS, Cloud SQL, Azure,
 Supabase, Neon, Aiven, Crunchy Bridge, self-hosted, etc.). Full detail
 in [docs/plugins/POSTGRES.md](plugins/POSTGRES.md).
 
+Model storage splits into two tables: `models` carries stable
+metadata (state, ChangeLevel, base schema) and `model_schema_extensions`
+is an append-only log of typed-op deltas produced by
+`ExtendSchema`. Plugin-internal savepoints every 64 rows bound the
+fold cost on read. The split eliminates the hot-row serialization
+conflict that the previous single-table-with-`UPDATE` scheme
+exhibited under concurrent entity writes with `ChangeLevel != ""`.
+See [docs/CONSISTENCY.md §3a](CONSISTENCY.md#3a-model--data-contract).
+
 ### 2.4 The `cassandra` plugin (commercial)
 
 A Cassandra-backed storage plugin is available as a commercial offering
@@ -417,6 +426,14 @@ This is the most architecturally significant section. Cyoda-Go supports multi-no
 ### 4.1 Cluster Discovery
 
 **Protocol:** SWIM gossip via HashiCorp `memberlist` (pure Go, embedded, no external infrastructure).
+
+**Topics:** In addition to cluster membership, the gossip layer
+carries application-level invalidation topics. The model-cache
+decorator (`internal/cluster/modelcache`) publishes on
+`model.invalidate` whenever a local mutation changes a
+`(tenantID, ref)` binding — every peer evicts the matching cache
+entry. The TTL lease (±10% jitter) is the fallback when gossip
+drops a message.
 
 **Encryption:** AES-256-GCM encrypted gossip using a shared HMAC secret (`CYODA_HMAC_SECRET`). The same secret is used for gossip encryption and transaction token signing.
 

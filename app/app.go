@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
@@ -32,6 +33,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -126,7 +128,37 @@ func New(cfg Config) *App {
 	if err != nil {
 		panic(fmt.Sprintf("create storage factory for %s: %v", plugin.Name(), err))
 	}
-	a.storeFactory = factory
+
+	// Wire the schema.Apply replay function into the plugin factory so
+	// ExtendSchema can fold deltas on read. Postgres uses this to fold
+	// the extension log; SQLite/Memory use it to apply in-place. The
+	// interface uses the raw function signature (not any plugin-local
+	// named ApplyFunc type) so a single type-assertion satisfies all
+	// plugins uniformly.
+	type applyFuncSetter interface {
+		SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
+	}
+	if setter, ok := factory.(applyFuncSetter); ok {
+		setter.SetApplyFunc(makeSchemaApply())
+	}
+
+	// Wrap the factory in the caching decorator. ModelStore(ctx) now
+	// returns a per-request adapter that reads through one shared
+	// cache (tenant-scoped via ctx). In cluster mode the decorator
+	// publishes "model.invalidate" on gossipReg so peer nodes stay in
+	// sync; in single-node mode no broadcaster is installed (passing a
+	// typed-nil *registry.Gossip as an interface would still evaluate
+	// != nil and trigger a nil-deref, so we pass an untyped nil).
+	var cacheBroadcaster spi.ClusterBroadcaster
+	if gossipReg != nil {
+		cacheBroadcaster = gossipReg
+	}
+	a.storeFactory = modelcache.NewCachingStoreFactory(
+		factory,
+		cacheBroadcaster,
+		nil, // wall clock
+		cfg.ModelCacheLease,
+	)
 
 	// Startable plugins (cassandra, etc.) must complete Start BEFORE the
 	// factory can serve TransactionManager: the initial takeover / shard-
@@ -575,6 +607,23 @@ func validateClusterConfig(c cluster.Config) {
 	if !strings.HasPrefix(c.NodeAddr, "http://") && !strings.HasPrefix(c.NodeAddr, "https://") {
 		slog.Error("CYODA_NODE_ADDR must include scheme (http:// or https://)", "pkg", "cluster", "addr", c.NodeAddr)
 		os.Exit(1)
+	}
+}
+
+// makeSchemaApply returns the schema-apply replay function the plugin
+// factories use to fold extension-log deltas on read. Defined here so
+// the plugin packages don't depend on internal/domain/model/schema.
+func makeSchemaApply() func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+	return func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		node, err := schema.Unmarshal(base)
+		if err != nil {
+			return nil, fmt.Errorf("apply: unmarshal base: %w", err)
+		}
+		extended, err := schema.Apply(node, delta)
+		if err != nil {
+			return nil, err
+		}
+		return schema.Marshal(extended)
 	}
 }
 

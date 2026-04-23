@@ -114,10 +114,15 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		ModelVersion: input.ModelVersion,
 	}
 
-	// Load model descriptor
+	// Load model descriptor. Distinguish genuine not-found (404) from other
+	// infrastructure errors (5xx) — a schema fold/apply failure or a pgx
+	// connection blip must not masquerade as a missing model.
 	desc, err := modelStore.Get(ctx, ref)
 	if err != nil {
-		return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "model not found")
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound, "model not found")
+		}
+		return nil, common.Internal("failed to load model", err)
 	}
 
 	// Reject if model not locked
@@ -557,17 +562,29 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
+	// The model must exist; a request to delete all entities of a model
+	// that was never registered is a 404. But a registered model with
+	// zero entities is a successful no-op (idempotent delete-before-
+	// recreate flows depend on this).
+	modelStore, err := h.factory.ModelStore(txCtx)
+	if err != nil {
+		h.txMgr.Rollback(txCtx, txID)
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if _, err := modelStore.Get(txCtx, ref); err != nil {
+		h.txMgr.Rollback(txCtx, txID)
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil, common.Operational(404, common.ErrCodeModelNotFound,
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", entityName, modelVersion))
+		}
+		return nil, common.Internal("failed to load model", err)
+	}
+
 	// Get all entities before deleting (for verbose response and IDs).
 	entities, err := entityStore.GetAll(txCtx, ref)
 	if err != nil {
 		h.txMgr.Rollback(txCtx, txID)
 		return nil, common.Internal("failed to get entities", err)
-	}
-
-	if len(entities) == 0 {
-		h.txMgr.Rollback(txCtx, txID)
-		return nil, common.Operational(404, common.ErrCodeEntityNotFound,
-			fmt.Sprintf("no entities found for model %s/%s", entityName, modelVersion))
 	}
 
 	if err := entityStore.DeleteAll(txCtx, ref); err != nil {
@@ -674,11 +691,16 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 			ModelVersion: fmt.Sprintf("%d", item.ModelVersion),
 		}
 
-		// Load and validate model
+		// Load and validate model. Distinguish genuine not-found (404) from
+		// other infrastructure errors (5xx) so a schema fold/apply failure
+		// does not masquerade as a missing model for a batch item.
 		desc, err := modelStore.Get(ctx, ref)
 		if err != nil {
-			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("item %d: model not found", i))
+			if errors.Is(err, spi.ErrNotFound) {
+				return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+					fmt.Sprintf("item %d: model not found", i))
+			}
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model", i), err)
 		}
 		if desc.State != spi.ModelLocked {
 			return nil, common.Operational(http.StatusConflict, common.ErrCodeModelNotLocked,

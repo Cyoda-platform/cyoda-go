@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,8 +32,10 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 
 	switch eventType {
 	case EntityCreateRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
 		var req events.EntityCreateRequestJson
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -73,8 +76,10 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityUpdateRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
 		var req events.EntityUpdateRequestJson
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -120,8 +125,10 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityDeleteRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
 		var req events.EntityDeleteRequestJson
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -148,8 +155,10 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityDeleteResponse, resp)
 
 	case EntityTransitionRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
 		var req events.EntityTransitionRequestJson
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -209,8 +218,10 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 
 	switch eventType {
 	case EntityCreateCollectionRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
 		var req events.EntityCreateCollectionRequestJson
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 		if len(req.Payloads) == 0 {
@@ -260,8 +271,10 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return stream.Send(respCE)
 
 	case EntityUpdateCollectionRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
 		var req events.EntityUpdateCollectionRequestJson
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 		if len(req.Payloads) == 0 {
@@ -330,8 +343,10 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return stream.Send(respCE)
 
 	case EntityDeleteAllRequest:
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
 		var req events.EntityDeleteAllRequestJson
-		if err := json.Unmarshal(payload, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 

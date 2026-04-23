@@ -25,13 +25,42 @@ func WithClock(c Clock) Option {
 	return func(f *StoreFactory) { f.clock = c }
 }
 
+// ApplyFunc replays an opaque SchemaDelta onto a base schema and
+// returns the new schema bytes. Production wiring uses schema.Apply
+// from internal/domain/model/schema; the SPI keeps deltas opaque so
+// the catalog stays out of the plugin.
+type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
+
+// WithApplyFunc installs the replay function used by ExtendSchema.
+// Must be called when the caller intends to use ExtendSchema; until
+// then, ExtendSchema returns an informative error.
+func WithApplyFunc(fn ApplyFunc) Option {
+	return func(f *StoreFactory) { f.applyFunc = fn }
+}
+
+// SetApplyFunc installs the replay function used by ExtendSchema.
+// May be called at most once — typically immediately after
+// Plugin.NewFactory in app/app.go. Panics on double-call
+// (programmer error).
+//
+// The parameter is the unnamed function type (not sqlite.ApplyFunc)
+// so that an interface type-assertion in app/app.go can satisfy the
+// setter uniformly across plugins.
+func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error)) {
+	if f.applyFunc != nil {
+		panic("sqlite: SetApplyFunc called twice")
+	}
+	f.applyFunc = ApplyFunc(fn)
+}
+
 // StoreFactory implements spi.StoreFactory backed by SQLite.
 type StoreFactory struct {
-	db       *sql.DB
-	fileLock *flock.Flock
-	clock    Clock
-	cfg      config
-	tm       *transactionManager
+	db        *sql.DB
+	fileLock  *flock.Flock
+	clock     Clock
+	cfg       config
+	tm        *transactionManager
+	applyFunc ApplyFunc
 
 	closeMu sync.Mutex
 	closed  bool
@@ -183,7 +212,7 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelStore{db: f.db, tenantID: tid}, nil
+	return &modelStore{db: f.db, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
 }
 
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
@@ -265,11 +294,12 @@ func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
 // given path. Intended for test use only.
 func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) (*StoreFactory, error) {
 	cfg := config{
-		Path:            dbPath,
-		AutoMigrate:     true,
-		BusyTimeout:     5 * time.Second,
-		CacheSizeKiB:    64000,
-		SearchScanLimit: 100_000,
+		Path:                   dbPath,
+		AutoMigrate:            true,
+		BusyTimeout:            5 * time.Second,
+		CacheSizeKiB:           64000,
+		SearchScanLimit:        100_000,
+		SchemaExtendMaxRetries: 8,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {
@@ -283,11 +313,12 @@ func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) 
 // limit for testing scan budget exhaustion. Intended for test use only.
 func NewStoreFactoryForTestWithScanLimit(ctx context.Context, dbPath string, scanLimit int, opts ...Option) (*StoreFactory, error) {
 	cfg := config{
-		Path:            dbPath,
-		AutoMigrate:     true,
-		BusyTimeout:     5 * time.Second,
-		CacheSizeKiB:    64000,
-		SearchScanLimit: scanLimit,
+		Path:                   dbPath,
+		AutoMigrate:            true,
+		BusyTimeout:            5 * time.Second,
+		CacheSizeKiB:           64000,
+		SearchScanLimit:        scanLimit,
+		SchemaExtendMaxRetries: 8,
 	}
 	f, err := newStoreFactory(ctx, cfg, opts...)
 	if err != nil {

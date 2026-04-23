@@ -85,12 +85,16 @@ func setupSchemaSymmetryWorkflow(t *testing.T, c *client.Client, modelName strin
 	t.Helper()
 
 	// The sample document must contain every top-level and nested field
-	// that the test entity will use, so model validation passes.
+	// that the test entity will use AND seed each leaf's classification
+	// to the type the test will later POST. Strict validation under the
+	// A.1 IsAssignableTo semantics rejects LONG against an INTEGER schema
+	// and DOUBLE against an INTEGER schema, so the sample must pre-seed
+	// those leaves with the broader type.
 	sampleDoc := `{
-		"level1": {"level2": {"level3": {"level4_int": 0, "level4_float": 0.0, "level4_string": "", "level4_unicode": "", "level4_empty": "", "level4_null": null}}},
+		"level1": {"level2": {"level3": {"level4_int": 0, "level4_float": 0.5, "level4_string": "", "level4_unicode": "", "level4_empty": "", "level4_null": null}}},
 		"array_with_nulls": ["sample", null],
 		"large_string": "",
-		"int_at_boundary": 0,
+		"int_at_boundary": 9007199254740991,
 		"negative_zero": 0,
 		"boolean_true": true,
 		"boolean_false": false,

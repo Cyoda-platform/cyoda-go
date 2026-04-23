@@ -2,6 +2,7 @@ package entity_test
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"time"
 
@@ -83,3 +84,69 @@ func (s *failingEntityStore) CountByState(_ context.Context, _ spi.ModelRef, _ [
 func (s *failingEntityStore) GetVersionHistory(_ context.Context, _ string) ([]spi.EntityVersion, error) {
 	return nil, s.err
 }
+
+// modelStoreGetErr is a spi.ModelStore that returns the configured error from
+// Get. All other methods are unused by the tests that inject this mock and
+// return nil/zero. Used to verify that the service layer classifies Get
+// errors correctly (spi.ErrNotFound → 404, anything else → 5xx).
+type modelStoreGetErr struct {
+	err error
+}
+
+func (m *modelStoreGetErr) Save(_ context.Context, _ *spi.ModelDescriptor) error { return nil }
+func (m *modelStoreGetErr) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+	return nil, m.err
+}
+func (m *modelStoreGetErr) GetAll(_ context.Context) ([]spi.ModelRef, error) { return nil, nil }
+func (m *modelStoreGetErr) Delete(_ context.Context, _ spi.ModelRef) error  { return nil }
+func (m *modelStoreGetErr) Lock(_ context.Context, _ spi.ModelRef) error    { return nil }
+func (m *modelStoreGetErr) Unlock(_ context.Context, _ spi.ModelRef) error  { return nil }
+func (m *modelStoreGetErr) IsLocked(_ context.Context, _ spi.ModelRef) (bool, error) {
+	return false, nil
+}
+func (m *modelStoreGetErr) SetChangeLevel(_ context.Context, _ spi.ModelRef, _ spi.ChangeLevel) error {
+	return nil
+}
+func (m *modelStoreGetErr) ExtendSchema(_ context.Context, _ spi.ModelRef, _ spi.SchemaDelta) error {
+	return nil
+}
+
+// Compile-time contract check.
+var _ spi.ModelStore = (*modelStoreGetErr)(nil)
+
+// modelGetErrFactory is a spi.StoreFactory that returns a modelStoreGetErr
+// from ModelStore(). EntityStore and the other stores are unused by the
+// CreateEntity test paths that reach ModelStore.Get first.
+type modelGetErrFactory struct {
+	getErr error
+}
+
+func (f *modelGetErrFactory) EntityStore(_ context.Context) (spi.EntityStore, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) ModelStore(_ context.Context) (spi.ModelStore, error) {
+	return &modelStoreGetErr{err: f.getErr}, nil
+}
+func (f *modelGetErrFactory) KeyValueStore(_ context.Context) (spi.KeyValueStore, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) MessageStore(_ context.Context) (spi.MessageStore, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) WorkflowStore(_ context.Context) (spi.WorkflowStore, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) StateMachineAuditStore(_ context.Context) (spi.StateMachineAuditStore, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
+	return nil, errUnusedEntity
+}
+func (f *modelGetErrFactory) Close() error { return nil }
+
+// errUnusedEntity is a sentinel for store accessors the CreateEntity-path
+// tests never reach because the ModelStore.Get error short-circuits.
+var errUnusedEntity = errors.New("store not used by this test")

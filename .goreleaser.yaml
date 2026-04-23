@@ -74,7 +74,7 @@ brews:
     description: Lightweight Go EDBMS — digital twin of the Cyoda platform.
     license: Apache-2.0
     commit_author:
-      name: cyoda-platform-release-bot
+      name: cyoda-go-release-bot
       email: noreply@cyoda.com
     install: |
       bin.install "cyoda"

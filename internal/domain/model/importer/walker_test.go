@@ -2,6 +2,7 @@ package importer_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
@@ -11,7 +12,7 @@ import (
 func TestWalkFlatObject(t *testing.T) {
 	data := map[string]any{
 		"name": "Alice",
-		"age":  float64(30),
+		"age":  json.Number("30"),
 	}
 	node, err := importer.Walk(data)
 	if err != nil {
@@ -81,7 +82,7 @@ func TestWalkArrayOfObjects(t *testing.T) {
 	data := map[string]any{
 		"items": []any{
 			map[string]any{"name": "x"},
-			map[string]any{"name": "y", "price": float64(10)},
+			map[string]any{"name": "y", "price": json.Number("10")},
 		},
 	}
 	node, err := importer.Walk(data)
@@ -117,57 +118,28 @@ func TestWalkBoolean(t *testing.T) {
 	}
 }
 
-func TestWalkNumericInferenceWithDefaultScope(t *testing.T) {
-	// Default scope: intScope=INTEGER, decimalScope=DOUBLE.
-	// Values below INTEGER are clamped up to INTEGER.
+func TestWalkNumericInference(t *testing.T) {
+	// Task 15 value-based classifier: whole-number magnitudes bucket by size
+	// across Integer/Long/BigInteger/UnboundInteger; fractional decimals go
+	// through ClassifyDecimal.
 	tests := []struct {
 		name     string
-		value    float64
+		literal  string
 		expected schema.DataType
 	}{
-		{"127 → INTEGER (clamped from Byte)", 127, schema.Integer},
-		{"128 → INTEGER (clamped from Short)", 128, schema.Integer},
-		{"32767 → INTEGER (clamped from Short)", 32767, schema.Integer},
-		{"32768 → INTEGER", 32768, schema.Integer},
-		{"2147483647 → INTEGER", 2147483647, schema.Integer},
-		{"2147483648 → Long", 2147483648, schema.Long},
-		{"-129 → INTEGER (clamped from Short)", -129, schema.Integer},
-		{"1.5 → Double", 1.5, schema.Double},
+		{"127 → Integer", "127", schema.Integer},
+		{"128 → Integer", "128", schema.Integer},
+		{"32767 → Integer", "32767", schema.Integer},
+		{"32768 → Integer", "32768", schema.Integer},
+		{"2147483647 → Integer", "2147483647", schema.Integer},
+		{"2147483648 → Long", "2147483648", schema.Long},
+		{"-129 → Integer", "-129", schema.Integer},
+		{"1.5 → Double", "1.5", schema.Double},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			data := map[string]any{"v": tc.value}
+			data := map[string]any{"v": json.Number(tc.literal)}
 			node, err := importer.Walk(data)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			types := node.Child("v").Types().Types()
-			if len(types) != 1 || types[0] != tc.expected {
-				t.Errorf("expected [%v], got %v", tc.expected, types)
-			}
-		})
-	}
-}
-
-func TestWalkNumericInferenceRawScope(t *testing.T) {
-	// With intScope=Byte, no clamping — raw inference.
-	cfg := importer.WalkConfig{IntScope: schema.Byte, DecimalScope: schema.Float}
-	tests := []struct {
-		name     string
-		value    float64
-		expected schema.DataType
-	}{
-		{"127 → Byte", 127, schema.Byte},
-		{"128 → Short", 128, schema.Short},
-		{"32767 → Short", 32767, schema.Short},
-		{"32768 → Integer", 32768, schema.Integer},
-		{"-129 → Short", -129, schema.Short},
-		{"1.5 → Double (raw inference, Float is minimum)", 1.5, schema.Double},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			data := map[string]any{"v": tc.value}
-			node, err := importer.WalkWithConfig(data, cfg)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -213,8 +185,7 @@ func TestWalkJsonNumber(t *testing.T) {
 }
 
 func TestWalkJsonNumberLarge(t *testing.T) {
-	// 9007199254740993 fits in int64 (2^53+1) but loses precision in float64.
-	// With json.Number we preserve it as Long.
+	// 2^53+1 exceeds int32 range → Long per ClassifyInteger.
 	data := map[string]any{"v": json.Number("9007199254740993")}
 	node, err := importer.Walk(data)
 	if err != nil {
@@ -256,6 +227,56 @@ func TestWalkUnsupportedType(t *testing.T) {
 	_, err := importer.Walk(data)
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
+	}
+}
+
+func TestWalker_ValueBasedClassification(t *testing.T) {
+	cases := []struct {
+		in   string
+		want schema.DataType
+	}{
+		// Integer-family literals (including decimal-shaped whole numbers).
+		{`42`, schema.Integer},
+		{`"1.0"`, schema.String},                                           // quoted is STRING
+		{`9007199254740993`, schema.Long},                                  // 2^53 + 1, beyond int32
+		{`9223372036854775808`, schema.BigInteger},                         // 2^63, beyond int64
+		{`170141183460469231731687303715884105728`, schema.UnboundInteger}, // 2^127
+		// Whole-number decimals route to integer branch.
+		{`1.0`, schema.Integer},
+		{`1e0`, schema.Integer},
+		{`100`, schema.Integer}, // strip → (1, -2), value-based → Integer
+		// Fractional decimals route to decimal branch.
+		{`0.1`, schema.Double},
+		{`1.5`, schema.Double},
+		// Pi-18 is BIG_DECIMAL; pi-20 is UNBOUND_DECIMAL.
+		{`3.141592653589793238`, schema.BigDecimal},
+		{`3.14159265358979323846`, schema.UnboundDecimal},
+		// Overflow: 10^400 is a whole number; value-based → integer branch.
+		{`1e400`, schema.UnboundInteger},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			dec := json.NewDecoder(strings.NewReader(c.in))
+			dec.UseNumber()
+			var v any
+			if err := dec.Decode(&v); err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			node, err := importer.Walk(v)
+			if err != nil {
+				t.Fatalf("Walk: %v", err)
+			}
+			if node.Kind() != schema.KindLeaf {
+				t.Fatalf("expected leaf, got %s", node.Kind())
+			}
+			types := node.Types().Types()
+			if len(types) != 1 {
+				t.Fatalf("expected single type, got %v", types)
+			}
+			if types[0] != c.want {
+				t.Errorf("walker for %q: got %s, want %s", c.in, types[0], c.want)
+			}
+		})
 	}
 }
 

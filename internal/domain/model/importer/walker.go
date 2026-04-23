@@ -3,38 +3,25 @@ package importer
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
+	"math/big"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// WalkConfig controls schema discovery behavior.
-type WalkConfig struct {
-	// IntScope is the minimum integer type to infer (default: Integer).
-	// Values narrower than this are widened. For example, if IntScope is Integer,
-	// a value of 42 (which fits in Byte) is inferred as Integer.
-	IntScope schema.DataType
-	// DecimalScope is the minimum decimal type to infer (default: Double).
-	DecimalScope schema.DataType
-}
+// WalkConfig is retained as an empty struct for backward compatibility
+// across the refactor. Scope fields (IntScope, DecimalScope) were
+// removed in A.1 Task 13 along with the BYTE/SHORT/FLOAT DataTypes.
+type WalkConfig struct{}
 
-// DefaultWalkConfig returns the default walk configuration matching Cyoda Cloud behavior.
-func DefaultWalkConfig() WalkConfig {
-	return WalkConfig{
-		IntScope:     schema.Integer,
-		DecimalScope: schema.Double,
-	}
-}
+// DefaultWalkConfig returns an empty WalkConfig.
+func DefaultWalkConfig() WalkConfig { return WalkConfig{} }
 
-// Walk converts a generic parsed data tree into a ModelNode schema tree
-// using the default walk configuration.
+// Walk converts a generic parsed data tree into a ModelNode schema tree.
 func Walk(data any) (*schema.ModelNode, error) {
 	return WalkWithConfig(data, DefaultWalkConfig())
 }
 
-// WalkWithConfig converts a generic parsed data tree into a ModelNode schema tree
-// using the provided configuration.
+// WalkWithConfig applies the default walk.
 func WalkWithConfig(data any, cfg WalkConfig) (*schema.ModelNode, error) {
 	w := &walker{cfg: cfg}
 	return w.walkValue(data)
@@ -53,9 +40,9 @@ func (w *walker) walkValue(v any) (*schema.ModelNode, error) {
 	case string:
 		return schema.NewLeafNode(schema.String), nil
 	case json.Number:
-		return schema.NewLeafNode(w.clampNumeric(inferNumericTypeFromString(val.String()))), nil
+		return classifyNumber(val)
 	case float64:
-		return schema.NewLeafNode(w.clampNumeric(inferNumericType(val))), nil
+		return nil, fmt.Errorf("walker received float64 value; callers must use json.UseNumber() decoding")
 	case bool:
 		return schema.NewLeafNode(schema.Boolean), nil
 	case nil:
@@ -65,91 +52,60 @@ func (w *walker) walkValue(v any) (*schema.ModelNode, error) {
 	}
 }
 
-func (w *walker) walkObject(obj map[string]any) (*schema.ModelNode, error) {
+func (w *walker) walkObject(m map[string]any) (*schema.ModelNode, error) {
 	node := schema.NewObjectNode()
-	for key, val := range obj {
-		child, err := w.walkValue(val)
+	for k, v := range m {
+		child, err := w.walkValue(v)
 		if err != nil {
-			return nil, fmt.Errorf("field %q: %w", key, err)
+			return nil, fmt.Errorf("field %q: %w", k, err)
 		}
-		node.SetChild(key, child)
+		node.SetChild(k, child)
 	}
 	return node, nil
+}
+
+func classifyNumber(n json.Number) (*schema.ModelNode, error) {
+	d, err := schema.ParseDecimal(n.String())
+	if err != nil {
+		return nil, fmt.Errorf("classify number %q: %w", n.String(), err)
+	}
+	stripped := d.StripTrailingZeros()
+	// Value-based classification (spec §2.3): any whole-number value routes
+	// to the integer branch regardless of source syntax. After
+	// StripTrailingZeros, scale <= 0 means the value is a whole number:
+	//   scale == 0 → unscaled itself (e.g. 42, "1.0" → 1)
+	//   scale <  0 → unscaled × 10^(-scale) (e.g. "100" → (1,-2) → 100;
+	//                "1e400" → (1,-400) → 10^400)
+	// Only a positive scale after stripping indicates a genuine fractional
+	// component that must go through ClassifyDecimal.
+	if stripped.Scale() <= 0 {
+		unscaled := stripped.Unscaled()
+		if s := stripped.Scale(); s < 0 {
+			mult := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-s)), nil)
+			unscaled = new(big.Int).Mul(unscaled, mult)
+		}
+		return schema.NewLeafNode(schema.ClassifyInteger(unscaled)), nil
+	}
+	return schema.NewLeafNode(schema.ClassifyDecimal(stripped)), nil
 }
 
 func (w *walker) walkArray(arr []any) (*schema.ModelNode, error) {
 	if len(arr) == 0 {
 		return schema.NewArrayNode(schema.NewLeafNode(schema.Null)), nil
 	}
-
 	var element *schema.ModelNode
-	for i, item := range arr {
+	for _, item := range arr {
 		child, err := w.walkValue(item)
 		if err != nil {
-			return nil, fmt.Errorf("index [%d]: %w", i, err)
+			return nil, err
+		}
+		if element == nil {
+			element = child
+			continue
 		}
 		element = schema.Merge(element, child)
 	}
-
 	node := schema.NewArrayNode(element)
 	node.Info().Observe(len(arr))
 	return node, nil
-}
-
-// clampNumeric widens a numeric type to at least the configured minimum scope.
-func (w *walker) clampNumeric(dt schema.DataType) schema.DataType {
-	if schema.NumericFamily(dt) == 1 && schema.NumericRank(dt) < schema.NumericRank(w.cfg.IntScope) {
-		return w.cfg.IntScope
-	}
-	if schema.NumericFamily(dt) == 2 && schema.NumericRank(dt) < schema.NumericRank(w.cfg.DecimalScope) {
-		return w.cfg.DecimalScope
-	}
-	return dt
-}
-
-// inferNumericTypeFromString classifies a numeric string (from json.Number)
-// into the narrowest DataType that can represent it without precision loss.
-func inferNumericTypeFromString(s string) schema.DataType {
-	if strings.ContainsAny(s, ".eE") {
-		// Decimal family
-		_, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			// Overflow or precision loss — use BigDecimal
-			return schema.BigDecimal
-		}
-		return schema.Double
-	}
-	// Integer family
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		// Too large for int64 — BigInteger
-		return schema.BigInteger
-	}
-	switch {
-	case v >= -128 && v <= 127:
-		return schema.Byte
-	case v >= -32768 && v <= 32767:
-		return schema.Short
-	case v >= -2147483648 && v <= 2147483647:
-		return schema.Integer
-	default:
-		return schema.Long
-	}
-}
-
-func inferNumericType(f float64) schema.DataType {
-	if f == float64(int64(f)) {
-		v := int64(f)
-		switch {
-		case v >= -128 && v <= 127:
-			return schema.Byte
-		case v >= -32768 && v <= 32767:
-			return schema.Short
-		case v >= -2147483648 && v <= 2147483647:
-			return schema.Integer
-		default:
-			return schema.Long
-		}
-	}
-	return schema.Double
 }

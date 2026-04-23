@@ -130,3 +130,25 @@ SELECT tenant_id, entity_id, model_name, model_version, version,
        json(data) AS data, json(meta) AS meta,
        change_type, transaction_id, submit_time, user_id
 FROM entity_versions;
+
+-- --------------------------------------------------------------------
+-- Model schema extensions — append-only log of additive schema deltas.
+-- See docs/superpowers/specs/2026-04-20-model-schema-extensions-design.md §4.4.
+-- SQLite is single-node by design; this table exists for SPI parity
+-- and for the conformance tests. Fold is trivial since there is only
+-- one writer.
+-- --------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_schema_extensions (
+    tenant_id     TEXT     NOT NULL,
+    model_name    TEXT     NOT NULL,
+    model_version TEXT     NOT NULL,
+    seq           INTEGER  NOT NULL,
+    kind          TEXT     NOT NULL CHECK (kind IN ('delta', 'savepoint')),
+    payload       BLOB     NOT NULL,
+    tx_id         TEXT     NOT NULL,
+    created_at    TEXT     NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (tenant_id, model_name, model_version, seq)
+);
+
+CREATE INDEX IF NOT EXISTS model_schema_extensions_lookup
+    ON model_schema_extensions (tenant_id, model_name, model_version, seq DESC);

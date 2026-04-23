@@ -85,3 +85,49 @@ func TestParseConfig_URLFileUnreadable(t *testing.T) {
 		t.Fatal("expected error for unreadable _FILE path, got nil")
 	}
 }
+
+func TestParseConfig_SchemaSavepointInterval(t *testing.T) {
+	env := map[string]string{
+		"CYODA_POSTGRES_URL":              "postgres://localhost/x",
+		"CYODA_SCHEMA_SAVEPOINT_INTERVAL": "128",
+	}
+	cfg, err := parseConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.SchemaSavepointInterval != 128 {
+		t.Errorf("SchemaSavepointInterval = %d, want 128", cfg.SchemaSavepointInterval)
+	}
+}
+
+func TestParseConfig_SchemaSavepointInterval_DefaultOnUnset(t *testing.T) {
+	env := map[string]string{
+		"CYODA_POSTGRES_URL": "postgres://localhost/x",
+	}
+	cfg, _ := parseConfig(func(k string) string { return env[k] })
+	if cfg.SchemaSavepointInterval != 64 {
+		t.Errorf("SchemaSavepointInterval default = %d, want 64", cfg.SchemaSavepointInterval)
+	}
+}
+
+func TestParseConfig_SchemaSavepointInterval_DefaultOnInvalid(t *testing.T) {
+	env := map[string]string{
+		"CYODA_POSTGRES_URL":              "postgres://localhost/x",
+		"CYODA_SCHEMA_SAVEPOINT_INTERVAL": "not-an-int",
+	}
+	cfg, _ := parseConfig(func(k string) string { return env[k] })
+	if cfg.SchemaSavepointInterval != 64 {
+		t.Errorf("SchemaSavepointInterval on invalid input = %d, want 64 (fallback)", cfg.SchemaSavepointInterval)
+	}
+}
+
+func TestParseConfig_SchemaSavepointInterval_DefaultOnZero(t *testing.T) {
+	env := map[string]string{
+		"CYODA_POSTGRES_URL":              "postgres://localhost/x",
+		"CYODA_SCHEMA_SAVEPOINT_INTERVAL": "0",
+	}
+	cfg, _ := parseConfig(func(k string) string { return env[k] })
+	if cfg.SchemaSavepointInterval != 64 {
+		t.Errorf("SchemaSavepointInterval on 0 = %d, want 64 (min 1 with fallback to default)", cfg.SchemaSavepointInterval)
+	}
+}

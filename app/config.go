@@ -29,7 +29,11 @@ type Config struct {
 	Cluster            cluster.Config
 	SearchSnapshotTTL  time.Duration
 	SearchReapInterval time.Duration
-	OTelEnabled        bool
+	// ModelCacheLease is the baseline TTL for cached LOCKED model
+	// descriptors. Actual expiry is jittered ±10% to prevent cross-
+	// node herding. Defaults to 5m; tune via CYODA_MODEL_CACHE_LEASE.
+	ModelCacheLease time.Duration
+	OTelEnabled     bool
 	// ExternalProcessing overrides the default gRPC processor dispatcher.
 	// Used in tests to inject a LocalProcessingService.
 	ExternalProcessing contract.ExternalProcessingService
@@ -106,6 +110,7 @@ func DefaultConfig() Config {
 		},
 		SearchSnapshotTTL:  envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
 		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
+		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
 		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
 		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
 		Admin: AdminConfig{

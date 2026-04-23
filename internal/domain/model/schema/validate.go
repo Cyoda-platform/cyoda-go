@@ -3,13 +3,31 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+	"math/big"
+)
+
+// ErrorKind classifies a ValidationError so handlers can branch on
+// specific failure modes without matching error message text.
+type ErrorKind int
+
+const (
+	// ErrKindGeneric covers validation failures that do not map to a
+	// more specific kind (type mismatches, shape mismatches).
+	ErrKindGeneric ErrorKind = iota
+
+	// ErrKindUnknownElement fires when a data document carries a field
+	// that the validating schema does not declare. In practice this is
+	// the "stale schema" signal handlers use to decide whether to
+	// refresh from authoritative storage and retry (see
+	// internal/domain/entity/handler.go).
+	ErrKindUnknownElement
 )
 
 // ValidationError describes a single validation failure at a specific path.
 type ValidationError struct {
 	Path    string
 	Message string
+	Kind    ErrorKind
 }
 
 // Error implements the error interface.
@@ -18,6 +36,19 @@ func (e ValidationError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf("%s: %s", e.Path, e.Message)
+}
+
+// HasUnknownSchemaElement reports whether any of the validation
+// errors in errs classify as ErrKindUnknownElement — the stale-schema
+// signal. Handlers use this to decide whether to force a cache
+// refresh and re-validate once before surfacing a 4xx to the client.
+func HasUnknownSchemaElement(errs []ValidationError) bool {
+	for _, e := range errs {
+		if e.Kind == ErrKindUnknownElement {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate checks whether data conforms to the given model schema.
@@ -62,6 +93,7 @@ func validateObject(model *ModelNode, data any, path string) []ValidationError {
 			errs = append(errs, ValidationError{
 				Path:    joinPath(path, name),
 				Message: "unexpected field not present in model",
+				Kind:    ErrKindUnknownElement,
 			})
 		}
 	}
@@ -92,86 +124,53 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 		// Null is compatible with any type.
 		return nil
 	}
-
 	dataType := inferDataType(data)
 	modelTypes := model.Types().Types()
-
 	for _, mt := range modelTypes {
-		if isCompatible(dataType, mt) {
+		if IsAssignableTo(dataType, mt) {
 			return nil
 		}
 	}
-
 	return []ValidationError{{
 		Path:    path,
 		Message: fmt.Sprintf("value of type %s is not compatible with %v", dataType, modelTypes),
 	}}
 }
 
-// inferDataType maps a Go value (typically from JSON decoding) to a DataType.
+// inferDataType maps a Go value (typically from JSON decoding with
+// UseNumber) to a DataType using the same classifier the walker uses.
+// This ensures validation sees the same classification as schema
+// inference.
 func inferDataType(v any) DataType {
 	switch n := v.(type) {
 	case bool:
 		return Boolean
 	case json.Number:
-		// JSON/XML importers preserve numeric leaves as json.Number to
-		// avoid float64 precision loss for integers >2^53. Classify as
-		// Double when the literal carries a fractional or exponent
-		// component, Long otherwise. Distinguishing finer integer widths
-		// here would only be used as a "numeric vs non-numeric" signal
-		// by isCompatible, so Long is sufficient.
-		if strings.ContainsAny(string(n), ".eE") {
-			return Double
+		d, err := ParseDecimal(string(n))
+		if err != nil {
+			// Malformed — conservatively say String (validation will fail).
+			return String
 		}
-		return Long
-	case float64:
-		// Fallback for JSON numbers decoded WITHOUT UseNumber() (legacy paths)
-		// and for caller-constructed trees with hand-typed float64 values.
-		// Intentionally lossy: an integer-valued float64 (e.g. 2.0) is
-		// classified as Double here, while the same integer literal via
-		// UseNumber → json.Number("2") would be classified as Long. This
-		// asymmetry is harmless under isCompatible's numeric-vs-non-numeric
-		// signal and is preserved to avoid broadening the float64 branch's
-		// scope (which would also affect non-importer call sites).
-		return Double
-	case int:
-		return Integer
-	case int64:
-		return Long
+		stripped := d.StripTrailingZeros()
+		if stripped.Scale() <= 0 {
+			var bigVal *big.Int
+			if stripped.Scale() == 0 {
+				bigVal = stripped.Unscaled()
+			} else {
+				factor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-stripped.Scale())), nil)
+				bigVal = new(big.Int).Mul(stripped.Unscaled(), factor)
+			}
+			return ClassifyInteger(bigVal)
+		}
+		return ClassifyDecimal(stripped)
 	case string:
 		return String
 	case nil:
 		return Null
 	default:
-		// Fallback — should not normally occur for JSON-decoded data.
+		// No float64/int/int64 fallbacks. Callers must use json.UseNumber.
+		// If something leaks through, map to String so validation fails noisily.
 		return String
-	}
-}
-
-// isCompatible returns true if a data value of type dataT is acceptable
-// where the model declares modelT.
-func isCompatible(dataT, modelT DataType) bool {
-	if dataT == modelT {
-		return true
-	}
-	if dataT == Null {
-		return true
-	}
-	// Numeric data values are compatible with any numeric model type.
-	if isNumeric(dataT) && isNumeric(modelT) {
-		return true
-	}
-	return false
-}
-
-// isNumeric returns true if dt is a numeric DataType.
-func isNumeric(dt DataType) bool {
-	switch dt {
-	case Byte, Short, Integer, Long, BigInteger, UnboundInteger,
-		Float, Double, BigDecimal, UnboundDecimal:
-		return true
-	default:
-		return false
 	}
 }
 

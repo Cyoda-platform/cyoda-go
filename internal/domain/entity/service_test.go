@@ -60,6 +60,78 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 	}
 }
 
+// TestCreateEntity_ClassifiesModelStoreErrors verifies that CreateEntity
+// distinguishes spi.ErrNotFound (a legitimate 404 MODEL_NOT_FOUND) from
+// other infrastructure errors returned by ModelStore.Get (which must be 5xx).
+// Blanket-mapping every Get error to 404 hides real failures — a schema
+// fold/apply failure, a pgx connection blip, or a bug in a new schema op
+// would look indistinguishable from a genuinely missing model.
+func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
+	uc := &spi.UserContext{
+		UserID:   "test-user",
+		UserName: "test",
+		Tenant:   spi.Tenant{ID: "test-tenant", Name: "Test"},
+		Roles:    []string{"user"},
+	}
+	ctx := spi.WithUserContext(context.Background(), uc)
+
+	input := entity.CreateEntityInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Data:         json.RawMessage(`{"field":"value"}`),
+	}
+
+	t.Run("ErrNotFound maps to 404", func(t *testing.T) {
+		h := entity.New(
+			&modelGetErrFactory{getErr: spi.ErrNotFound},
+			nil,
+			common.NewDefaultUUIDGenerator(),
+			nil,
+		)
+
+		_, err := h.CreateEntity(ctx, input)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status != http.StatusNotFound {
+			t.Errorf("expected 404 for ErrNotFound, got %d: %s", appErr.Status, appErr.Message)
+		}
+	})
+
+	t.Run("arbitrary error maps to 5xx", func(t *testing.T) {
+		synthetic := errors.New("synthetic fold failure")
+		h := entity.New(
+			&modelGetErrFactory{getErr: synthetic},
+			nil,
+			common.NewDefaultUUIDGenerator(),
+			nil,
+		)
+
+		_, err := h.CreateEntity(ctx, input)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+		}
+		if appErr.Status == http.StatusNotFound {
+			t.Errorf("non-ErrNotFound infra error must not be 404 MODEL_NOT_FOUND; got %d: %s", appErr.Status, appErr.Message)
+		}
+		if appErr.Status < 500 || appErr.Status >= 600 {
+			t.Errorf("expected 5xx for non-ErrNotFound error, got %d: %s", appErr.Status, appErr.Message)
+		}
+		if !errors.Is(err, synthetic) {
+			t.Errorf("expected wrapped error to satisfy errors.Is(synthetic), got %v", err)
+		}
+	})
+}
+
 // TestGetEntity_NotFoundReturns404 verifies that ErrNotFound from the entity store
 // results in a 404.
 func TestGetEntity_NotFoundReturns404(t *testing.T) {
@@ -293,7 +365,12 @@ func decodeJSONResponseUseNumber(t *testing.T, body []byte, v any) {
 // path must keep the literal exactly.
 func TestCreateEntity_PreservesLargeIntPrecision(t *testing.T) {
 	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "PrecisionCreate", 1, `{"id":1,"name":"x"}`)
+	// Updated for A.1: seed the schema with a 2^53+1 literal so the id
+	// leaf classifies as LONG. Post-A.1 the classifier no longer widens
+	// LONG values into an INTEGER schema; the sample fixture must advertise
+	// the LONG family upfront for this precision test to reach the service
+	// layer at all.
+	importAndLockModel(t, srv.URL, "PrecisionCreate", 1, `{"id":9007199254740993,"name":"x"}`)
 
 	// 9007199254740993 == 2^53 + 1, the smallest positive integer that is
 	// not exactly representable as a float64.
@@ -334,7 +411,9 @@ func TestCreateEntity_PreservesLargeIntPrecision(t *testing.T) {
 // preservation through the UpdateEntity HTTP path (service.go :781).
 func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
 	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "PrecisionUpdate", 1, `{"id":1,"name":"x"}`)
+	// Updated for A.1: seed with a LONG-family literal so the schema
+	// accepts the >2^53 update payload. See TestCreateEntity_PreservesLargeIntPrecision.
+	importAndLockModel(t, srv.URL, "PrecisionUpdate", 1, `{"id":9007199254740993,"name":"x"}`)
 
 	// Create with a small id, then update with a >2^53 id.
 	entityID := createEntityAndGetID(t, srv.URL, "PrecisionUpdate", 1, `{"id":1,"name":"orig"}`)
@@ -375,7 +454,9 @@ func TestUpdateEntity_PreservesLargeIntPrecision(t *testing.T) {
 // TestCreateEntity_PreservesLargeIntPrecision.
 func TestCollectionCreate_PreservesLargeIntPrecision(t *testing.T) {
 	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "PrecisionCollection", 1, `{"id":1,"name":"x"}`)
+	// Updated for A.1: seed with a LONG-family literal so the schema
+	// accepts the >2^53 payload. See TestCreateEntity_PreservesLargeIntPrecision.
+	importAndLockModel(t, srv.URL, "PrecisionCollection", 1, `{"id":9007199254740993,"name":"x"}`)
 
 	// 9007199254740993 == 2^53 + 1, the smallest positive integer that is
 	// not exactly representable as a float64. The first item carries the
@@ -435,5 +516,47 @@ func TestCollectionCreate_PreservesLargeIntPrecision(t *testing.T) {
 	}
 	if gotInt != int64(9007199254740993) {
 		t.Fatalf("expected int64=9007199254740993, got %d", gotInt)
+	}
+}
+
+// TestDeleteAllEntities_EmptyModel_ReturnsZeroCount verifies that
+// DeleteAllEntities on a model with no entities returns a success result
+// with TotalCount=0 rather than a 404. Idempotent delete-before-recreate
+// smoke flows in multi-node clusters depend on this behavior.
+func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := statsTestCtx("tenant-delete-empty")
+
+	txMgr, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil)
+
+	// Register a LOCKED model with zero entities.
+	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
+	mstore, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := mstore.Save(ctx, &spi.ModelDescriptor{Ref: mref, State: spi.ModelLocked}); err != nil {
+		t.Fatalf("ModelStore.Save: %v", err)
+	}
+
+	result, err := h.DeleteAllEntities(ctx, "EmptyModel", "1")
+	if err != nil {
+		t.Fatalf("DeleteAllEntities on empty model: expected no error, got %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.TotalCount != 0 {
+		t.Errorf("expected TotalCount=0, got %d", result.TotalCount)
+	}
+	if result.ModelID == "" {
+		t.Error("expected ModelID to be populated")
+	}
+	if result.EntityModelID == "" {
+		t.Error("expected EntityModelID to be populated")
 	}
 }

@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -327,7 +328,9 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 	warnings := diag.GetWarnings()
 	for _, e := range results {
 		var data any
-		if err := json.Unmarshal(e.Data, &data); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(e.Data))
+		dec.UseNumber()
+		if err := dec.Decode(&data); err != nil {
 			slog.Warn("failed to unmarshal entity data", "pkg", "grpc", "entityId", e.Meta.ID, "error", err)
 			continue
 		}
@@ -599,7 +602,9 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	for _, e := range results {
 		var data any
 		if e.Data != nil {
-			if err := json.Unmarshal(e.Data, &data); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(e.Data))
+			dec.UseNumber()
+			if err := dec.Decode(&data); err != nil {
 				slog.Warn("failed to unmarshal entity data", "pkg", "grpc", "entityId", e.Meta.ID, "error", err)
 				continue
 			}

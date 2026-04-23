@@ -3,6 +3,7 @@ package entity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,16 @@ import (
 
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
 const maxEntityBodySize = 10 * 1024 * 1024
+
+// errInternalSchema tags schema-processing errors inside validateOrExtend
+// that represent internal failures (codec decode/encode, Diff computation,
+// plugin-layer ExtendSchema write) rather than client-contract violations.
+// The handler classifier uses errors.Is to route these to 5xx with a
+// logged ticket. Using a sentinel rather than string-matching the wrap
+// messages makes classification robust to future wording changes — the
+// prior string-match classifier would have silently shifted a renamed
+// "failed to extend schema" to 4xx.
+var errInternalSchema = errors.New("internal schema processing failure")
 
 // maxStatesFilterSize bounds the cardinality of the user-supplied ?states= query
 // parameter on stats-by-state endpoints. Without this cap, an oversized list would
@@ -51,13 +62,18 @@ func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
 	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeBadRequest, "not yet implemented"))
 }
 
-// validateOrExtend validates parsedData against the model schema. When changeLevel
-// is set, it extends the model instead of strict validation and saves the updated
-// model back. Returns an error on validation or extension failure.
+// validateOrExtend validates parsedData against the model schema. When
+// changeLevel is set, it computes an additive schema delta via schema.Diff
+// and appends it to the model's extension log via ModelStore.ExtendSchema.
+// That call participates in the ambient entity transaction, so visibility
+// is commit-bound and concurrent entity writes on the same model do not
+// contend on a single "models" row — the hot-row regression that
+// ModelStore.Save would otherwise produce under REPEATABLE READ.
+// Returns an error on validation or extension failure.
 func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal model schema: %w", err)
+		return fmt.Errorf("%w: failed to unmarshal model schema: %w", errInternalSchema, err)
 	}
 
 	if desc.ChangeLevel == "" {
@@ -78,29 +94,109 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	}
 	extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
 	if err != nil {
+		// Polymorphic-slot rejections cannot be resolved by raising ChangeLevel
+		// and so must not wear the "change level violation" prefix — the phrase
+		// misleads clients into tuning a setting that wouldn't help.
+		if errors.Is(err, schema.ErrPolymorphicSlot) {
+			return err
+		}
 		return fmt.Errorf("change level violation: %w", err)
 	}
-	schemaBytes, err := schema.Marshal(extended)
+
+	// Compute the additive delta. Diff returns (nil, nil) when the
+	// extension is a semantic no-op, which is the common case on
+	// every entity write.
+	delta, err := schema.Diff(modelNode, extended)
 	if err != nil {
-		return fmt.Errorf("failed to marshal extended schema: %w", err)
+		return fmt.Errorf("%w: failed to compute schema delta: %w", errInternalSchema, err)
 	}
-	desc.Schema = schemaBytes
-	if err := modelStore.Save(ctx, desc); err != nil {
-		return fmt.Errorf("failed to save extended model: %w", err)
+	if delta == nil {
+		return nil
+	}
+	// Append to the extension log via the plugin. Participates in the
+	// ambient entity transaction so visibility is commit-bound.
+	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
+		return fmt.Errorf("%w: failed to extend schema: %w", errInternalSchema, err)
 	}
 	return nil
 }
 
+// ValidateWithRefresh runs strict schema validation with a bounded
+// refresh-on-stale safety net. One refresh attempt, only on unknown-
+// schema-element errors — the signal that our cached schema is behind
+// a peer's ExtendSchema. Other validation failures surface directly.
+// Stores that don't implement RefreshAndGet (no caching layer) skip
+// the refresh and return the original errors. See spec §4.3.
+func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, data any) error {
+	desc, err := modelStore.Get(ctx, ref)
+	if err != nil {
+		return err
+	}
+	errs := validateDescriptor(desc, data)
+	if errs == nil {
+		return nil
+	}
+	if !schema.HasUnknownSchemaElement(errs) {
+		return validationErrorsToError(errs)
+	}
+	refresher, ok := modelStore.(interface {
+		RefreshAndGet(context.Context, spi.ModelRef) (*spi.ModelDescriptor, error)
+	})
+	if !ok {
+		return validationErrorsToError(errs) // plugin has no cache
+	}
+	freshDesc, rErr := refresher.RefreshAndGet(ctx, ref)
+	if rErr != nil {
+		return rErr
+	}
+	if errs2 := validateDescriptor(freshDesc, data); errs2 != nil {
+		return validationErrorsToError(errs2)
+	}
+	return nil
+}
+
+// validateDescriptor unmarshals desc.Schema and runs schema.Validate.
+// Returns nil on success, or a []ValidationError on failure (including
+// a descriptive entry if desc itself is malformed or nil).
+func validateDescriptor(desc *spi.ModelDescriptor, data any) []schema.ValidationError {
+	if desc == nil {
+		return []schema.ValidationError{{Message: "nil descriptor"}}
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return []schema.ValidationError{{Message: fmt.Sprintf("unmarshal schema: %v", err)}}
+	}
+	return schema.Validate(node, data)
+}
+
+// validationErrorsToError converts a []ValidationError to a single error,
+// preserving the concatenation style used by validateOrExtend.
+func validationErrorsToError(errs []schema.ValidationError) error {
+	msgs := make([]string, len(errs))
+	for i, e := range errs {
+		msgs[i] = e.Error()
+	}
+	return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+}
+
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
 // internal (5xx) or operational (4xx) and returns the appropriate AppError.
+//
+// Classification is sentinel-based to keep it robust against wording drift
+// in the wrap strings:
+//
+//   - ErrPolymorphicSlot → 4xx POLYMORPHIC_SLOT (client normalizes payload)
+//   - errInternalSchema  → 5xx with logged ticket (codec/diff/store failure)
+//   - anything else      → 4xx BAD_REQUEST (change-level violation,
+//                          validation failure, malformed walk input)
 func classifyValidateOrExtendErr(err error) *common.AppError {
-	msg := err.Error()
-	if strings.Contains(msg, "failed to unmarshal") ||
-		strings.Contains(msg, "failed to marshal") ||
-		strings.Contains(msg, "failed to save") {
+	if errors.Is(err, schema.ErrPolymorphicSlot) {
+		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
+	}
+	if errors.Is(err, errInternalSchema) {
 		return common.Internal("failed to process model schema", err)
 	}
-	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, msg)
+	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {

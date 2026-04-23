@@ -1,10 +1,33 @@
 package schema
 
 import (
+	"errors"
 	"fmt"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
+
+// ErrPolymorphicSlot is returned by Extend when the incoming payload
+// carries a different node kind at the same path as the registered schema
+// (LEAF vs OBJECT, OBJECT vs ARRAY, etc.). Cyoda Cloud represents such
+// slots via a tagged-union; cyoda-go does not yet implement that
+// representation.
+//
+// The sentinel lets handler layers distinguish polymorphic-slot rejections
+// — which the caller cannot resolve by raising ChangeLevel — from genuine
+// change-level violations (new field at TYPE, widening at ArrayLength,
+// etc.) so the user-facing error message is not misleading.
+//
+// The LEAF[NULL] nullable-marker path is NOT classified as a polymorphic
+// slot: Extend accepts LEAF[NULL] against an existing ARRAY/OBJECT (and
+// vice versa) as a nullable marker, matching the Diff/Apply broaden_type
+// contract.
+//
+// TODO(#85): decommission this sentinel + common.ErrCodePolymorphicSlot +
+// the isNullOnlyLeaf carve-outs in checkAndExtend/checkElementWidening
+// once Sub-project A.3 lands Cloud-parity polymorphic-slot semantics.
+// Grep this identifier to find all transitional surfaces that must go.
+var ErrPolymorphicSlot = errors.New("polymorphic slot not yet supported")
 
 // changeLevelRank maps each ChangeLevel to its position in the permission hierarchy.
 // Higher rank means more permissive. Empty string maps to -1 (nothing allowed).
@@ -48,6 +71,28 @@ func Extend(existing, incoming *ModelNode, level spi.ChangeLevel) (*ModelNode, e
 func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path string) (bool, error) {
 	if existing == nil || incoming == nil {
 		return false, nil
+	}
+
+	// Kind mismatches are not additive — Diff already documents this contract.
+	// Silently accepting them would let Merge union TypeSets across kinds,
+	// producing e.g. an OBJECT node carrying primitive DataTypes, which
+	// violates the OBJECT-only-NULL invariant that Apply enforces at replay.
+	//
+	// Exception: a LEAF carrying ONLY {NULL} is a nullable marker. JSON null
+	// against an existing ARRAY/OBJECT path (or an existing null slot later
+	// seeing a concrete array/object) is a legitimate TYPE-level change —
+	// Merge promotes to the non-LEAF kind and Union adds NULL to the target's
+	// TypeSet. The exception is strictly null-only: LEAF carrying any other
+	// primitive type is still a genuine kind mismatch and is rejected.
+	if existing.Kind() != incoming.Kind() {
+		if isNullOnlyLeaf(existing) || isNullOnlyLeaf(incoming) {
+			if !levelPermits(level, spi.ChangeLevelType) {
+				return false, fmt.Errorf("nullable marker at %s requires TYPE level, but level is %q", path, level)
+			}
+			return true, nil
+		}
+		return false, fmt.Errorf("%w at %q: existing %s, incoming %s — cyoda-go does not yet support polymorphic slots (Cyoda Cloud does); normalize the field to one kind per record (e.g. always use an array, or always a scalar) until parity ships",
+			ErrPolymorphicSlot, path, existing.Kind(), incoming.Kind())
 	}
 
 	changed := false
@@ -112,8 +157,39 @@ func checkAndExtend(existing, incoming *ModelNode, level spi.ChangeLevel, path s
 	return changed, nil
 }
 
+// isNullOnlyLeaf returns true when n is a LEAF whose TypeSet contains
+// exactly {NULL}. Such a node is a nullable marker: merging it against a
+// concrete ARRAY/OBJECT promotes to the concrete kind and adds NULL to
+// the target's TypeSet via Union. Guards the LEAF[NULL] exception in
+// checkAndExtend against genuine kind conflicts (LEAF[primitive] vs
+// OBJECT/ARRAY), which must still reject.
+func isNullOnlyLeaf(n *ModelNode) bool {
+	if n == nil || n.Kind() != KindLeaf {
+		return false
+	}
+	types := n.Types().Types()
+	return len(types) == 1 && types[0] == Null
+}
+
 // checkElementWidening checks if array element types differ and whether the change is permitted.
 func checkElementWidening(existingElem, incomingElem *ModelNode, level spi.ChangeLevel, path string) (bool, error) {
+	// Kind mismatches between array elements carry the same contract as at
+	// the root (checkAndExtend): reject unless one side is a LEAF[NULL]
+	// nullable marker, which Merge promotes to the concrete kind. Without
+	// this check, kind-mismatched elements silently passed through and
+	// Merge absorbed them into the existing kind — losing the incoming
+	// element's type information entirely.
+	if existingElem.Kind() != incomingElem.Kind() {
+		if isNullOnlyLeaf(existingElem) || isNullOnlyLeaf(incomingElem) {
+			if !levelPermits(level, spi.ChangeLevelArrayElements) {
+				return false, fmt.Errorf("nullable marker on array element at %s requires ARRAY_ELEMENTS level, but level is %q", path, level)
+			}
+			return true, nil
+		}
+		return false, fmt.Errorf("%w at %s[]: existing %s, incoming %s — cyoda-go does not yet support polymorphic slots (Cyoda Cloud does); normalize the array elements to one kind per record until parity ships",
+			ErrPolymorphicSlot, path, existingElem.Kind(), incomingElem.Kind())
+	}
+
 	// For leaf elements, check type widening at the ARRAY_ELEMENTS level
 	if existingElem.Kind() == KindLeaf && incomingElem.Kind() == KindLeaf {
 		if !existingElem.Types().Equal(incomingElem.Types()) {
@@ -127,6 +203,13 @@ func checkElementWidening(existingElem, incomingElem *ModelNode, level spi.Chang
 	// For object elements, recurse into children
 	if existingElem.Kind() == KindObject && incomingElem.Kind() == KindObject {
 		return checkAndExtend(existingElem, incomingElem, level, path+"[]")
+	}
+
+	// For array-of-array elements, recurse into the inner element.
+	if existingElem.Kind() == KindArray && incomingElem.Kind() == KindArray {
+		if existingElem.Element() != nil && incomingElem.Element() != nil {
+			return checkElementWidening(existingElem.Element(), incomingElem.Element(), level, path+"[]")
+		}
 	}
 
 	return false, nil

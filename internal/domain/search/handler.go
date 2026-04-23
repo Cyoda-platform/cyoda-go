@@ -1,6 +1,7 @@
 package search
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -275,7 +276,9 @@ func entityEnvelope(e *spi.Entity) map[string]any {
 	}
 
 	var data any
-	json.Unmarshal(e.Data, &data)
+	dec := json.NewDecoder(bytes.NewReader(e.Data))
+	dec.UseNumber()
+	_ = dec.Decode(&data)
 
 	return map[string]any{
 		"type": "ENTITY",

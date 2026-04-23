@@ -104,3 +104,29 @@ func (s *ModelStore) SetChangeLevel(ctx context.Context, modelRef spi.ModelRef, 
 	entry.ChangeLevel = level
 	return nil
 }
+
+// ExtendSchema applies the delta to the current schema via the
+// injected ApplyFunc. Memory is single-writer so apply-in-place
+// under the factory's model mutex is correct.
+func (s *ModelStore) ExtendSchema(ctx context.Context, ref spi.ModelRef, delta spi.SchemaDelta) error {
+	if len(delta) == 0 {
+		return nil
+	}
+	if s.factory.applyFunc == nil {
+		return fmt.Errorf("memory: ApplyFunc not wired (use WithApplyFunc)")
+	}
+	s.factory.modelMu.Lock()
+	defer s.factory.modelMu.Unlock()
+
+	entry, ok := s.factory.modelData[s.tenant][ref]
+	if !ok {
+		return fmt.Errorf("model %s not found: %w", ref, spi.ErrNotFound)
+	}
+	newSchema, err := s.factory.applyFunc(entry.Schema, delta)
+	if err != nil {
+		return fmt.Errorf("apply delta for %s: %w", ref, err)
+	}
+	// Replace the schema bytes. Other descriptor fields untouched.
+	entry.Schema = newSchema
+	return nil
+}

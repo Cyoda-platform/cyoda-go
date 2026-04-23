@@ -92,11 +92,11 @@ func (e *JSONSchemaExporter) convertLeaf(node *schema.ModelNode) map[string]any 
 // jsonSchemaType maps a DataType to a JSON Schema type descriptor.
 func jsonSchemaType(dt schema.DataType) map[string]any {
 	switch dt {
-	case schema.Byte, schema.Short, schema.Integer, schema.Long,
+	case schema.Integer, schema.Long,
 		schema.BigInteger, schema.UnboundInteger:
 		return map[string]any{"type": "integer"}
 
-	case schema.Float, schema.Double, schema.BigDecimal, schema.UnboundDecimal:
+	case schema.Double, schema.BigDecimal, schema.UnboundDecimal:
 		return map[string]any{"type": "number"}
 
 	case schema.String, schema.Character:

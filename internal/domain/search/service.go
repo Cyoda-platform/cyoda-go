@@ -69,6 +69,14 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 // When the plugin's EntityStore implements spi.Searcher and there is no active
 // transaction, Search delegates to the plugin for SQL predicate pushdown.
 // Otherwise it falls back to GetAll + in-memory filtering.
+//
+// TODO(model-schema-extensions-F3): when field-path validation against the
+// model schema is added here (pre-execution, rejecting unknown paths early),
+// wrap it via entity.Handler.ValidateWithRefresh so a stale cached schema
+// triggers one bounded RefreshAndGet before the rejection surfaces. Today
+// the service has no such pre-execution validation step; unknown paths are
+// caught downstream by match.Evaluate / plugin Searcher. Integration point
+// belongs here when the validation hook is introduced.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
 	store, err := s.factory.EntityStore(ctx)
 	if err != nil {

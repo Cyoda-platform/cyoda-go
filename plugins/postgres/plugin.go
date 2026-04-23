@@ -52,7 +52,7 @@ func (p *plugin) NewFactory(
 		}
 	}
 
-	factory := newStoreFactory(pool)
+	factory := newStoreFactory(pool, cfg)
 	factory.initTransactionManager(&defaultUUIDGenerator{})
 	return factory, nil
 }

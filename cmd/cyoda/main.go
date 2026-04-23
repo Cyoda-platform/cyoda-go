@@ -217,6 +217,13 @@ func printStorageHelp() {
 	fmt.Println("  CYODA_STORAGE_BACKEND              Active storage plugin (default: memory)")
 	fmt.Printf("                                     Available: %s\n", strings.Join(spi.RegisteredPlugins(), ", "))
 	fmt.Println("  CYODA_STARTUP_TIMEOUT              Deadline for plugin.NewFactory and TM init (default: 30s)")
+	fmt.Println("  CYODA_SCHEMA_SAVEPOINT_INTERVAL    Number of extensions between savepoint rows in the schema-extension")
+	fmt.Println("                                     log. Honored by postgres, sqlite, cassandra plugins. Ignored by memory.")
+	fmt.Println("                                     (default: 64)")
+	fmt.Println("  CYODA_SCHEMA_EXTEND_MAX_RETRIES    Plugin-layer retry budget for ExtendSchema on backends with a native")
+	fmt.Println("                                     conflict surface. Honored by sqlite (SQLITE_BUSY), cassandra (LWT).")
+	fmt.Println("                                     Ignored by memory and postgres (no schema-write conflict surface).")
+	fmt.Println("                                     (default: 8)")
 	fmt.Println()
 
 	for _, name := range spi.RegisteredPlugins() {
