@@ -1,174 +1,261 @@
-# Sub-project B — Handoff State (2026-04-22)
+# Sub-project B — Handoff State (updated 2026-04-22, end-of-cyoda-go)
 
-**Purpose:** This document captures the state at the Phase-4 checkpoint. A fresh session can pick up from here without re-reading the conversation transcript.
+**Purpose:** Captures the state after cyoda-go completion. A fresh session can pick up the remaining cyoda-go-cassandra work without re-reading the conversation transcript.
 
 ## Status summary
 
-| Plan | Worktree | Branch | Origin | Progress |
+| Repo | Worktree | Branch | Origin | Progress |
 |---|---|---|---|---|
 | cyoda-go-spi | `/Users/paul/go-projects/cyoda-light/cyoda-go-spi/` | `main` (merged) | **`v0.6.0` tagged + pushed** | ✅ Complete |
-| cyoda-go | `/Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence/` | `feat/subproject-b-persistence` | Pushed, tracking `origin/feat/subproject-b-persistence` | **14 / 31 tasks done** |
-| cyoda-go-cassandra | `/Users/paul/go-projects/cyoda-light/cyoda-go-cassandra/.worktrees/subproject-b-persistence/` | `feat/subproject-b-persistence` | Not yet pushed | 0 / 15 tasks |
+| cyoda-go | `/Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence/` | `feat/subproject-b-persistence` | Pushed, tracking `origin/feat/subproject-b-persistence` | ✅ **31 / 31 tasks + 3 bugfixes** |
+| cyoda-go-cassandra | `/Users/paul/go-projects/cyoda-light/cyoda-go-cassandra/.worktrees/subproject-b-persistence/` | `feat/subproject-b-persistence` | Not yet pushed | **0 / 15 tasks** |
 
-## What was completed (14 tasks)
+---
 
-Tasks **1 through 14** of the cyoda-go plan plus the implied Cassandra Task 1 *coordination* (cyoda-go-spi v0.6.0 exists and can now be consumed by a Cassandra go.mod bump).
+## cyoda-go: COMPLETE
 
-### Phase 1 — cyoda-go-spi SPI additions (Tasks 1-3)
-- Task 1: `ErrRetryExhausted` error type added to `errors.go`. Distinct from `ErrConflict`.
-- Task 2: `ExtendSchema` method godoc on `ModelStore` interface clarified: retry contract, ctx-cancellation semantics, no-persisted-effect-on-error, empty-delta no-op.
-- Task 3: Released as `cyoda-go-spi@v0.6.0`. The tag also carries the previously-unmerged `feat/model-schema-extensions` commit (`a89759d` — `ExtendSchema` method addition). One coordinated release.
+All 31 plan tasks done across Phases 1-10. All pushed. Branch `feat/subproject-b-persistence` tracks origin and is clean.
 
-### Phase 2 — plugin Config (Tasks 4-5)
-- Task 4: `plugins/postgres/config.go` gains `SchemaSavepointInterval` field (default 64, env `CYODA_SCHEMA_SAVEPOINT_INTERVAL`). New helper `envIntMin1` clamps values < 1 to default with a slog warning.
-- Task 5: `plugins/sqlite/config.go` gains BOTH `SchemaSavepointInterval` and `SchemaExtendMaxRetries` (default 8). Sqlite's existing helpers use an `Fn` suffix convention, so the new helper is named `envIntMin1Fn` for local consistency.
+### Gate 5 verification results (end-of-deliverable)
 
-### Phase 3 — memory plugin B tests (Tasks 6-7)
-- Task 6: `TestMemory_ExtendSchema_RejectionLeavesDescriptorUnmutated` (B-I6).
-- Task 7: `TestMemory_ExtendSchema_ConvergenceUnderConcurrency` (B-I7). No production-code change in memory.
+| Check | Result |
+|---|---|
+| `go vet ./...` root + all 3 plugin submodules | clean |
+| `go test ./... -count=1` root module (37 pkgs) | PASS |
+| `go test ./... -count=1` plugins/memory | PASS |
+| `go test ./... -count=1` plugins/postgres | PASS |
+| `go test ./... -count=1` plugins/sqlite | PASS |
+| `go test -race ./... -count=1` root | PASS, no races |
+| `go test -race ./... -count=1` per plugin | PASS, no races |
 
-### Phase 4 — postgres B implementation + tests (Tasks 8-14)
-- Task 8: `lastSavepointSeq(ctx, ref) (int64, error)` method added to `modelStore`. Plus internal-package test file `model_extensions_internal_test.go` with fixture `newPGFixture(t)`.
-- Task 9: Savepoint trigger in `ExtendSchema` refactored from hardcoded `newSeq%64==0` to `(newSeq - lastSavepointSeq) >= cfg.SchemaSavepointInterval`. Config threaded through `StoreFactory` and `DBConfig.toInternal()`. Existing `TestExtendSchema_SavepointEvery64` stays green at default interval=64.
-- Task 10: Save-on-lock implemented in `Lock`. Lock is now idempotent (skips savepoint on re-lock) and handles nil-schema models. Unlock's dev-mode "operator-contract violation" check narrowed to **delta rows only** — lifecycle savepoints from save-on-lock are silently drained. This is a real behavior change for Unlock and deserves reviewer attention; see note below.
-- Task 11: `TestExtendSchema_CommutativeAppend_ConvergesUnderConcurrency` (B-I7 local).
-- Task 12: `TestExtendSchema_ContextCancellation_ReturnsCtxErr`.
-- Task 13: `TestExtendSchema_FoldAcrossSavepointBoundary_ByteIdentical` (B-I2 local).
-- Task 14: `TestExtendSchema_RejectionLeavesNoSavepointOrOp` (B-I6 tightening). **Added production code:** `ExtendSchema` now self-wraps in a pgx transaction when no ambient tx is present, so a failing savepoint-fold path rolls back the just-inserted delta row. Uses an `extendSchemaBody(ctx, q Querier, ...)` helper with a shadow `modelStore` for the tx-bound querier (subagent-chosen pattern).
+### Phase-by-phase summary
 
-## Adaptations from the plan
-
-Noted where the subagents deviated from the plan text and why:
-
-| Task | Deviation | Rationale |
+| Phase | Tasks | Deliverable |
 |---|---|---|
-| 1 | Used unqualified `ErrRetryExhausted` / `ErrConflict` in `errors_test.go` instead of the plan's `spi.ErrRetryExhausted`. | The test file is internal (`package spi`), not external; unqualified matches the file's existing style. |
-| 1 (post-implementer) | Branch rebased onto `feat/model-schema-extensions` before Task 2. | `main` did not have `ExtendSchema` yet; the plan assumed it did. Rebase brought the method into scope for Task 2's godoc edit. |
-| 5 | Sqlite helper named `envIntMin1Fn` (not `envIntMin1`). | Local consistency with sqlite's existing `envIntFn`/`envBoolFn` naming. |
-| 6-7 | Plan referenced `newTestFactory(t)` / `withTenant` / `factory.SetApplyFunc`. Memory's real helpers are `memory.NewStoreFactory(memory.WithApplyFunc(fn))` and `extTestCtx("t1")`. Plan text's `spi.ModelDraft` doesn't exist — used `spi.ModelUnlocked` + `Lock()`. | Use real helpers that exist in the tree, per the plan's "Before You Begin" note allowing this. |
-| 8 | Tests placed in new internal-package test file `model_extensions_internal_test.go`. Hardcoded `want 128` from the plan's test replaced with SQL cross-check. | Unexported method access + `seq` is a shared `BIGSERIAL` that both deltas and savepoints consume; hardcoded seq arithmetic was wrong. |
-| 9 | Test rewritten to assert savepoint-count / seq-distance invariants rather than exact seq values. | Same BIGSERIAL reality as Task 8. |
-| 10 | Lock idempotence + nil-schema guard + Unlock dev-mode narrowing. | Save-on-lock as-specified broke pre-existing `testModelLockIdempotent` and `TestUnlock_*` tests. Fixes are load-bearing and correctness-preserving; Gate 6 "resolve, don't defer." |
-| 11-13 | Delta payloads JSON-encoded; `setUnionApplyFunc` adapted to handle JSON strings; `sortNewlineTokens` reshaped accordingly. | Postgres's `payload` column is `JSONB`, not raw bytes. Plain strings fail with `invalid input syntax for type json`. |
-| 14 | `ExtendSchema` self-wraps in tx when no ambient tx present; test + production change combined into one commit. | Without self-wrap, the delta INSERT auto-commits before the savepoint-fold fails, violating B-I6. Combined commit reflects the atomicity linkage. |
+| 1 | 1-3 | cyoda-go-spi v0.6.0 (`ErrRetryExhausted`, ExtendSchema godoc, tag) |
+| 2 | 4-5 | Plugin config (postgres + sqlite: `SchemaSavepointInterval`, `SchemaExtendMaxRetries`) |
+| 3 | 6-7 | Memory plugin B tests (B-I6 + B-I7) |
+| 4 | 8-14 | Postgres B implementation + tests (interval refactor, save-on-lock, 4 new tests, self-wrap tx) |
+| 5 | 15-20 | Sqlite conversion: apply-in-place → append-to-log with savepoints, BUSY retry, upgrade-path, local B tests |
+| 6 | 21 | modelcache B-I8 verification test (stronger assertion than existing) |
+| 7 | 22-28 | Five named parity entries + property harness (50 seeds × 3 backends) + runtime budget meta-test |
+| 8 | 29 | Docs: `printHelp()`, `README.md`, overview §6 invariant table |
+| 9 | 30 | go.mod bumps to cyoda-go-spi v0.6.0 across all modules |
+| 10 | 31 | Gate 5 verification (✓ all green) |
 
-## Behavior changes worth reviewer attention
+### Bugs surfaced + fixed during Phase 7
 
-1. **Unlock drains the extension log wholesale** (deltas + savepoints) in both dev and prod. Previously the dev-mode "operator-contract violation" check errored on ANY remaining row; it now counts only `kind='delta'` rows and silently drains savepoints. Rationale: after save-on-lock, the lifecycle legitimately produces savepoint rows. The operator-contract warning should fire only on stale deltas (evidence of a writer that didn't drain). This is an intentional narrowing; see commit `50cf24f` diff for the full change.
+The property-based parity test (Task 27) surfaced three real bugs en route — all fixed with TDD before Task 27 was allowed to land. This is exactly what B was designed to catch.
 
-2. **`ExtendSchema` now self-wraps in a pgx transaction** when no ambient entity tx is present. This was added to honor B-I6 atomicity on the savepoint-fold-error path. Existing behavior (when an ambient tx IS present) is unchanged — still participates in the ambient tx's visibility. Commit `3a6addd`.
+| Commit | Bug | Fix |
+|---|---|---|
+| `2b43009` | `schema.Extend`/`Merge` silently accepted kind-mismatched subtrees, producing OBJECT-with-primitive-types TypeSets that violate the Apply invariant | `checkAndExtend` now rejects kind mismatches explicitly with a `"kind mismatch at PATH: EXISTING vs INCOMING"` error (4xx at handler) |
+| `f4a7728` | postgres and sqlite persisted delta rows without running Apply — malformed deltas only failed at fold-on-read time | Added pre-persist `applyFunc(current, delta)` check in both plugins, matching memory's apply-inline behavior. Symmetric contract across plugins. |
+| `c965f23` | handler service layer blanket-mapped every `modelStore.Get` error to 404 MODEL_NOT_FOUND — fold/apply failures looked identical to missing rows | `CreateEntity` and `ExportModel` (+ 6 other sites) now do `errors.Is(err, spi.ErrNotFound)` → 404, everything else → 5xx with standard `common.Internal` ticket |
 
-3. **`modelStore` gained a `pool *pgxpool.Pool` field** to support the self-wrap path. Wired through `store_factory.go`. Commit `3a6addd`.
+### Commit range (cyoda-go)
 
-4. **Shadow `modelStore` copy pattern** for threading the tx querier through the existing fold/baseSchema helpers. Works because no field carries per-call mutable state today; if that changes in future, the pattern must be revisited.
-
-## Test suite state
+The B work is on branch `feat/subproject-b-persistence`. Top commits (newest first):
 
 ```
-cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence
-go vet ./...                  # clean
-cd plugins/memory && go test ./...   # ok
-cd ../postgres && go test ./...      # ok  (includes 5 new tests)
-cd ../sqlite && go test ./...        # ok  (sqlite has B config but no B behavior changes yet)
+6427fa3 chore: bump cyoda-go-spi to v0.6.0
+79fa20d docs: env vars in printHelp/README + overview §6 invariant table
+c636f7f test(parity): runtime-budget meta-test for property suite (§7.3)
+33750e7 test(parity): property-based B-I1 with in-memory oracle, 50 seeds
+c965f23 fix(service): distinguish ErrNotFound from other Get errors         # bugfix 3
+f4a7728 fix(postgres,sqlite): pre-persist Apply check on ExtendSchema       # bugfix 2
+2b43009 fix(schema): Extend rejects kind mismatches                          # bugfix 1
+9131796 test(parity): B-I8 — local cache invalidation on extension commit
+82faff7 test(parity): B-I2/B-I3 — savepoint-on-lock fold equivalence
+1af824b test(parity): B-I7 — concurrent schema-extension convergence
+65e34e4 test(parity): B-I6 — schema extension atomic rejection
+c67c90a test(parity): B-I1 — cross-backend byte identity via 20-field widening
+f4097e8 test(modelcache): B-I8 stronger assertion — post-extend Get returns new schema
+354981c test(sqlite): rejection atomicity (B-I6) + fold savepoint-equivalence (B-I2)
+71174ca test(sqlite): deterministic retry-exhaustion test (B-I7)
+9c450c7 feat(sqlite): SQLITE_BUSY transparent retry (B-I7) + ctx cancellation
+95fa7a2 docs(sqlite): correct Unlock-asymmetry test comment
+98390a2 test(sqlite): upgrade-path from pre-B deployment
+3f816a2 docs(sqlite): clarify SchemaSavepointInterval=0 semantics
+e611115 feat(sqlite): savepoint triggering (interval + on-lock) [B-I3/B-I4]
+5dba22c feat(sqlite): convert ExtendSchema from apply-in-place to log-based
+8b9bd92 feat(sqlite): add foldLocked + lastSavepointSeq (B-I1 infrastructure)
+10de5f1 docs: Phase-4 handoff state (this doc, pre-update)
+3a6addd test(postgres): B-I6 — rejection at savepoint boundary leaves no row
+c0118a1 test(postgres): B-I2 — fold across savepoint boundary byte-identical
+1e7bced test(postgres): ctx cancellation returns ctx.Err(), not ErrRetryExhausted
+94f369a test(postgres): B-I7 — commutative-append convergence
+... [Phase 1-3 commits below]
 ```
 
-Root-level `go test ./...` not run yet — deferred until after Phase 7 (parity registry) so the e2e suite isn't exercised against half-built infrastructure. Gate 5 verification is Task 31.
+Full range: from `a473163` (first B commit — spec rev 1) through `6427fa3` (final chore: cyoda-go-spi bump). All pushed to `origin/feat/subproject-b-persistence`.
 
-## Known pre-existing flakes (NOT caused by B)
+### Notable non-plan commits you should know about
 
-- `TestEntityStore_GetAsAt` and `TestEntityStore_GetAllAsAt` in `plugins/postgres` flake ~1-in-6 under full-suite load. They use `time.Sleep(2*time.Millisecond)` between writes. Pre-existing; intermittent; consistently pass in isolation and on repeated runs.
+The three `fix(...)` commits (`2b43009`, `f4a7728`, `c965f23`) are scope expansion driven by the Task 27 property test. They are SMALL, SURGICAL fixes — the largest is `c965f23` with the `classifyGetErr` helper added to `internal/domain/model/service.go` covering 6 call sites plus 3 inline fixes in `internal/domain/entity/service.go`. They are Gate 6 responses ("resolve, don't defer") that the user explicitly approved ("We're not going to go forward with bugs like that").
 
-Out of scope for B. Consider tracking separately.
+---
 
-## Remaining work — cyoda-go plan
+## cyoda-go-cassandra: PENDING (15 tasks)
 
-### Phase 5 — sqlite conversion (Tasks 15-20) — LARGEST REMAINING CHUNK
-- Task 15: Create `plugins/sqlite/model_extensions.go` with `foldLocked` + `lastSavepointSeq`. TDD scaffolds.
-- Task 16: Rewrite `ExtendSchema` from apply-in-place to log-based. Populate `model_schema_extensions`. Make `applyFunc` wiring mandatory for models with pending deltas. Update `Get` to call `foldLocked`.
-- Task 17: Savepoint triggering (interval + on-lock). Reuse postgres's pattern via `lastSavepointSeq*InTx` helpers inside `BEGIN IMMEDIATE` transactions.
-- Task 18: Upgrade-path test (pre-B sqlite file with populated `models.doc.schema` and empty extension log → zero-deltas fold returns base verbatim).
-- Task 19: `SQLITE_BUSY` retry wrapper around `extendSchemaAttempt`. `CYODA_SCHEMA_EXTEND_MAX_RETRIES=8` default; ctx cancellation returns `ctx.Err()` wrapped with attempt count.
-- Task 20: Remaining sqlite-local tests (B-I2, B-I6) mirroring postgres.
+### Location
 
-Estimated size: ~200-300 LOC of new production code + ~200 LOC of tests. The largest single task bundle.
+```
+/Users/paul/go-projects/cyoda-light/cyoda-go-cassandra/.worktrees/subproject-b-persistence/
+```
 
-### Phase 6 — modelcache B-I8 test (Task 21)
-- Add `TestCachingModelStore_ExtendSchema_InvalidatesCache` to `internal/cluster/modelcache/cache_test.go`. The production implementation already exists at `cache.go:178-184`; the test promotes the existing invalidation to an executable contract.
+Branch: `feat/subproject-b-persistence` (local only, not yet pushed).
 
-### Phase 7 — parity registry + property harness (Tasks 22-28)
-- Tasks 22-26: Five new named parity entries (byte identity, atomic rejection, concurrent convergence, save-on-lock fold equivalence, cache invalidation). Each is a top-level `Run*` function in `e2e/parity/` registered in `registry.go`.
-- Task 27: Property-based parity entry + `e2e/parity/oracle.go` with the deterministic in-memory oracle helper. Requires wiring the actual schema/importer signatures (verified in the plan: `schema.Extend(existing, incoming, level)`, `importer.Walk(data any)`, `schema.Marshal(n)`).
-- Task 28: Runtime-budget meta-test (`TestParity_SchemaExtensionProperty_Budget_CI`) enforcing 120s CI ceiling.
+### Plan
 
-**Property-test oracle is cross-package:** lives in `e2e/parity/oracle.go`, imports `internal/domain/model/{schema,importer}`. Make sure `e2e/parity/` doesn't become a cyclic module.
+`docs/superpowers/plans/2026-04-22-data-ingestion-qa-subproject-b-cassandra.md` (1540 lines, rev 3).
 
-### Phase 8 — documentation (Task 29)
-- `cmd/cyoda/main.go` `printHelp()` adds both env vars.
-- `README.md` config table adds both env vars with an "Honored by" column.
-- `docs/superpowers/specs/2026-04-21-data-ingestion-qa-overview.md` §6 invariant table replaces the two `TBD | B | ...` rows with concrete B-I1..B-I8.
+Spec: `docs/superpowers/specs/2026-04-22-data-ingestion-qa-subproject-b-cassandra-design.md` (rev 3).
 
-### Phase 9 — plugin go.mod bumps (Task 30)
-- Bump `cyoda-go-spi` from current (`v0.5.3`?) to `v0.6.0` in each plugin's `go.mod` and at the repo root.
-- Bump `plugins/memory`, `plugins/postgres`, `plugins/sqlite` in the root `go.mod` if they're consumed as modules externally.
-- Run `go mod tidy` per module. Verify builds cleanly.
+### Task list
 
-### Phase 10 — Gate 5 verification (Task 31)
-- `go test ./... -v` (Docker running) — full suite including e2e and parity.
-- Per-plugin submodule tests.
-- `go vet ./...`.
-- `go test -race ./...` one-shot before PR creation.
+| Task | Title | Phase |
+|---|---|---|
+| 1 | Bump dependencies — cyoda-go-spi v0.6.0 + cyoda-go plugin modules | Setup |
+| 2 | Migration — add `model_schema_extensions` table | Setup |
+| 3 | Cassandra Config — `SchemaSavepointInterval` + `SchemaExtendMaxRetries` | Setup |
+| 4 | ExtendSchema — append-only delta row via LWT (Lightweight Transaction) | Core impl |
+| 5 | Fold-on-read — update Get to invoke `foldLocked` | Core impl |
+| 6 | Savepoint-on-size-threshold via LoggedBatch | Core impl |
+| 7 | Save-on-lock via LoggedBatch | Core impl |
+| 8 | B-I7 — LWT retry convergence test | Tests |
+| 9 | B-I6 — rejection leaves no log row | Tests |
+| 10 | B-I2 — savepoint transparency | Tests |
+| 11 | B-I8 — local cache invalidation | Tests |
+| 12 | ApplyFunc wiring in the plugin bootstrap | Wiring |
+| 13 | Consume cyoda-go parity registry entries (via go.mod bump) | Wiring |
+| 14 | Documentation — `CASSANDRA_BACKEND_DESIGN.md` update | Docs |
+| 15 | Gate 5 — Full verification | Verify |
 
-## Remaining work — Cassandra plan (all 15 tasks)
+### Cassandra-specific notes
 
-Located at `cyoda-go-cassandra/.worktrees/subproject-b-persistence/docs/superpowers/plans/2026-04-22-data-ingestion-qa-subproject-b-cassandra.md`. Summary of what's pending there:
+- **LWT (Lightweight Transaction) IF NOT EXISTS** is used for delta insert collision detection (Cassandra has no native auto-increment; Paxos-based CAS detects conflicts).
+- **LoggedBatch** provides atomicity for save-on-lock and save-on-size-threshold (delta+savepoint written atomically). Cassandra has no ACID transactions.
+- **HLC-based seq allocation** instead of auto-increment BIGSERIAL.
+- **Testcontainers-go** bootstraps a real Cassandra container for tests — needs Docker.
+- The Cassandra plugin is in a separate repo with its own `go.mod`. Its dependency on cyoda-go is via Go module path `github.com/cyoda-platform/cyoda-go`.
 
-- **Task 1:** bump cyoda-go-spi to v0.6.0 + plugin-module pins (resolves pre-existing `CountByState` drift + picks up B's additions). Can be done immediately.
-- **Task 2:** migration — append `model_schema_extensions` table to `migrations/000001_initial_schema.up.cql`.
-- **Task 3:** Cassandra `config.go` gains `SchemaSavepointInterval` + `SchemaExtendMaxRetries`.
-- **Tasks 4-7:** core implementation. `model_extensions.go` with LWT-gated insert + HLC-sequenced `delta_seq` + retry loop + savepoint-on-size-threshold via `LoggedBatch`. `Get` wired to `foldLocked`. `Lock` wraps state change + savepoint in a single `LoggedBatch`.
-- **Tasks 8-11:** per-plugin gray-box tests (B-I7 LWT retry convergence, ctx cancellation, B-I6 rejection, B-I2 fold across savepoint, B-I8 post-extend Get reflects state).
-- **Task 12:** wire `schema.Apply` as the plugin's injected `ApplyFunc` at construction time.
-- **Tasks 13-14:** consume cyoda-go's new parity entries via go.mod refresh; doc update in `CASSANDRA_BACKEND_DESIGN.md`.
-- **Task 15:** Gate 5 verification (Cassandra testcontainer suite).
+### Critical: Task 13 inherits the parity tests automatically
 
-**Critical dependency:** Cassandra tests require a running Cassandra container. The existing test harness bootstraps it. Ensure Docker is available before attempting.
+Once Task 13 bumps cyoda-go to the latest version (after merge to cyoda-go `main`), the parity registry's 5 named entries + property harness + budget meta-test are picked up **without code changes** in the Cassandra plugin. The Cassandra fixture just registers itself with the parity runner, and all cyoda-go parity entries run against it. This is the cross-plugin verification pattern.
 
-## Known open questions / TODOs for the resumer
+**This means Cassandra's Task 13 will transitively verify B-I1 through B-I8 against a real Cassandra backend.** If any bug surfaces, it's likely plugin-local (LWT retry budget, HLC skew, LoggedBatch ordering) — fix Cassandra-side only.
 
-1. **Task 10 unlock-behavior commit message is vague** about the dev-mode narrowing (commit `50cf24f`). Consider amending when convenient, or document in the PR description instead.
+---
 
-2. **Pre-existing flakes** (`TestEntityStore_GetAsAt*`) — worth filing an issue to fix independently. Not in scope for B.
+## Key references
 
-3. **Postgres self-wrap uses `shadow := *s`** copy pattern in Task 14. Works today but would break if `modelStore` ever gains mutable per-instance state. Low-risk forward note.
+### Specs
 
-4. **Cassandra plan's Task 4+ uses `replace` directive** during development. Once cyoda-go Task 30 lands (plugin go.mod bumps to published versions), Cassandra can consume the real tags.
+- **Overview:** `docs/superpowers/specs/2026-04-21-data-ingestion-qa-overview.md` — §6 invariant table is now populated with B-I1..B-I8.
+- **cyoda-go B design:** `docs/superpowers/specs/2026-04-21-data-ingestion-qa-subproject-b-design.md` (rev 3).
+- **Cassandra design:** `cyoda-go-cassandra/.worktrees/subproject-b-persistence/docs/superpowers/specs/2026-04-22-data-ingestion-qa-subproject-b-cassandra-design.md` (rev 3).
 
-5. **Parity oracle implementation detail (Task 27):** the plan specifies `schema.Extend(existing, incoming, level)` where `level` is `spi.ChangeLevelStructural`. Confirm this is the right level for oracle generation — it should permit the widest set of deltas the property tests generate.
+### Plans
+
+- **cyoda-go (this repo):** `docs/superpowers/plans/2026-04-22-data-ingestion-qa-subproject-b.md` (3298 lines, 31 tasks) — all tasks done.
+- **Cassandra:** `cyoda-go-cassandra/.worktrees/subproject-b-persistence/docs/superpowers/plans/2026-04-22-data-ingestion-qa-subproject-b-cassandra.md` (1540 lines, 15 tasks).
+
+### Relevant project memory (Claude auto-memory)
+
+Already contains (at `~/.claude/projects/-Users-paul-go-projects-cyoda-light-cyoda-go/memory/`):
+- `feedback_cross_plugin_design_verification.md` — dispatch Explore agents per plugin BEFORE writing per-plugin spec sections
+- `feedback_race_testing_discipline.md` — race detector only at end-of-deliverable
+- `feedback_gate6_no_followups.md` — "file a follow-up issue" is never valid; fix now or surface
+- `feedback_plugin_submodule_tests.md` — each plugin has its own go.mod; run per-plugin explicitly
+- `feedback_worktree_before_plan.md` — worktree BEFORE brainstorming/plan
+- `feedback_git_push_credential.md` — use `git -c "credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f" push ...` in sandbox
+
+### Plan defects discovered (apply to Cassandra too)
+
+Watch out for the same defect patterns in the Cassandra plan, based on what cyoda-go Phase 7 surfaced:
+
+1. **Wrong client method names** — plan may reference `c.GetModelSchema(...)`. The real client uses `c.ExportModel(t, "SIMPLE_VIEW", name, version)`. NO `GetModelSchema` exists.
+2. **Wrong enum values** — plan may use `"ArrayLength"`. Real enum is SCREAMING_SNAKE_CASE: `"ARRAY_LENGTH"`, `"STRUCTURAL"`, `"TYPE"`, `"ARRAY_ELEMENTS"`.
+3. **Wrong oracle helper name** — plan may call `expectedFoldFromBodies(t, bodies)`. Real function is `expectedSimpleViewFromBodies(bodies, currentState) ([]byte, error)`, and the separate helper `expectedSimpleViewFromExtensions(extensions []any, currentState string) ([]byte, error)` exists for the property harness path.
+4. **Missing `SetChangeLevel("STRUCTURAL")`** — plan test flows may omit this. Without it, `CreateEntity` rejects schema-widening bodies. Insert it after `LockModel`.
+5. **Missing `ImportWorkflow` may or may not be needed** — Cassandra plan should mirror what worked in cyoda-go parity tests: most test flows don't need it.
+6. **`fx.factory.SetApplyFunc(fn)` panics** on re-entry (fixture already installs one). Use `fx.store.applyFunc = fn` directly — matches the established cyoda-go pattern.
+7. **BackendFixture has no `Name()` method** — use `t.Name()` in error messages.
+
+### Test fixture naming convention
+
+- `plugins/postgres/model_extensions_internal_test.go` — postgres reference
+- `plugins/sqlite/model_extensions_internal_test.go` — sqlite reference
+- For Cassandra, follow the same naming: internal-package test file for unexported-method access + `newCassandraFixture`/`newCassandraFixtureWithInterval` helpers mirroring sqlite's pattern.
+
+---
 
 ## How to resume
 
-**In a fresh session, run:**
+### In a fresh session, read this first
+
+1. This handoff doc.
+2. The Cassandra plan: `docs/superpowers/plans/2026-04-22-data-ingestion-qa-subproject-b-cassandra.md` at the Cassandra worktree.
+3. The Cassandra spec (rev 3): `docs/superpowers/specs/2026-04-22-data-ingestion-qa-subproject-b-cassandra-design.md` at the Cassandra worktree.
+
+Do NOT read the conversation transcript — this doc is the authoritative resume state.
+
+### Verify cyoda-go state
 
 ```bash
 cd /Users/paul/go-projects/cyoda-light/cyoda-go/.worktrees/subproject-b-persistence
-git pull   # confirm local is current
-git log --oneline -15   # sanity check — should show 3a6addd at top
+git log --oneline -3   # should show 6427fa3 at top (chore: bump cyoda-go-spi to v0.6.0)
+git status             # should be clean, tracking origin
 ```
 
-Read this handoff doc, the plan, and the spec (rev 3). The next task is **Task 15** (sqlite conversion).
+### Start Cassandra work
 
-For Cassandra, a parallel path is viable — **cyoda-go-cassandra Task 1** can be done immediately (bump deps, picks up v0.6.0) and then Tasks 2-11 can proceed against the current local state of cyoda-go via a `replace` directive.
-
-## Commit range for review (cyoda-go)
-
-The B work starts at `a473163` (spec rev 1) and currently ends at `3a6addd` (Task 14). Commits `a473163`..`3a6addd` are all B's work on `feat/subproject-b-persistence`.
-
-```
-git log --oneline a473163..3a6addd
+```bash
+cd /Users/paul/go-projects/cyoda-light/cyoda-go-cassandra/.worktrees/subproject-b-persistence
+git log --oneline -5   # verify worktree state
+git status
 ```
 
-yields 15 commits: 4 docs (spec rev 1/2/3 + plan) and 11 code/test commits (Tasks 4-14; Tasks 6-7 are two tests in one area).
+The Cassandra worktree was prepared ahead of time. It has the plan + spec committed. Start at Task 1.
 
-## Commit range for review (cyoda-go-spi)
+### Workflow
 
-Tasks 1-3. Published as `v0.6.0` on the main branch. Commits: `a56f603` (ErrRetryExhausted) + `2993ad0` (ExtendSchema godoc).
+Follow the same pattern used for cyoda-go:
+1. Use `superpowers:subagent-driven-development` — dispatch one implementer subagent per task.
+2. Per task: implementer writes test → runs RED → implements → runs GREEN → commits.
+3. Spec reviewer + code quality reviewer for non-trivial tasks; inline review for test-only additions.
+4. Mark TodoWrite tasks complete as you go.
+5. Push commits incrementally (use the GH_TOKEN PAT pattern from memory).
+
+### Estimated effort
+
+- **Setup (Tasks 1-3):** ~1 hour — mechanical
+- **Core impl (Tasks 4-7):** ~4-6 hours — LWT + LoggedBatch design is the hard part
+- **Tests (Tasks 8-11):** ~2 hours — parallels cyoda-go patterns
+- **Wiring (Tasks 12-13):** ~1 hour — mechanical, but Task 13 may need care with go.mod version pinning
+- **Docs + Gate 5 (Tasks 14-15):** ~1 hour
+
+Total: ~9-11 hours in a focused session. Can be done in a single session if Docker is available for the Cassandra testcontainer.
+
+---
+
+## Open questions for the resumer
+
+1. **Task 1 go.mod pinning:** Cassandra's Task 1 needs to bump `cyoda-go` to a version that includes the B changes. Since `feat/subproject-b-persistence` is NOT yet merged to cyoda-go's `main`, Task 1 may need to:
+   - Use a `replace` directive pointing at the local worktree (dev-mode), OR
+   - Wait until cyoda-go's PR is merged and a new version is tagged.
+   
+   Decide which approach fits the current state of the cyoda-go PR. The plan (rev 3) proposes starting with `replace` for Tasks 4-12 and switching to published versions for Task 13.
+
+2. **Cassandra container startup cost** for Gate 5 is ~30s per run. Budget accordingly.
+
+3. **cyoda-go PR status:** the branch `feat/subproject-b-persistence` has NOT yet been opened as a PR. When to PR is a user decision — could be before or after Cassandra. Ask.
+
+## Summary
+
+**cyoda-go: DONE.** Branch `feat/subproject-b-persistence` on origin, ready for PR review whenever the user decides.
+
+**cyoda-go-cassandra: 0/15 tasks.** Next session's focus.
+
+**No blockers known.** All cross-repo coordination artifacts (cyoda-go-spi v0.6.0, parity registry, invariant spec) are in place.
