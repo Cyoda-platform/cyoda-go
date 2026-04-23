@@ -58,17 +58,69 @@ func TestClassifyValidateOrExtendErr_ChangeLevelViolation_StillGetsBadRequest(t 
 	}
 }
 
-// TestClassifyValidateOrExtendErr_InternalFailure_Still5xx — "failed to
-// extend schema" (plugin-layer write failure) is still classified as 5xx
-// with a ticket UUID, unchanged.
-func TestClassifyValidateOrExtendErr_InternalFailure_Still5xx(t *testing.T) {
-	underlying := fmt.Errorf("failed to extend schema: write rejected: %w", fmt.Errorf("pgx: connection refused"))
+// TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx — an error
+// wrapping errInternalSchema (codec/diff/store failures in validateOrExtend)
+// classifies as 5xx regardless of its message text. This is the contract
+// that replaces the prior fragile string-matching classifier: if a future
+// refactor renames a wrap like "failed to compute schema delta" to
+// "schema delta: compute failed", classification still routes correctly
+// because the sentinel is what's checked, not the string.
+func TestClassifyValidateOrExtendErr_InternalSentinel_Is5xx(t *testing.T) {
+	cases := []struct {
+		name     string
+		makeErr  func() error
+	}{
+		{
+			name: "renamed wrap string still classifies as 5xx",
+			makeErr: func() error {
+				// A message deliberately NOT matching the prior string-
+				// matching patterns; would have been mis-routed to 4xx
+				// under the old classifier.
+				return fmt.Errorf("%w: schema codec: unmarshal: %w", errInternalSchema, fmt.Errorf("unexpected end of input"))
+			},
+		},
+		{
+			name: "plugin-layer extend failure wrapped with sentinel",
+			makeErr: func() error {
+				return fmt.Errorf("%w: failed to extend schema: %w", errInternalSchema, fmt.Errorf("pgx: connection refused"))
+			},
+		},
+		{
+			name: "diff failure wrapped with sentinel",
+			makeErr: func() error {
+				return fmt.Errorf("%w: failed to compute schema delta: %w", errInternalSchema, fmt.Errorf("unexpected node kind"))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			appErr := classifyValidateOrExtendErr(tc.makeErr())
+			if appErr == nil {
+				t.Fatal("nil appErr")
+			}
+			if appErr.Status != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", appErr.Status)
+			}
+		})
+	}
+}
+
+// TestClassifyValidateOrExtendErr_UntaggedError_Is4xx — an error NOT
+// wrapping either ErrPolymorphicSlot or errInternalSchema classifies as
+// 4xx BAD_REQUEST. Represents e.g. a change-level violation, a validation
+// failure, or an importer.Walk error from malformed user input — all
+// client-contract issues, not server faults.
+func TestClassifyValidateOrExtendErr_UntaggedError_Is4xx(t *testing.T) {
+	underlying := fmt.Errorf("validation failed: field .foo must be a string")
 
 	appErr := classifyValidateOrExtendErr(underlying)
 	if appErr == nil {
 		t.Fatal("nil appErr")
 	}
-	if appErr.Status != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", appErr.Status)
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeBadRequest {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeBadRequest)
 	}
 }

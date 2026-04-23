@@ -24,6 +24,16 @@ import (
 // maxEntityBodySize is the maximum allowed request body size for entity operations (10 MB).
 const maxEntityBodySize = 10 * 1024 * 1024
 
+// errInternalSchema tags schema-processing errors inside validateOrExtend
+// that represent internal failures (codec decode/encode, Diff computation,
+// plugin-layer ExtendSchema write) rather than client-contract violations.
+// The handler classifier uses errors.Is to route these to 5xx with a
+// logged ticket. Using a sentinel rather than string-matching the wrap
+// messages makes classification robust to future wording changes — the
+// prior string-match classifier would have silently shifted a renamed
+// "failed to extend schema" to 4xx.
+var errInternalSchema = errors.New("internal schema processing failure")
+
 // maxStatesFilterSize bounds the cardinality of the user-supplied ?states= query
 // parameter on stats-by-state endpoints. Without this cap, an oversized list would
 // reach SQL backends and either exceed driver parameter limits (SQLite's
@@ -63,7 +73,7 @@ func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal model schema: %w", err)
+		return fmt.Errorf("%w: failed to unmarshal model schema: %w", errInternalSchema, err)
 	}
 
 	if desc.ChangeLevel == "" {
@@ -98,7 +108,7 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	// every entity write.
 	delta, err := schema.Diff(modelNode, extended)
 	if err != nil {
-		return fmt.Errorf("failed to compute schema delta: %w", err)
+		return fmt.Errorf("%w: failed to compute schema delta: %w", errInternalSchema, err)
 	}
 	if delta == nil {
 		return nil
@@ -106,7 +116,7 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	// Append to the extension log via the plugin. Participates in the
 	// ambient entity transaction so visibility is commit-bound.
 	if err := modelStore.ExtendSchema(ctx, desc.Ref, delta); err != nil {
-		return fmt.Errorf("failed to extend schema: %w", err)
+		return fmt.Errorf("%w: failed to extend schema: %w", errInternalSchema, err)
 	}
 	return nil
 }
@@ -171,22 +181,22 @@ func validationErrorsToError(errs []schema.ValidationError) error {
 
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
 // internal (5xx) or operational (4xx) and returns the appropriate AppError.
+//
+// Classification is sentinel-based to keep it robust against wording drift
+// in the wrap strings:
+//
+//   - ErrPolymorphicSlot → 4xx POLYMORPHIC_SLOT (client normalizes payload)
+//   - errInternalSchema  → 5xx with logged ticket (codec/diff/store failure)
+//   - anything else      → 4xx BAD_REQUEST (change-level violation,
+//                          validation failure, malformed walk input)
 func classifyValidateOrExtendErr(err error) *common.AppError {
-	// Polymorphic-slot rejections are a specific operational case — they're
-	// not a change-level issue (the level is honored), and they're not a
-	// server fault. Surface with a dedicated error code so SDKs can detect
-	// and document the limitation.
 	if errors.Is(err, schema.ErrPolymorphicSlot) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
 	}
-	msg := err.Error()
-	if strings.Contains(msg, "failed to unmarshal") ||
-		strings.Contains(msg, "failed to marshal") ||
-		strings.Contains(msg, "failed to extend schema") ||
-		strings.Contains(msg, "failed to compute schema delta") {
+	if errors.Is(err, errInternalSchema) {
 		return common.Internal("failed to process model schema", err)
 	}
-	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, msg)
+	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.CreateParamsFormat, entityName string, modelVersion int32, params genapi.CreateParams) {
