@@ -13,8 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
 	"github.com/cyoda-platform/cyoda-go/internal/admin"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
@@ -37,15 +40,24 @@ func printVersion(w io.Writer) {
 	fmt.Fprintf(w, "cyoda version %s (commit %s, built %s)\n", version, commit, buildDate)
 }
 
+// runHelpCmd is the entry point for `cyoda help [args...]`.
+func runHelpCmd(args []string) int {
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	return help.RunHelp(help.DefaultTree, args, os.Stdout, version, isTTY)
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--help", "-h":
-			printHelp()
-			return
+			// Delegate to the help subsystem so there is a single source
+			// of truth. Matches `cyoda help cli` exactly.
+			os.Exit(runHelpCmd([]string{"cli"}))
 		case "--version", "-v":
 			printVersion(os.Stdout)
 			return
+		case "help":
+			os.Exit(runHelpCmd(os.Args[2:]))
 		case "init":
 			os.Exit(runInit(os.Args[2:]))
 		case "health":
