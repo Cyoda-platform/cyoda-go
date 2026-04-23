@@ -38,6 +38,11 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 		positional = append(positional, a)
 	}
 
+	if !validFormat(format) {
+		fmt.Fprintf(out, "cyoda help: unknown --format %q (want: auto, text, markdown, json)\n", format)
+		return 2
+	}
+
 	// No positional: render tree summary. In json mode emit the full payload.
 	if len(positional) == 0 {
 		if format == "json" {
@@ -63,18 +68,24 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 	}
 }
 
+func validFormat(f string) bool {
+	switch f {
+	case "auto", "", "text", "markdown", "json":
+		return true
+	}
+	return false
+}
+
 func resolveFormat(f string, isTTY bool) string {
 	switch f {
 	case "json", "markdown", "text":
 		return f
-	case "auto", "":
-		if isTTY {
-			return "text"
-		}
-		return "markdown"
-	default:
+	}
+	// "auto" or "" — choose based on TTY.
+	if isTTY {
 		return "text"
 	}
+	return "markdown"
 }
 
 func writeTopicText(t *Topic, out io.Writer, isTTY bool) int {

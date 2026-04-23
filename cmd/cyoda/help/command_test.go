@@ -126,3 +126,14 @@ func TestRunHelp_FormatJSONSingleTopic(t *testing.T) {
 		t.Errorf("single-topic output should not include wrapper: %q", s)
 	}
 }
+
+func TestRunHelp_UnknownFormat_Exit2(t *testing.T) {
+	var out bytes.Buffer
+	code := RunHelp(testTree(t), []string{"--format=bogus"}, &out, "0.6.1", false)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(out.String(), "bogus") {
+		t.Errorf("error must name the bad format: %q", out.String())
+	}
+}
