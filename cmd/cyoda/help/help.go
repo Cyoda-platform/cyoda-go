@@ -229,7 +229,7 @@ func (t *Topic) Descriptor() renderer.TopicDescriptor {
 	}
 	desc := renderer.TopicDescriptor{
 		Topic:     t.DottedPath(),
-		Path:      append([]string(nil), t.Path...),
+		Path:      append([]string{}, t.Path...),
 		Title:     t.Title,
 		Synopsis:  renderer.ExtractSynopsis(t.Body),
 		Body:      string(t.Body),
@@ -246,6 +246,9 @@ func (t *Topic) Descriptor() renderer.TopicDescriptor {
 // WalkDescriptors returns every topic's descriptor, depth-first,
 // parents before children. The synthetic root is not included.
 func (t *Tree) WalkDescriptors() []renderer.TopicDescriptor {
+	if t.Root == nil {
+		return nil
+	}
 	var out []renderer.TopicDescriptor
 	var visit func(*Topic)
 	visit = func(n *Topic) {

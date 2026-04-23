@@ -320,6 +320,57 @@ func TestTopicDescriptor_SeeAlsoAlwaysNonNil(t *testing.T) {
 	}
 }
 
+func TestTree_WalkDescriptors_NilRoot(t *testing.T) {
+	tree := &Tree{}
+	got := tree.WalkDescriptors()
+	if got != nil {
+		t.Errorf("WalkDescriptors on nil Root = %v, want nil", got)
+	}
+}
+
+func TestTree_WalkDescriptors_GrandchildPreOrder(t *testing.T) {
+	fsys := fstest.MapFS{
+		"content/a.md": &fstest.MapFile{Data: []byte(`---
+topic: a
+title: a
+stability: stable
+---
+`)},
+		"content/a/b.md": &fstest.MapFile{Data: []byte(`---
+topic: a.b
+title: ab
+stability: stable
+---
+`)},
+		"content/a/b/c.md": &fstest.MapFile{Data: []byte(`---
+topic: a.b.c
+title: abc
+stability: stable
+---
+`)},
+		"content/a/d.md": &fstest.MapFile{Data: []byte(`---
+topic: a.d
+title: ad
+stability: stable
+---
+`)},
+	}
+	tree, err := Load(fsys)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := tree.WalkDescriptors()
+	want := []string{"a", "a.b", "a.b.c", "a.d"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d descriptors, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Topic != want[i] {
+			t.Errorf("got[%d].Topic = %q, want %q", i, got[i].Topic, want[i])
+		}
+	}
+}
+
 func TestTree_WalkDescriptors_DepthFirst(t *testing.T) {
 	fsys := fstest.MapFS{
 		"content/a.md": &fstest.MapFile{Data: []byte(`---
