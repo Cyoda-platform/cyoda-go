@@ -46,3 +46,8 @@ const (
 	ErrCodeSearchShardTimeout       = "SEARCH_SHARD_TIMEOUT"
 	ErrCodeSearchResultLimit        = "SEARCH_RESULT_LIMIT"
 )
+
+// Help subsystem
+const (
+	ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
+)

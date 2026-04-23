@@ -51,6 +51,7 @@ See subtopics for each code:
 - `errors.ENTITY_NOT_FOUND`
 - `errors.EPOCH_MISMATCH`
 - `errors.FORBIDDEN`
+- `errors.HELP_TOPIC_NOT_FOUND`
 - `errors.IDEMPOTENCY_CONFLICT`
 - `errors.MODEL_NOT_FOUND`
 - `errors.MODEL_NOT_LOCKED`
