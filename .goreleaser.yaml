@@ -71,7 +71,7 @@ brews:
       name: homebrew-cyoda-go
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/cyoda-platform/cyoda-go
-    description: Lightweight Go EDBMS — digital twin of the Cyoda platform.
+    description: Lightweight Go EDBMS — digital twin of the Cyoda platform
     license: Apache-2.0
     commit_author:
       name: cyoda-go-release-bot
@@ -79,13 +79,13 @@ brews:
     install: |
       bin.install "cyoda"
     test: |
-      system "#{bin}/cyoda", "--help"
+      system bin/"cyoda", "--help"
     post_install: |
-      system "#{bin}/cyoda", "init"
+      system bin/"cyoda", "init"
     caveats: |
       ==============================================================
       cyoda is configured to use sqlite with data stored in
-      #{ENV["HOME"]}/.local/share/cyoda/cyoda.db
+      #{Dir.home}/.local/share/cyoda/cyoda.db
 
       If you want to reconfigure, run:
         cyoda init --force
