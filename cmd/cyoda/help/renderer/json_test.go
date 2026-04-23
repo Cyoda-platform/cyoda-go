@@ -2,6 +2,7 @@ package renderer
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -25,8 +26,8 @@ func TestRenderTopicDescriptor_Roundtrip(t *testing.T) {
 	if err := json.Unmarshal(b, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if back.Topic != d.Topic || back.Stability != d.Stability {
-		t.Errorf("roundtrip mismatch: %+v", back)
+	if !reflect.DeepEqual(back, d) {
+		t.Errorf("roundtrip mismatch:\n got:  %+v\n want: %+v", back, d)
 	}
 }
 
