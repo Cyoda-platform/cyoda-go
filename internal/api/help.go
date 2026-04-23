@@ -13,17 +13,11 @@ import (
 
 var topicPathPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// helpBinaryVersion is injected via SetHelpBinaryVersion; defaults to "dev" for tests.
-var helpBinaryVersion = "dev"
-
-// SetHelpBinaryVersion wires the version string displayed in the help
-// payload. Called from the app bootstrap when the ldflag version is known.
-func SetHelpBinaryVersion(v string) { helpBinaryVersion = v }
-
 // RegisterHelpRoutes mounts GET {contextPath}/help and
 // GET {contextPath}/help/{topic} on the given mux. contextPath must NOT
 // have a trailing slash. An empty contextPath mounts at "/help".
-func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath string) {
+// version is closed over by the handlers and reported in the full-tree payload.
+func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, version string) {
 	prefix := strings.TrimRight(contextPath, "/") + "/help"
 	mux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -31,11 +25,11 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath string)
 			common.WriteError(w, r, common.Operational(
 				http.StatusNotFound,
 				common.ErrCodeHelpTopicNotFound,
-				"no such help topic: "+strings.TrimPrefix(r.URL.Path, prefix+"/"),
+				"no such help topic at this path",
 			))
 			return
 		}
-		serveFullHelpTree(w, tree)
+		serveFullHelpTree(w, tree, version)
 	})
 	mux.HandleFunc(prefix+"/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -62,12 +56,12 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath string)
 	})
 }
 
-func serveFullHelpTree(w http.ResponseWriter, tree *help.Tree) {
+func serveFullHelpTree(w http.ResponseWriter, tree *help.Tree, version string) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	_ = enc.Encode(renderer.HelpPayload{
 		Schema:  1,
-		Version: helpBinaryVersion,
+		Version: version,
 		Topics:  tree.WalkDescriptors(),
 	})
 }

@@ -61,16 +61,8 @@ func TestHelpConfigDatabase_ListsStorageBackends(t *testing.T) {
 }
 
 func TestHelpRestEndpointReportsInjectedVersion(t *testing.T) {
-	origVersion := version
-	version = "9.9.9-test"
-	internalapi.SetHelpBinaryVersion(version)
-	defer func() {
-		version = origVersion
-		internalapi.SetHelpBinaryVersion(origVersion)
-	}()
-
 	mux := http.NewServeMux()
-	internalapi.RegisterHelpRoutes(mux, help.DefaultTree, "/api")
+	internalapi.RegisterHelpRoutes(mux, help.DefaultTree, "/api", "9.9.9-test")
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -84,7 +76,7 @@ func TestHelpRestEndpointReportsInjectedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload.Version != "9.9.9-test" {
-		t.Errorf("Version = %q, want %q (SetHelpBinaryVersion not wired from main.go)", payload.Version, "9.9.9-test")
+		t.Errorf("Version = %q, want %q", payload.Version, "9.9.9-test")
 	}
 }
 

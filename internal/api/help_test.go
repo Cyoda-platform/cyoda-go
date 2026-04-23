@@ -15,7 +15,7 @@ import (
 func helpTestServer(t *testing.T, contextPath string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	RegisterHelpRoutes(mux, help.DefaultTree, contextPath)
+	RegisterHelpRoutes(mux, help.DefaultTree, contextPath, "dev")
 	return httptest.NewServer(mux)
 }
 
