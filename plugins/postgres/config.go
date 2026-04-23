@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -32,8 +33,8 @@ func parseConfig(getenv func(string) string) (config, error) {
 	}
 	cfg := config{
 		URL:                     url,
-		MaxConns:                int32(envInt(getenv, "CYODA_POSTGRES_MAX_CONNS", 25)),
-		MinConns:                int32(envInt(getenv, "CYODA_POSTGRES_MIN_CONNS", 5)),
+		MaxConns:                envInt32(getenv, "CYODA_POSTGRES_MAX_CONNS", 25),
+		MinConns:                envInt32(getenv, "CYODA_POSTGRES_MIN_CONNS", 5),
 		MaxConnIdleTime:         envDuration(getenv, "CYODA_POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		AutoMigrate:             envBool(getenv, "CYODA_POSTGRES_AUTO_MIGRATE", true),
 		SchemaSavepointInterval: envIntMin1(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
@@ -73,6 +74,20 @@ func envInt(getenv func(string) string, key string, dflt int) int {
 		return dflt
 	}
 	return n
+}
+
+// envInt32 reads an integer env var and narrows to int32 with bounds
+// checking. Values outside [math.MinInt32, math.MaxInt32] fall back
+// to the default with a logged warning — silent wrap-around on an
+// out-of-range value is a CodeQL HIGH (CWE-681) and would produce
+// absurd MaxConns/MinConns like -2_147_483_648.
+func envInt32(getenv func(string) string, key string, dflt int32) int32 {
+	n := envInt(getenv, key, int(dflt))
+	if n < math.MinInt32 || n > math.MaxInt32 {
+		slog.Warn("env var out of int32 range; using default", "key", key, "value", n, "default", dflt)
+		return dflt
+	}
+	return int32(n)
 }
 
 // envIntMin1 reads an integer env var, applies the default when unset
