@@ -2,48 +2,71 @@
 
 **Target release:** v0.6.1
 **Tracks issue:** #80 (Ship a topic-structured `cyoda help` surface)
-**Scope:** Phase 1 — tooling infrastructure + reference-first content (`cli`, `config`, `errors`). All other topic frames ship as experimental stubs.
-**Bundled fix:** `--version` flag (hallucinated in docs, missing from binary).
+**Scope:** Phase 1 — tooling infrastructure + reference-first content (`cli`, `config`, `errors`), CLI and REST consumption, release-asset CI. Remaining 10 top-level topic frames ship as experimental stubs.
+**Bundled fix:** `--version` flag (handler missing from the binary; ldflag wiring and vars already exist).
 
 ## Goal
 
-Embed a topic-organised help system in the `cyoda` binary. Three output formats (`text`, `markdown`, `json`) from one source. The binary becomes the authoritative reference for flags, env vars, metrics, error codes, and endpoints — versioned with the binary itself rather than drifting on an external docs site.
+Embed a topic-organised help system in the `cyoda` binary. Four consumption paths from a single source:
 
-v0.6.1 ships the engine plus authoritative content for three reference-first topics. Remaining concept topics accrue in subsequent patches; every new topic is a standalone markdown file with no Go code change required.
+1. `cyoda help <topic>` on the CLI (terminal-friendly text by default)
+2. `GET /api/help[/<path>]` on any running server (JSON)
+3. `cyoda_help_<version>.{tar.gz,json}` as release assets (static, version-scoped)
+4. `cyoda --help` delegates to the help subsystem — single source of truth, no drift
+
+v0.6.1 ships the engine + authoritative content for three reference-first topics. Remaining concept topics accrue in subsequent patches; every new topic is a standalone markdown file with no Go code change required.
 
 ## Non-goals
 
 - Full authoring of all 13 topic trees (phased over v0.6.2+)
-- Enterprise/Cassandra topic content (OSS-only build)
-- Cross-repo docs-site integration (cyoda-docs imports the help.tar.gz asset separately)
-- Interactive paging (`| less` idiom is sufficient)
+- Enterprise/Cassandra topic content (OSS-only build; architecture supports overlay — see §Forward compatibility)
+- cyoda-docs website integration (consumes the release asset separately, cross-repo)
+- Shell completion for topic names (v0.6.2+)
+- Localisation/i18n (English only; out of scope indefinitely)
+- Interactive paging (`| less` idiom suffices)
 
 ## Architecture
 
+### Canonical path forms
+
+The same topic has four string representations. One rule: **dots for identifiers, slashes for filesystem, spaces for CLI argv.**
+
+| Form | Example | Used in |
+|---|---|---|
+| Filesystem | `cli/serve.md` | `cmd/cyoda/help/content/**` — where authors edit |
+| Front-matter `topic:` | `cli.serve` | YAML header of each `.md` |
+| JSON `topic` field | `cli.serve` | `cyoda help --format json`, `/api/help`, release JSON asset |
+| REST path parameter | `cli.serve` | `GET /api/help/cli.serve` (dots on the URL; no slash segments) |
+| CLI argv | `cli serve` | `cyoda help cli serve` |
+| Go `Topic.Path` | `[]string{"cli","serve"}` | internal representation; converters in both directions |
+
+Content test #7 asserts the filesystem→front-matter mapping: `cli/serve.md` must declare `topic: cli.serve`, reject mismatches at `Tree.Load()` time.
+
 ### Source layout
 
-Authoring source is markdown with YAML front-matter, organised as a hierarchical directory tree under `cmd/cyoda/help/content/`. Filesystem path maps 1:1 to topic path — `cli/serve.md` is the `cli serve` topic. Top-level parent topics live as sibling `.md` files alongside their child directories (e.g. `cli.md` beside `cli/`).
+Authoring source is markdown with YAML front-matter, organised as a hierarchical directory tree under `cmd/cyoda/help/content/`. Top-level parent topics live as sibling `.md` files alongside their child directories.
 
 ```
 cmd/cyoda/help/content/
-├── cli.md                  # "cli"
+├── cli.md                  # "cli" (stable)
 ├── cli/
-│   ├── serve.md            # "cli serve"
-│   ├── init.md             # "cli init"
-│   ├── migrate.md          # "cli migrate"
-│   └── help.md             # "cli help" (meta)
-├── config.md
+│   ├── serve.md            # "cli.serve"
+│   ├── init.md             # "cli.init"
+│   ├── migrate.md          # "cli.migrate"
+│   ├── health.md           # "cli.health"
+│   └── help.md             # "cli.help" (meta-topic: includes stability contract)
+├── config.md               # "config" (stable)
 ├── config/
 │   ├── database.md
 │   ├── auth.md
 │   ├── grpc.md
 │   └── schema.md
-├── errors.md
+├── errors.md               # "errors" (stable)
 ├── errors/
 │   ├── MODEL_NOT_FOUND.md
 │   ├── POLYMORPHIC_SLOT.md
-│   └── ... (one per ErrCode* in internal/common/error_codes.go)
-├── crud.md                 # stub
+│   └── ...                 # one per ErrCode* in internal/common/error_codes.go
+├── crud.md                 # stub (experimental)
 ├── search.md               # stub
 ├── analytics.md            # stub
 ├── models.md               # stub
@@ -62,17 +85,34 @@ Content is embedded via `go:embed content/` at build time.
 
 ```yaml
 ---
-topic: cli                    # required: dotted path, must match filesystem location
+topic: cli                    # required: dotted path; must match filesystem location
 title: "cyoda CLI — subcommand reference"
 stability: stable             # required: stable | evolving | experimental
-see_also:                     # optional: list of topic paths
+see_also:                     # optional: list of topic paths (dotted)
   - config
   - run
 version_added: "0.6.1"        # optional
 ---
 ```
 
-Body follows the man-page template from issue #80 (NAME / SYNOPSIS / DESCRIPTION / OPTIONS / EXAMPLES / SEE ALSO) using H2 headings. Front-matter `see_also` is authoritative for navigation; the body's `SEE ALSO` section is its human-readable presentation.
+Body follows the man-page template (NAME / SYNOPSIS / DESCRIPTION / OPTIONS / EXAMPLES / SEE ALSO) using H2 headings.
+
+**Front-matter `see_also` is authoritative** for navigation and for the JSON output. The body's `SEE ALSO` section is advisory prose only — the markdown renderer strips it from the body and re-emits the authoritative list.
+
+### Supported markdown subset
+
+Authoring is constrained to a pinned subset so the custom text tokenizer (~200 LOC) stays small and predictable. The content linter test (test #10) rejects anything outside this list:
+
+- ATX headings: `# H1`, `## H2`, `### H3`
+- Paragraphs (blank-line separated)
+- Single-level bullet lists starting with `-` or `*`
+- Fenced code blocks (``` ` ``` opening and closing fences; language hint ignored by text renderer)
+- Inline: `**bold**`, `*italic*`, `` `code` ``, `[text](url)` — exactly these four, no nesting
+- Horizontal rules: `---` on its own line
+
+**Not supported:** tables, nested lists, blockquotes, footnotes, admonitions, HTML, images, setext headings, reference-style links, inline HTML. Content using any of these is a build-time failure (see test #10).
+
+This bound is explicit and enforced. If a future topic legitimately needs tables or nested lists, that's a spec-change event: either extend the tokenizer (with tests) or adopt `goldmark` — one decision, one time.
 
 ### Go types
 
@@ -85,7 +125,7 @@ type Topic struct {
     Title     string
     Stability string      // stable | evolving | experimental
     SeeAlso   []string    // dotted paths
-    Body      []byte      // markdown body, front-matter stripped
+    Body      []byte      // markdown body, front-matter stripped, SEE ALSO stripped
     Children  []*Topic    // from directory walk
 }
 
@@ -95,11 +135,16 @@ type Tree struct {
 
 // Package-level, initialised once from go:embed content/ at program start.
 var DefaultTree = loadEmbedded()
+
+// Loader supports overlay for Enterprise builds (see §Forward compatibility).
+func Load(roots ...fs.FS) (*Tree, error)
 ```
+
+`fs.FS` input lets tests inject a synthetic tree and lets Enterprise add an overlay without modifying the OSS loader.
 
 ### Rendering layer
 
-Three renderers under `cmd/cyoda/help/renderer/`. All take a `*Topic` and produce bytes. Shared tokenizer (~150 LOC) consumed by the text renderer; JSON and markdown renderers need no parsing.
+Three renderers under `cmd/cyoda/help/renderer/`. All take a `*Topic` and produce bytes.
 
 **`json.go`** — marshals `TopicDescriptor`:
 
@@ -109,7 +154,7 @@ type TopicDescriptor struct {
     Path      []string  `json:"path"`
     Title     string    `json:"title"`
     Synopsis  string    `json:"synopsis"`    // first paragraph of DESCRIPTION
-    Body      string    `json:"body"`        // full markdown
+    Body      string    `json:"body"`        // full markdown, SEE ALSO re-emitted
     Sections  []Section `json:"sections"`    // parsed H2 sections
     SeeAlso   []string  `json:"see_also"`
     Stability string    `json:"stability"`
@@ -122,11 +167,21 @@ type Section struct {
 }
 ```
 
-`cyoda help --format json` with no topic emits `{"version": "<binary-version>", "topics": [<descriptor>...]}` — full tree, depth-first. Single-topic query emits one descriptor.
+Full-tree output wraps these:
 
-**`markdown.go`** — pass-through. Front-matter stripped, body emitted verbatim. `SEE ALSO` section appended if not already present in the body.
+```go
+type HelpPayload struct {
+    Schema  int                `json:"schema"`   // monotonic version, starts at 1
+    Version string             `json:"version"`  // binary version (ldflag-injected)
+    Topics  []TopicDescriptor  `json:"topics"`
+}
+```
 
-**`text.go`** — ANSI-ified minimal markdown:
+**`schema` versioning contract**: additive changes to `TopicDescriptor`/`Section` keep `schema: 1`. Breaking changes (field removal, semantic change) bump to `schema: 2` and document migration. Consumers key on `schema` before parsing.
+
+**`markdown.go`** — pass-through. Front-matter stripped, body-level `SEE ALSO` stripped, authoritative `SEE ALSO` re-emitted from front-matter at the end.
+
+**`text.go`** — ANSI-ified for the pinned markdown subset:
 
 - H1/H2/H3 → ANSI bold, blank-line padding
 - `**bold**` / `*italic*` → ANSI codes
@@ -134,75 +189,196 @@ type Section struct {
 - Fenced code blocks → 2-space-indented + dim
 - Bullet lists → `  • item`
 - Links `[text](url)` → `text (url)` plain
-- No tables (topics use bullet lists per template)
+- Horizontal rules → dim line of `─`
 - TTY detection via `golang.org/x/term` — drops all ANSI when stdout is piped
+
+**Output policy exception:** `cmd/cyoda/help/renderer/` writes user-facing output to injected `io.Writer`s via `fmt.Fprint*`. This is a documented carve-out from the `log/slog`-exclusive rule (`.claude/rules/logging.md`) — that rule governs **operational logging**, not CLI stdout. Comment to that effect at the top of `text.go`.
+
+`--format=auto` (the default) resolves to `text` on TTY stdout, `markdown` when piped. It does **not** apply to JSON — `--format=json` is explicit and always produces JSON.
 
 ### CLI command
 
 ```
-cyoda help                             # tree summary (all top-level topics)
+cyoda help                             # tree summary (all top-level topics, grouped by stability)
 cyoda help <topic>                     # renders a top-level topic
 cyoda help <topic> <sub>               # drilldown
 cyoda help <topic> <sub> <sub2>        # depth-3
 cyoda help --format=markdown <...>
 cyoda help --format=json               # no topic → full tree
 cyoda help --format=json <topic>       # single descriptor
-cyoda --version                        # ldflag-injected version
 ```
 
-`--format` defaults to `text` when stdout is a TTY, `markdown` when piped. Explicit flag wins.
+**`cyoda --help` / `cyoda -h`** is rewired to invoke `cyoda help cli` internally. No separate printHelp.
 
-Unknown topic → exit 2 with an error message listing valid children of the nearest existing parent.
+**`cyoda --version` / `cyoda -v`** prints the existing ldflag-injected `version`, `commit`, `buildDate` vars in a single parse-friendly line, then exits 0:
 
-### `--version` flag
+```
+cyoda version 0.6.1 (commit abc1234, built 2026-04-23T14:06:14Z)
+```
 
-Separately-scoped change, bundled into the same release because it's adjacent and trivial.
+For `go run` without ldflags: `cyoda version dev (commit unknown, built unknown)`.
 
-- ldflag-injected vars in `cmd/cyoda/main.go`:
-  ```go
-  var (
-      version = "dev"
-      commit  = "unknown"
-      date    = "unknown"
-  )
-  ```
-- `.goreleaser.yaml` `builds[].ldflags`: `-X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}`
-- Output: `cyoda version 0.6.1 (commit abc1234, built 2026-04-23T14:06:14Z)` — single line, parse-friendly
+**`printHelp()` deletion.** `cmd/cyoda/main.go:258-393` (the current `printHelp` function) is removed in this change. Its content migrates into `cli/*.md` and `config/*.md` topic bodies. The parity test (test #11) asserts every `CYODA_*` env var referenced in the codebase appears in at least one `config/**/*.md` file — enforces the content migration didn't lose anything.
 
-### Release asset contract
+**Tree summary output** (`cyoda help` with no args, text format) groups by stability:
 
-Two artifacts per `v*` tag, attached to the GitHub Release via goreleaser's `release.extra_files`:
+```
+cyoda help — topic reference
 
-| Asset | URL | Content |
+Stable
+  cli              operate the binary (subcommands, conventions)
+  config           configuration model, env vars, precedence
+  errors           error catalogue and RFC 7807 shape
+
+Experimental — content pending
+  analytics        Trino SQL surface
+  crud             entity CRUD over REST
+  grpc             gRPC surface, CloudEvents envelope
+  helm             chart values reference
+  models           entity model overview
+  openapi          REST surface overview
+  quickstart       install, bootstrap, first entity
+  run              deployment shapes
+  search           query modes and predicates
+  telemetry        observability interface
+  workflows        state-machine model
+
+Run 'cyoda help <topic>' for details.
+```
+
+Sort: alphabetical within each stability group. Stability groups in order: stable, evolving, experimental.
+
+**Stub body convention.** Experimental-stub topic bodies use a minimal two-line form, not a full templated frame:
+
+```markdown
+# crud
+
+**Content pending in v0.6.1** — see https://cyoda.net/docs/ for current CRUD coverage, or `cyoda help openapi` (when available) for the REST reference.
+```
+
+No NAME/SYNOPSIS/DESCRIPTION sections. User sees immediately that this is a placeholder, not polished-but-thin documentation.
+
+**Error behavior:**
+
+- Unknown topic: exit 2, message `cyoda help: no such topic: "widgetry". Run 'cyoda help' to list available topics.`
+- Unknown subtopic under valid parent: exit 2, message `cyoda help: topic "config" has no subtopic "widgetry". Available: database, auth, grpc, schema. Run 'cyoda help config' for an overview.`
+- Unknown `--format`: exit 2 via argument parser.
+
+### REST API
+
+Help is accessible over HTTP on any running cyoda server. Zero auth (read-only, public by construction — the binary ships the content openly).
+
+| Method | Path | Response |
 |---|---|---|
-| `cyoda_help_<version>.tar.gz` | `https://github.com/Cyoda-platform/cyoda-go/releases/download/v<version>/cyoda_help_<version>.tar.gz` | Verbatim tarball of `cmd/cyoda/help/content/` |
-| `cyoda_help_<version>.json` | `https://github.com/Cyoda-platform/cyoda-go/releases/download/v<version>/cyoda_help_<version>.json` | Full-tree JSON descriptor (same as `cyoda help --format json`) |
+| `GET` | `/api/help` | `200 application/json` — full `HelpPayload` (same shape as release JSON asset) |
+| `GET` | `/api/help/{topic}` | `200 application/json` — single `TopicDescriptor` |
 
-Generated in a pre-release step before goreleaser runs, moved to `dist/`, referenced in `.goreleaser.yaml`'s `release.extra_files` glob.
+`{topic}` uses the dotted form: `/api/help/cli.serve`. No slash segments — keeps routing flat and unambiguous with the existing API prefix scheme.
 
-Naming convention `cyoda_<artifact>_<version>.<ext>` sets the pattern for #81 (openapi) and #82 (proto) to follow.
+**Error responses:**
+
+- Unknown topic → `404 application/json` with RFC 7807 Problem Details:
+  ```json
+  { "type": "about:blank",
+    "title": "Not Found",
+    "status": 404,
+    "detail": "no such help topic: widgetry",
+    "code": "HELP_TOPIC_NOT_FOUND" }
+  ```
+  (New error code `ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"` added to `internal/common/error_codes.go`.)
+
+**No path encoding edge cases** — dotted identifiers are URL-safe by construction (`[A-Za-z0-9_.-]`).
+
+**CORS:** default GET-from-anywhere is acceptable for help content. Nothing sensitive. Header: `Access-Control-Allow-Origin: *` on help endpoints only.
+
+**OpenAPI:** the endpoints are added to the generated OpenAPI spec at `api/openapi.yaml` (generator path — depends on the current pipeline) so they appear in any future #81 release asset.
+
+**Handlers live in `internal/api/handlers/help/`** — separate package; ~40 LOC. Uses `help.DefaultTree`.
 
 ### Forward compatibility for Enterprise builds
 
-Not in v0.6.1 scope, but the architecture accommodates:
+The loader supports **overlay merging** at load time:
 
-- `go:embed content_oss/` in the OSS build vs `go:embed content_enterprise/` under `//go:build enterprise`
-- OR: same `content/` directory plus an Enterprise-only overlay directory merged at tree-load time
+```go
+// OSS build
+tree, _ := help.Load(ossContent)
 
-No code change required in v0.6.1 — the loader just uses `content/` today. When the Enterprise build lands, the loader gains the overlay logic.
+// Enterprise build (cyoda-go-cassandra embeds extra content)
+tree, _ := help.Load(ossContent, enterpriseContent)
+```
+
+Enterprise content overlay adds topics; if a topic path collides between OSS and Enterprise, Enterprise wins (replacement, not merge — simpler contract, matches the "Enterprise carries richer content" goal). `fs.FS` is the input type; Enterprise build plumbs in its own embed as a second argument.
+
+**Unit test `TestLoad_OverlayMerge`** constructs two synthetic `fs.FS` trees, one with `topic-a.md`, one with `topic-b.md` + a conflicting `topic-a.md`; asserts the merged tree has both topics and that Enterprise's `topic-a` won. Proves the seam is real.
+
+v0.6.1 OSS build calls `help.Load(ossContent)` with a single arg. Enterprise wiring lands with the cyoda-go-cassandra integration, not in this release.
+
+### Release asset contract
+
+Two artifacts per `v*` tag, attached to the GitHub Release:
+
+| Asset | URL | Content |
+|---|---|---|
+| `cyoda_help_<version>.tar.gz` | `https://github.com/Cyoda-platform/cyoda-go/releases/download/v<version>/cyoda_help_<version>.tar.gz` | `cmd/cyoda/help/content/` tree, verbatim |
+| `cyoda_help_<version>.json` | `https://github.com/Cyoda-platform/cyoda-go/releases/download/v<version>/cyoda_help_<version>.json` | `HelpPayload` JSON |
+
+**Generation step** in `release.yml`, after `checkout` but before `goreleaser`:
+
+```yaml
+- name: Build help release assets
+  run: |
+    VERSION="${GITHUB_REF_NAME#v}"
+    tar -czf "dist/cyoda_help_${VERSION}.tar.gz" -C cmd/cyoda/help content/
+    go run ./cmd/cyoda help --format json > "dist/cyoda_help_${VERSION}.json"
+```
+
+Using `go run ./cmd/cyoda help --format json` as the JSON generator. This runs the same code the binary will run in production — no separate tool to maintain.
+
+**`.goreleaser.yaml` addition** in the top-level `release:` block:
+
+```yaml
+release:
+  extra_files:
+    - glob: ./dist/cyoda_help_*.tar.gz
+    - glob: ./dist/cyoda_help_*.json
+```
+
+**Checksum coverage.** Goreleaser's `checksum:` config at `.goreleaser.yaml:97-99` hashes `archives:` artifacts by default — not `release.extra_files`. The pre-release step appends a custom hash:
+
+```yaml
+- name: Extend SHA256SUMS with help assets
+  run: |
+    cd dist/
+    sha256sum cyoda_help_*.tar.gz cyoda_help_*.json >> SHA256SUMS
+```
+
+Run after goreleaser (since SHA256SUMS is created by goreleaser), before the release is finalized. The goreleaser action writes SHA256SUMS into dist/ before returning, so an `after:` step works.
+
+**Naming convention `cyoda_<artifact>_<version>.<ext>`** sets the pattern for #81 (openapi) and #82 (proto) to follow.
+
+**Snapshot smoke (`release-smoke.yml`)** asserts the two assets appear in `dist/`:
+
+```yaml
+- name: Assert help assets generated
+  run: |
+    test -f "dist/cyoda_help_0.0.0.tar.gz"
+    test -f "dist/cyoda_help_0.0.0.json"
+    jq . "dist/cyoda_help_0.0.0.json" > /dev/null
+```
 
 ## Testing
 
 ### Renderer tests (`cmd/cyoda/help/renderer/*_test.go`)
 
 1. **Tree-walk symmetry.** Table-driven: for every topic in the tree, render all 3 formats. Assert:
-   - JSON output parses as valid JSON
+   - JSON output parses; `schema: 1`
    - Markdown output starts with H1 matching front-matter `title`
    - Text output contains the title string (ANSI-stripped)
    - JSON `see_also` matches front-matter `see_also` verbatim
-2. **Tokenizer unit tests.** Table-driven markdown fragments + expected text output. Covers headings, lists, code fences, bold/italic, links, TTY vs non-TTY.
+   - JSON `TopicDescriptor` has all required fields populated
+2. **Tokenizer unit tests.** Table-driven markdown fragments + expected text output. Covers every supported subset element.
 3. **JSON schema pin.** Golden-file test for one stable topic. Catches unintended struct changes.
-4. **CLI dispatch.** `TestHelpCommand_UnknownTopic_ErrorAndExit2`, `TestHelpCommand_DepthTraversal`, `TestHelpCommand_FormatFlag`.
+4. **CLI dispatch.** `TestHelpCommand_UnknownTopic_ErrorAndExit2`, `TestHelpCommand_DepthTraversal`, `TestHelpCommand_FormatFlag`, `TestHelpCommand_NoArgsShowsGroupedTree`, `TestVersionFlag`.
 5. **Front-matter parser.** Unit tests for malformed YAML — missing `topic`, invalid `stability`. Fail at `Tree.Load()` time, not invocation time.
 
 ### Content tests (`cmd/cyoda/help/help_test.go`)
@@ -211,26 +387,41 @@ No code change required in v0.6.1 — the loader just uses `content/` today. Whe
 7. **Topic path matches filesystem path.** `cli/serve.md` must declare `topic: cli.serve`.
 8. **See-also targets exist.** Every `see_also` entry resolves to a topic in the tree.
 9. **All 13 top-level frames present.** Hardcoded list — catches accidental deletion.
+10. **Markdown-subset linter.** Reject any file using disallowed markdown constructs (tables, nested lists, HTML, reference-style links, etc.). Enforces tokenizer's pinned scope.
+11. **`CYODA_*` env vars covered in `config/**/*.md`.** Extract `grep -oE 'CYODA_[A-Z_]+' cmd app plugins | sort -u`, compare against `grep -oE 'CYODA_[A-Z_]+' cmd/cyoda/help/content/config/*.md | sort -u`. Missing var = test failure.
+12. **`ErrCode*` parity with `errors/*.md`.** Extract `grep -oE 'ErrCode[A-Z][A-Za-z]+\s*=\s*"([A-Z_]+)"' internal/common/error_codes.go` → set of codes. Compare against `ls cmd/cyoda/help/content/errors/*.md` stripped of `.md` extension. Missing code = test failure. This is the C-level defense against error-catalog drift.
 
-### No integration/e2e tests
+### Overlay test (`cmd/cyoda/help/help_test.go`)
 
-Help is a pure local subcommand — no network, storage, or state. Unit + CLI-dispatch coverage is sufficient.
+13. **`TestLoad_OverlayMerge`.** Construct two `fstest.MapFS` trees; assert merged tree has both topics and that the second argument's content wins on path collision.
+
+### REST API tests (`internal/api/handlers/help/*_test.go`)
+
+14. **`TestGetFullTree`.** `httptest.Server` serves `/api/help`; assert `HelpPayload` JSON + `schema: 1`.
+15. **`TestGetSingleTopic`.** `/api/help/cli.serve` returns one descriptor.
+16. **`TestGetUnknownTopic_404_RFC7807`.** `/api/help/widgetry` returns 404 with correct problem-details shape and `HELP_TOPIC_NOT_FOUND` code.
+17. **`TestCORSHeadersPresent`.** GET response includes `Access-Control-Allow-Origin: *`.
+
+### No integration/e2e tests beyond the REST unit tests
+
+Help is a local, deterministic subcommand + a stateless HTTP handler. No DB, no tenant scope, no async. Unit + CLI-dispatch + handler coverage is sufficient.
 
 ### Gate 5 verification
 
-- `go test ./cmd/cyoda/...` green
+- `go test ./cmd/cyoda/... ./internal/api/handlers/help/...` green
 - `go vet ./...` clean
 - `go test -race ./...` one-shot before PR
-- Manual smoke: `cyoda help`, `cyoda help cli`, `cyoda help errors POLYMORPHIC_SLOT`, `cyoda help --format json | jq .`, each piped to `/dev/null` to confirm no ANSI leakage
+- Manual smoke: `cyoda help`, `cyoda --help` (equals `cyoda help cli`), `cyoda help errors POLYMORPHIC_SLOT`, `cyoda help --format json | jq .`, `cyoda --version`
+- Manual REST smoke: `curl http://localhost:8080/api/help | jq '.topics[0]'`, `curl http://localhost:8080/api/help/cli.serve`
 
 ## Content scope for v0.6.1
 
 | Topic | Stability | Source of truth |
 |---|---|---|
-| `cli` + subcommands | stable | Mirrors `printHelp()` in `cmd/cyoda/main.go`; one subtopic per existing subcommand |
-| `config` + topic groups | stable | Derived from env-var constants + `parseConfig` per plugin; subtopics `database`, `auth`, `grpc`, `schema` |
-| `errors` + all codes | stable | One subtopic per `ErrCode*` in `internal/common/error_codes.go` — name, trigger, retryable, operator action |
-| `crud`, `search`, `analytics`, `models`, `workflows`, `run`, `helm`, `telemetry`, `openapi`, `grpc`, `quickstart` | experimental | Minimal NAME/SYNOPSIS with "content pending — see cyoda-docs" pointer |
+| `cli` + subcommands (`serve`, `init`, `migrate`, `health`, `help`) | stable | Hand-written, cross-checked by tests #11 (env vars) and post-migration from deleted `printHelp()` content |
+| `config` + topic groups (`database`, `auth`, `grpc`, `schema`) | stable | Hand-written, covers every `CYODA_*` var enforced by test #11 |
+| `errors` + every `ErrCode*` | stable | Hand-written, one subtopic per code, enforced by test #12 |
+| `crud`, `search`, `analytics`, `models`, `workflows`, `run`, `helm`, `telemetry`, `openapi`, `grpc`, `quickstart` | experimental | Two-line stub bodies per the stub convention |
 
 Estimated content: ~3500 lines of markdown across ~40 files.
 
@@ -238,59 +429,73 @@ Estimated content: ~3500 lines of markdown across ~40 files.
 
 ```
 cmd/cyoda/
-├── main.go                                # +--version, +ldflag vars, +help wiring
+├── main.go                                # -printHelp, +--version handler, +--help→help cli, +help subcmd wiring
 └── help/
-    ├── help.go                            # go:embed + Tree + Topic types
-    ├── help_test.go                       # content-level tests (6-9)
-    ├── command.go                         # cobra subcommand + --format handling
+    ├── help.go                            # go:embed + Tree + Topic types + Load(fs.FS...)
+    ├── help_test.go                       # content-level + overlay tests (6-13)
+    ├── command.go                         # subcommand + --format handling + tree-summary renderer
     ├── command_test.go                    # CLI dispatch tests (4)
     ├── content/                           # AUTHORING SOURCE
-    │   └── ... (markdown tree, see above)
+    │   └── ... (markdown tree)
     └── renderer/
-        ├── tokenizer.go
+        ├── tokenizer.go                   # ~200-line markdown subset tokenizer
         ├── tokenizer_test.go
-        ├── text.go
+        ├── text.go                        # + fmt-exception comment at top
         ├── text_test.go
-        ├── markdown.go
-        ├── json.go
+        ├── markdown.go                    # + see-also strip+re-emit
+        ├── json.go                        # + HelpPayload wrapper with schema version
         └── json_test.go
+
+internal/
+├── api/handlers/help/
+│   ├── handler.go                         # GET /api/help[, /{topic}]
+│   └── handler_test.go                    # 4 REST tests (14-17)
+└── common/
+    └── error_codes.go                     # +ErrCodeHelpTopicNotFound = "HELP_TOPIC_NOT_FOUND"
 ```
 
-Outside `cmd/cyoda/help/`:
+Outside `cmd/cyoda/help/` and `internal/`:
 
-- `cmd/cyoda/main.go` — +ldflag vars, +`--version`, wire `help` subcommand
-- `.goreleaser.yaml` — +ldflags in `builds[]`, +`release.extra_files` glob
-- `.github/workflows/release.yml` — +Build-help-assets pre-release step
-- `.github/workflows/release-smoke.yml` — assert help assets exist in snapshot `dist/`
-- `README.md` — one-paragraph pointer at `cyoda help`
+- `cmd/cyoda/main.go` — delete `printHelp`, add `--version` handler, rewire `--help/-h` to `help cli`, add `help` dispatch arm
+- `.goreleaser.yaml` — `release.extra_files` glob (ldflags untouched, already inject `buildDate`)
+- `.github/workflows/release.yml` — Build-help-assets pre-release step + SHA256SUMS extension step
+- `.github/workflows/release-smoke.yml` — assert help assets generated
+- `README.md` — one-paragraph pointer at `cyoda help` and `/api/help`; Gate 4
+- `CONTRIBUTING.md` — topic-tree stability contract (additions free; renames/removals require deprecation window); Gate 4
+- `api/openapi.yaml` or equivalent source — `/api/help` endpoints for #81 future asset
 
 ## Estimated LOC
 
-- Go code: ~1200 (renderer ~400, loader ~200, command ~150, tests ~450)
+- Go code: ~1400 (renderer ~400, loader + overlay ~250, CLI command ~200, REST handler ~100, tests ~450)
 - Markdown content: ~3500 across ~40 files
-- Config (goreleaser + workflows): ~30
+- Config (goreleaser + workflows + error codes): ~40
 
-## Acceptance (maps to issue #80 criteria)
+## Acceptance (maps to issue #80 criteria + bundled scope)
 
-- [ ] `cyoda help` lists all 13 top-level topics with one-line synopses
+- [ ] `cyoda help` lists all 13 top-level topics grouped by stability with one-line synopses
 - [ ] `cyoda help <topic>` renders the templated structure for each topic
 - [ ] `cyoda help <topic> <subtopic>` works for every drilldown currently defined
-- [ ] All three formats produce equivalent content from a single source
-- [ ] `cyoda help --format json` (no topic) emits the full topic-tree descriptor
-- [ ] Per-topic stability marker is present in all formats
-- [ ] Release CI attaches `cyoda_help_<version>.tar.gz` and `cyoda_help_<version>.json`
-- [ ] OSS build contains no confidential content (architecture supports future Enterprise extension without overlap)
-- [ ] Topic-tree stability contract documented (additions free; renames/removals require deprecation window) — lives in `cli.help` topic body
+- [ ] All three formats (`text`, `markdown`, `json`) produce equivalent content from a single source
+- [ ] `cyoda help --format json` (no topic) emits `HelpPayload` with `schema: 1` and all descriptors
+- [ ] Per-topic `stability` marker is present in all formats
+- [ ] `GET /api/help` returns the same `HelpPayload` shape; `GET /api/help/{topic}` returns one descriptor; 404 uses RFC 7807
+- [ ] Release CI attaches `cyoda_help_<version>.tar.gz` and `cyoda_help_<version>.json`; both included in `SHA256SUMS`
+- [ ] Topic-tree stability contract documented in `CONTRIBUTING.md` and in the `cli.help` topic body
 - [ ] `cyoda --version` prints ldflag-injected version + commit + build date
+- [ ] `cyoda --help` renders `cyoda help cli` — no separate `printHelp()` maintained
+- [ ] Markdown-subset linter rejects disallowed constructs (test #10)
+- [ ] `CYODA_*` env var coverage test (test #11) passes
+- [ ] `ErrCode*` parity test (test #12) passes
+- [ ] Overlay-merge loader test (test #13) passes
 
 ## Out of scope for v0.6.1 (tracked for later)
 
-- Authoritative content for the 10 experimental-stub topics — each is a standalone future change
-- Enterprise build overlay for Cassandra-tier deltas — architecture ready, loader change needed when cyoda-go-cassandra lands
-- cyoda-docs import of the help release assets — separate cross-repo coordination
-- #81 OpenAPI release asset (sibling pattern, separate ticket)
-- #82 gRPC proto release asset (sibling pattern, separate ticket)
+- Authoritative content for the 10 experimental-stub topics — each is a standalone future change, co-authored with cyoda-docs where applicable
+- Enterprise build overlay for Cassandra-tier deltas — architecture ready via `Load(fs.FS...)`; activation lands with cyoda-go-cassandra
+- cyoda-docs website integration with the release asset
+- Shell completion for topic names (`cyoda help <TAB>`) — v0.6.2+
+- OpenAPI release asset (#81), gRPC proto release asset (#82) — sibling patterns, separate tickets
 
 ## Decommission when done
 
-No decommission — this is a new subsystem that will live for the lifetime of the project.
+No decommission — this is a new subsystem that will live for the lifetime of the project. One resurrected piece: the help subsystem formally replaces `cmd/cyoda/main.go:printHelp()`, which is deleted as part of this change.
