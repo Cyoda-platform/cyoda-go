@@ -12,6 +12,15 @@ import (
 // summary's first column.
 var namePrefixPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+\s*[—-]\s*`)
 
+// Inline markdown patterns for stripping markers in plain-text extraction.
+// Order matters: code spans before bold so backtick-delimited ** isn't bolded.
+var (
+	reCode   = regexp.MustCompile("`([^`]+)`")
+	reBold   = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	reItalic = regexp.MustCompile(`\*([^*]+)\*`)
+	reLink   = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+)
+
 // flattenToPlainText strips inline markdown markers and collapses all
 // whitespace (including newlines) into single spaces.
 func flattenToPlainText(s string) string {

@@ -89,8 +89,10 @@ func resolveFormat(f string, isTTY bool) string {
 }
 
 func writeTopicText(t *Topic, out io.Writer, isTTY bool) int {
-	toks := renderer.Tokenize(t.Body)
-	renderer.RenderText(out, toks, isTTY)
+	if err := renderer.RenderText(out, t.Body, isTTY); err != nil {
+		fmt.Fprintf(out, "cyoda help: render failed: %v\n", err)
+		return 1
+	}
 	if len(t.SeeAlso) > 0 {
 		fmt.Fprintln(out, "\nSEE ALSO")
 		for _, s := range t.SeeAlso {

@@ -6,104 +6,53 @@ import (
 	"testing"
 )
 
-func TestRenderText_HeadingBoldWhenTTY(t *testing.T) {
-	tokens := []Token{{Kind: KindHeading, Level: 1, Text: "cli"}}
+func TestRenderText_EmitsANSIOnTTY(t *testing.T) {
 	var buf bytes.Buffer
-	RenderText(&buf, tokens, true)
-	out := buf.String()
-	if !strings.Contains(out, "\x1b[1m") {
-		t.Errorf("H1 must emit bold ANSI on TTY; got %q", out)
+	err := RenderText(&buf, []byte("# Title\n\nBody.\n"), true)
+	if err != nil {
+		t.Fatalf("RenderText: %v", err)
 	}
-	if !strings.Contains(out, "cli") {
-		t.Errorf("H1 text missing from output: %q", out)
+	if !strings.Contains(buf.String(), "\x1b[") {
+		t.Errorf("TTY output should contain ANSI: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Title") {
+		t.Errorf("output missing heading content: %q", buf.String())
 	}
 }
 
-func TestRenderText_NoANSIWhenNotTTY(t *testing.T) {
-	tokens := []Token{{Kind: KindHeading, Level: 1, Text: "cli"}}
+func TestRenderText_NoANSIOffTTY(t *testing.T) {
 	var buf bytes.Buffer
-	RenderText(&buf, tokens, false)
-	out := buf.String()
-	if strings.Contains(out, "\x1b[") {
-		t.Errorf("non-TTY output must NOT contain ANSI; got %q", out)
+	err := RenderText(&buf, []byte("# Title\n\nBody.\n"), false)
+	if err != nil {
+		t.Fatalf("RenderText: %v", err)
 	}
-	if !strings.Contains(out, "cli") {
-		t.Errorf("H1 text missing: %q", out)
+	if strings.Contains(buf.String(), "\x1b[") {
+		t.Errorf("non-TTY output must NOT contain ANSI: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Title") {
+		t.Errorf("output missing heading content: %q", buf.String())
 	}
 }
 
-func TestRenderText_Bullets(t *testing.T) {
-	tokens := []Token{
-		{Kind: KindBullet, Text: "one"},
-		{Kind: KindBullet, Text: "two"},
-	}
+func TestRenderText_FencedCodeBlockRenders(t *testing.T) {
 	var buf bytes.Buffer
-	RenderText(&buf, tokens, false)
-	out := buf.String()
-	if !strings.Contains(out, "  • one") || !strings.Contains(out, "  • two") {
-		t.Errorf("bullets should render as '  • ...'; got %q", out)
+	err := RenderText(&buf, []byte("```\nhello\n```\n"), false)
+	if err != nil {
+		t.Fatalf("RenderText: %v", err)
+	}
+	if !strings.Contains(buf.String(), "hello") {
+		t.Errorf("code block content missing: %q", buf.String())
 	}
 }
 
-func TestRenderText_InlineBoldStripsMarkers(t *testing.T) {
-	tokens := []Token{{Kind: KindParagraph, Text: "hello **world** done"}}
+func TestRenderText_BulletsRender(t *testing.T) {
 	var buf bytes.Buffer
-	RenderText(&buf, tokens, false)
-	out := buf.String()
-	if !strings.Contains(out, "world") {
-		t.Errorf("bold text missing: %q", out)
+	err := RenderText(&buf, []byte("- one\n- two\n"), false)
+	if err != nil {
+		t.Fatalf("RenderText: %v", err)
 	}
-	if strings.Contains(out, "**") {
-		t.Errorf("asterisks must be stripped in non-TTY text: %q", out)
-	}
-}
-
-func TestRenderText_InlineBoldEmitsANSIOnTTY(t *testing.T) {
-	tokens := []Token{{Kind: KindParagraph, Text: "hello **world** done"}}
-	var buf bytes.Buffer
-	RenderText(&buf, tokens, true)
-	out := buf.String()
-	if !strings.Contains(out, "\x1b[1m") {
-		t.Errorf("TTY output must emit bold ANSI; got %q", out)
-	}
-}
-
-func TestRenderText_CodeBlockIndented(t *testing.T) {
-	tokens := []Token{{Kind: KindCodeBlock, Text: "line1\nline2"}}
-	var buf bytes.Buffer
-	RenderText(&buf, tokens, false)
-	out := buf.String()
-	if !strings.Contains(out, "  line1") || !strings.Contains(out, "  line2") {
-		t.Errorf("code block must be 2-space-indented: %q", out)
-	}
-}
-
-func TestRenderText_LinksFlattenToTextAndURL(t *testing.T) {
-	tokens := []Token{{Kind: KindParagraph, Text: "see [docs](https://x/y)"}}
-	var buf bytes.Buffer
-	RenderText(&buf, tokens, false)
-	out := buf.String()
-	if !strings.Contains(out, "docs (https://x/y)") {
-		t.Errorf("link should render as 'text (url)'; got %q", out)
-	}
-}
-
-func TestRenderText_CodeBlockDimWhenTTY(t *testing.T) {
-	tokens := []Token{{Kind: KindCodeBlock, Text: "x"}}
-	var buf bytes.Buffer
-	RenderText(&buf, tokens, true)
-	out := buf.String()
-	if !strings.Contains(out, "\x1b[2m") {
-		t.Errorf("code block on TTY must emit dim ANSI; got %q", out)
-	}
-}
-
-func TestRenderText_CodeBlockNoANSIWhenNotTTY(t *testing.T) {
-	tokens := []Token{{Kind: KindCodeBlock, Text: "x"}}
-	var buf bytes.Buffer
-	RenderText(&buf, tokens, false)
-	out := buf.String()
-	if strings.Contains(out, "\x1b[") {
-		t.Errorf("code block off TTY must NOT emit ANSI; got %q", out)
+	s := buf.String()
+	if !strings.Contains(s, "one") || !strings.Contains(s, "two") {
+		t.Errorf("bullets missing: %q", s)
 	}
 }
