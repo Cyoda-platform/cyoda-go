@@ -78,6 +78,9 @@ func applyInline(s string, isTTY bool) string {
 		}
 		return inner
 	})
+	// *italic* — terminal compat: no portable italic ANSI code, so we
+	// reuse bold. A separate italic code (\x1b[3m) exists but renders
+	// unreliably across terminal emulators.
 	s = reItalic.ReplaceAllStringFunc(s, func(m string) string {
 		inner := m[1 : len(m)-1]
 		if isTTY {

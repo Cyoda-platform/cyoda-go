@@ -87,3 +87,23 @@ func TestRenderText_LinksFlattenToTextAndURL(t *testing.T) {
 		t.Errorf("link should render as 'text (url)'; got %q", out)
 	}
 }
+
+func TestRenderText_CodeBlockDimWhenTTY(t *testing.T) {
+	tokens := []Token{{Kind: KindCodeBlock, Text: "x"}}
+	var buf bytes.Buffer
+	RenderText(&buf, tokens, true)
+	out := buf.String()
+	if !strings.Contains(out, "\x1b[2m") {
+		t.Errorf("code block on TTY must emit dim ANSI; got %q", out)
+	}
+}
+
+func TestRenderText_CodeBlockNoANSIWhenNotTTY(t *testing.T) {
+	tokens := []Token{{Kind: KindCodeBlock, Text: "x"}}
+	var buf bytes.Buffer
+	RenderText(&buf, tokens, false)
+	out := buf.String()
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("code block off TTY must NOT emit ANSI; got %q", out)
+	}
+}
