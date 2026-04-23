@@ -107,6 +107,10 @@ func Tokenize(src []byte) []Token {
 		paraBuf = append(paraBuf, trimmed)
 	}
 	flushPara()
+	// sc.Err() is intentionally not checked: the source is always a
+	// bytes.Reader (we control the call sites), which cannot produce
+	// an I/O error. If Tokenize ever accepts an io.Reader, add the
+	// check here.
 	return out
 }
 
@@ -163,5 +167,6 @@ func FindUnsupported(src []byte) []Issue {
 			continue
 		}
 	}
+	// sc.Err() is intentionally not checked; see Tokenize.
 	return issues
 }

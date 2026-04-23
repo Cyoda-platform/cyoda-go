@@ -90,3 +90,36 @@ func TestFindUnsupported_CleanContentHasNoIssues(t *testing.T) {
 		t.Errorf("clean content flagged: %+v", issues)
 	}
 }
+
+func TestTokenize_EmptyInput(t *testing.T) {
+	if got := Tokenize(nil); len(got) != 0 {
+		t.Errorf("Tokenize(nil) = %+v, want empty", got)
+	}
+	if got := Tokenize([]byte{}); len(got) != 0 {
+		t.Errorf("Tokenize(empty) = %+v, want empty", got)
+	}
+}
+
+func TestTokenize_UnterminatedFencedCode(t *testing.T) {
+	// Unclosed fence: scanner exhausts without seeing closing ```.
+	// Behaviour: accumulated body emitted as a KindCodeBlock.
+	tokens := Tokenize([]byte("```\nline1\nline2\n"))
+	if len(tokens) != 1 {
+		t.Fatalf("len(tokens) = %d, want 1", len(tokens))
+	}
+	if tokens[0].Kind != KindCodeBlock {
+		t.Errorf("tokens[0].Kind = %v, want KindCodeBlock", tokens[0].Kind)
+	}
+	if tokens[0].Text != "line1\nline2" {
+		t.Errorf("tokens[0].Text = %q, want %q", tokens[0].Text, "line1\nline2")
+	}
+}
+
+func TestFindUnsupported_PipeTableInsideFenceIsExempt(t *testing.T) {
+	// Content that LOOKS like a pipe table but is inside a fenced code
+	// block must not be flagged — example usage in help docs is legitimate.
+	src := []byte("```\n| col |\n|-----|\n| val |\n```\n")
+	if issues := FindUnsupported(src); len(issues) != 0 {
+		t.Errorf("fenced pipe table flagged: %+v", issues)
+	}
+}
