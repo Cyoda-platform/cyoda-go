@@ -525,6 +525,58 @@ func scanEnvVarsInGoSource(t *testing.T, root string, dirs []string) map[string]
 	return out
 }
 
+var errCodePattern = regexp.MustCompile(`ErrCode[A-Z][A-Za-z0-9]+\s*=\s*"([A-Z0-9_]+)"`)
+
+// TestErrCode_Parity asserts every ErrCode* in internal/common/error_codes.go
+// has a matching errors/<CODE>.md topic file, and vice versa.
+func TestErrCode_Parity(t *testing.T) {
+	wd, _ := os.Getwd()
+	root := wd
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Skip("cannot locate repo root")
+			return
+		}
+		root = parent
+	}
+	src, err := os.ReadFile(filepath.Join(root, "internal/common/error_codes.go"))
+	if err != nil {
+		t.Fatalf("read error_codes.go: %v", err)
+	}
+	defined := map[string]bool{}
+	for _, m := range errCodePattern.FindAllStringSubmatch(string(src), -1) {
+		defined[m[1]] = true
+	}
+	errorsDir := filepath.Join(root, "cmd/cyoda/help/content/errors")
+	entries, err := os.ReadDir(errorsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Fatalf("errors content directory missing: %s", errorsDir)
+		}
+		t.Fatalf("read errors/: %v", err)
+	}
+	documented := map[string]bool{}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			documented[strings.TrimSuffix(e.Name(), ".md")] = true
+		}
+	}
+	for code := range defined {
+		if !documented[code] {
+			t.Errorf("ErrCode %q defined in error_codes.go but no errors/%s.md", code, code)
+		}
+	}
+	for code := range documented {
+		if !defined[code] {
+			t.Errorf("errors/%s.md exists but no matching ErrCode in error_codes.go", code)
+		}
+	}
+}
+
 // scanEnvVarsInConfigDocs walks the help content directory and extracts
 // every CYODA_* mention from config.md and config/**/*.md.
 func scanEnvVarsInConfigDocs(t *testing.T, contentRoot string) map[string]bool {
