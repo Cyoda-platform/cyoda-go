@@ -146,3 +146,52 @@ func TestExtend_GenuineKindMismatch_StillRejected(t *testing.T) {
 		})
 	}
 }
+
+// TestExtend_NullableMarker_AtLowerChangeLevel_RejectedAsLevelViolation pins
+// the intersection of two behaviors that interact non-obviously:
+//
+//   1. isNullOnlyLeaf carve-out: LEAF[NULL] against non-LEAF is a nullable
+//      marker, not a kind mismatch (commit d3159bd).
+//   2. Nullable markers add NULL to the target's TypeSet, which is a
+//      TYPE-level operation and requires ChangeLevelType or higher.
+//
+// A caller operating at ChangeLevelArrayLength (or any level below TYPE)
+// must NOT smuggle a TypeSet widening through via the nullable path. The
+// carve-out returns a clear "nullable marker requires TYPE level" error
+// rather than silently accepting the change OR falsely reporting a kind
+// mismatch — both of which would be wrong.
+//
+// Runs for the three sub-TYPE levels (ArrayLength, ArrayElements, and the
+// empty level that permits nothing) to cover the full matrix of "below TYPE"
+// cases.
+func TestExtend_NullableMarker_AtLowerChangeLevel_RejectedAsLevelViolation(t *testing.T) {
+	cases := []struct {
+		name  string
+		level spi.ChangeLevel
+	}{
+		{"ArrayLength", spi.ChangeLevelArrayLength},
+		{"ArrayElements", spi.ChangeLevelArrayElements},
+		{"Empty", spi.ChangeLevel("")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			existing := NewObjectNode()
+			existing.SetChild("custom_permissions", NewArrayNode(NewLeafNode(String)))
+
+			incoming := NewObjectNode()
+			incoming.SetChild("custom_permissions", NewLeafNode(Null))
+
+			_, err := Extend(existing, incoming, tc.level)
+			if err == nil {
+				t.Fatal("nullable marker below TYPE level must reject")
+			}
+			// Must NOT be classified as polymorphic — this is a level
+			// issue, solvable by raising the level. Treating it as
+			// polymorphic would mislead clients into thinking their
+			// payload shape is at fault.
+			if errors.Is(err, ErrPolymorphicSlot) {
+				t.Errorf("level-below-TYPE nullable must NOT wrap ErrPolymorphicSlot; got: %v", err)
+			}
+		})
+	}
+}
