@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://cyoda.com/cloud/event/search/EntityMetadata.json",
+  "$id": "https://cyoda.com/cloud/event/common/EntityMetadata.json",
   "title": "EntityMetadata",
   "description": "Metadata about an entity. id, modelKey and creationDate are invariant against the point-in-time. All other values are with respect to the as-at point-in-time for which the entity was retrieved. If the point-in-time was not explicitly set, the values correspond to the latest state of the entity.",
   "type": "object",

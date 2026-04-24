@@ -1,12 +1,14 @@
 package help
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	cyodaschemas "github.com/cyoda-platform/cyoda-go/docs/cyoda/schema"
 )
@@ -91,8 +93,17 @@ func loadEmbeddedSchemas() (map[string]json.RawMessage, error) {
 		// re-marshal to canonicalize formatting. Structural content is
 		// preserved — JSON object key order is not semantically
 		// significant; downstream consumers deep-equal parsed docs.
+		//
+		// UseNumber() keeps numeric literals as json.Number instead of
+		// coercing to float64 — no current schema carries values above
+		// 2^53, but a future `multipleOf` or long-integer default would
+		// silently lose precision through a naive float round-trip
+		// (same class as issue #79). Remarshal of json.Number preserves
+		// the original lexical form byte-for-byte.
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
 		var doc any
-		if err := json.Unmarshal(raw, &doc); err != nil {
+		if err := dec.Decode(&doc); err != nil {
 			return fmt.Errorf("%s: invalid JSON: %w", p, err)
 		}
 		canon, err := json.Marshal(doc)
@@ -111,15 +122,34 @@ func loadEmbeddedSchemas() (map[string]json.RawMessage, error) {
 // binaryVersionFn is the accessor used at runtime to stamp the envelope
 // `version` field. Package main wires it to the ldflag-injected string
 // via SetBinaryVersion (parallel pattern to other help actions).
-var binaryVersionFn = func() string { return "dev" }
+//
+// Stored via atomic.Pointer so concurrent callers of binaryVersion()
+// observe a consistent function value; reset mid-read by a late
+// SetBinaryVersion can't data-race. The default — returned before any
+// setter runs — reports "dev".
+var binaryVersionFn atomic.Pointer[func() string]
 
-func binaryVersion() string { return binaryVersionFn() }
+func init() {
+	defaultFn := func() string { return "dev" }
+	binaryVersionFn.Store(&defaultFn)
+}
+
+func binaryVersion() string {
+	fn := binaryVersionFn.Load()
+	if fn == nil {
+		return "dev"
+	}
+	return (*fn)()
+}
 
 // SetBinaryVersion wires the binary version reporter. Called from
 // package main at program start once the ldflag-injected `version`
-// variable is available.
+// variable is available. Safe to call concurrently with binaryVersion()
+// — the atomic swap guarantees readers see either the old or new fn,
+// never a torn value.
 func SetBinaryVersion(fn func() string) {
-	if fn != nil {
-		binaryVersionFn = fn
+	if fn == nil {
+		return
 	}
+	binaryVersionFn.Store(&fn)
 }

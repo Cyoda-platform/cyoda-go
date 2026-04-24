@@ -133,6 +133,46 @@ func TestCloudEventsJSON_ValuesStructurallyMatchEmbed(t *testing.T) {
 	}
 }
 
+// TestCloudEventsJSON_EverySchemaHasSchemaAndID pins that every emitted
+// schema carries `$schema` and `$id`, and that `$id` matches the
+// expected `BaseID + <relative-path>` pattern.
+//
+// The structural-equality test would not catch a future regeneration
+// that dropped `$schema` or `$id` from every file simultaneously (both
+// sides of deep-equal lack it → pass). This test is the positive guard
+// against that class of upstream drift.
+func TestCloudEventsJSON_EverySchemaHasSchemaAndID(t *testing.T) {
+	env := emitAndParse(t)
+
+	for path, rawValue := range env.Schemas {
+		var obj map[string]any
+		if err := json.Unmarshal(rawValue, &obj); err != nil {
+			t.Errorf("%s: value is not a JSON object: %v", path, err)
+			continue
+		}
+		// $schema is required by Draft 2020-12 for standalone schemas.
+		if _, ok := obj["$schema"]; !ok {
+			t.Errorf("%s: missing $schema field", path)
+		}
+		// $id is required by the cyoda schema tree convention —
+		// every file has one and it must match BaseID + relative-path.
+		idRaw, ok := obj["$id"]
+		if !ok {
+			t.Errorf("%s: missing $id field", path)
+			continue
+		}
+		id, ok := idRaw.(string)
+		if !ok {
+			t.Errorf("%s: $id is not a string: %v", path, idRaw)
+			continue
+		}
+		want := cyodaschemas.BaseID + path
+		if id != want {
+			t.Errorf("%s: $id = %q, want %q", path, id, want)
+		}
+	}
+}
+
 // TestCloudEventsJSON_RefsRemainRelative pins that no `$ref` is
 // rewritten to an absolute URL — downstream tooling materializes the
 // tree to disk and expects relative resolution.
