@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityStatsResponse.json",
+  "title": "EntityStatsResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original request."
+    },
+    "modelName": {
+      "type": "string",
+      "description": "Entity model name."
+    },
+    "modelVersion": {
+      "type": "integer",
+      "description": "Entity model version."
+    },
+    "count": {
+      "type": "integer",
+      "existingJavaType": "java.lang.Long",
+      "description": "Entity count for this model."
+    }
+  },
+  "required": [
+    "requestId",
+    "modelName",
+    "modelVersion",
+    "count"
+  ]
+}
+

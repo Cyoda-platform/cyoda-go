@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/model/EntityModelGetAllResponse.json",
+  "title": "EntityModelGetAllResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "models": {
+      "type": "array",
+      "description": "Information about registered models.",
+      "items": {
+        "$ref": "../common/ModelInfo.json"
+      }
+    }
+  },
+  "required": [
+    "models"
+  ]
+}

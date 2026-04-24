@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/ModelInfo.json",
+  "title": "ModelInfo",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Id of the model."
+    },
+    "name": {
+      "type": "string",
+      "description": "Name of the model."
+    },
+    "version": {
+      "type": "integer",
+      "description": "Version of the model."
+    },
+    "state": {
+      "type": "string",
+      "description": "Current state of the model."
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "version",
+    "state"
+  ]
+}

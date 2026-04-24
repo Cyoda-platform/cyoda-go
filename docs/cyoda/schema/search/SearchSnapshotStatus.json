@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/SearchSnapshotStatus.json",
+  "title": "SearchSnapshotStatus",
+  "type": "object",
+  "properties": {
+    "snapshotId": {
+      "type": "string",
+      "description": "ID of the snapshot.",
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string",
+      "description": "Status of the snapshot.",
+      "enum": [
+        "RUNNING",
+        "FAILED",
+        "CANCELLED",
+        "SUCCESSFUL",
+        "NOT_FOUND"
+      ]
+    },
+    "expirationDate": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Expiration date of the snapshot."
+    },
+    "entitiesCount": {
+      "type": "integer",
+      "existingJavaType": "java.lang.Long",
+      "description": "Number of entities collected."
+    }
+  },
+  "required": [
+    "snapshotId",
+    "status"
+  ]
+}

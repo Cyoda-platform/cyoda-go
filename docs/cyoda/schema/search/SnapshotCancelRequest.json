@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/SnapshotCancelRequest.json",
+  "title": "SnapshotCancelRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "snapshotId": {
+      "type": "string",
+      "description": "ID of the snapshot to cancel.",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "snapshotId"
+  ]
+}

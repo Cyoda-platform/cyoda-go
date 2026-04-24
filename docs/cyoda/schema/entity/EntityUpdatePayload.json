@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityUpdatePayload.json",
+  "title": "EntityUpdatePayload",
+  "type": "object",
+  "properties": {
+    "entityId": {
+      "type": "string",
+      "description": "ID of the entity.",
+      "format": "uuid"
+    },
+    "data": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "Entity payload data."
+    },
+    "transition": {
+      "type": "string",
+      "description": "Transition to use for update."
+    }
+  },
+  "required": [
+    "entityId",
+    "data"
+  ]
+}

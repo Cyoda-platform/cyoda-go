@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/model/EntityModelExportResponse.json",
+  "title": "EntityModelExportResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "modelId": {
+      "type": "string",
+      "description": "ID of the entity model.",
+      "format": "uuid"
+    },
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Entity model specification."
+    },
+    "payload": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "The content format of the exported entity model depends on the selected converter."
+    }
+  },
+  "required": [
+    "model",
+    "modelVersion",
+    "payload"
+  ]
+}

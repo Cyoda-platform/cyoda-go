@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityCreateCollectionRequest.json",
+  "title": "EntityCreateCollectionRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "dataFormat": {
+      "$ref": "../common/DataFormat.json"
+    },
+    "transactionWindow": {
+      "type": "integer",
+      "description": "The collection will be saved in a single transaction up to a maximum number of entities given by the transactionWindow. Collections exceeding the transactionWindow size will be saved in separate chunked transactions of the transactionWindow size."
+    },
+    "transactionTimeoutMs": {
+      "type": "integer",
+      "existingJavaType": "java.lang.Long",
+      "description": "Indicates the timeout of transaction for transactional save."
+    },
+    "payloads": {
+      "type" : "array",
+      "description": "Data payloads containing entities to save.",
+      "items": {
+        "$ref": "./EntityCreatePayload.json"
+      }
+    }
+  },
+  "required": [
+    "dataFormat",
+    "payloads"
+  ]
+}

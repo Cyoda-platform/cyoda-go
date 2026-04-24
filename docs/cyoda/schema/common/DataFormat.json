@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/DataFormat.json",
+  "title": "DataFormat",
+  "type": "string",
+  "enum": [
+    "JSON",
+    "XML"
+  ],
+  "description": "Specifies the format of the input data (e.g., JSON)."
+}
