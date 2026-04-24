@@ -43,6 +43,26 @@ stability: stable
 
 Body.
 `)},
+		"content/openapi.md": &fstest.MapFile{Data: []byte(`---
+topic: openapi
+title: openapi
+stability: stable
+---
+
+# openapi
+
+OpenAPI spec.
+`)},
+		"content/grpc.md": &fstest.MapFile{Data: []byte(`---
+topic: grpc
+title: grpc
+stability: stable
+---
+
+# grpc
+
+gRPC service.
+`)},
 	}
 	tree, err := Load(fsys)
 	if err != nil {
@@ -263,4 +283,42 @@ stability: stable
 	if !strings.Contains(s, "errors VALIDATION_FAILED") {
 		t.Errorf("SEE ALSO must contain 'errors VALIDATION_FAILED':\n%s", s)
 	}
+}
+
+func TestRunHelp_OpenAPIJSONAction(t *testing.T) {
+	tree := testTree(t) // includes openapi topic
+
+	var out bytes.Buffer
+	code := RunHelp(tree, []string{"openapi", "json"}, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, output = %q", code, out.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, `"openapi"`) {
+		t.Errorf("output should contain openapi JSON field: %q", s[:min(200, len(s))])
+	}
+}
+
+func TestRunHelp_UnknownActionOnKnownTopic(t *testing.T) {
+	tree := testTree(t) // includes openapi topic
+
+	var out bytes.Buffer
+	code := RunHelp(tree, []string{"openapi", "xml"}, &out, "0.6.1", false, "")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, "unknown action") || !strings.Contains(s, "xml") {
+		t.Errorf("error should name the bad action: %q", s)
+	}
+	if !strings.Contains(s, "json") || !strings.Contains(s, "yaml") {
+		t.Errorf("error should list available actions: %q", s)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

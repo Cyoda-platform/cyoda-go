@@ -28,6 +28,15 @@ The same topic tree is also available as a REST endpoint on the running server: 
 
 - `--format=<auto|text|markdown|json>` — Default `auto` selects text on a TTY and markdown off-TTY.
 
+## TOPIC ACTIONS
+
+Some topics publish machine-readable actions invoked as `cyoda help <topic> <action>`:
+
+- `cyoda help openapi json` / `yaml` — OpenAPI spec in either format
+- `cyoda help grpc proto` / `json` — gRPC proto source or descriptor JSON
+
+Actions emit raw content to stdout without rendering the help body. They do not accept `--format`.
+
 ## STABILITY
 
 Topic additions are non-breaking. Renaming or removing a topic requires a deprecation window and an entry in CONTRIBUTING.md. Topic paths are stable for the duration of a major version.

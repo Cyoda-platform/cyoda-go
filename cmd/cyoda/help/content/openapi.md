@@ -224,6 +224,13 @@ sleep 2
 curl -s http://localhost:8080/openapi.json | jq '.paths | keys | length'
 ```
 
+## ACTIONS
+
+- `cyoda help openapi json` — emit the embedded OpenAPI spec as JSON to stdout
+- `cyoda help openapi yaml` — emit the embedded OpenAPI spec as YAML to stdout
+
+The emitted spec is the binary's compile-time baseline. The `servers` array reflects whatever is embedded at build time; the running server's HTTP endpoint (`GET /openapi.json`) rewrites `servers` per request, but the CLI does not.
+
 ## SEE ALSO
 
 - crud

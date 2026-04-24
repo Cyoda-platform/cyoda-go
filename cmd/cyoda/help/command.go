@@ -55,6 +55,24 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 	// Topic lookup.
 	topic := tree.Find(positional)
 	if topic == nil {
+		// Action lookup: if positional[:len-1] is a known topic and
+		// positional[len-1] is a registered action on it, dispatch.
+		if len(positional) >= 2 {
+			parentPath := positional[:len(positional)-1]
+			actionName := positional[len(positional)-1]
+			parent := tree.Find(parentPath)
+			if parent != nil {
+				if handler, ok := lookupAction(parent.DottedPath(), actionName); ok {
+					return handler(out)
+				}
+				// Topic exists but the action name is unknown — improve the error.
+				if avail := actionsFor(parent.DottedPath()); avail != nil {
+					fmt.Fprintf(out, "cyoda help %s: unknown action %q. Available actions: %s\n",
+						strings.Join(parentPath, " "), actionName, strings.Join(avail, ", "))
+					return 2
+				}
+			}
+		}
 		writeUnknownTopicError(tree, positional, out)
 		return 2
 	}
