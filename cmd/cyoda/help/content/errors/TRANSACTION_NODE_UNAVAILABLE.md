@@ -23,7 +23,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 Transaction state is pinned to the node that opened it. If that node crashes or becomes unreachable while the transaction is in progress, subsequent requests using the transaction token are rejected with this error because the proxy cannot forward them to the owner.
 
-The transaction is likely lost. Retry by opening a new transaction. Implement health checks and reconnect logic if your client must tolerate node failures mid-transaction.
+Retryable by opening a new transaction. The in-progress transaction is likely lost. Mid-transaction node failure requires the client to restart the transaction from scratch.
 
 ## SEE ALSO
 

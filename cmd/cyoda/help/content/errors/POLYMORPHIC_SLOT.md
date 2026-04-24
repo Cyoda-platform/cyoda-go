@@ -22,7 +22,7 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 A model can define polymorphic slots — fields whose schema varies based on a discriminator value. This error fires when the payload's discriminator selects a variant whose schema the provided data fails to match, or when the discriminator value itself is unrecognised.
 
-Review the model's polymorphic slot definitions and ensure the payload's discriminator field matches one of the registered variants. Fix the payload before retrying.
+Not retryable. The model's polymorphic slot definition determines valid discriminator values and their corresponding schemas.
 
 ## SEE ALSO
 

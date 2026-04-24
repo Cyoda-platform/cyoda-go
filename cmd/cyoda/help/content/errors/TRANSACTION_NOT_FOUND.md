@@ -20,9 +20,9 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The transaction ID supplied in the request does not correspond to an active transaction. The transaction may have been committed, rolled back, expired, or may never have existed. This error can also occur when a request is mis-routed to a node that never opened the transaction.
+The transaction ID supplied in the request does not correspond to an active transaction. The transaction may have been committed, rolled back, expired, or may never have existed. Also occurs when a request is mis-routed to a node that never opened the transaction.
 
-Verify the transaction ID. If the transaction was expected to be active, check whether it was committed or rolled back by a prior request.
+Not retryable. Transaction state (committed, rolled back, expired) determines whether the transaction existed.
 
 ## SEE ALSO
 

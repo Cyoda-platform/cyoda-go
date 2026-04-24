@@ -20,9 +20,9 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The entity type or model name specified in the request does not exist in the tenant's model registry. This occurs when creating entities with an unknown type, importing data that references a missing model, or performing model lifecycle transitions on a model ID that does not exist.
+The entity type or model name specified in the request does not exist in the tenant's model registry. Occurs when creating entities with an unknown type, importing data that references a missing model, or performing model lifecycle transitions on a model ID that does not exist.
 
-Register or import the model before creating entities of that type. Verify the model name and tenant context.
+Not retryable. Entity creation requires the model to exist and be registered in the tenant's registry.
 
 ## SEE ALSO
 

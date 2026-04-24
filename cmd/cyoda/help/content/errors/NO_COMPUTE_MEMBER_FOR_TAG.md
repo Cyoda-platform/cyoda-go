@@ -20,9 +20,9 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-Workflow processors are dispatched to nodes that advertise matching compute tags. When no node with the required tag is alive in the cluster within the configured wait timeout, the operation is rejected with this error.
+Workflow processors are dispatched to nodes that advertise matching compute tags. When no node with the required tag is alive in the cluster within the configured wait timeout (`CYODA_DISPATCH_WAIT_TIMEOUT`), the operation is rejected with this error.
 
-Ensure at least one compute node with the required tag is running. Check `CYODA_COMPUTE_TAGS` on your node configuration and verify the node is registered in the cluster. Retry after compute capacity is restored.
+Retryable after compute capacity is restored. At least one live node advertising the required tag is required for dispatch to succeed.
 
 ## SEE ALSO
 

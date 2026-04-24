@@ -21,9 +21,9 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The two-phase commit coordinator tracks per-transaction state (prepared, committed, aborted). This error is returned when a commit or abort instruction references a transaction for which no state record exists, usually because the transaction was never prepared or was already cleaned up.
+The two-phase commit coordinator tracks per-transaction state (prepared, committed, aborted). This error is returned when a commit or abort instruction references a transaction for which no state record exists, because the transaction was never prepared or was already cleaned up.
 
-Do not retry. Verify the transaction lifecycle: ensure `prepare` was called before `commit` or `abort`. If the state was cleaned up prematurely, review the coordinator's state retention configuration.
+Not retryable. `prepare` must be called before `commit` or `abort`. The coordinator's state retention configuration determines how long state records are kept.
 
 ## SEE ALSO
 

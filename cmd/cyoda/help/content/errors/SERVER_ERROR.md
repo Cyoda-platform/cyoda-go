@@ -20,7 +20,7 @@ HTTP: `500` `Internal Server Error`. Retryable: `yes` (with caution).
 
 The server encountered an unclassified internal error. The response body contains a `ticket` UUID that correlates with the server-side error log. No internal details are exposed in the response.
 
-Record the `ticket` value from the response for support escalation. Simple reads may be retried safely; writes should be treated as potentially applied and verified before retrying to avoid duplicates.
+Retryable with caution. Simple reads may be retried safely. Writes must be treated as potentially applied — the write outcome must be verified before retrying to avoid duplicates. The `ticket` value identifies the server-side error log entry.
 
 ## SEE ALSO
 

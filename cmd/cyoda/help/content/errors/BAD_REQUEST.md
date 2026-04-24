@@ -21,7 +21,7 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 Fired when the server cannot parse or structurally process the incoming request. Common triggers include invalid JSON, missing required fields, unsupported format specifiers, or mutually exclusive parameters being set simultaneously.
 
-Fix the request before retrying. Sending the same request again will produce the same error.
+Not retryable. The same request produces the same error.
 
 ## SEE ALSO
 

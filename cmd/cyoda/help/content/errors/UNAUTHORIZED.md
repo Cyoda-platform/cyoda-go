@@ -21,7 +21,7 @@ HTTP: `401` `Unauthorized`. Retryable: `no`.
 
 Returned when the `Authorization` header is missing, the bearer token is expired, the token signature is invalid, or the token was issued by an untrusted issuer. Also returned when a request reaches a protected route with no identity context established by the auth middleware.
 
-Obtain a valid token by authenticating via the token endpoint and retry with a fresh `Authorization: Bearer <token>` header. Do not retry with the same invalid token.
+Not retryable with the same token. A fresh `Authorization: Bearer <token>` header is required.
 
 ## SEE ALSO
 

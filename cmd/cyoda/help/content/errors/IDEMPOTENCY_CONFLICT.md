@@ -20,9 +20,11 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The server has already processed (or is currently processing) a request with the same idempotency key, but the new request's body or parameters differ from the first one. Idempotency keys protect against duplicate submissions of identical requests; they do not allow changing the request after the fact.
+The idempotency key is supplied via the `Idempotency-Key` HTTP header on collection create and update requests. See `crud` for the request shape.
 
-Use a fresh idempotency key for a new operation. Do not reuse an existing key with a modified payload.
+The server has already processed (or is currently processing) a request with the same idempotency key, but the new request's body or parameters differ from the first one. Idempotency keys protect against duplicate submissions of identical requests; they do not allow modifying the request after the fact.
+
+Not retryable with the same key and a different payload. A distinct operation requires a distinct idempotency key.
 
 ## SEE ALSO
 

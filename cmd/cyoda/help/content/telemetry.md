@@ -6,7 +6,6 @@ see_also:
   - config
   - cli.serve
   - cli.health
-  - config.database
   - config.auth
 ---
 
@@ -233,5 +232,4 @@ curl -s -X POST \
 - config
 - cli.serve
 - cli.health
-- config.database
 - config.auth

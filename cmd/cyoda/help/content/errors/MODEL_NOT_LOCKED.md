@@ -20,9 +20,9 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Entity creation and bulk write operations require the model to be in the `LOCKED` lifecycle state. If the model is still in `DRAFT` or has been unlocked for editing, writes against it are rejected to prevent schema changes from affecting in-flight data.
+Entity creation and bulk write operations require the model to be in the `LOCKED` lifecycle state. Models in `DRAFT` or unlocked-for-editing state reject writes to prevent schema changes from affecting in-flight data.
 
-Lock the model via the model lifecycle API before writing entities. If the model is intentionally being edited, complete the edit and lock it again.
+Not retryable. Entity writes require the model to be in `LOCKED` state.
 
 ## SEE ALSO
 

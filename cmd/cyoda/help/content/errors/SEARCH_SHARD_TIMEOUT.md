@@ -20,9 +20,9 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-Distributed search fans out to multiple shards in parallel. If any shard does not return results before the search timeout expires, the job is marked failed and this error is returned. This can occur under high load, during partial cluster degradation, or with very expensive queries.
+Distributed search fans out to multiple shards in parallel. If any shard does not return results before the search timeout expires, the job is marked failed and this error is returned. Occurs under high load, during partial cluster degradation, or with expensive queries.
 
-Retry the search request. If timeouts are frequent, consider narrowing the query, reducing the result limit, or increasing the search timeout via cluster configuration.
+Retryable. Frequent timeouts indicate that the query scope, result limit, or cluster configuration requires adjustment.
 
 ## SEE ALSO
 

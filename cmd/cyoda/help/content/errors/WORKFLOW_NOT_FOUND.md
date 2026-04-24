@@ -20,9 +20,9 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Entity models reference a workflow by name to govern state transitions. This error is returned when the named workflow cannot be found in the tenant's workflow registry, typically during entity type registration or when a model references a workflow that was deleted.
+Entity models reference a workflow by name to govern state transitions. This error is returned when the named workflow cannot be found in the tenant's workflow registry, during entity type registration or when a model references a workflow that was deleted.
 
-Register the workflow before associating it with an entity model. Verify the workflow name and tenant context.
+Not retryable. Associating a model with a workflow requires the workflow to exist in the tenant's registry.
 
 ## SEE ALSO
 

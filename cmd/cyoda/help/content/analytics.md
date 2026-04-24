@@ -5,6 +5,7 @@ stability: evolving
 see_also:
   - search
   - models
+  - grpc
   - errors.BAD_REQUEST
 ---
 
@@ -351,4 +352,5 @@ trino --server https://trino.cloud.cyoda.com \
 
 - search
 - models
+- grpc
 - errors.BAD_REQUEST

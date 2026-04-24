@@ -20,9 +20,9 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Entity workflow state machines define explicit transitions between states. This error fires when a transition is triggered that does not exist in the model's workflow definition for the entity's current state. It can also occur when the transition name is misspelled or when the entity is in a terminal state that allows no further transitions.
+Entity workflow state machines define explicit transitions between states. This error fires when a transition is triggered that does not exist in the model's workflow definition for the entity's current state. Also occurs when the transition name is misspelled or when the entity is in a terminal state that allows no further transitions.
 
-Review the workflow definition for the entity model to determine which transitions are valid from the current state. Correct the transition name or verify the entity's current state before retrying.
+Not retryable. The workflow definition and the entity's current state determine which transition names are valid.
 
 ## SEE ALSO
 

@@ -22,7 +22,7 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 Search jobs are long-running asynchronous operations. Once a job reaches a terminal state it cannot be cancelled, resumed, or otherwise modified. This error is returned when such an operation is attempted on a finished job.
 
-Submit a new search job if another query is needed. Results from a successfully completed job remain available for retrieval.
+Not retryable on the same job. Results from a successfully completed job remain available for retrieval.
 
 ## SEE ALSO
 

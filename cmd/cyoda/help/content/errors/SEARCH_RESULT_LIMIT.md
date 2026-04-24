@@ -20,9 +20,9 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The server imposes an upper bound on the number of results returned per page and per job to protect cluster resources. When a request exceeds this limit — either by requesting too large a page size or by the matched result count exceeding the cap — this error is returned.
+The server imposes an upper bound on the number of results returned per page and per job to protect cluster resources. Returned when the request exceeds this limit — either by requesting too large a page size or by the matched result count exceeding the cap.
 
-Reduce the `pageSize` parameter or apply more selective filter conditions to narrow the result set. Use cursor-based pagination if you need to iterate over large result sets.
+Not retryable with the same parameters. A smaller `pageSize` or more selective filter conditions reduce the result set below the cap.
 
 ## SEE ALSO
 

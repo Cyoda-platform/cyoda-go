@@ -18,9 +18,9 @@ HTTP: `501` `Not Implemented`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The route is defined and accepted by the server but the handler returns this error because the feature is pending implementation. This is distinct from a `404` — the endpoint exists, it simply has no functional implementation yet.
+The route is defined and accepted by the server but the handler returns this error because the feature is pending implementation. Distinct from a `404` — the endpoint exists without a functional implementation.
 
-Check the release notes or roadmap for when the feature is expected. Do not retry; the response will be the same until a new version is deployed.
+Not retryable. The response is identical until a new version is deployed.
 
 ## SEE ALSO
 

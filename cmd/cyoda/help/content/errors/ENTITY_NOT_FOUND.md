@@ -21,7 +21,7 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 No entity with the given ID exists in the tenant's data store, or the entity existed at a point-in-time that precedes the requested snapshot. Also returned for audit log lookups when the specified event or message cannot be found.
 
-Verify the entity ID and tenant context. Point-in-time lookups require a timestamp within the entity's history.
+Not retryable. Point-in-time lookups require a timestamp within the entity's history.
 
 ## SEE ALSO
 

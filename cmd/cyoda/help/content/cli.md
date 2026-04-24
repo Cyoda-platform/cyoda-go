@@ -26,15 +26,16 @@ Global flags `--help` (or `-h`) and `--version` (or `-v`) are recognized before 
 
 ## SUBCOMMANDS
 
-- `cyoda init [--force]` — Write a starter user config enabling sqlite. See `cyoda help cli init`.
-- `cyoda health` — Probe `/readyz` on the admin listener. See `cyoda help cli health`.
-- `cyoda migrate [--timeout <duration>]` — Run schema migrations for the configured backend and exit. See `cyoda help cli migrate`.
-- `cyoda help [<topic>...] [--format=<fmt>]` — Browse the help topic tree. See `cyoda help cli help`.
+- `cyoda` (no subcommand) — start the API server. See `cli serve`. Exit codes: `0` clean shutdown after SIGINT/SIGTERM; `1` startup failure (IAM validation, OTel init, port bind, backend connect).
+- `cyoda init [--force]` — Write a starter user config enabling sqlite. See `cyoda help cli init`. Exit codes: `0` success or idempotent no-op; `1` I/O error; `2` bad flags.
+- `cyoda health` — Probe `/readyz` on the admin listener. See `cyoda help cli health`. Exit codes: `0` readyz returned 200; `1` connection error or non-200 status.
+- `cyoda migrate [--timeout <duration>]` — Run schema migrations for the configured backend and exit. See `cyoda help cli migrate`. Exit codes: `0` success or no-op (memory/sqlite); `1` runtime error (bad config, DB unreachable, migration failure, timeout); `2` flag-parse error.
+- `cyoda help [<topic>...] [--format=<fmt>]` — Browse the help topic tree. See `cyoda help cli help`. Exit codes: `0` topic found; `1` topic not found.
 
 ## OPTIONS
 
-- `--help`, `-h` — Show help for the `cli` topic. Equivalent to `cyoda help cli`.
-- `--version`, `-v` — Print the binary's ldflag-injected version, commit SHA, and build date. Exits 0.
+- `--help`, `-h` — Print top-level help summary. Exit code: `0`.
+- `--version`, `-v` — Print the binary's ldflag-injected version, commit SHA, and build date. Exit code: `0`.
 
 ## CONFIGURATION
 

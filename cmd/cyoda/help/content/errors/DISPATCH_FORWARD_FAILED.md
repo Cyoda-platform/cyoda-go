@@ -22,7 +22,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 The cluster dispatcher attempted to forward a processor invocation or criteria evaluation to a peer node but the HTTP call to that peer failed (network error, peer crash, or connection refused). The operation has not been executed on the target node.
 
-Retry the originating request. If failures persist, verify inter-node network connectivity and peer node health.
+Retryable. Persistent failures indicate inter-node network or peer node health issues.
 
 ## SEE ALSO
 

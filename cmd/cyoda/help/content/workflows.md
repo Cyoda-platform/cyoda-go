@@ -6,6 +6,7 @@ see_also:
   - models
   - crud
   - grpc
+  - search
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_NOT_FOUND
   - errors.WORKFLOW_FAILED
@@ -312,6 +313,7 @@ curl -s -X POST \
 - models
 - crud
 - grpc
+- search
 - errors.TRANSITION_NOT_FOUND
 - errors.WORKFLOW_NOT_FOUND
 - errors.WORKFLOW_FAILED

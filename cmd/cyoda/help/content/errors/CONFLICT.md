@@ -21,9 +21,9 @@ HTTP: `409` `Conflict`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-The server detected that the entity was modified by another writer between the time it was read and the time the current write was committed. This is a normal outcome under concurrent load and is not an error in the application logic.
+The server detected that the entity was modified by another writer between the time it was read and the time the current write was committed. Normal outcome under concurrent load.
 
-Retry the full read-modify-write cycle with exponential backoff. Do not replay the original write without re-fetching the current entity state.
+Retryable. The full read-modify-write cycle must be repeated using the current entity state; replaying the original write without re-fetching produces stale data.
 
 ## SEE ALSO
 

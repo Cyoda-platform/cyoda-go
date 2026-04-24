@@ -20,9 +20,9 @@ HTTP: `409` `Conflict`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-Shard ownership is tracked by an epoch counter that increments whenever the cluster re-partitions. A write is rejected with this error when the writing node's cached epoch is stale — i.e., another node has since taken ownership of the shard. This prevents split-brain writes.
+Shard ownership is tracked by an epoch counter that increments whenever the cluster re-partitions. A write is rejected with this error when the writing node's cached epoch is stale — another node has since taken ownership of the shard. This prevents split-brain writes.
 
-Retry the request; the client will be re-routed to the current shard owner. If the error recurs frequently, review cluster stability and the frequency of re-partitioning events.
+Retryable. The routing layer re-routes to the current shard owner on retry. Frequent recurrence indicates cluster instability or high re-partitioning frequency.
 
 ## SEE ALSO
 

@@ -22,7 +22,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `no`.
 
 Certain operations that span multiple storage shards require a distributed transaction coordinator. This error is returned when such an operation is attempted on a node where the coordinator component is disabled or misconfigured.
 
-Enable the transaction coordinator via the relevant `CYODA_TX_*` environment variables, or route distributed transaction operations to a node that has the coordinator enabled.
+Not retryable on this node. Distributed transaction operations require the coordinator to be enabled via the relevant `CYODA_TX_*` environment variables, or must be routed to a node where the coordinator is enabled.
 
 ## SEE ALSO
 

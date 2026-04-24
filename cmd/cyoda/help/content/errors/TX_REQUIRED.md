@@ -20,9 +20,9 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Certain write operations that require atomic multi-step coordination mandate a transaction context. When such an operation is called without a `transactionId` header or query parameter, this error is returned.
+Certain write operations that require atomic multi-step coordination mandate a transaction context. Returned when such an operation is called without a `transactionId` header or query parameter.
 
-Open a transaction first using the transaction management API, then pass the resulting transaction ID with the request.
+Not retryable without a transaction. The operation requires an open transaction ID passed as a header or query parameter.
 
 ## SEE ALSO
 

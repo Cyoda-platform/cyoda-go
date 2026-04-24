@@ -19,9 +19,9 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-The request was routed to or requires a specific cluster node that is not present in the registry. This typically occurs during startup, rolling restarts, or after a node failure before the gossip layer has converged.
+The request was routed to or requires a specific cluster node that is not present in the registry. Occurs during startup, rolling restarts, or after a node failure before the gossip layer has converged.
 
-Retry with exponential backoff. If the error persists beyond the cluster's expected convergence window, inspect node health and cluster membership configuration.
+Retryable. Gossip convergence determines when the node becomes available. Persistence beyond the expected convergence window indicates a node health or cluster membership issue.
 
 ## SEE ALSO
 

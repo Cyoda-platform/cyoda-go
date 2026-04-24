@@ -20,9 +20,9 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 ## DESCRIPTION
 
-The compute member responsible for executing a processor or workflow step disconnected before completing the operation. The task may or may not have been executed; idempotent callers should retry after the cluster re-routes to an available member.
+The compute member responsible for executing a processor or workflow step disconnected before completing the operation. The task may or may not have been executed.
 
-Retry with backoff. If the cluster does not recover compute capacity, check node health and the `CYODA_COMPUTE_TAGS` configuration.
+Retryable. The cluster re-routes to an available member. Callers must be idempotent or use an idempotency key when retrying. Persistent failures indicate insufficient compute capacity for the required tags.
 
 ## SEE ALSO
 

@@ -5,6 +5,10 @@ stability: stable
 see_also:
   - cli
   - run
+  - config.auth
+  - config.database
+  - config.grpc
+  - config.schema
 ---
 
 # config
@@ -26,11 +30,16 @@ All configuration is environment variables prefixed with `CYODA_`. Topics group 
 
 ### Precedence
 
-Explicit command-line flags beat environment variables, which beat default values. cyoda uses
-environment variables as the primary configuration surface. The `_FILE` suffix pattern allows
-reading a secret from a file path instead of the variable value — for example,
-`CYODA_POSTGRES_URL_FILE=/etc/secrets/db-url` takes precedence over `CYODA_POSTGRES_URL`
-if both are set.
+Environment variables beat default values. The `_FILE` suffix variant takes precedence over the plain variable when both are set — for example, `CYODA_POSTGRES_URL_FILE=/etc/secrets/db-url` wins over `CYODA_POSTGRES_URL`. There are no command-line flags for configuration values; env vars are the sole configuration surface.
+
+### _FILE suffix support
+
+The following variables support the `_FILE` suffix. Setting `CYODA_FOO_FILE=<path>` causes the binary to read the value from the file at `<path>`, trimming trailing whitespace. The `_FILE` variant takes precedence over `CYODA_FOO` when both are set. A set but unreadable `_FILE` path causes immediate startup failure.
+
+- `CYODA_JWT_SIGNING_KEY` / `CYODA_JWT_SIGNING_KEY_FILE`
+- `CYODA_HMAC_SECRET` / `CYODA_HMAC_SECRET_FILE`
+- `CYODA_BOOTSTRAP_CLIENT_SECRET` / `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`
+- `CYODA_METRICS_BEARER` / `CYODA_METRICS_BEARER_FILE`
 
 ### Profile loader
 
@@ -48,48 +57,52 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 
 ### Server options
 
-- `CYODA_HTTP_PORT` — HTTP listen port (default: `8080`)
-- `CYODA_CONTEXT_PATH` — URL prefix for all routes (default: `/api`)
-- `CYODA_ERROR_RESPONSE_MODE` — error detail level: `sanitized` or `verbose` (default: `sanitized`)
-- `CYODA_LOG_LEVEL` — log level: `debug`, `info`, `warn`, or `error` (default: `info`)
-- `CYODA_SUPPRESS_BANNER` — silence startup and mock-auth banners (default: `false`)
-- `CYODA_STARTUP_TIMEOUT` — deadline for plugin and TM init (default: `30s`)
-- `CYODA_MAX_STATE_VISITS` — max visits per state in workflow cascade (default: `10`)
-- `CYODA_MODEL_CACHE_LEASE` — model cache lease duration (default: `5m`)
-- `CYODA_DEBUG` — reserved for future debug verbosity flag
+- `CYODA_HTTP_PORT` (int, default: `8080`) — HTTP listen port.
+- `CYODA_CONTEXT_PATH` (string, default: `/api`) — URL prefix for all routes.
+- `CYODA_ERROR_RESPONSE_MODE` (string, default: `sanitized`) — error detail level: `sanitized` (generic message + ticket UUID for 5xx) or `verbose` (internal error detail included in responses; development use only).
+- `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
+- `CYODA_SUPPRESS_BANNER` (bool, default: `false`) — silence startup and mock-auth banners.
+- `CYODA_STARTUP_TIMEOUT` (duration, default: `30s`) — deadline for plugin and TM init.
+- `CYODA_DEBUG` — reserved; not currently read by the server.
+- `CYODA_MAX_STATE_VISITS` (int, default: `10`) — max visits per state in workflow cascade.
+- `CYODA_MODEL_CACHE_LEASE` (duration, default: `5m`) — model cache lease duration; actual expiry is jittered ±10%.
 
 ### Admin and metrics
 
-- `CYODA_ADMIN_PORT` — admin port for health and metrics (default: `9091`)
-- `CYODA_ADMIN_BIND_ADDRESS` — admin listener bind address (default: `127.0.0.1`)
-- `CYODA_METRICS_REQUIRE_AUTH` — require Bearer auth on `/metrics` (default: `false`)
-- `CYODA_METRICS_BEARER` — static Bearer token for `GET /metrics` (default: unset)
-- `CYODA_METRICS_BEARER_FILE` — file path for `CYODA_METRICS_BEARER`
-- `CYODA_OTEL_ENABLED` — enable OpenTelemetry tracing and metrics (default: `false`)
+- `CYODA_ADMIN_PORT` (int, default: `9091`) — admin port for health and metrics.
+- `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address.
+- `CYODA_METRICS_REQUIRE_AUTH` (bool, default: `false`) — require Bearer auth on `/metrics`; startup fails if `true` and `CYODA_METRICS_BEARER` is empty.
+- `CYODA_METRICS_BEARER` (string, default: unset) — static Bearer token for `GET /metrics`. Supports `_FILE` suffix.
+- `CYODA_OTEL_ENABLED` (bool, default: `false`) — enable OpenTelemetry tracing and metrics.
 
 ### Search and transaction internals
 
-- `CYODA_SEARCH_SNAPSHOT_TTL` — search snapshot TTL (default: `1h`)
-- `CYODA_SEARCH_REAP_INTERVAL` — search snapshot reap interval (default: `5m`)
-- `CYODA_TX_TTL` — transaction TTL (default: `60s`)
-- `CYODA_TX_REAP_INTERVAL` — transaction reap interval (default: `10s`)
-- `CYODA_TX_OUTCOME_TTL` — transaction outcome TTL (default: `5m`)
+- `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`) — search snapshot TTL.
+- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval.
+- `CYODA_TX_TTL` (duration, default: `60s`) — transaction TTL.
+- `CYODA_TX_REAP_INTERVAL` (duration, default: `10s`) — transaction reap interval.
+- `CYODA_TX_OUTCOME_TTL` (duration, default: `5m`) — transaction outcome TTL.
 
 ### Cluster and dispatch
 
-- `CYODA_CLUSTER_ENABLED` — enable multi-node clustering (default: `false`)
-- `CYODA_NODE_ID` — unique node identifier (required when cluster enabled)
-- `CYODA_NODE_ADDR` — this node's address (default: `http://localhost:8080`)
-- `CYODA_GOSSIP_ADDR` — gossip protocol listen address (default: `:7946`)
-- `CYODA_GOSSIP_STABILITY_WINDOW` — gossip stability window (default: `2s`)
-- `CYODA_SEED_NODES` — comma-separated seed node addresses (default: empty)
-- `CYODA_PROXY_TIMEOUT` — request proxy timeout (default: `30s`)
-- `CYODA_DISPATCH_WAIT_TIMEOUT` — dispatch wait timeout (default: `5s`)
-- `CYODA_DISPATCH_FORWARD_TIMEOUT` — dispatch forward timeout (default: `30s`)
-- `CYODA_KEEPALIVE_INTERVAL` — keep-alive send interval in seconds (default: `10`)
-- `CYODA_KEEPALIVE_TIMEOUT` — keep-alive timeout in seconds (default: `30`)
+- `CYODA_CLUSTER_ENABLED` (bool, default: `false`) — enable multi-node clustering.
+- `CYODA_NODE_ID` (string, default: unset) — unique node identifier; required when `CYODA_CLUSTER_ENABLED=true`; any non-empty string is accepted.
+- `CYODA_NODE_ADDR` (string, default: `http://localhost:8080`) — this node's HTTP base URL; must include scheme (`http://` or `https://`).
+- `CYODA_GOSSIP_ADDR` (string, default: `:7946`) — gossip protocol listen address; format `[host]:port` — parsed via `net.SplitHostPort`; invalid format causes startup failure.
+- `CYODA_GOSSIP_STABILITY_WINDOW` (duration, default: `2s`) — gossip stability window.
+- `CYODA_SEED_NODES` (string, default: empty) — comma-separated list of seed node addresses (e.g., `node1.example.com:7946,node2.example.com:7946`); empty means single-node or seed-discovery handled externally.
+- `CYODA_HMAC_SECRET` (string, default: unset) — hex-encoded HMAC secret for inter-node dispatch authentication; required when `CYODA_CLUSTER_ENABLED=true`. Supports `_FILE` suffix.
+- `CYODA_PROXY_TIMEOUT` (duration, default: `30s`) — request proxy timeout.
+- `CYODA_DISPATCH_WAIT_TIMEOUT` (duration, default: `5s`) — how long the dispatcher polls gossip for a compute member with matching tags.
+- `CYODA_DISPATCH_FORWARD_TIMEOUT` (duration, default: `30s`) — HTTP timeout for the cross-node forwarding call.
+- `CYODA_KEEPALIVE_INTERVAL` (int, default: `10`) — keep-alive send interval in seconds.
+- `CYODA_KEEPALIVE_TIMEOUT` (int, default: `30`) — keep-alive timeout in seconds.
 
 ## SEE ALSO
 
 - cli
 - run
+- config.auth
+- config.database
+- config.grpc
+- config.schema

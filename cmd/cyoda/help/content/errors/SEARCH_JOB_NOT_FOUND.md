@@ -20,9 +20,9 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Polling a search job by ID returns this error when the job ID is unknown or belongs to a different tenant. Jobs are tenant-scoped; a valid job ID from one tenant will not be visible to another.
+Polling a search job by ID returns this error when the job ID is unknown or belongs to a different tenant. Jobs are tenant-scoped; a valid job ID from one tenant is not visible to another.
 
-Verify the job ID returned when the search was submitted. If the job was submitted successfully, check that the polling request uses the same tenant credentials.
+Not retryable. The job ID and tenant credentials must match the values used at job submission time.
 
 ## SEE ALSO
 

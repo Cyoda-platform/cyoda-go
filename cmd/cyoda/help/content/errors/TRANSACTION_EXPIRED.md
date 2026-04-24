@@ -22,7 +22,7 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 Transaction tokens are short-lived bearer tokens issued when a transaction is opened. This error fires when the token's `exp` claim is in the past at the time the proxy validates it. The transaction itself may still be active server-side, but the token is no longer valid for routing.
 
-Obtain a fresh transaction token by re-opening the transaction or extending the session. The original transaction should be committed or rolled back first.
+Not retryable with the same token. The original transaction must be committed or rolled back before opening a new one.
 
 ## SEE ALSO
 
