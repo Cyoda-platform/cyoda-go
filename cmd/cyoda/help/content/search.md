@@ -26,7 +26,7 @@ POST   /api/search/direct/{entityName}/{modelVersion}
 POST   /api/search/async/{entityName}/{modelVersion}
 GET    /api/search/async/{jobId}
 GET    /api/search/async/{jobId}/status
-DELETE /api/search/async/{jobId}/cancel
+PUT    /api/search/async/{jobId}/cancel
 ```
 
 Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints require `Authorization: Bearer <token>` except when `CYODA_IAM_MODE=mock`.
@@ -85,7 +85,7 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `IENDS_WITH` — case-insensitive ENDS_WITH
 - `INOT_ENDS_WITH` — case-insensitive NOT ENDS_WITH
 
-**Known bug (#90):** unknown operator strings are currently accepted by the parser and fall back to post-filter regex matching instead of producing `errors.BAD_REQUEST`. Behaviour of any operator outside the list above is undefined and must not be relied upon. Tracked for red/green TDD fix.
+**Known bug (#90):** unknown operator strings are accepted by the parser without error at parse time but cause a `500 SERVER_ERROR` at match time (the predicate evaluator returns an error for unknown operators). Do not use any operator string outside the list above. Tracked for red/green TDD fix (should return `errors.BAD_REQUEST`).
 
 **LifecycleCondition** — match entity lifecycle metadata:
 
@@ -259,7 +259,7 @@ Response: `200 OK`, `application/json`:
 
 Results are fetched from the stored entity snapshots at the job's `pointInTime`. Entities deleted or modified after submission are returned as they existed at submission time.
 
-**DELETE /api/search/async/{jobId}/cancel** — Cancel a running async job
+**PUT /api/search/async/{jobId}/cancel** — Cancel a running async job
 
 - `jobId` (path): UUID
 
@@ -296,11 +296,11 @@ Synchronous search does not paginate; use the `limit` parameter (max 10000) to b
 
 ## ERRORS
 
-- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist
-- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`
+- `errors.ENTITY_NOT_FOUND` — `404` — async job UUID does not exist (error code in response is `ENTITY_NOT_FOUND`; the `errors.SEARCH_JOB_NOT_FOUND` topic describes this condition)
+- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
 - `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
-- `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job
+- `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
 
 ## EXAMPLES
 
@@ -378,7 +378,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 **Cancel an async job:**
 
 ```
-curl -s -X DELETE \
+curl -s -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/search/async/$JOB_ID/cancel"
 ```
