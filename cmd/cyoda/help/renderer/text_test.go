@@ -123,3 +123,36 @@ func TestRenderText_NoGreyBackgroundDark(t *testing.T) {
 		t.Errorf("dark style must not emit background-color ANSI on inline code: %q", buf.String())
 	}
 }
+
+// TestRenderText_LightTealOnInlineCode verifies that the light style emits a
+// teal foreground (#008080 → SGR 38;2;0;128;128 in truecolor) on inline code
+// spans. We force truecolor via COLORTERM so glamour/lipgloss does not
+// downgrade to a 256-color approximation in the test environment.
+func TestRenderText_LightTealOnInlineCode(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	var buf bytes.Buffer
+	if err := RenderText(&buf, []byte("use `init` now\n"), "light"); err != nil {
+		t.Fatalf("RenderText: %v", err)
+	}
+	out := buf.String()
+	// #008080 in truecolor SGR: 38;2;0;128;128
+	if !strings.Contains(out, "38;2;0;128;128") {
+		t.Errorf("light style inline code must use teal (#008080 → 38;2;0;128;128); got %q", out)
+	}
+}
+
+// TestRenderText_DarkTealOnInlineCode verifies that the dark style emits a
+// bright teal foreground (#5FDDD7 → SGR 38;2;95;221;215 in truecolor) on
+// inline code spans.
+func TestRenderText_DarkTealOnInlineCode(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	var buf bytes.Buffer
+	if err := RenderText(&buf, []byte("use `init` now\n"), "dark"); err != nil {
+		t.Fatalf("RenderText: %v", err)
+	}
+	out := buf.String()
+	// #5FDDD7 in truecolor SGR: 38;2;95;221;215
+	if !strings.Contains(out, "38;2;95;221;215") {
+		t.Errorf("dark style inline code must use teal (#5FDDD7 → 38;2;95;221;215); got %q", out)
+	}
+}

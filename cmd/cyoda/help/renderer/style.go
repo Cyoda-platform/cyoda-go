@@ -6,25 +6,24 @@ import (
 )
 
 // cyodaLightStyle is glamour's LightStyleConfig with background fills removed
-// from inline code spans and fenced code blocks. Glamour's built-in light
-// preset renders inline code with a pale grey background (ANSI color 254)
-// that looks washed out on white terminals. This variant keeps the foreground
-// color highlighting while suppressing the fill.
-var cyodaLightStyle = clearCodeBackgrounds(styles.LightStyleConfig)
+// from inline code spans and fenced code blocks, and teal foreground colors
+// applied. Dark teal (#008080) is used for readability on white terminals.
+var cyodaLightStyle = applyCyodaTheme(styles.LightStyleConfig, "#008080") // CSS teal
 
 // cyodaDarkStyle is glamour's DarkStyleConfig with the same background-fill
-// suppression applied for visual consistency.
-var cyodaDarkStyle = clearCodeBackgrounds(styles.DarkStyleConfig)
+// suppression and bright teal (#5FDDD7) foreground applied for readability on
+// dark terminals.
+var cyodaDarkStyle = applyCyodaTheme(styles.DarkStyleConfig, "#5FDDD7") // bright teal
 
-// clearCodeBackgrounds returns a copy of base with BackgroundColor cleared on:
-//   - Code (inline code spans): base.Code.StylePrimitive.BackgroundColor
-//   - CodeBlock wrapper: base.CodeBlock.StyleBlock.StylePrimitive.BackgroundColor
-//   - Chroma block background: base.CodeBlock.Chroma.Background.BackgroundColor
+// applyCyodaTheme copies the preset, clears the grey code backgrounds,
+// and sets teal foreground colors for inline code and plain fenced
+// blocks. Chroma (syntax highlighting) is untouched — language-tagged
+// fences retain their full syntax color palette.
 //
 // The Chroma pointer is deep-copied so the global preset is never mutated.
 // Chroma.Error.BackgroundColor is intentionally left intact — it marks syntax
 // errors and is not cosmetic fill.
-func clearCodeBackgrounds(base ansi.StyleConfig) ansi.StyleConfig {
+func applyCyodaTheme(base ansi.StyleConfig, teal string) ansi.StyleConfig {
 	s := base
 
 	// Clear inline-code background.
@@ -41,5 +40,14 @@ func clearCodeBackgrounds(base ansi.StyleConfig) ansi.StyleConfig {
 		s.CodeBlock.Chroma = &chromaCopy
 	}
 
+	// Set teal foreground on inline code and the plain fenced-block wrapper.
+	// strPtr allocates separate *string values per field.
+	s.Code.StylePrimitive.Color = strPtr(teal)
+	s.CodeBlock.StyleBlock.StylePrimitive.Color = strPtr(teal)
+
 	return s
 }
+
+// strPtr returns a pointer to a copy of s. Used to set *string fields in
+// ansi.StylePrimitive without aliasing issues.
+func strPtr(s string) *string { return &s }
