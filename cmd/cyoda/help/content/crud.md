@@ -128,7 +128,7 @@ Response: `200 OK`, `application/json`:
     "creationDate": "2025-08-01T10:00:00Z",
     "lastUpdateTime": "2025-08-01T10:00:00Z",
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16",
-    "transitionForLatestSave": ""
+    "transitionForLatestSave": "loopback"
   }
 }
 ```
