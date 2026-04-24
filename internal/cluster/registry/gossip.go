@@ -95,7 +95,11 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 
 // Register joins the cluster seeds. If no seeds are configured, the node
 // proceeds as a cluster of one. Self-addresses are filtered from the seed list.
-func (g *Gossip) Register(_ context.Context, _ string, _ string) error {
+//
+// The retry loop and stability-window wait are bounded by ctx — callers set
+// the join deadline via context.WithTimeout (typically cfg.StartupTimeout).
+// A nil/background context makes the retry loop unbounded; pass a deadline.
+func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 	seeds := g.filterSelf(g.cfg.Seeds)
 	if len(seeds) == 0 {
 		slog.Info("no seeds configured, proceeding as cluster of one",
@@ -105,24 +109,21 @@ func (g *Gossip) Register(_ context.Context, _ string, _ string) error {
 		return nil
 	}
 
-	// Exponential backoff: 500ms initial, 10s max, 2min deadline.
 	const (
 		initialBackoff = 500 * time.Millisecond
 		maxBackoff     = 10 * time.Second
-		deadline       = 2 * time.Minute
 	)
 
 	start := time.Now()
 	backoff := initialBackoff
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err)
+		}
 		_, err := g.list.Join(seeds)
 		if err == nil {
 			break
-		}
-		elapsed := time.Since(start)
-		if elapsed+backoff > deadline {
-			return fmt.Errorf("join seeds after %v: %w", elapsed, err)
 		}
 		slog.Warn("failed to join seeds, retrying",
 			"pkg", "cluster/registry",
@@ -130,19 +131,31 @@ func (g *Gossip) Register(_ context.Context, _ string, _ string) error {
 			"err", err,
 			"backoff", backoff,
 		)
-		time.Sleep(backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("join seeds after %v: %w", time.Since(start), ctx.Err())
+		case <-timer.C:
+		}
 		backoff = time.Duration(math.Min(float64(backoff*2), float64(maxBackoff)))
 	}
 
 	// Wait for the stability window to allow gossip convergence.
 	// Poll every 200ms; only proceed when the member count is stable for the
-	// full window duration.
+	// full window duration. Cancel early if ctx expires.
 	if g.cfg.StabilityWindow > 0 {
 		const pollInterval = 200 * time.Millisecond
 		lastCount := g.list.NumMembers()
 		stableSince := time.Now()
 		for time.Since(stableSince) < g.cfg.StabilityWindow {
-			time.Sleep(pollInterval)
+			timer := time.NewTimer(pollInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err())
+			case <-timer.C:
+			}
 			current := g.list.NumMembers()
 			if current != lastCount {
 				lastCount = current
