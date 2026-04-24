@@ -228,8 +228,12 @@ curl -s http://localhost:8080/openapi.json | jq '.paths | keys | length'
 
 - `cyoda help openapi json` — emit the embedded OpenAPI spec as JSON to stdout
 - `cyoda help openapi yaml` — emit the embedded OpenAPI spec as YAML to stdout
+- `cyoda help openapi tags` — list every tag in the spec as `<slug>  <canonical name>` pairs (tabular, sorted by slug)
+- `cyoda help openapi <slug>` — emit a standalone OpenAPI 3.1 document scoped to the named tag; paths filtered to operations carrying that tag, components pruned to only the transitively-referenced members. Pass `--format=yaml` to emit YAML instead of the default JSON. Discover valid slugs via `cyoda help openapi tags`. Unknown slugs exit 2 with the full valid-slug list in the error.
 
 The emitted spec is the binary's compile-time baseline. The `servers` array reflects whatever is embedded at build time; the running server's HTTP endpoint (`GET /openapi.json`) rewrites `servers` per request, but the CLI does not.
+
+Per-tag filtering is useful for AI agents and downstream tooling that only need the slice of the API corresponding to one concern (e.g. just `entity-management` or just `search`) — the pruned spec is typically 3-5× smaller than the full spec and is still a valid standalone OpenAPI 3.1 document (every `$ref` resolves within its own `components`).
 
 ## SEE ALSO
 
