@@ -55,9 +55,13 @@ Only `GET` and `OPTIONS` are accepted. Any other method (`POST`, `PUT`, `DELETE`
 
 ### Topic path syntax
 
-The `{topic}` URL segment uses the canonical dotted form (e.g. `errors.VALIDATION_FAILED`, `config.database`, `cli.serve`). The CLI-argv form with spaces is not accepted at the REST layer.
+`{topic}` uses either the canonical **dotted** form (`errors.VALIDATION_FAILED`, `cli.serve`) or the **slash** form (`errors/VALIDATION_FAILED`, `cli/serve`). Both resolve to the same topic. The dotted form matches the identifier used in the JSON payload (`topic`, `see_also`, `children` fields); the slash form is a REST-idiomatic hierarchy. Mixed separators in a single path (e.g. `cli.serve/examples`) are also accepted.
 
-Valid path characters: `[A-Za-z0-9._-]+` with the additional constraint that the first and last character must each be `[A-Za-z0-9]` (leading/trailing dots and hyphens are rejected). A path that fails this pattern returns `400 BAD_REQUEST`.
+Valid path characters: `[A-Za-z0-9._/-]+`, starting and ending with alphanumeric. A path with any other character (including URL-encoded spaces `%20`) returns `400 BAD_REQUEST`. An empty path segment (leading separator, trailing separator, or double separator) also returns `400`.
+
+URL-encoded slash (`%2F`) is decoded to a literal `/` by the HTTP stack and treated as a separator — so `GET /api/help/cli%2Fhelp` is equivalent to `GET /api/help/cli/help`.
+
+Note: consecutive slashes (e.g. `cli//help`) are cleaned to a single slash by Go's HTTP stack before the handler runs, so `cli//help` resolves the same as `cli/help`. This is analogous to how a bare `.` path segment redirects to the parent.
 
 ### Response — full tree
 
@@ -148,7 +152,7 @@ All `GET` responses carry `Access-Control-Allow-Origin: *`.
 
 Errors use RFC 9457 Problem Details (`application/problem+json`). See `errors` topic for the full envelope shape.
 
-- `400 BAD_REQUEST` — the `{topic}` path segment contains disallowed characters (fails `^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`). Also returned for any method other than `GET` or `OPTIONS` (with `Allow: GET, OPTIONS` response header).
+- `400 BAD_REQUEST` — the `{topic}` path segment contains disallowed characters (fails `^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$`), or contains an empty segment (leading/trailing separator, double separator). Also returned for any method other than `GET` or `OPTIONS` (with `Allow: GET, OPTIONS` response header).
 - `404 HELP_TOPIC_NOT_FOUND` — the `{topic}` is well-formed but does not resolve to any topic in the tree.
 
 ### Examples
@@ -156,6 +160,15 @@ Errors use RFC 9457 Problem Details (`application/problem+json`). See `errors` t
 ```bash
 # Fetch the full topic tree and inspect schema version and binary version
 curl -s http://localhost:8080/api/help | jq '{schema: .schema, version: .version}'
+
+# Fetch a single topic — dotted form (canonical)
+curl -s http://localhost:8080/api/help/cli.serve | jq .topic
+
+# Fetch the same topic — slash form (REST-idiomatic, equivalent)
+curl -s http://localhost:8080/api/help/cli/serve | jq .topic
+
+# Mixed separators also resolve (e.g. errors.VALIDATION_FAILED via slash)
+curl -s http://localhost:8080/api/help/errors/VALIDATION_FAILED | jq .topic
 
 # Fetch a single topic and extract its registered actions
 curl -s http://localhost:8080/api/help/cli.help | jq '.actions'

@@ -213,6 +213,114 @@ func TestNonGET_Returns405(t *testing.T) {
 	}
 }
 
+func TestGetSingleTopic_SlashSeparator(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/help/cli/help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	var d renderer.TopicDescriptor
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Topic != "cli.help" {
+		t.Errorf("topic = %q, want %q (slash form must resolve to dotted canonical)", d.Topic, "cli.help")
+	}
+}
+
+func TestGetSingleTopic_MixedSeparators(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/help/errors/VALIDATION_FAILED")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	var d renderer.TopicDescriptor
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Topic != "errors.VALIDATION_FAILED" {
+		t.Errorf("topic = %q, want %q", d.Topic, "errors.VALIDATION_FAILED")
+	}
+}
+
+func TestMalformedTopicPath_DoubleSlash_CleanedByServeMux(t *testing.T) {
+	// Go's http.ServeMux cleans consecutive slashes before the handler runs
+	// (cli//help → cli/help). The observable effect is the same as a single
+	// slash: the handler sees "cli/help", normalises to "cli.help", and
+	// resolves to the cli.help topic (200). We cannot detect the double-slash
+	// at the handler layer. This is documented behaviour, analogous to the
+	// ServeMux dot-redirect behaviour tested in
+	// TestMalformedTopicPath_BareDot_RedirectsToCanonical.
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/help/cli//help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// ServeMux cleans cli//help → cli/help before the handler; the topic
+	// resolves to cli.help → 200.
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200 (ServeMux cleans double-slash before handler)", resp.StatusCode)
+	}
+}
+
+func TestMalformedTopicPath_400_DoubleDot(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/help/cli..help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400 (double dot → empty segment)", resp.StatusCode)
+	}
+}
+
+func TestMalformedTopicPath_400_MixedEmptySegment(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	// cli./help — dot followed by slash: normalises to "cli..help" → empty segment
+	resp, err := http.Get(srv.URL + "/api/help/cli./help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// regex now admits / and . as path characters, so it passes the regex;
+	// but normalization yields an empty segment → 400.
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400 (mixed with empty segment)", resp.StatusCode)
+	}
+}
+
+func TestGetUnknownTopic_SlashForm_404(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/help/cli/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "HELP_TOPIC_NOT_FOUND") {
+		t.Errorf("response body missing HELP_TOPIC_NOT_FOUND: %q", body)
+	}
+}
+
 func TestRespectsContextPath(t *testing.T) {
 	srv := helpTestServer(t, "/v1/api")
 	defer srv.Close()

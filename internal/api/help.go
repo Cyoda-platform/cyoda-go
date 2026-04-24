@@ -12,9 +12,12 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// topicPathPattern rejects leading/trailing dots and hyphens.
-// First char: [A-Za-z0-9]; optional middle + final [A-Za-z0-9] for multi-char paths.
-var topicPathPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+// topicPathPattern accepts both . and / as topic-path separators.
+// Must start and end with alphanumeric; internal characters allow
+// letters, digits, underscore, hyphen, and the two separators (. and /).
+// Note: Go's http.ServeMux cleans consecutive slashes (cli//help → cli/help)
+// before the handler runs, so double-slash cannot be detected at this layer.
+var topicPathPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$`)
 
 // handleHelpPreflight writes a CORS preflight response and returns true if the
 // request was an OPTIONS preflight. The caller should return immediately when
@@ -92,7 +95,20 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 			))
 			return
 		}
-		segs := strings.Split(topic, ".")
+		// Normalise: / and . are equivalent separators. Split on either,
+		// then reject any empty segment (double separator, leading/trailing).
+		normalized := strings.ReplaceAll(topic, "/", ".")
+		segs := strings.Split(normalized, ".")
+		for _, s := range segs {
+			if s == "" {
+				common.WriteError(w, r, common.Operational(
+					http.StatusBadRequest,
+					common.ErrCodeBadRequest,
+					"invalid topic path: empty segment",
+				))
+				return
+			}
+		}
 		node := tree.Find(segs)
 		if node == nil {
 			common.WriteError(w, r, common.Operational(
