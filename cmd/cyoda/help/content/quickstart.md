@@ -99,6 +99,49 @@ Env vars required to move from defaults to a production-shaped deployment.
 - `CYODA_METRICS_BEARER` — static bearer token required on `GET /metrics`
 - `CYODA_METRICS_REQUIRE_AUTH` = `false` (default; set `true` to enforce metrics auth at startup)
 
+### Generating secrets
+
+**JWT signing key** — RSA private key, PEM-encoded. The binary accepts PKCS#8 (`BEGIN PRIVATE KEY`) and PKCS#1 (`BEGIN RSA PRIVATE KEY`) formats. Only RSA keys are accepted; the signature algorithm is always RS256. Minimum recommended size: 2048 bits.
+
+Generate a PKCS#8 RSA-2048 key (preferred):
+
+```
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out signing.pem
+```
+
+Generate a PKCS#1 RSA-2048 key (also accepted):
+
+```
+openssl genrsa -out signing.pem 2048
+```
+
+Pass to the binary via file reference (recommended):
+
+```
+export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
+```
+
+**HMAC secret** — hex-encoded shared secret for inter-node dispatch authentication. The binary decodes the value from hex to raw bytes. Minimum: 32 bytes of entropy (64 hex characters).
+
+Generate a 32-byte secret (64 hex chars):
+
+```
+openssl rand -hex 32
+```
+
+Pass to the binary via file reference (recommended):
+
+```
+# Write the hex string to a file, then:
+export CYODA_HMAC_SECRET_FILE=/run/secrets/hmac-secret
+```
+
+Or pass inline (dev only — not suitable for production):
+
+```
+export CYODA_HMAC_SECRET="$(openssl rand -hex 32)"
+```
+
 ## EXAMPLES
 
 **First-run default (sqlite + mock auth):**
@@ -154,7 +197,7 @@ curl -O https://raw.githubusercontent.com/cyoda-platform/cyoda-go/main/deploy/do
 docker compose up
 ```
 
-The bundled `compose.yaml` at `deploy/docker/compose.yaml` uses `CYODA_STORAGE_BACKEND=sqlite` and a named volume `cyoda-data` for persistence. For production, set `CYODA_REQUIRE_JWT=true` and `CYODA_JWT_SIGNING_KEY` before running `docker compose up`.
+The bundled `compose.yaml` at `deploy/docker/compose.yaml` uses `CYODA_STORAGE_BACKEND=sqlite` and a named volume `cyoda-data` for persistence. For production JWT auth, mount the signing key file and set `CYODA_JWT_SIGNING_KEY_FILE` — do not pass `CYODA_JWT_SIGNING_KEY` inline; multi-line PEM does not survive shell or YAML env-var interpolation. See `run` for the full docker compose JWT configuration.
 
 ## SEE ALSO
 

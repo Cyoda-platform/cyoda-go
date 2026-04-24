@@ -181,12 +181,24 @@ The bundled compose file uses SQLite + mock auth by default. The compose healthc
 docker compose -f deploy/docker/compose.yaml up
 ```
 
-**Enable JWT auth before starting compose:**
+**Enable JWT auth before starting compose (file-mount approach):**
+
+**Do not** pass `CYODA_JWT_SIGNING_KEY` as an inline environment variable through docker compose — multi-line PEM content does not survive shell interpolation or YAML env-var parsing reliably. Always use `CYODA_JWT_SIGNING_KEY_FILE` with a volume mount.
 
 ```
-export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"
-# Then uncomment CYODA_REQUIRE_JWT and CYODA_JWT_SIGNING_KEY lines in compose.yaml
-docker compose -f deploy/docker/compose.yaml up
+# 1. Place the signing key on the host (outside the compose dir if gitignored):
+#    ./secrets/signing.pem
+# 2. docker-compose.yaml snippet (add to the cyoda service):
+#      volumes:
+#        - ./secrets/signing.pem:/run/secrets/signing.pem:ro
+#      environment:
+#        CYODA_IAM_MODE: jwt
+#        CYODA_REQUIRE_JWT: "true"
+#        CYODA_JWT_SIGNING_KEY_FILE: /run/secrets/signing.pem
+#        CYODA_JWT_ISSUER: https://auth.example.com
+#        CYODA_JWT_AUDIENCE: cyoda-api
+# 3. Launch:
+docker compose up
 ```
 
 **Use a custom image (e.g. a local dev build):**
@@ -338,11 +350,14 @@ curl -s http://localhost:9091/readyz
 echo $?   # 0 = ready, 1 = not ready or error
 ```
 
-**Docker Compose — production JWT (set key before starting):**
+**Docker Compose — production JWT (file-mount):**
 
 ```
-export CYODA_JWT_SIGNING_KEY="$(cat signing.pem)"
-docker compose -f deploy/docker/compose.yaml up
+# Mount the PEM file and reference it via CYODA_JWT_SIGNING_KEY_FILE.
+# Do not export CYODA_JWT_SIGNING_KEY inline — multi-line PEM does not
+# survive shell → docker-compose env interpolation reliably.
+# See the Docker Compose section above for the full snippet.
+docker compose up
 ```
 
 ## SEE ALSO

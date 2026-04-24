@@ -132,7 +132,7 @@ Arbitrary additional env vars injected into the StatefulSet container. Each entr
 Kubernetes Service type for the main Service (ports 8080, 9090, 9091). Accepted values: `ClusterIP`, `NodePort`, `LoadBalancer`.
 
 **`gateway.enabled`** — boolean — default `true`
-Enable Gateway API routing. Renders `HTTPRoute` (port 8080) and `GRPCRoute` (port 9090). Mutually exclusive with `ingress.enabled`; both enabled triggers a `fail`.
+Enable Gateway API routing. Renders `HTTPRoute` (port 8080) and `GRPCRoute` (port 9090). Mutually exclusive with `ingress.enabled`; both enabled triggers a `fail`. When `true`, `gateway.parentRefs` MUST be set to a non-empty list of operator-provided Gateway references; an empty list causes install to fail.
 
 **`gateway.parentRefs`** — list — default `[]` — **REQUIRED when `gateway.enabled=true`**
 List of Gateway API parent references (operator-provided Gateway). The chart does not render the Gateway itself.
@@ -293,6 +293,25 @@ The chart renders the following Kubernetes objects. Conditional objects note the
 - `Ingress` (gRPC, `networking.k8s.io/v1`) — rendered when `ingress.enabled=true`.
 - `ServiceMonitor` (`monitoring.coreos.com/v1`) — rendered when `monitoring.serviceMonitor.enabled=true`. References the metrics bearer Secret for scrape authentication.
 
+## GENERATING SECRETS
+
+**JWT signing key** — generate an RSA-2048 private key and load it into a Kubernetes Secret:
+
+```
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out signing.pem
+kubectl create secret generic cyoda-jwt -n cyoda \
+  --from-file=signing-key.pem=signing.pem
+```
+
+**HMAC secret** — generate 32 bytes of entropy (64 hex chars) and load into a Kubernetes Secret:
+
+```
+kubectl create secret generic cyoda-hmac -n cyoda \
+  --from-literal=secret="$(openssl rand -hex 32)"
+```
+
+See `quickstart` for accepted key formats and format-specific `openssl` commands.
+
 ## SECRETS PROVISIONING
 
 The chart never stores credentials in the ConfigMap. All credentials are mounted via a projected Secret volume at `/etc/cyoda/secrets` and read by the binary through `CYODA_*_FILE` env vars. The file paths and corresponding env vars are set in the StatefulSet env block:
@@ -383,6 +402,8 @@ helm template cyoda ./deploy/helm/cyoda \
 
 **Minimal install (pre-created postgres + jwt secrets):**
 
+**Bare-cluster install** — `gateway.enabled=false` disables the Gateway API route objects. Use this form on clusters without Gateway API CRDs (kind, minikube, most vanilla clusters). The chart falls back to the built-in `Service` for traffic ingress.
+
 ```
 kubectl create namespace cyoda
 kubectl create secret generic cyoda-pg -n cyoda \
@@ -393,7 +414,8 @@ kubectl create secret generic cyoda-jwt -n cyoda \
 helm install cyoda ./deploy/helm/cyoda \
   --namespace cyoda \
   --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt
+  --set jwt.existingSecret=cyoda-jwt \
+  --set gateway.enabled=false
 ```
 
 **Multi-replica cluster with HPA:**
@@ -448,8 +470,10 @@ helm install cyoda ./deploy/helm/cyoda \
   --set bootstrap.clientId=m2m-api-client \
   --set bootstrap.clientSecret.existingSecret=cyoda-bootstrap \
   --set bootstrap.tenantId=acme \
-  --set bootstrap.roles=ROLE_ADMIN,ROLE_M2M
+  --set-string 'bootstrap.roles=ROLE_ADMIN\,ROLE_M2M'
 ```
+
+Helm treats commas in `--set` as array separators. Use `--set-string` with an escaped comma (`\,`) or provide the value via a `values.yaml` file to preserve the single string.
 
 **With Gateway API (requires operator-provided Gateway):**
 
