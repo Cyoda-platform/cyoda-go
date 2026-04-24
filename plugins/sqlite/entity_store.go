@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"time"
@@ -797,6 +798,34 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 	return count, nil
 }
 
+// MaxStateFilterSize caps the number of state names accepted in a
+// CountByState filter. SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999
+// on some builds (32766 on others); the cap below sits well under the
+// conservative limit with room for the three other bound parameters
+// (tenant_id, model_name, model_version). Issue #99 added the cap — state
+// values are already bound as parameters, but a bounded-input contract
+// closes the door on a future caller accidentally passing a huge list.
+const MaxStateFilterSize = 500
+
+// ErrStateFilterTooLarge is returned by CountByState when the caller
+// supplies more state names than MaxStateFilterSize allows.
+var ErrStateFilterTooLarge = errors.New("state filter exceeds maximum size")
+
+// inPlaceholders returns `?,?,?,...` with n markers. n must be > 0 —
+// callers check for the empty case. The returned string is composed
+// entirely of `?` and `,` characters; no caller-supplied data is ever
+// interpolated.
+func inPlaceholders(n int) string {
+	buf := make([]byte, 0, 2*n)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, '?')
+	}
+	return string(buf)
+}
+
 // CountByState returns counts of non-deleted entities grouped by state for the
 // given model. See SPI godoc on EntityStore.CountByState for filter semantics.
 //
@@ -809,6 +838,9 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
+	}
+	if len(states) > MaxStateFilterSize {
+		return nil, fmt.Errorf("%w: got %d, max %d", ErrStateFilterTooLarge, len(states), MaxStateFilterSize)
 	}
 
 	tx := spi.GetTransaction(ctx)
@@ -848,15 +880,11 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	      WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted`
 
 	if states != nil {
-		// Build IN (?, ?, ...) placeholder list. len(states) > 0 here (early-exit covered the empty case).
-		placeholders := make([]byte, 0, 2*len(states))
-		for i := range states {
-			if i > 0 {
-				placeholders = append(placeholders, ',')
-			}
-			placeholders = append(placeholders, '?')
-		}
-		q += ` AND json_extract(json(meta), '$.state') IN (` + string(placeholders) + `)`
+		// Build IN (?, ?, ...) placeholder list. The string is built from
+		// `?` markers only — no state value ever enters the query text.
+		// State values are bound as SQL parameters below. Size is bounded
+		// by MaxStateFilterSize above.
+		q += ` AND json_extract(json(meta), '$.state') IN (` + inPlaceholders(len(states)) + `)`
 		for _, st := range states {
 			args = append(args, st)
 		}

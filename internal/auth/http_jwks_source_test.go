@@ -51,7 +51,7 @@ func TestHTTPJWKSSource_RejectsTLS12OnlyEndpoint(t *testing.T) {
 	srv.StartTLS()
 	defer srv.Close()
 
-	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, 5*time.Minute, testTransportTrusting(srv))
+	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, "test-issuer", 5*time.Minute, testTransportTrusting(srv))
 	_, err := src.GetKey("any")
 	if err == nil {
 		t.Fatal("expected handshake failure against TLS 1.2-only endpoint, got nil")
@@ -82,7 +82,7 @@ func TestHTTPJWKSSource_ProductionTransportPinsTLS13(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
 
-	src := auth.NewHTTPJWKSSourceWithRootCAsForTesting(srv.URL, 5*time.Minute, pool)
+	src := auth.NewHTTPJWKSSourceWithRootCAsForTesting(srv.URL, "test-issuer", 5*time.Minute, pool)
 	_, err := src.GetKey("any")
 	if err == nil {
 		t.Fatal("production transport accepted TLS 1.2 handshake — MinVersion pin is broken")
@@ -101,7 +101,7 @@ func TestHTTPJWKSSource_RejectsHTMLContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, 5*time.Minute, testTransportTrusting(srv))
+	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, "test-issuer", 5*time.Minute, testTransportTrusting(srv))
 	_, err := src.GetKey("any")
 	if err == nil {
 		t.Fatal("expected content-type rejection, got nil")
@@ -119,7 +119,7 @@ func TestHTTPJWKSSource_AcceptsApplicationJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, 5*time.Minute, testTransportTrusting(srv))
+	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, "test-issuer", 5*time.Minute, testTransportTrusting(srv))
 	// Empty key set → GetKey returns ErrKeyNotFound, NOT a transport/content-type
 	// error. Confirms the fetch succeeded.
 	_, err := src.GetKey("any-kid")
@@ -139,7 +139,7 @@ func TestHTTPJWKSSource_AcceptsJWKSetJSONWithCharset(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, 5*time.Minute, testTransportTrusting(srv))
+	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, "test-issuer", 5*time.Minute, testTransportTrusting(srv))
 	_, err := src.GetKey("any-kid")
 	if err == nil {
 		t.Fatal("expected ErrKeyNotFound for empty JWKS, got nil")
@@ -155,7 +155,7 @@ func TestHTTPJWKSSource_RejectsNon200Status(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, 5*time.Minute, testTransportTrusting(srv))
+	src := auth.NewHTTPJWKSSourceWithTransportForTesting(srv.URL, "test-issuer", 5*time.Minute, testTransportTrusting(srv))
 	_, err := src.GetKey("any")
 	if err == nil {
 		t.Fatal("expected status-code rejection, got nil")
