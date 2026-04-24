@@ -122,3 +122,15 @@ Per-topic `stability:` value governs what consumers should expect:
 - `stable` — content semantics locked. Wording may evolve; structure does not.
 - `evolving` — may be reorganised between minors. No path changes without deprecation.
 - `experimental` — may be reorganised or removed without deprecation. Used for stubs and early drafts.
+
+### Content voice — definitive, not tutorial
+
+`cyoda help` is the **definitive reference** for flags, env vars, endpoints, schemas, error codes, and runtime options. Tutorials, narrative walkthroughs, and "getting started" storytelling live in the cyoda-docs site — which **references `cyoda help`** for contract details.
+
+That division makes two rules binding on help authors:
+
+1. **No outbound cross-references.** Help topic bodies must not point at `cyoda-docs`, external URLs, or "see the documentation site" footers. Internal `see_also` entries referencing other help topics are fine and expected. The cyoda-docs site is a research input when authoring — it is not a citation target.
+
+2. **Contract, not prose.** Help states *what* a thing is, its *inputs*, *outputs*, and *errors*. It does not narrate ("first you'll want to…", "imagine you have a case where…"). Concrete examples are welcome when they *are* the contract — a minimal `curl` invocation, a sample env var block, a proto method signature. Multi-step walkthroughs belong in cyoda-docs.
+
+If a topic seems hard to write without tutorial prose, that usually means the contract underneath is fuzzy — sharpen the contract before writing the help.
