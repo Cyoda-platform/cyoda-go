@@ -7,7 +7,7 @@ description: |
   controller (transitional).
 type: application
 version: 0.1.0
-appVersion: "0.1.0"  # bump-chart-appversion.yml syncs this to the binary
+appVersion: "0.6.1" # bump-chart-appversion.yml syncs this to the binary
 kubeVersion: ">=1.31.0"
 keywords:
   - cyoda
