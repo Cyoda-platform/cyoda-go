@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,6 +15,12 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
+
+// ErrSearchJobNotFound is returned by the async-job lookup paths
+// (GetAsyncStatus, GetAsyncResults, CancelAsync) when the job UUID is not
+// known. Handlers map this to HTTP 404 + SEARCH_JOB_NOT_FOUND — callers
+// can use errors.Is to branch (issue #93).
+var ErrSearchJobNotFound = errors.New("search job not found")
 
 // SearchOptions controls search behavior.
 type SearchOptions struct {
@@ -264,7 +271,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 func (s *SearchService) GetAsyncStatus(ctx context.Context, jobID string) (SearchJobStatus, error) {
 	job, err := s.searchStore.GetJob(ctx, jobID)
 	if err != nil {
-		return SearchJobStatus{}, fmt.Errorf("job %s not found", jobID)
+		return SearchJobStatus{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
 	}
 
 	return SearchJobStatus{
@@ -287,7 +294,7 @@ type AsyncResultsPage struct {
 func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts ResultOptions) (AsyncResultsPage, error) {
 	job, err := s.searchStore.GetJob(ctx, jobID)
 	if err != nil {
-		return AsyncResultsPage{}, fmt.Errorf("job %s not found", jobID)
+		return AsyncResultsPage{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
 	}
 
 	if job.Status != "SUCCESSFUL" {
@@ -333,7 +340,7 @@ type CancelResult struct {
 func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelResult, error) {
 	job, err := s.searchStore.GetJob(ctx, jobID)
 	if err != nil {
-		return CancelResult{}, fmt.Errorf("job %s not found", jobID)
+		return CancelResult{}, fmt.Errorf("%w: %s", ErrSearchJobNotFound, jobID)
 	}
 
 	if job.Status != "RUNNING" {
