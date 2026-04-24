@@ -137,3 +137,109 @@ func TestRunHelp_UnknownFormat_Exit2(t *testing.T) {
 		t.Errorf("error must name the bad format: %q", out.String())
 	}
 }
+
+func TestRunHelp_NoDuplicateSeeAlso(t *testing.T) {
+	// Build a small tree with a topic whose body includes "## SEE ALSO"
+	// and whose front-matter see_also is set.
+	fsys := fstest.MapFS{
+		"content/x.md": &fstest.MapFile{Data: []byte(`---
+topic: x
+title: x
+stability: stable
+see_also:
+  - y
+---
+
+# x
+
+body text
+
+## SEE ALSO
+
+- body-y
+- body-z
+`)},
+		"content/y.md": &fstest.MapFile{Data: []byte(`---
+topic: y
+title: y
+stability: stable
+---
+
+# y
+
+body
+`)},
+	}
+	tree, err := Load(fsys)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var out bytes.Buffer
+	// isTTY=true forces text mode, where the duplicate used to appear.
+	code := RunHelp(tree, []string{"x"}, &out, "0.6.1", true, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	// Count occurrences of "SEE ALSO" — should be exactly one.
+	seeAlsoCount := strings.Count(s, "SEE ALSO")
+	if seeAlsoCount != 1 {
+		t.Errorf("SEE ALSO appears %d times, want 1:\n%s", seeAlsoCount, s)
+	}
+	// Body's see-also content ("body-y", "body-z") must not appear.
+	if strings.Contains(s, "body-y") || strings.Contains(s, "body-z") {
+		t.Errorf("body-level see_also must be stripped, but appeared:\n%s", s)
+	}
+	// Front-matter's see_also must appear.
+	if !strings.Contains(s, "y") {
+		t.Errorf("front-matter see_also ('y') missing:\n%s", s)
+	}
+}
+
+func TestRunHelp_SeeAlsoUsesCLISyntax(t *testing.T) {
+	fsys := fstest.MapFS{
+		"content/a.md": &fstest.MapFile{Data: []byte(`---
+topic: a
+title: a
+stability: stable
+see_also:
+  - errors.VALIDATION_FAILED
+---
+
+# a
+`)},
+		"content/errors.md": &fstest.MapFile{Data: []byte(`---
+topic: errors
+title: errors
+stability: stable
+---
+
+# errors
+`)},
+		"content/errors/VALIDATION_FAILED.md": &fstest.MapFile{Data: []byte(`---
+topic: errors.VALIDATION_FAILED
+title: vf
+stability: stable
+---
+
+# vf
+`)},
+	}
+	tree, err := Load(fsys)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var out bytes.Buffer
+	// isTTY=true forces text mode where CLI-syntax bullets are required.
+	code := RunHelp(tree, []string{"a"}, &out, "0.6.1", true, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if strings.Contains(s, "errors.VALIDATION_FAILED") {
+		t.Errorf("SEE ALSO must show space-separated form, not dotted:\n%s", s)
+	}
+	if !strings.Contains(s, "errors VALIDATION_FAILED") {
+		t.Errorf("SEE ALSO must contain 'errors VALIDATION_FAILED':\n%s", s)
+	}
+}

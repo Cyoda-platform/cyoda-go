@@ -90,17 +90,26 @@ func resolveFormat(f string, isTTY bool) string {
 }
 
 func writeTopicText(t *Topic, out io.Writer, style string) int {
-	if err := renderer.RenderText(out, t.Body, style); err != nil {
+	cleaned := renderer.StripSeeAlsoSection(t.Body)
+	if err := renderer.RenderText(out, cleaned, style); err != nil {
 		fmt.Fprintf(out, "cyoda help: render failed: %v\n", err)
 		return 1
 	}
 	if len(t.SeeAlso) > 0 {
 		fmt.Fprintln(out, "\nSEE ALSO")
 		for _, s := range t.SeeAlso {
-			fmt.Fprintf(out, "  • %s\n", s)
+			fmt.Fprintf(out, "  • %s\n", dottedToCLIArgs(s))
 		}
 	}
 	return 0
+}
+
+// dottedToCLIArgs converts a canonical dotted topic identifier
+// (e.g. "errors.VALIDATION_FAILED") to the space-separated form the
+// CLI accepts (e.g. "errors VALIDATION_FAILED"). Used only in text-
+// mode SEE ALSO output; markdown and JSON keep the dotted form.
+func dottedToCLIArgs(dotted string) string {
+	return strings.ReplaceAll(dotted, ".", " ")
 }
 
 func writeTopicMarkdown(t *Topic, out io.Writer) int {

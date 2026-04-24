@@ -13,7 +13,7 @@ import (
 // H1/H2 or end-of-file), and appending the authoritative see_also from
 // front-matter as a fresh SEE ALSO section when non-empty.
 func RenderMarkdown(w io.Writer, body []byte, seeAlso []string) {
-	stripped := stripSeeAlsoSection(body)
+	stripped := StripSeeAlsoSection(body)
 	_, _ = w.Write(stripped)
 	// Ensure single trailing newline before the SEE ALSO we append.
 	if !bytes.HasSuffix(stripped, []byte("\n")) {
@@ -29,9 +29,12 @@ func RenderMarkdown(w io.Writer, body []byte, seeAlso []string) {
 	}
 }
 
-// stripSeeAlsoSection returns src with any "## SEE ALSO" section
-// removed (H2 through the next H2/H1, or EOF).
-func stripSeeAlsoSection(src []byte) []byte {
+// StripSeeAlsoSection returns src with any "## SEE ALSO" section
+// removed (H2 through the next H2/H1, or EOF). It is exported so
+// callers that render via other paths (e.g. text mode) can strip the
+// body SEE ALSO before passing to their own renderer and appending
+// the authoritative front-matter list themselves.
+func StripSeeAlsoSection(src []byte) []byte {
 	var out bytes.Buffer
 	sc := bufio.NewScanner(bytes.NewReader(src))
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
