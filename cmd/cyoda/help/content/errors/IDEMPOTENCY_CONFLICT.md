@@ -10,6 +10,10 @@ see_also:
 
 # errors.IDEMPOTENCY_CONFLICT
 
+## STATUS
+
+**Not yet implemented (#91).** The error code is reserved and documented here for the future contract, but no API handler currently reads the `Idempotency-Key` header or raises this error. Duplicate collection requests will currently pass through without detection. Tracked for implementation or removal.
+
 ## NAME
 
 IDEMPOTENCY_CONFLICT — a request with the same idempotency key was already received but its payload differs from the original.

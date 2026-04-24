@@ -359,7 +359,7 @@ To use: read the entity (`GET /entity/{id}`), note `meta.transactionId`, include
 - `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist or is not locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.CONFLICT` — `409` — transaction conflict (retryable)
-- `errors.IDEMPOTENCY_CONFLICT` — `409` — returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
+- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented (#91). Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
 
