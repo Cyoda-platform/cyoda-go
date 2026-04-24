@@ -137,6 +137,54 @@ func TestUpdateCollection_PayloadMustBeString(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for object payload; body: %s", resp.StatusCode, rbody)
 	}
+	// Pin the operator-facing error text so a future refactor doesn't
+	// silently regress the hint that payload must be a JSON-encoded string.
+	if !strings.Contains(string(rbody), "payload must be") {
+		t.Errorf("body does not explain the payload-must-be-string contract: %s", rbody)
+	}
+}
+
+// TestUpdateCollection_EmptyArray — `UpdateEntityCollection` rejects an
+// empty items list with 400 before opening a transaction. Pins that
+// contract so a future caller can rely on it.
+func TestUpdateCollection_EmptyArray(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doUpdateCollection(t, srv.URL, "JSON", `[]`)
+	defer resp.Body.Close()
+	rbody := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for empty array; body: %s", resp.StatusCode, rbody)
+	}
+}
+
+// TestUpdateCollection_BatchExceedsTransactionWindow — a batch larger
+// than `transactionWindow` (default 100) must be rejected with 400 before
+// any work starts. Protects against unbounded batch sizes that would hold
+// locks on many rows in one transaction.
+func TestUpdateCollection_BatchExceedsTransactionWindow(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "UpdBatchWin", 1, `{"name":"x"}`)
+
+	// Build a 101-item body (one over the default window of 100). The IDs
+	// don't need to exist — the window check fires before any lookup.
+	items := make([]string, 101)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"id":"00000000-0000-0000-0000-%012d","payload":"{\"name\":\"x\"}"}`, i)
+	}
+	body := "[" + strings.Join(items, ",") + "]"
+
+	resp := doUpdateCollection(t, srv.URL, "JSON", body)
+	defer resp.Body.Close()
+	rbody := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for oversize batch; body: %s", resp.StatusCode, rbody)
+	}
+	if !strings.Contains(string(rbody), "transactionWindow") {
+		t.Errorf("body does not reference transactionWindow: %s", rbody)
+	}
 }
 
 // doCreateAndGetID is a small helper used by the UpdateCollection tests:

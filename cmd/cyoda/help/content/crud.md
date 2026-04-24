@@ -165,7 +165,8 @@ Response: `200 OK`, same shape as loopback update.
 
 **PUT /api/entity/{format}** — Update a collection (mixed entities)
 
-- `format` (path): `JSON` (only supported format today)
+- `format` (path): `JSON` (only supported format today; single-item PUT endpoints still accept XML)
+- `transactionWindow` (query, optional): int32, default `100`, max `1000` — max items accepted in one batch; batches over the window are rejected with `400 BAD_REQUEST`
 - `transactionTimeoutMillis` (query, optional): int64, default `10000`
 - `waitForConsistencyAfter` (query, optional): boolean, default `false`
 
