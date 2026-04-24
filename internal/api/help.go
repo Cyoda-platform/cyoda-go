@@ -41,6 +41,15 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 		if handleHelpPreflight(w, r) {
 			return
 		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET, OPTIONS")
+			common.WriteError(w, r, common.Operational(
+				http.StatusMethodNotAllowed,
+				common.ErrCodeBadRequest,
+				"method not allowed; GET only",
+			))
+			return
+		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.URL.Path != prefix {
 			common.WriteError(w, r, common.Operational(
@@ -62,6 +71,15 @@ func RegisterHelpRoutes(mux *http.ServeMux, tree *help.Tree, contextPath, versio
 	})
 	mux.HandleFunc(prefix+"/", func(w http.ResponseWriter, r *http.Request) {
 		if handleHelpPreflight(w, r) {
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET, OPTIONS")
+			common.WriteError(w, r, common.Operational(
+				http.StatusMethodNotAllowed,
+				common.ErrCodeBadRequest,
+				"method not allowed; GET only",
+			))
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")

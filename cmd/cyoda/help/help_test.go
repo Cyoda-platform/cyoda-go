@@ -658,6 +658,21 @@ func TestContentMarkdownSubsetLinter(t *testing.T) {
 	}
 }
 
+// TestSeeAlsoResolution asserts every see_also entry across the
+// embedded topic tree resolves to a real topic via tree.Find. Prevents
+// dead cross-references from landing silently.
+func TestSeeAlsoResolution(t *testing.T) {
+	for _, desc := range DefaultTree.WalkDescriptors() {
+		for _, ref := range desc.SeeAlso {
+			segs := strings.Split(ref, ".")
+			if DefaultTree.Find(segs) == nil {
+				t.Errorf("topic %q has see_also %q but no such topic exists",
+					desc.Topic, ref)
+			}
+		}
+	}
+}
+
 // scanEnvVarsInConfigDocs walks the help content directory and extracts
 // every CYODA_* mention from config.md and config/**/*.md.
 func scanEnvVarsInConfigDocs(t *testing.T, contentRoot string) map[string]bool {

@@ -177,6 +177,42 @@ func TestCORSPreflight_204(t *testing.T) {
 	}
 }
 
+func TestNonGET_Returns405(t *testing.T) {
+	srv := helpTestServer(t, "/api")
+	defer srv.Close()
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		t.Run(method, func(t *testing.T) {
+			req, _ := http.NewRequest(method, srv.URL+"/api/help", nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Errorf("%s / : status = %d, want 405", method, resp.StatusCode)
+			}
+			if got := resp.Header.Get("Allow"); got != "GET, OPTIONS" {
+				t.Errorf("%s / : Allow = %q, want \"GET, OPTIONS\"", method, got)
+			}
+		})
+	}
+
+	// Same check for the subtree handler
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		t.Run(method+"/topic", func(t *testing.T) {
+			req, _ := http.NewRequest(method, srv.URL+"/api/help/cli", nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Errorf("%s /cli : status = %d, want 405", method, resp.StatusCode)
+			}
+		})
+	}
+}
+
 func TestRespectsContextPath(t *testing.T) {
 	srv := helpTestServer(t, "/v1/api")
 	defer srv.Close()
