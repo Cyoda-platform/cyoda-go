@@ -39,7 +39,7 @@ type BaseEventJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *BaseEventJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -50,7 +50,7 @@ func (j *BaseEventJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain BaseEventJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = BaseEventJsonError(plain)
@@ -60,7 +60,7 @@ func (j *BaseEventJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *BaseEventJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -68,7 +68,7 @@ func (j *BaseEventJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain BaseEventJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -114,7 +114,7 @@ type CalculationMemberGreetEventJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *CalculationMemberGreetEventJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -125,7 +125,7 @@ func (j *CalculationMemberGreetEventJsonError) UnmarshalJSON(value []byte) error
 	}
 	type Plain CalculationMemberGreetEventJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = CalculationMemberGreetEventJsonError(plain)
@@ -135,7 +135,7 @@ func (j *CalculationMemberGreetEventJsonError) UnmarshalJSON(value []byte) error
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *CalculationMemberGreetEventJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -149,7 +149,7 @@ func (j *CalculationMemberGreetEventJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain CalculationMemberGreetEventJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -192,7 +192,7 @@ type CalculationMemberJoinEventJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *CalculationMemberJoinEventJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -203,7 +203,7 @@ func (j *CalculationMemberJoinEventJsonError) UnmarshalJSON(value []byte) error 
 	}
 	type Plain CalculationMemberJoinEventJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = CalculationMemberJoinEventJsonError(plain)
@@ -213,7 +213,7 @@ func (j *CalculationMemberJoinEventJsonError) UnmarshalJSON(value []byte) error 
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *CalculationMemberJoinEventJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -221,7 +221,7 @@ func (j *CalculationMemberJoinEventJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain CalculationMemberJoinEventJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -264,7 +264,7 @@ type CalculationMemberKeepAliveEventJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *CalculationMemberKeepAliveEventJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -275,7 +275,7 @@ func (j *CalculationMemberKeepAliveEventJsonError) UnmarshalJSON(value []byte) e
 	}
 	type Plain CalculationMemberKeepAliveEventJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = CalculationMemberKeepAliveEventJsonError(plain)
@@ -285,7 +285,7 @@ func (j *CalculationMemberKeepAliveEventJsonError) UnmarshalJSON(value []byte) e
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *CalculationMemberKeepAliveEventJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -296,7 +296,7 @@ func (j *CalculationMemberKeepAliveEventJson) UnmarshalJSON(value []byte) error 
 	}
 	type Plain CalculationMemberKeepAliveEventJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -350,7 +350,7 @@ type DataPayloadJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *DataPayloadJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["type"]; raw != nil && !ok {
@@ -358,7 +358,7 @@ func (j *DataPayloadJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain DataPayloadJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = DataPayloadJson(plain)
@@ -418,7 +418,7 @@ func (j *EntityChangeMetaJsonChangeType) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityChangeMetaJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["changeType"]; raw != nil && !ok {
@@ -432,7 +432,7 @@ func (j *EntityChangeMetaJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityChangeMetaJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityChangeMetaJson(plain)
@@ -476,7 +476,7 @@ type EntityChangesMetadataGetRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityChangesMetadataGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -487,7 +487,7 @@ func (j *EntityChangesMetadataGetRequestJsonError) UnmarshalJSON(value []byte) e
 	}
 	type Plain EntityChangesMetadataGetRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityChangesMetadataGetRequestJsonError(plain)
@@ -497,7 +497,7 @@ func (j *EntityChangesMetadataGetRequestJsonError) UnmarshalJSON(value []byte) e
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityChangesMetadataGetRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -508,7 +508,7 @@ func (j *EntityChangesMetadataGetRequestJson) UnmarshalJSON(value []byte) error 
 	}
 	type Plain EntityChangesMetadataGetRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -554,7 +554,7 @@ type EntityChangesMetadataResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityChangesMetadataResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -565,7 +565,7 @@ func (j *EntityChangesMetadataResponseJsonError) UnmarshalJSON(value []byte) err
 	}
 	type Plain EntityChangesMetadataResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityChangesMetadataResponseJsonError(plain)
@@ -575,7 +575,7 @@ func (j *EntityChangesMetadataResponseJsonError) UnmarshalJSON(value []byte) err
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["changeMeta"]; raw != nil && !ok {
@@ -589,7 +589,7 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityChangesMetadataResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -644,7 +644,7 @@ type EntityCreateCollectionRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCreateCollectionRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -655,7 +655,7 @@ func (j *EntityCreateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	}
 	type Plain EntityCreateCollectionRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityCreateCollectionRequestJsonError(plain)
@@ -665,7 +665,7 @@ func (j *EntityCreateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["dataFormat"]; raw != nil && !ok {
@@ -679,7 +679,7 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityCreateCollectionRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -700,7 +700,7 @@ type EntityCreatePayloadJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCreatePayloadJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["data"]; raw != nil && !ok {
@@ -711,7 +711,7 @@ func (j *EntityCreatePayloadJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityCreatePayloadJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityCreatePayloadJson(plain)
@@ -757,7 +757,7 @@ type EntityCreateRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCreateRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -768,7 +768,7 @@ func (j *EntityCreateRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityCreateRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityCreateRequestJsonError(plain)
@@ -778,7 +778,7 @@ func (j *EntityCreateRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCreateRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["dataFormat"]; raw != nil && !ok {
@@ -792,7 +792,7 @@ func (j *EntityCreateRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityCreateRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -865,7 +865,7 @@ type EntityCriteriaCalculationRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCriteriaCalculationRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -876,7 +876,7 @@ func (j *EntityCriteriaCalculationRequestJsonError) UnmarshalJSON(value []byte) 
 	}
 	type Plain EntityCriteriaCalculationRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityCriteriaCalculationRequestJsonError(plain)
@@ -920,7 +920,7 @@ func (j *EntityCriteriaCalculationRequestJsonTarget) UnmarshalJSON(value []byte)
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCriteriaCalculationRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["criteriaId"]; raw != nil && !ok {
@@ -943,7 +943,7 @@ func (j *EntityCriteriaCalculationRequestJson) UnmarshalJSON(value []byte) error
 	}
 	type Plain EntityCriteriaCalculationRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -995,7 +995,7 @@ type EntityCriteriaCalculationResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCriteriaCalculationResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1006,7 +1006,7 @@ func (j *EntityCriteriaCalculationResponseJsonError) UnmarshalJSON(value []byte)
 	}
 	type Plain EntityCriteriaCalculationResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityCriteriaCalculationResponseJsonError(plain)
@@ -1016,7 +1016,7 @@ func (j *EntityCriteriaCalculationResponseJsonError) UnmarshalJSON(value []byte)
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCriteriaCalculationResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -1030,7 +1030,7 @@ func (j *EntityCriteriaCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	}
 	type Plain EntityCriteriaCalculationResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1085,7 +1085,7 @@ type EntityDeleteAllRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1096,7 +1096,7 @@ func (j *EntityDeleteAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteAllRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityDeleteAllRequestJsonError(plain)
@@ -1106,7 +1106,7 @@ func (j *EntityDeleteAllRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -1117,7 +1117,7 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteAllRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["pageSize"]; !ok || v == nil {
@@ -1181,7 +1181,7 @@ type EntityDeleteAllResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1192,7 +1192,7 @@ func (j *EntityDeleteAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteAllResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityDeleteAllResponseJsonError(plain)
@@ -1205,7 +1205,7 @@ type EntityDeleteAllResponseJsonErrorsByID map[string]interface{}
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteAllResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityIds"]; raw != nil && !ok {
@@ -1225,7 +1225,7 @@ func (j *EntityDeleteAllResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteAllResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1268,7 +1268,7 @@ type EntityDeleteRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1279,7 +1279,7 @@ func (j *EntityDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityDeleteRequestJsonError(plain)
@@ -1289,7 +1289,7 @@ func (j *EntityDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -1300,7 +1300,7 @@ func (j *EntityDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1352,7 +1352,7 @@ type EntityDeleteResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1363,7 +1363,7 @@ func (j *EntityDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityDeleteResponseJsonError(plain)
@@ -1373,7 +1373,7 @@ func (j *EntityDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -1393,7 +1393,7 @@ func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityDeleteResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1445,7 +1445,7 @@ type EntityGetAllRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1456,7 +1456,7 @@ func (j *EntityGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityGetAllRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityGetAllRequestJsonError(plain)
@@ -1466,7 +1466,7 @@ func (j *EntityGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -1477,7 +1477,7 @@ func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityGetAllRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["pageNumber"]; !ok || v == nil {
@@ -1530,7 +1530,7 @@ type EntityGetRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1541,7 +1541,7 @@ func (j *EntityGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityGetRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityGetRequestJsonError(plain)
@@ -1551,7 +1551,7 @@ func (j *EntityGetRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityGetRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -1562,7 +1562,7 @@ func (j *EntityGetRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityGetRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1605,7 +1605,7 @@ type EntityModelDeleteRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1616,7 +1616,7 @@ func (j *EntityModelDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelDeleteRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelDeleteRequestJsonError(plain)
@@ -1626,7 +1626,7 @@ func (j *EntityModelDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -1637,7 +1637,7 @@ func (j *EntityModelDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelDeleteRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1677,7 +1677,7 @@ type EntityModelDeleteResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1688,7 +1688,7 @@ func (j *EntityModelDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelDeleteResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelDeleteResponseJsonError(plain)
@@ -1698,7 +1698,7 @@ func (j *EntityModelDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -1706,7 +1706,7 @@ func (j *EntityModelDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelDeleteResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1752,7 +1752,7 @@ type EntityModelExportRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelExportRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1763,7 +1763,7 @@ func (j *EntityModelExportRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelExportRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelExportRequestJsonError(plain)
@@ -1773,7 +1773,7 @@ func (j *EntityModelExportRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelExportRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["converter"]; raw != nil && !ok {
@@ -1787,7 +1787,7 @@ func (j *EntityModelExportRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelExportRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1837,7 +1837,7 @@ type EntityModelExportResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelExportResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1848,7 +1848,7 @@ func (j *EntityModelExportResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelExportResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelExportResponseJsonError(plain)
@@ -1858,7 +1858,7 @@ func (j *EntityModelExportResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -1875,7 +1875,7 @@ func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelExportResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1915,7 +1915,7 @@ type EntityModelGetAllRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1926,7 +1926,7 @@ func (j *EntityModelGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelGetAllRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelGetAllRequestJsonError(plain)
@@ -1936,7 +1936,7 @@ func (j *EntityModelGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -1944,7 +1944,7 @@ func (j *EntityModelGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelGetAllRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -1987,7 +1987,7 @@ type EntityModelGetAllResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelGetAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -1998,7 +1998,7 @@ func (j *EntityModelGetAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelGetAllResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelGetAllResponseJsonError(plain)
@@ -2008,7 +2008,7 @@ func (j *EntityModelGetAllResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelGetAllResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -2019,7 +2019,7 @@ func (j *EntityModelGetAllResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelGetAllResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2071,7 +2071,7 @@ type EntityModelImportRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelImportRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2082,7 +2082,7 @@ func (j *EntityModelImportRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelImportRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelImportRequestJsonError(plain)
@@ -2092,7 +2092,7 @@ func (j *EntityModelImportRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["converter"]; raw != nil && !ok {
@@ -2112,7 +2112,7 @@ func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelImportRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2155,7 +2155,7 @@ type EntityModelImportResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelImportResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2166,7 +2166,7 @@ func (j *EntityModelImportResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelImportResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelImportResponseJsonError(plain)
@@ -2176,7 +2176,7 @@ func (j *EntityModelImportResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -2187,7 +2187,7 @@ func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelImportResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2233,7 +2233,7 @@ type EntityModelTransitionRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelTransitionRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2244,7 +2244,7 @@ func (j *EntityModelTransitionRequestJsonError) UnmarshalJSON(value []byte) erro
 	}
 	type Plain EntityModelTransitionRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelTransitionRequestJsonError(plain)
@@ -2284,7 +2284,7 @@ func (j *EntityModelTransitionRequestJsonTransition) UnmarshalJSON(value []byte)
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -2298,7 +2298,7 @@ func (j *EntityModelTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelTransitionRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2344,7 +2344,7 @@ type EntityModelTransitionResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelTransitionResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2355,7 +2355,7 @@ func (j *EntityModelTransitionResponseJsonError) UnmarshalJSON(value []byte) err
 	}
 	type Plain EntityModelTransitionResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityModelTransitionResponseJsonError(plain)
@@ -2365,7 +2365,7 @@ func (j *EntityModelTransitionResponseJsonError) UnmarshalJSON(value []byte) err
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -2379,7 +2379,7 @@ func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityModelTransitionResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2446,7 +2446,7 @@ type EntityProcessorCalculationRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityProcessorCalculationRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2457,7 +2457,7 @@ func (j *EntityProcessorCalculationRequestJsonError) UnmarshalJSON(value []byte)
 	}
 	type Plain EntityProcessorCalculationRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityProcessorCalculationRequestJsonError(plain)
@@ -2467,7 +2467,7 @@ func (j *EntityProcessorCalculationRequestJsonError) UnmarshalJSON(value []byte)
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityProcessorCalculationRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -2490,7 +2490,7 @@ func (j *EntityProcessorCalculationRequestJson) UnmarshalJSON(value []byte) erro
 	}
 	type Plain EntityProcessorCalculationRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2539,7 +2539,7 @@ type EntityProcessorCalculationResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityProcessorCalculationResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2550,7 +2550,7 @@ func (j *EntityProcessorCalculationResponseJsonError) UnmarshalJSON(value []byte
 	}
 	type Plain EntityProcessorCalculationResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityProcessorCalculationResponseJsonError(plain)
@@ -2560,7 +2560,7 @@ func (j *EntityProcessorCalculationResponseJsonError) UnmarshalJSON(value []byte
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityProcessorCalculationResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -2574,7 +2574,7 @@ func (j *EntityProcessorCalculationResponseJson) UnmarshalJSON(value []byte) err
 	}
 	type Plain EntityProcessorCalculationResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2620,7 +2620,7 @@ type EntityResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2631,7 +2631,7 @@ func (j *EntityResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityResponseJsonError(plain)
@@ -2641,7 +2641,7 @@ func (j *EntityResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -2655,7 +2655,7 @@ func (j *EntityResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2713,7 +2713,7 @@ type EntitySearchRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2724,7 +2724,7 @@ func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntitySearchRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntitySearchRequestJsonError(plain)
@@ -2734,7 +2734,7 @@ func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["condition"]; raw != nil && !ok {
@@ -2748,7 +2748,7 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntitySearchRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2800,7 +2800,7 @@ type EntitySnapshotSearchRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2811,7 +2811,7 @@ func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error
 	}
 	type Plain EntitySnapshotSearchRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntitySnapshotSearchRequestJsonError(plain)
@@ -2821,7 +2821,7 @@ func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySnapshotSearchRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["condition"]; raw != nil && !ok {
@@ -2835,7 +2835,7 @@ func (j *EntitySnapshotSearchRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntitySnapshotSearchRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2878,7 +2878,7 @@ type EntitySnapshotSearchResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySnapshotSearchResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2889,7 +2889,7 @@ func (j *EntitySnapshotSearchResponseJsonError) UnmarshalJSON(value []byte) erro
 	}
 	type Plain EntitySnapshotSearchResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntitySnapshotSearchResponseJsonError(plain)
@@ -2899,7 +2899,7 @@ func (j *EntitySnapshotSearchResponseJsonError) UnmarshalJSON(value []byte) erro
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySnapshotSearchResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -2910,7 +2910,7 @@ func (j *EntitySnapshotSearchResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntitySnapshotSearchResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -2961,7 +2961,7 @@ type EntityStatsByStateGetRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsByStateGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -2972,7 +2972,7 @@ func (j *EntityStatsByStateGetRequestJsonError) UnmarshalJSON(value []byte) erro
 	}
 	type Plain EntityStatsByStateGetRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityStatsByStateGetRequestJsonError(plain)
@@ -2982,7 +2982,7 @@ func (j *EntityStatsByStateGetRequestJsonError) UnmarshalJSON(value []byte) erro
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsByStateGetRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -2990,7 +2990,7 @@ func (j *EntityStatsByStateGetRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityStatsByStateGetRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3045,7 +3045,7 @@ type EntityStatsByStateResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsByStateResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3056,7 +3056,7 @@ func (j *EntityStatsByStateResponseJsonError) UnmarshalJSON(value []byte) error 
 	}
 	type Plain EntityStatsByStateResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityStatsByStateResponseJsonError(plain)
@@ -3066,7 +3066,7 @@ func (j *EntityStatsByStateResponseJsonError) UnmarshalJSON(value []byte) error 
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsByStateResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["count"]; raw != nil && !ok {
@@ -3089,7 +3089,7 @@ func (j *EntityStatsByStateResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityStatsByStateResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3136,7 +3136,7 @@ type EntityStatsGetRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3147,7 +3147,7 @@ func (j *EntityStatsGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityStatsGetRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityStatsGetRequestJsonError(plain)
@@ -3157,7 +3157,7 @@ func (j *EntityStatsGetRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsGetRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -3165,7 +3165,7 @@ func (j *EntityStatsGetRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityStatsGetRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3217,7 +3217,7 @@ type EntityStatsResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3228,7 +3228,7 @@ func (j *EntityStatsResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityStatsResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityStatsResponseJsonError(plain)
@@ -3238,7 +3238,7 @@ func (j *EntityStatsResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityStatsResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["count"]; raw != nil && !ok {
@@ -3258,7 +3258,7 @@ func (j *EntityStatsResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityStatsResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3279,7 +3279,7 @@ type EntityTransactionInfoJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityTransactionInfoJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityIds"]; raw != nil && !ok {
@@ -3287,7 +3287,7 @@ func (j *EntityTransactionInfoJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityTransactionInfoJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityTransactionInfoJson(plain)
@@ -3330,7 +3330,7 @@ type EntityTransactionResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityTransactionResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3341,7 +3341,7 @@ func (j *EntityTransactionResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityTransactionResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityTransactionResponseJsonError(plain)
@@ -3351,7 +3351,7 @@ func (j *EntityTransactionResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityTransactionResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -3365,7 +3365,7 @@ func (j *EntityTransactionResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityTransactionResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3411,7 +3411,7 @@ type EntityTransitionRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityTransitionRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3422,7 +3422,7 @@ func (j *EntityTransitionRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityTransitionRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityTransitionRequestJsonError(plain)
@@ -3432,7 +3432,7 @@ func (j *EntityTransitionRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["entityId"]; raw != nil && !ok {
@@ -3446,7 +3446,7 @@ func (j *EntityTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityTransitionRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3489,7 +3489,7 @@ type EntityTransitionResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityTransitionResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3500,7 +3500,7 @@ func (j *EntityTransitionResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityTransitionResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityTransitionResponseJsonError(plain)
@@ -3510,7 +3510,7 @@ func (j *EntityTransitionResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -3518,7 +3518,7 @@ func (j *EntityTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityTransitionResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3573,7 +3573,7 @@ type EntityUpdateCollectionRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityUpdateCollectionRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3584,7 +3584,7 @@ func (j *EntityUpdateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	}
 	type Plain EntityUpdateCollectionRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityUpdateCollectionRequestJsonError(plain)
@@ -3594,7 +3594,7 @@ func (j *EntityUpdateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["dataFormat"]; raw != nil && !ok {
@@ -3608,7 +3608,7 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityUpdateCollectionRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3632,7 +3632,7 @@ type EntityUpdatePayloadJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityUpdatePayloadJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["data"]; raw != nil && !ok {
@@ -3643,7 +3643,7 @@ func (j *EntityUpdatePayloadJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityUpdatePayloadJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityUpdatePayloadJson(plain)
@@ -3689,7 +3689,7 @@ type EntityUpdateRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityUpdateRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3700,7 +3700,7 @@ func (j *EntityUpdateRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityUpdateRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EntityUpdateRequestJsonError(plain)
@@ -3710,7 +3710,7 @@ func (j *EntityUpdateRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityUpdateRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["dataFormat"]; raw != nil && !ok {
@@ -3724,7 +3724,7 @@ func (j *EntityUpdateRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EntityUpdateRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3767,7 +3767,7 @@ type EventAckResponseJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EventAckResponseJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -3778,7 +3778,7 @@ func (j *EventAckResponseJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EventAckResponseJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = EventAckResponseJsonError(plain)
@@ -3788,7 +3788,7 @@ func (j *EventAckResponseJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EventAckResponseJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -3799,7 +3799,7 @@ func (j *EventAckResponseJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain EventAckResponseJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -3856,7 +3856,7 @@ type ModelInfoJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *ModelInfoJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -3873,7 +3873,7 @@ func (j *ModelInfoJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain ModelInfoJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = ModelInfoJson(plain)
@@ -3891,7 +3891,7 @@ type ModelSpecJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *ModelSpecJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["name"]; raw != nil && !ok {
@@ -3902,7 +3902,7 @@ func (j *ModelSpecJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain ModelSpecJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = ModelSpecJson(plain)
@@ -3920,7 +3920,7 @@ type ProcessorInfoJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *ProcessorInfoJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -3931,7 +3931,7 @@ func (j *ProcessorInfoJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain ProcessorInfoJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = ProcessorInfoJson(plain)
@@ -3991,7 +3991,7 @@ func (j *SearchSnapshotStatusJsonStatus) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SearchSnapshotStatusJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["snapshotId"]; raw != nil && !ok {
@@ -4002,7 +4002,7 @@ func (j *SearchSnapshotStatusJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain SearchSnapshotStatusJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = SearchSnapshotStatusJson(plain)
@@ -4042,7 +4042,7 @@ type SnapshotCancelRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SnapshotCancelRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -4053,7 +4053,7 @@ func (j *SnapshotCancelRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain SnapshotCancelRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = SnapshotCancelRequestJsonError(plain)
@@ -4063,7 +4063,7 @@ func (j *SnapshotCancelRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SnapshotCancelRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -4074,7 +4074,7 @@ func (j *SnapshotCancelRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain SnapshotCancelRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -4126,7 +4126,7 @@ type SnapshotGetRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SnapshotGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -4137,7 +4137,7 @@ func (j *SnapshotGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain SnapshotGetRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = SnapshotGetRequestJsonError(plain)
@@ -4147,7 +4147,7 @@ func (j *SnapshotGetRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -4158,7 +4158,7 @@ func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain SnapshotGetRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["pageNumber"]; !ok || v == nil {
@@ -4207,7 +4207,7 @@ type SnapshotGetStatusRequestJsonError struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SnapshotGetStatusRequestJsonError) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["code"]; raw != nil && !ok {
@@ -4218,7 +4218,7 @@ func (j *SnapshotGetStatusRequestJsonError) UnmarshalJSON(value []byte) error {
 	}
 	type Plain SnapshotGetStatusRequestJsonError
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = SnapshotGetStatusRequestJsonError(plain)
@@ -4228,7 +4228,7 @@ func (j *SnapshotGetStatusRequestJsonError) UnmarshalJSON(value []byte) error {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SnapshotGetStatusRequestJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -4239,7 +4239,7 @@ func (j *SnapshotGetStatusRequestJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain SnapshotGetStatusRequestJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	if v, ok := raw["success"]; !ok || v == nil {
@@ -4266,7 +4266,7 @@ type TransitionInfoJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *TransitionInfoJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -4283,7 +4283,7 @@ func (j *TransitionInfoJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain TransitionInfoJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = TransitionInfoJson(plain)
@@ -4301,7 +4301,7 @@ type WorkflowInfoJson struct {
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *WorkflowInfoJson) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
@@ -4312,7 +4312,7 @@ func (j *WorkflowInfoJson) UnmarshalJSON(value []byte) error {
 	}
 	type Plain WorkflowInfoJson
 	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
+	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
 	*j = WorkflowInfoJson(plain)
