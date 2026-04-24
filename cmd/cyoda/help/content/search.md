@@ -69,12 +69,16 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `GREATER_OR_EQUAL` — greater-than or equal
 - `LESS_OR_EQUAL` — less-than or equal
 - `CONTAINS` — substring or array-element containment
+- `NOT_CONTAINS` — inverse of CONTAINS
 - `STARTS_WITH` — string prefix match
+- `NOT_STARTS_WITH` — inverse of STARTS_WITH
 - `ENDS_WITH` — string suffix match
+- `NOT_ENDS_WITH` — inverse of ENDS_WITH
 - `LIKE` — SQL-style LIKE pattern (`%` = any sequence, `_` = any single char)
 - `IS_NULL` — field is absent or JSON null
 - `NOT_NULL` — field is present and not JSON null
-- `BETWEEN` — range check; `value` must be a two-element array `[low, high]`
+- `BETWEEN` — range check (exclusive bounds); `value` must be a two-element array `[low, high]`
+- `BETWEEN_INCLUSIVE` — range check (inclusive bounds); same `value` shape as BETWEEN
 - `MATCHES_PATTERN` — regular expression match
 - `IEQUALS` — case-insensitive EQUALS
 - `INOT_EQUAL` — case-insensitive NOT_EQUAL
@@ -85,7 +89,7 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `IENDS_WITH` — case-insensitive ENDS_WITH
 - `INOT_ENDS_WITH` — case-insensitive NOT ENDS_WITH
 
-**Known bug (#90):** unknown operator strings are accepted by the parser without error at parse time but cause a `500 SERVER_ERROR` at match time (the predicate evaluator returns an error for unknown operators). Do not use any operator string outside the list above. Tracked for red/green TDD fix (should return `errors.BAD_REQUEST`).
+Operator strings outside this list are rejected with `errors.BAD_REQUEST` at request time; the error detail includes the canonical list.
 
 **LifecycleCondition** — match entity lifecycle metadata:
 
@@ -296,7 +300,7 @@ Synchronous search does not paginate; use the `limit` parameter (max 10000) to b
 
 ## ERRORS
 
-- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist. **Known bug (#93):** the server currently returns `ENTITY_NOT_FOUND` in the response `errorCode` field; it should be `SEARCH_JOB_NOT_FOUND`. Clients classifying errors by `errorCode` must handle both until the fix ships.
+- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
 - `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)

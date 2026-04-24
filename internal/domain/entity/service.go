@@ -196,8 +196,12 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		entity.Meta.State = "CREATED"
 	}
 
+	// The CREATE path runs the workflow engine without an explicit
+	// client-supplied transition name (Execute(..., "")). From the caller's
+	// viewpoint this is a save without a named transition — the canonical
+	// marker for that is "loopback", not the literal "workflow" (issue #94).
 	if result != nil && result.StopReason == "" {
-		entity.Meta.TransitionForLatestSave = "workflow"
+		entity.Meta.TransitionForLatestSave = "loopback"
 	}
 
 	// Save entity within transaction (goes to buffer).

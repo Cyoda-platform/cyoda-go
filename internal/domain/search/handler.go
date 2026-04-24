@@ -3,6 +3,7 @@ package search
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,6 +27,16 @@ const (
 	// volume of data (issue #98).
 	maxPageSize = 10000
 )
+
+// jobLookupError maps a service-level error to a handler response. Job-not-
+// found is reported as 404 + SEARCH_JOB_NOT_FOUND (issue #93); any other
+// lookup error is treated as an internal failure.
+func jobLookupError(err error) *common.AppError {
+	if errors.Is(err, ErrSearchJobNotFound) {
+		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
+	}
+	return common.Internal("job lookup failed", err)
+}
 
 // Handler handles search-related HTTP endpoints.
 type Handler struct {
@@ -52,6 +63,10 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 	cond, err := predicate.ParseCondition(body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
+		return
+	}
+	if err := ValidateCondition(cond); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
 		return
 	}
 
@@ -121,6 +136,10 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
+	if err := ValidateCondition(cond); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+		return
+	}
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -148,7 +167,7 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 func (h *Handler) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
 	status, err := h.searchSvc.GetAsyncStatus(r.Context(), jobId.String())
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("job not found: %v", err)))
+		common.WriteError(w, r, jobLookupError(err))
 		return
 	}
 
@@ -204,6 +223,10 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 
 	page, err := h.searchSvc.GetAsyncResults(r.Context(), jobId.String(), opts)
 	if err != nil {
+		if errors.Is(err, ErrSearchJobNotFound) {
+			common.WriteError(w, r, jobLookupError(err))
+			return
+		}
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
 		return
 	}
@@ -241,7 +264,7 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 func (h *Handler) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
 	result, err := h.searchSvc.CancelAsync(r.Context(), jobId.String())
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("job not found: %v", err)))
+		common.WriteError(w, r, jobLookupError(err))
 		return
 	}
 

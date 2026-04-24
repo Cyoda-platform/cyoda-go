@@ -99,4 +99,12 @@ mkdir -p "$(dirname "$OUT")"
 # MUST include "success": false explicitly.
 sed -i '' 's/Success bool `json:"success,omitempty"/Success bool `json:"success"/g' "$OUT"
 
+# Post-process: route every generated UnmarshalJSON call through
+# decodeWithUseNumber (see api/grpc/events/use_number.go) so numeric
+# literals in freeform fields (map[string]interface{} / interface{}) are
+# preserved as json.Number rather than coerced to float64 — precision
+# loss above 2^53 otherwise breaks search filters with large-integer
+# values (issue #79).
+sed -i '' 's|json\.Unmarshal(value, &raw)|decodeWithUseNumber(value, \&raw)|g; s|json\.Unmarshal(value, &plain)|decodeWithUseNumber(value, \&plain)|g' "$OUT"
+
 echo "Generated $OUT ($(wc -l < "$OUT") lines)"
