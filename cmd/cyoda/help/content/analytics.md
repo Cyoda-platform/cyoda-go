@@ -10,6 +10,8 @@ see_also:
 
 # analytics
 
+**Cloud-only.** The analytics surface documented here is served by Cyoda Cloud (`cloud.cyoda.com`). It is not part of the cyoda-go binary. Running a local cyoda-go server does not expose any of the endpoints below.
+
 ## NAME
 
 analytics — Trino SQL analytics interface for querying Cyoda entity data via SQL.
@@ -48,8 +50,6 @@ reports.deleteReports
 ```
 
 ## DESCRIPTION
-
-The Trino analytics interface is a **Cyoda Cloud feature**. It is not present in the cyoda-go binary. The REST and WebSocket APIs described in this topic are served by Cyoda Cloud, not by `cyoda` (the cyoda-go server). A cyoda-go deployment does not expose `/api/sql/schema` or any STOMP endpoints.
 
 Cyoda Cloud exposes entity data as Trino SQL tables through a Trino connector. The connector uses the Schema Management REST API to discover table definitions and the WebSocket (STOMP) messaging API to stream entity rows at query time.
 

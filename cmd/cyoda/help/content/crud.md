@@ -75,6 +75,13 @@ Response: `200 OK`, `application/json`:
 
 - `format` (path): `JSON` or `XML`
 
+**IMPORTANT — `payload` is a JSON-encoded string, not an object.**
+
+The `payload` field must be a string containing the JSON-encoded entity body, not a nested JSON object. This is a deliberate API contract — it preserves the payload as an opaque blob through the pipeline.
+
+Correct: `"payload": "{\"category\":\"physics\"}"`
+Wrong:   `"payload": {"category":"physics"}`   (will be rejected with `errors.BAD_REQUEST`)
+
 Request body: JSON array of `CreatePayload` objects:
 
 ```json
@@ -161,6 +168,13 @@ Response: `200 OK`, same shape as loopback update.
 - `transactionWindow` (query, optional): int32, default `100` — max entities per transaction batch
 - `transactionTimeoutMillis` (query, optional): int64, default `10000`
 - `waitForConsistencyAfter` (query, optional): boolean, default `false`
+
+**IMPORTANT — `payload` is a JSON-encoded string, not an object.**
+
+The `payload` field in each update item must be a string containing the JSON-encoded entity body, not a nested JSON object (same contract as collection create).
+
+Correct: `"payload": "{\"category\":\"physics\"}"`
+Wrong:   `"payload": {"category":"physics"}`   (will be rejected with `errors.BAD_REQUEST`)
 
 Request body: JSON array of update items:
 

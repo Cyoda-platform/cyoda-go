@@ -120,6 +120,39 @@ message CloudEvent {
 - `EntityCriteriaCalculationResponse` — client → server; criteria result
 - `EventAckResponse` — client → server; acknowledges any server event
 
+**EventAckResponse `text_data` JSON shape:**
+
+```json
+{
+  "id": "<uuid for this ack message>",
+  "sourceEventId": "<id of the server event being acknowledged>",
+  "success": true,
+  "warnings": [],
+  "error": null
+}
+```
+
+Fields:
+- `id` (string, required) — unique identifier for this ack message; any UUID
+- `sourceEventId` (string, required) — the `id` field from the server CloudEvent being acknowledged
+- `success` (boolean, optional, default `true`) — set to `true` for a normal ack; `false` if the client is reporting a processing error
+- `warnings` (string array, optional) — diagnostic messages; may be omitted
+- `error` (object, optional) — present only when `success=false`; shape: `{"code":"<code>","message":"<msg>","retryable":<bool|null>}`
+
+The full CloudEvent envelope for an ack:
+
+```json
+{
+  "id": "<ack-uuid>",
+  "source": "client",
+  "spec_version": "1.0",
+  "type": "EventAckResponse",
+  "text_data": "{\"id\":\"<ack-uuid>\",\"sourceEventId\":\"<server-event-id>\",\"success\":true}"
+}
+```
+
+`EventAckResponse` updates the member's last-seen timestamp, preventing keep-alive timeout. It is used to acknowledge any server event for which the client has no substantive response (e.g. a keep-alive or a greet event).
+
 **Entity management event types**:
 
 - `EntityCreateRequest` / `EntityTransactionResponse`
@@ -164,9 +197,11 @@ The compute member protocol allows external processes to serve as workflow proce
 {
   "id": "<uuid>",
   "tags": ["approval-service", "notification"],
-  "joinedLegalEntityId": "<tenantId>"
+  "joinedLegalEntityId": "acme-corp"
 }
 ```
+
+`joinedLegalEntityId` must match the tenant ID in the bearer token. When present and mismatched, the server returns `codes.PermissionDenied`. When absent, the server uses the token's tenant ID implicitly. Include `joinedLegalEntityId` in all join messages — clients that omit it against a strict server may fail if validation is tightened.
 
 3. Server registers the member and responds with `CalculationMemberGreetEvent`:
 
@@ -281,9 +316,9 @@ Both variables are read by `DefaultConfig()` and applied at gRPC server construc
 
 A compute member declares its tags in `CalculationMemberJoinEvent.tags` as a string slice. The server routes a processor or criteria request to a member whose tags overlap with `calculationNodesTags` (comma-separated) from the processor or criteria config.
 
-`FindByTags` selects the first matching member for the authenticated tenant. Tag matching uses intersection: the member must declare at least one tag that appears in the processor's `calculationNodesTags`.
+`FindByTags` selects the first matching member for the authenticated tenant by iterating over the internal member map. Tag matching uses intersection: the member must declare at least one tag that appears in the processor's `calculationNodesTags`. Because the internal store is a Go map, iteration order is random (non-deterministic per Go specification). When multiple members share a tag, the selected member is chosen at random on each dispatch. Clients requiring deterministic routing must use distinct tags per member.
 
-When `calculationNodesTags` is empty, any member for the authenticated tenant matches.
+When `calculationNodesTags` is empty, any member for the authenticated tenant matches (still chosen at random when multiple exist).
 
 In cluster mode, the `ClusterDispatcher` propagates member tag sets across nodes via gossip so any node can forward dispatches to a node that has a matching member.
 
@@ -349,7 +384,7 @@ grpcurl -plaintext \
 grpcurl -plaintext \
   -import-path ./proto \
   -proto cyoda/cyoda-cloud-api.proto \
-  -d '{"id":"join-1","source":"client","spec_version":"1.0","type":"CalculationMemberJoinEvent","text_data":"{\"id\":\"join-1\",\"tags\":[\"my-service\"]}"}' \
+  -d '{"id":"join-1","source":"client","spec_version":"1.0","type":"CalculationMemberJoinEvent","text_data":"{\"id\":\"join-1\",\"tags\":[\"my-service\"],\"joinedLegalEntityId\":\"mock-tenant\"}"}' \
   localhost:9090 \
   org.cyoda.cloud.api.grpc.CloudEventsService/StartStreaming
 ```
@@ -361,7 +396,7 @@ grpcurl -plaintext \
   -H "authorization: Bearer $TOKEN" \
   -import-path ./proto \
   -proto cyoda/cyoda-cloud-api.proto \
-  -d '{"id":"join-1","source":"client","spec_version":"1.0","type":"CalculationMemberJoinEvent","text_data":"{\"id\":\"join-1\",\"tags\":[\"my-service\"]}"}' \
+  -d '{"id":"join-1","source":"client","spec_version":"1.0","type":"CalculationMemberJoinEvent","text_data":"{\"id\":\"join-1\",\"tags\":[\"my-service\"],\"joinedLegalEntityId\":\"acme-corp\"}"}' \
   localhost:9090 \
   org.cyoda.cloud.api.grpc.CloudEventsService/StartStreaming
 ```

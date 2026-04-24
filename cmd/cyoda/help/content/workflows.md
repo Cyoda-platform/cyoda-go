@@ -126,10 +126,24 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 **ProcessorDefinition fields:**
 
-- `type` — string — processor type; `"EXTERNAL"` dispatches to a calculation node via gRPC
+- `type` — string — processor type; see valid values below
 - `name` — string — logical processor name
-- `executionMode` — string — `"SYNC"` (engine waits for the processor response before continuing) or `"ASYNC"` (fire-and-forget)
+- `executionMode` — string — execution mode; see valid values below
 - `config` — `ProcessorConfig`
+
+**Valid `type` values (exhaustive for v0.6.1):**
+
+- `"EXTERNAL"` — dispatches to a calculation node via gRPC using `calculationNodesTags` for routing
+
+No other types are supported. Supplying any other value produces `errors.VALIDATION_FAILED` at workflow import time.
+
+**Valid `executionMode` values (exhaustive):**
+
+- `"SYNC"` — the engine dispatches the processor and blocks until a response is received; the entity write transaction remains open during the wait; processor failure (including timeout and `success=false` in the response) returns `errors.WORKFLOW_FAILED` (`400`) and the entity remains in the source state
+- `"ASYNC_SAME_TX"` — same dispatch mechanics as `SYNC` (blocks inline, transaction stays open); failure semantics are identical to `SYNC`
+- `"ASYNC_NEW_TX"` — dispatched within a savepoint; on failure the savepoint is rolled back and the error is logged as a warning; the pipeline continues to the next processor and the transition completes; returned entity modifications are discarded
+
+An invalid `executionMode` value is treated as `SYNC` / `ASYNC_SAME_TX` (the engine's default branch). It is not rejected at import time but produces undefined behaviour and must not be relied upon.
 
 **ProcessorConfig fields:**
 
@@ -145,7 +159,7 @@ Criteria on workflows and transitions use the same `Condition` DSL as search. Al
 
 `simple` criteria match entity data fields via JSONPath. `lifecycle` criteria match `state`, `creationDate`, or `previousTransition` from entity metadata.
 
-A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one whose criterion matches.
+A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
 
 ## IMPORT REQUEST
 

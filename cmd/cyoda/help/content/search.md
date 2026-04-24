@@ -58,8 +58,34 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 
 - `type`: `"simple"`
 - `jsonPath`: JSONPath string (e.g., `"$.year"`, `"$.laureates[0].firstname"`)
-- `operatorType` (also accepted as `operator` or `operation`): operator string
+- `operatorType` (also accepted as `operator` or `operation`): operator string (see valid values below)
 - `value`: any JSON scalar
+
+**Valid `operatorType` values** (exhaustive):
+- `EQUALS` — exact equality; numeric-aware (JSON number vs string representation)
+- `NOT_EQUAL` — inequality; inverse of EQUALS
+- `GREATER_THAN` — numeric or lexicographic greater-than
+- `LESS_THAN` — numeric or lexicographic less-than
+- `GREATER_OR_EQUAL` — greater-than or equal
+- `LESS_OR_EQUAL` — less-than or equal
+- `CONTAINS` — substring or array-element containment
+- `STARTS_WITH` — string prefix match
+- `ENDS_WITH` — string suffix match
+- `LIKE` — SQL-style LIKE pattern (`%` = any sequence, `_` = any single char)
+- `IS_NULL` — field is absent or JSON null
+- `NOT_NULL` — field is present and not JSON null
+- `BETWEEN` — range check; `value` must be a two-element array `[low, high]`
+- `MATCHES_PATTERN` — regular expression match
+- `IEQUALS` — case-insensitive EQUALS
+- `INOT_EQUAL` — case-insensitive NOT_EQUAL
+- `ICONTAINS` — case-insensitive CONTAINS
+- `INOT_CONTAINS` — case-insensitive NOT CONTAINS
+- `ISTARTS_WITH` — case-insensitive STARTS_WITH
+- `INOT_STARTS_WITH` — case-insensitive NOT STARTS_WITH
+- `IENDS_WITH` — case-insensitive ENDS_WITH
+- `INOT_ENDS_WITH` — case-insensitive NOT ENDS_WITH
+
+Unknown operator strings are accepted by the parser but fall back to post-filter regex matching; behaviour is undefined and should not be relied upon.
 
 **LifecycleCondition** — match entity lifecycle metadata:
 
@@ -74,7 +100,7 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 
 - `type`: `"lifecycle"`
 - `field`: `"state"`, `"creationDate"`, or `"previousTransition"`
-- `operatorType` (also accepted as `operator` or `operation`): operator string
+- `operatorType` (also accepted as `operator` or `operation`): operator string — same valid values as for `SimpleCondition`
 - `value`: any JSON scalar
 
 **GroupCondition** — combine conditions with a logical operator:
@@ -91,8 +117,12 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 ```
 
 - `type`: `"group"`
-- `operator`: `"AND"` or `"OR"`
+- `operator`: `"AND"` or `"OR"` — these are the only supported values; any other string produces `errors.BAD_REQUEST` at match time ("unknown group operator")
 - `conditions`: array of `Condition` objects (recursive; maximum nesting depth 50)
+
+`"NOT"` is not supported. An `AND` group with an empty `conditions` array evaluates to `true` (vacuous conjunction). An `OR` group with an empty `conditions` array evaluates to `false` (vacuous disjunction).
+
+**EMPTY CONDITION**: Submitting an empty body (`{}`) or a body with no `type` field as the top-level search condition is rejected with `errors.BAD_REQUEST` — the parser requires a valid `type` field. Submitting a valid `AND` group with an empty `conditions` array (`{"type":"group","operator":"AND","conditions":[]}`) is accepted and matches all entities — this is the correct way to retrieve all entities without filtering.
 
 **ArrayCondition** — match positional values in a JSON array:
 
@@ -108,14 +138,29 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `jsonPath`: path to the array field
 - `values`: positional values; `null` entries match any value at that index
 
-**FunctionCondition** — server-side function predicate placeholder:
+**FunctionCondition** — server-side function predicate dispatched to a compute member:
 
 ```json
-{ "type": "function" }
+{
+  "type": "function",
+  "function": {
+    "name": "my-criteria-fn",
+    "config": {
+      "calculationNodesTags": "approval-service",
+      "attachEntity": true,
+      "responseTimeoutMs": 30000
+    }
+  }
+}
 ```
 
 - `type`: `"function"`
-- No additional fields; reserved for server-side computed predicates.
+- `function.name`: string — identifies the function; becomes `criteriaId` / `criteriaName` in the dispatch request; required for routing
+- `function.config.calculationNodesTags`: string — comma-separated tags used to select a registered compute member; follows the same tag-intersection rules as processor dispatch
+- `function.config.attachEntity`: boolean (optional, default `true`) — when `true`, the full entity payload is included in the dispatch request
+- `function.config.responseTimeoutMs`: int64 (optional, default `30000`) — timeout in milliseconds
+
+The function is dispatched as `EntityCriteriaCalculationRequest` to the matching compute member — see the `grpc` topic for the request/response shape. `FunctionCondition` cannot be translated to a storage-plugin pushdown filter; it always executes as a post-filter with in-memory entity loading.
 
 ## ENDPOINTS
 
