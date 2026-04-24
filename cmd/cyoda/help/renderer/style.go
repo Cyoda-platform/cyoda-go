@@ -37,6 +37,10 @@ func applyCyodaTheme(base ansi.StyleConfig, teal string) ansi.StyleConfig {
 	if base.CodeBlock.Chroma != nil {
 		chromaCopy := *base.CodeBlock.Chroma
 		chromaCopy.Background.BackgroundColor = nil
+		// Bold on the Chroma Text token makes plain (untagged) fenced blocks
+		// bold. Language-tagged fences inherit their own token styles from the
+		// Chroma theme — only the Text (plain-text) token is affected here.
+		chromaCopy.Text.Bold = boolPtr(true)
 		s.CodeBlock.Chroma = &chromaCopy
 	}
 
@@ -45,9 +49,17 @@ func applyCyodaTheme(base ansi.StyleConfig, teal string) ansi.StyleConfig {
 	s.Code.StylePrimitive.Color = strPtr(teal)
 	s.CodeBlock.StyleBlock.StylePrimitive.Color = strPtr(teal)
 
+	// Bold makes teal code pop against body text without needing backgrounds.
+	s.Code.Bold = boolPtr(true)
+	s.CodeBlock.StyleBlock.Bold = boolPtr(true)
+
 	return s
 }
 
 // strPtr returns a pointer to a copy of s. Used to set *string fields in
 // ansi.StylePrimitive without aliasing issues.
 func strPtr(s string) *string { return &s }
+
+// boolPtr returns a pointer to b. Used to set *bool fields in
+// ansi.StylePrimitive without aliasing issues.
+func boolPtr(b bool) *bool { return &b }

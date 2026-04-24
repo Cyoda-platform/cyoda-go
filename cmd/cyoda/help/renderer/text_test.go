@@ -156,3 +156,87 @@ func TestRenderText_DarkTealOnInlineCode(t *testing.T) {
 		t.Errorf("dark style inline code must use teal (#5FDDD7 → 38;2;95;221;215); got %q", out)
 	}
 }
+
+// hasBoldAndTeal reports whether the output contains a CSI sequence that
+// carries both SGR 1 (bold) and a teal truecolor foreground in the same
+// escape block. Parameters can appear in any order, so we parse each CSI
+// block's parameter set and check for membership.
+func hasBoldAndTeal(out, tealSGR string) bool {
+	// tealSGR is the "38;2;R;G;B" suffix without the surrounding CSI/m.
+	for i := 0; i < len(out); i++ {
+		if out[i] != '\x1b' || i+1 >= len(out) || out[i+1] != '[' {
+			continue
+		}
+		end := strings.IndexByte(out[i+2:], 'm')
+		if end < 0 {
+			continue
+		}
+		params := out[i+2 : i+2+end]
+		if strings.Contains(params, tealSGR) && strings.Contains(params, "1") {
+			// Verify "1" is a standalone parameter, not part of "10", "31", etc.
+			for _, p := range strings.Split(params, ";") {
+				if p == "1" {
+					return true
+				}
+			}
+		}
+		i += 2 + end
+	}
+	return false
+}
+
+// TestRenderText_InlineCodeIsBold verifies that the light cyoda theme emits
+// SGR bold (1) together with the teal truecolor foreground on inline code
+// spans. Both must appear in the same CSI escape block.
+func TestRenderText_InlineCodeIsBold(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	var buf bytes.Buffer
+	if err := RenderText(&buf, []byte("use `init` now\n"), "light"); err != nil {
+		t.Fatalf("RenderText: %v", err)
+	}
+	out := buf.String()
+	// Light teal is #008080 → 38;2;0;128;128
+	if !hasBoldAndTeal(out, "38;2;0;128;128") {
+		t.Errorf("inline code must emit Bold + teal SGR in same CSI block; got %q", out)
+	}
+}
+
+// TestRenderText_FencedCodeBlockIsBold verifies that the light cyoda theme
+// emits SGR bold (1) for plain (untagged) fenced code block content. Plain
+// fences are routed through Chroma's "Text" token type — the teal colour is
+// not present there (Chroma manages its own palette), so we check for SGR 1
+// anywhere in the output rather than requiring bold+teal in the same sequence.
+func TestRenderText_FencedCodeBlockIsBold(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderText(&buf, []byte("```\nhello\n```\n"), "light"); err != nil {
+		t.Fatalf("RenderText: %v", err)
+	}
+	out := buf.String()
+	// Check that at least one CSI block contains the standalone "1" bold param.
+	if !hasStandaloneBold(out) {
+		t.Errorf("fenced code block must emit SGR bold (1); got %q", out)
+	}
+}
+
+// hasStandaloneBold reports whether the output contains a CSI sequence with
+// the standalone parameter "1" (bold), i.e. "1" delimited by ';' or at the
+// start/end of the parameter list, not as part of "10", "21", etc.
+func hasStandaloneBold(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\x1b' || i+1 >= len(s) || s[i+1] != '[' {
+			continue
+		}
+		end := strings.IndexByte(s[i+2:], 'm')
+		if end < 0 {
+			continue
+		}
+		params := s[i+2 : i+2+end]
+		for _, p := range strings.Split(params, ";") {
+			if p == "1" {
+				return true
+			}
+		}
+		i += 2 + end
+	}
+	return false
+}
