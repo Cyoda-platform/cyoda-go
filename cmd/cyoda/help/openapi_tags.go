@@ -330,10 +330,15 @@ func emitOpenAPITags(w io.Writer) int {
 func lookupOpenAPITagAction(slug, format string) (ActionFunc, bool) {
 	swagger, err := genapi.GetSwagger()
 	if err != nil {
-		// Treat load failure as "not resolved" so the static "unknown
-		// action" error fires; the static error already mentions the
-		// available actions.
-		return nil, false
+		// Surface the swagger-load failure directly rather than faking
+		// "unknown action" — otherwise the user sees an inconsistent
+		// error (`unknown action`) here while `cyoda help openapi tags`
+		// reports the real swagger-load error for the same underlying
+		// condition. The closure reports via w, returns rc=1.
+		return func(w io.Writer) int {
+			fmt.Fprintf(w, "cyoda help openapi %s: load embedded spec: %v\n", slug, err)
+			return 1
+		}, true
 	}
 	found := false
 	for _, t := range swagger.Tags {

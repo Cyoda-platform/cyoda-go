@@ -12,7 +12,7 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
-// TestSlugifyTag pins the tag-name → slug normalization for the 11
+// TestSlugifyTag pins the tag-name → slug normalization for the 12
 // canonical tags shipped with v0.6.2. The slug is the lookup key users
 // type on the CLI; any change to the slug rule breaks downstream
 // tooling, so these are contract-level.
@@ -31,6 +31,7 @@ func TestSlugifyTag(t *testing.T) {
 		{"Stream Data", "stream-data"},
 		{"User, Account", "user-account"},
 		{"SQL-Schema", "sql-schema"},
+		{"CQL Execution Statistics", "cql-execution-statistics"},
 
 		// extra normalization invariants
 		{"Multiple   Spaces", "multiple-spaces"},
@@ -82,6 +83,7 @@ func TestListOpenAPITags(t *testing.T) {
 		"Stream Data",
 		"User, Account",
 		"SQL-Schema",
+		"CQL Execution Statistics",
 	}
 	present := map[string]bool{}
 	for _, tg := range tags {
@@ -91,6 +93,23 @@ func TestListOpenAPITags(t *testing.T) {
 		if !present[c] {
 			t.Errorf("expected canonical name %q not present in tag list", c)
 		}
+	}
+}
+
+// TestOpenAPISpecSlugsAreUnique pins that no two tags in the embedded
+// spec slugify to the same value. Slug collision would silently shadow
+// one tag's operations under another's slug at dispatch time; with this
+// check, any future tag addition that collides fails the build
+// immediately. Gate 6 — resolve at spec-edit time, not at runtime.
+func TestOpenAPISpecSlugsAreUnique(t *testing.T) {
+	swagger, _ := genapi.GetSwagger()
+	seen := map[string]string{}
+	for _, tg := range swagger.Tags {
+		slug := SlugifyTag(tg.Name)
+		if prev, ok := seen[slug]; ok {
+			t.Errorf("tag-slug collision: %q and %q both slugify to %q", prev, tg.Name, slug)
+		}
+		seen[slug] = tg.Name
 	}
 }
 
@@ -133,12 +152,30 @@ func TestFilterOpenAPISpecByTag_PathsFilteredToTag(t *testing.T) {
 		t.Fatalf("filtered paths empty — tag %q has no operations in this spec?", canonical)
 	}
 
-	// Every operation that survived must carry the target tag.
+	// Forward: every operation that survived must carry the target tag.
+	survived := map[string]bool{}
 	for path, pathItem := range filtered.Paths.Map() {
 		for method, op := range pathItem.Operations() {
+			key := method + " " + path
+			survived[key] = true
 			if !hasTag(op, canonical) {
-				t.Errorf("%s %s: surviving operation does not carry tag %q (tags: %v)",
-					method, path, canonical, op.Tags)
+				t.Errorf("%s: surviving operation does not carry tag %q (tags: %v)",
+					key, canonical, op.Tags)
+			}
+		}
+	}
+
+	// Converse: every source operation carrying the target tag must survive.
+	// Without this check, a bug that drops operations matching some other
+	// criterion (e.g. all PUTs) would pass the forward check alone.
+	for path, pathItem := range swagger.Paths.Map() {
+		for method, op := range pathItem.Operations() {
+			if !hasTag(op, canonical) {
+				continue
+			}
+			key := method + " " + path
+			if !survived[key] {
+				t.Errorf("source operation %s carries tag %q but was dropped from the filtered doc", key, canonical)
 			}
 		}
 	}
@@ -267,21 +304,30 @@ func extractRefs(raw []byte) []string {
 }
 
 // refExistsInDoc returns true iff the named internal $ref resolves
-// within the marshaled doc (i.e. the corresponding component is present).
+// within the marshaled doc. Walks components.<kind>.<name> precisely —
+// a prior version substring-searched `"<name>":` which could false-
+// positive on property names colliding with component names (e.g. a
+// property `items`).
 func refExistsInDoc(raw []byte, ref string) bool {
-	// ref shape: "#/components/schemas/EntityMeta" → look for
-	// "EntityMeta":{ or "EntityMeta": under components.schemas.
-	// We do the cheap version: search for the JSON key under the right
-	// section path. The section is components.<kind>; the name is the
-	// last path component.
+	// ref shape: "#/components/<kind>/<name>"
 	parts := strings.Split(strings.TrimPrefix(ref, "#/"), "/")
 	if len(parts) != 3 || parts[0] != "components" {
 		return false
 	}
-	name := parts[2]
-	// Crude but adequate: the name appears as a quoted JSON key
-	// somewhere in the doc. For a ref to resolve, the component
-	// must exist at components.<kind>.<name>.
-	quoted := `"` + name + `":`
-	return bytes.Contains(raw, []byte(quoted))
+	kind, name := parts[1], parts[2]
+
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false
+	}
+	components, ok := doc["components"].(map[string]any)
+	if !ok {
+		return false
+	}
+	section, ok := components[kind].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = section[name]
+	return ok
 }
