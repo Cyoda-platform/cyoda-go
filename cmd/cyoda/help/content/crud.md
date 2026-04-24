@@ -8,6 +8,7 @@ see_also:
   - workflows
   - errors.ENTITY_NOT_FOUND
   - errors.MODEL_NOT_FOUND
+  - errors.MODEL_NOT_LOCKED
   - errors.VALIDATION_FAILED
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
@@ -162,7 +163,10 @@ Response: `200 OK`, `application/json`:
 
 Response: `200 OK`, same shape as loopback update.
 
-**PUT /api/entity/{format}** — Update a collection (mixed entities)
+**PUT /api/entity/{format}** — Update a collection (mixed entities) — **NOT YET IMPLEMENTED**
+
+> **Status:** This endpoint exists in the route table but currently returns `501 Not Implemented`.
+> Do not rely on it in production. Tracked for implementation.
 
 - `format` (path): `JSON` or `XML`
 - `transactionWindow` (query, optional): int32, default `100` — max entities per transaction batch
@@ -190,7 +194,7 @@ Request body: JSON array of update items:
 
 If any entity in the collection is not found, the entire operation fails and no entities are updated.
 
-Response: `200 OK`, `application/json`, `EntityTransactionResponse` array.
+Response (when implemented): `200 OK`, `application/json`, `EntityTransactionResponse` array.
 
 **DELETE /api/entity/{entityId}** — Delete a single entity by UUID
 
@@ -329,6 +333,7 @@ All entity read operations return entities in the standard envelope:
   "data": { ... },
   "meta": {
     "id": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
+    "modelKey": { "name": "nobel-prize", "version": 1 },
     "state": "NEW",
     "creationDate": "2025-08-01T10:00:00.000000000Z",
     "lastUpdateTime": "2025-08-01T10:00:00.000000000Z",
@@ -341,11 +346,12 @@ All entity read operations return entities in the standard envelope:
 - `type` — always `"ENTITY"`
 - `data` — the entity's JSON payload (decoded with `json.Number` for numeric precision)
 - `meta.id` — UUID string
+- `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present in single-entity `GET /entity/{id}` responses; may be absent in list and search results
 - `meta.state` — current workflow state string
 - `meta.creationDate` — RFC 3339 with nanoseconds
 - `meta.lastUpdateTime` — RFC 3339 with nanoseconds
 - `meta.transactionId` — present when a transaction ID exists
-- `meta.transitionForLatestSave` — transition name that produced the latest save; empty string for loopback
+- `meta.transitionForLatestSave` — transition name that produced the latest save; `"loopback"` for loopback updates, `"workflow"` for engine-driven transitions, or the named transition string
 
 ## OPTIMISTIC CONCURRENCY
 
@@ -356,7 +362,8 @@ To use: read the entity (`GET /entity/{id}`), note `meta.transactionId`, include
 ## ERRORS
 
 - `errors.ENTITY_NOT_FOUND` — `404` — entity UUID does not exist
-- `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist or is not locked
+- `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist
+- `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.CONFLICT` — `409` — transaction conflict (retryable)
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented (#91). Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
@@ -471,6 +478,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 - workflows
 - errors.ENTITY_NOT_FOUND
 - errors.MODEL_NOT_FOUND
+- errors.MODEL_NOT_LOCKED
 - errors.VALIDATION_FAILED
 - errors.CONFLICT
 - errors.TRANSITION_NOT_FOUND
