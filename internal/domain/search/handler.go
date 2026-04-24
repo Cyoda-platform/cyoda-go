@@ -58,6 +58,10 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
+	if err := ValidateCondition(cond); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+		return
+	}
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -119,6 +123,10 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 	cond, err := predicate.ParseCondition(body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
+		return
+	}
+	if err := ValidateCondition(cond); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
 		return
 	}
 

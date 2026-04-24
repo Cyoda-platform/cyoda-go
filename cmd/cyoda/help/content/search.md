@@ -85,7 +85,7 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `IENDS_WITH` — case-insensitive ENDS_WITH
 - `INOT_ENDS_WITH` — case-insensitive NOT ENDS_WITH
 
-**Known bug (#90):** unknown operator strings are accepted by the parser without error at parse time but cause a `500 SERVER_ERROR` at match time (the predicate evaluator returns an error for unknown operators). Do not use any operator string outside the list above. Tracked for red/green TDD fix (should return `errors.BAD_REQUEST`).
+Operator strings outside this list are rejected with `errors.BAD_REQUEST` at request time; the error detail includes the canonical list.
 
 **LifecycleCondition** — match entity lifecycle metadata:
 
