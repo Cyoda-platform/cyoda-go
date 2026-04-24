@@ -46,7 +46,7 @@ func NewValidatorFromSource(src KeySource, issuer string) *JWKSValidator {
 // a convenience for tests and for future external-IdP wiring; in-process
 // callers should use NewValidatorFromSource with NewLocalKeySource.
 func NewJWKSValidator(jwksURL, issuer string, cacheTTL time.Duration) *JWKSValidator {
-	return NewValidatorFromSource(NewHTTPJWKSSource(jwksURL, cacheTTL), issuer)
+	return NewValidatorFromSource(NewHTTPJWKSSource(jwksURL, issuer, cacheTTL), issuer)
 }
 
 // Validate parses and validates a JWT token string, returning a UserContext on success.
