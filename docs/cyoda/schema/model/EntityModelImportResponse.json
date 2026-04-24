@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/model/EntityModelImportResponse.json",
+  "title": "EntityModelImportResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "modelId": {
+      "type": "string",
+      "description": "ID of the created or updated entity model.",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "modelId"
+  ]
+}

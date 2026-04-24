@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/statemachine/ProcessorInfo.json",
+  "title": "ProcessorInfo",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Processor ID."
+    },
+    "name": {
+      "type": "string",
+      "description": "Processor name."
+    }
+  },
+  "required": [
+    "id",
+    "name"
+  ]
+}

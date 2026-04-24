@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/statemachine/TransitionInfo.json",
+  "title": "TransitionInfo",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Transition ID."
+    },
+    "name": {
+      "type": "string",
+      "description": "Transition name."
+    },
+    "stateFrom": {
+      "type": "string",
+      "description": "Source state."
+    },
+    "stateTo": {
+      "type": "string",
+      "description": "Target state."
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "stateFrom",
+    "stateTo"
+  ]
+}

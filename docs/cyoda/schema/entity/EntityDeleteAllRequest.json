@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityDeleteAllRequest.json",
+  "title": "EntityDeleteAllRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Information about the model."
+    },
+    "pageSize": {
+      "type": "integer",
+      "description": "Page size.",
+      "default": 10
+    },
+    "transactionSize": {
+      "type": "integer",
+      "description": "Transaction size.",
+      "default": 1000
+    },
+    "pointInTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "point in time, i.e. delete all that existed prior to this point in time"
+    },
+    "verbose": {
+      "type": "boolean",
+      "description": "Include the list of entity ids deleted in the response",
+      "default": false
+    }
+  },
+  "required": [
+    "model"
+  ]
+}

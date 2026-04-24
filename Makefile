@@ -1,4 +1,9 @@
-.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test clean docker-build docker-push todos
+.PHONY: dev-up dev-down dev-ps dev-logs dev-run dev-test build test test-all test-short-all clean docker-build docker-push todos
+
+# Plugin submodules: each has its own go.mod, so `go test ./...` from the
+# repo root does not recurse into them. The aggregator targets below close
+# that coverage gap (issue #46).
+PLUGIN_MODULES := plugins/memory plugins/sqlite plugins/postgres
 
 # --- Docker services ---
 
@@ -48,8 +53,22 @@ endif
 
 # --- Testing ---
 
-test:                  ## Run all tests (postgres tests skipped without DB)
+test:                  ## Run root-module tests only (plugin submodules skipped — see test-all)
 	go test ./... -v
+
+test-all:              ## Run root + every plugin submodule (requires Docker for postgres)
+	go test ./... -v
+	@for m in $(PLUGIN_MODULES); do \
+	  echo "==> go test ./... in $$m"; \
+	  (cd $$m && go test ./... -v) || exit $$?; \
+	done
+
+test-short-all:        ## Run root + every plugin submodule with -short (quick coverage check)
+	go test -short ./... -v
+	@for m in $(PLUGIN_MODULES); do \
+	  echo "==> go test -short ./... in $$m"; \
+	  (cd $$m && go test -short ./... -v) || exit $$?; \
+	done
 
 dev-test: dev-up       ## Run all tests against local postgres
 	set -a && . .env.dev && set +a && go test ./... -v -count=1

@@ -32,10 +32,14 @@ var actionRegistry = map[string]map[string]ActionFunc{
 	"openapi": {
 		"json": emitOpenAPIJSON,
 		"yaml": emitOpenAPIYAML,
+		"tags": emitOpenAPITags,
 	},
 	"grpc": {
 		"proto": emitGRPCProto,
 		"json":  emitGRPCDescriptorJSON,
+	},
+	"cloudevents": {
+		"json": emitCloudEventsJSON,
 	},
 }
 

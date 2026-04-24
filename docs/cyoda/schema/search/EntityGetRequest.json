@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityGetRequest.json",
+  "title": "EntityGetRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "entityId": {
+      "type": "string",
+      "description": "ID of the entity.",
+      "format": "uuid"
+    },
+    "pointInTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Point in time to retrieve the entity. If not provided, retrieves the entity at the current consistency time."
+    }
+  },
+  "required": [
+    "entityId"
+  ]
+}

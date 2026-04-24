@@ -97,6 +97,14 @@ type CollectionItem struct {
 	Payload      json.RawMessage
 }
 
+// UpdateCollectionItem holds a parsed item for batch update
+// (PUT /api/entity/{format}). Transition is empty for a loopback update.
+type UpdateCollectionItem struct {
+	EntityID   string
+	Payload    json.RawMessage
+	Transition string
+}
+
 // --- Service methods ---
 
 // CreateEntity creates a single entity with workflow execution and returns
@@ -196,8 +204,12 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 		entity.Meta.State = "CREATED"
 	}
 
+	// The CREATE path runs the workflow engine without an explicit
+	// client-supplied transition name (Execute(..., "")). From the caller's
+	// viewpoint this is a save without a named transition — the canonical
+	// marker for that is "loopback", not the literal "workflow" (issue #94).
 	if result != nil && result.StopReason == "" {
-		entity.Meta.TransitionForLatestSave = "workflow"
+		entity.Meta.TransitionForLatestSave = "loopback"
 	}
 
 	// Save entity within transaction (goes to buffer).
@@ -923,6 +935,144 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	return &EntityTransactionResult{
 		TransactionID: txID,
 		EntityIDs:     []string{input.EntityID},
+	}, nil
+}
+
+// UpdateEntityCollection updates multiple entities in a single transaction
+// (PUT /api/entity/{format}). Per the documented contract: if any entity
+// in the collection is missing (or any step fails), the entire batch is
+// rolled back and no entity is modified. Loopback updates (empty
+// Transition) and named-transition updates may be mixed within the same
+// batch. Issue #92.
+func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateCollectionItem) (*EntityTransactionResult, error) {
+	if len(items) == 0 {
+		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "collection is empty")
+	}
+
+	modelStore, err := h.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+
+	// Parse all payloads up-front — fail fast on malformed JSON before
+	// starting the transaction so a bad item doesn't leave a partially
+	// locked batch in flight.
+	type parsedItem struct {
+		id         string
+		transition string
+		bodyBytes  []byte
+		parsedData any
+	}
+	parsed := make([]parsedItem, 0, len(items))
+	for i, item := range items {
+		if item.EntityID == "" {
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				fmt.Sprintf("item %d: missing id", i))
+		}
+		var data any
+		if err := decodeJSONPreservingNumbers([]byte(item.Payload), &data); err != nil {
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				fmt.Sprintf("item %d: invalid JSON payload", i))
+		}
+		parsed = append(parsed, parsedItem{
+			id:         item.EntityID,
+			transition: item.Transition,
+			bodyBytes:  []byte(item.Payload),
+			parsedData: data,
+		})
+	}
+
+	// Begin transaction — all items in one transaction, all-or-nothing.
+	txID, txCtx, err := h.txMgr.Begin(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to begin transaction", err)
+	}
+
+	entityStore, err := h.factory.EntityStore(txCtx)
+	if err != nil {
+		h.txMgr.Rollback(txCtx, txID)
+		return nil, common.Internal("failed to access entity store", err)
+	}
+
+	now := time.Now()
+	uc := spi.GetUserContext(ctx)
+	changeUser := ""
+	if uc != nil {
+		changeUser = uc.UserID
+	}
+
+	entityIDs := make([]string, 0, len(parsed))
+
+	for i, item := range parsed {
+		existing, err := entityStore.Get(txCtx, item.id)
+		if err != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
+				fmt.Sprintf("item %d: entity %s not found", i, item.id))
+		}
+
+		desc, err := modelStore.Get(txCtx, existing.Meta.ModelRef)
+		if err != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
+		}
+
+		if err := h.validateOrExtend(txCtx, modelStore, desc, item.parsedData); err != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, classifyValidateOrExtendErr(err)
+		}
+
+		updated := &spi.Entity{
+			Meta: spi.EntityMeta{
+				ID:               existing.Meta.ID,
+				TenantID:         existing.Meta.TenantID,
+				ModelRef:         existing.Meta.ModelRef,
+				State:            existing.Meta.State,
+				Version:          existing.Meta.Version,
+				CreationDate:     existing.Meta.CreationDate,
+				LastModifiedDate: now,
+				TransactionID:    txID,
+				ChangeType:       "UPDATED",
+				ChangeUser:       changeUser,
+			},
+			Data: item.bodyBytes,
+		}
+
+		if item.transition == "" {
+			if _, err := h.engine.Loopback(txCtx, updated); err != nil {
+				h.txMgr.Rollback(txCtx, txID)
+				slog.Error("workflow loopback failed", "error", err.Error(), "entityId", updated.Meta.ID)
+				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed,
+					fmt.Sprintf("item %d: %v", i, err))
+			}
+			updated.Meta.TransitionForLatestSave = "loopback"
+		} else {
+			if _, err := h.engine.ManualTransition(txCtx, updated, item.transition); err != nil {
+				h.txMgr.Rollback(txCtx, txID)
+				slog.Error("workflow manual transition failed", "error", err.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
+				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed,
+					fmt.Sprintf("item %d: %v", i, err))
+			}
+			updated.Meta.TransitionForLatestSave = item.transition
+		}
+
+		if _, err := entityStore.Save(txCtx, updated); err != nil {
+			h.txMgr.Rollback(txCtx, txID)
+			return nil, common.Internal(fmt.Sprintf("item %d: failed to save entity", i), err)
+		}
+		entityIDs = append(entityIDs, updated.Meta.ID)
+	}
+
+	if err := h.txMgr.Commit(txCtx, txID); err != nil {
+		if errors.Is(err, spi.ErrConflict) {
+			return nil, common.Conflict("transaction conflict — retry")
+		}
+		return nil, common.Internal("failed to commit transaction", err)
+	}
+
+	return &EntityTransactionResult{
+		TransactionID: txID,
+		EntityIDs:     entityIDs,
 	}, nil
 }
 

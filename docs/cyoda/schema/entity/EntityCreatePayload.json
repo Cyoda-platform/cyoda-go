@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityCreatePayload.json",
+  "title": "EntityCreatePayload",
+  "type": "object",
+  "properties": {
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Entity model to use for this payload."
+    },
+    "data": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "Payload data."
+    }
+  },
+  "required": [
+    "model",
+    "data"
+  ]
+}

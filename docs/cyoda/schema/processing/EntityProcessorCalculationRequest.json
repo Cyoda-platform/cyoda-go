@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/processing/EntityProcessorCalculationRequest.json",
+  "title": "EntityProcessorCalculationRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "Request ID."
+    },
+    "entityId": {
+      "type": "string",
+      "description": "Entity ID.",
+      "format": "uuid"
+    },
+    "processorId": {
+      "type": "string",
+      "description": "Processor ID."
+    },
+    "processorName": {
+      "type": "string",
+      "description": "Processor name."
+    },
+    "workflow": {
+      "description": "Workflow information.",
+      "$ref": "../common/statemachine/WorkflowInfo.json"
+    },
+    "transition": {
+      "description": "Transition information.",
+      "$ref": "../common/statemachine/TransitionInfo.json"
+    },
+    "transactionId": {
+      "type": "string",
+      "description": "Transaction ID."
+    },
+    "parameters": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "Configured parameters, if any."
+    },
+    "payload": {
+      "$ref": "../common/DataPayload.json"
+    }
+  },
+  "required": [
+    "requestId",
+    "entityId",
+    "processorId",
+    "processorName",
+    "workflow"
+  ]
+}

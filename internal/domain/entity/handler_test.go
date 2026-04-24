@@ -993,9 +993,11 @@ func TestEntityResponseEnvelope(t *testing.T) {
 		}
 	}
 
-	// transitionForLatestSave should be "workflow" after creation (default workflow runs)
-	if v, exists := meta["transitionForLatestSave"]; !exists || v != "workflow" {
-		t.Errorf("expected transitionForLatestSave=workflow after creation, got %v", meta["transitionForLatestSave"])
+	// After creation without an explicit transition, transitionForLatestSave
+	// must be "loopback" — not the literal "workflow", which is not a valid
+	// value (issue #94).
+	if v, exists := meta["transitionForLatestSave"]; !exists || v != "loopback" {
+		t.Errorf("expected transitionForLatestSave=loopback after creation, got %v", meta["transitionForLatestSave"])
 	}
 
 	// Verify meta.id is a string matching the entity ID

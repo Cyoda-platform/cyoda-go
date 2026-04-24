@@ -58,10 +58,6 @@ func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDG
 	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine}
 }
 
-func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
-	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeBadRequest, "not yet implemented"))
-}
-
 // validateOrExtend validates parsedData against the model schema. When
 // changeLevel is set, it computes an additive schema delta via schema.Diff
 // and appends it to the model's extension log via ModelStore.ExtendSchema.
@@ -506,8 +502,81 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 	common.WriteJSON(w, http.StatusOK, []any{resp})
 }
 
+// updateCollectionDefaultWindow is the default batch cap applied when a
+// client does not pass `transactionWindow`. Matches what the docs have
+// historically advertised (100). updateCollectionMaxWindow is the hard
+// upper bound the server will accept from a client — larger values are
+// rejected with 400 rather than silently clamped, so misuse is visible.
+const (
+	updateCollectionDefaultWindow = 100
+	updateCollectionMaxWindow     = 1000
+)
+
 func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, format genapi.UpdateCollectionParamsFormat, params genapi.UpdateCollectionParams) {
-	h.stub(w, r)
+	// Only JSON is wired up today — parity with CreateCollection, which
+	// also accepts the format path param but consumes JSON. XML parity
+	// for collection update is tracked as a follow-up; single-item PUT
+	// endpoints still accept XML via importer.ParseXML.
+	if format != genapi.UpdateCollectionParamsFormatJSON {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "collection update accepts JSON only (single-item endpoints accept XML)"))
+		return
+	}
+
+	// Resolve transactionWindow: honor the client value when specified,
+	// otherwise use the documented default. Reject clearly-bad values.
+	window := int32(updateCollectionDefaultWindow)
+	if params.TransactionWindow != nil {
+		if *params.TransactionWindow <= 0 || *params.TransactionWindow > updateCollectionMaxWindow {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("transactionWindow must be in (0, %d]", updateCollectionMaxWindow)))
+			return
+		}
+		window = *params.TransactionWindow
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
+		return
+	}
+
+	// Per docs: `payload` is a JSON-encoded STRING (not a nested object).
+	// Match CreateCollection's wire contract exactly.
+	var rawItems []struct {
+		ID         string `json:"id"`
+		Payload    string `json:"payload"`
+		Transition string `json:"transition"`
+	}
+	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array (payload must be a JSON-encoded string)"))
+		return
+	}
+
+	if int32(len(rawItems)) > window {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("collection size %d exceeds transactionWindow %d", len(rawItems), window)))
+		return
+	}
+
+	items := make([]UpdateCollectionItem, 0, len(rawItems))
+	for _, raw := range rawItems {
+		items = append(items, UpdateCollectionItem{
+			EntityID:   raw.ID,
+			Payload:    json.RawMessage(raw.Payload),
+			Transition: raw.Transition,
+		})
+	}
+
+	result, err := h.UpdateEntityCollection(r.Context(), items)
+	if err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
+	}
+
+	resp := map[string]any{
+		"transactionId": result.TransactionID,
+		"entityIds":     result.EntityIDs,
+	}
+	common.WriteJSON(w, http.StatusOK, []any{resp})
 }
 
 func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.UpdateSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.UpdateSingleWithLoopbackParams) {

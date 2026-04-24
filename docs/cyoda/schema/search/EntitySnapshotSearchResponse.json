@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntitySnapshotSearchResponse.json",
+  "title": "EntitySnapshotSearchResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "status": {
+      "$ref": "./SearchSnapshotStatus.json",
+      "description": "Status information for the requested snapshot."
+    }
+  },
+  "required": [
+    "model",
+    "condition"
+  ]
+}

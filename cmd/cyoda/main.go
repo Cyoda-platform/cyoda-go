@@ -50,6 +50,11 @@ func runHelpCmd(args []string) int {
 			style = "light"
 		}
 	}
+	// Wire the ldflag-injected version into help actions that stamp it
+	// into their output envelopes (e.g. cloudevents json). RunHelp also
+	// takes version as a parameter for the topic-JSON flow; the setter
+	// feeds the action dispatch path.
+	help.SetBinaryVersion(func() string { return version })
 	return help.RunHelp(help.DefaultTree, args, os.Stdout, version, isTTY, style)
 }
 

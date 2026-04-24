@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/model/EntityModelExportRequest.json",
+  "title": "EntityModelExportRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "converter": {
+      "$ref": "../common/ModelConverterType.json"
+    },
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Entity model specification."
+    }
+  },
+  "required": [
+    "converter",
+    "model"
+  ]
+}

@@ -75,8 +75,11 @@ brew tap cyoda-platform/cyoda-go
 brew install cyoda
 ```
 
-The formula automatically runs `cyoda init` after install, enabling
-sqlite persistence with data stored in `~/.local/share/cyoda/cyoda.db`.
+After install, run `cyoda init` to write the default sqlite config to
+`~/.config/cyoda/cyoda.env` (data file at `~/.local/share/cyoda/cyoda.db`),
+or set `CYODA_STORAGE_BACKEND` and related env vars in your shell to run
+without an on-disk config. Homebrew does not auto-init because its
+`post_install` sandbox denies writes to `$HOME` (see issue #96).
 
 ### Any Unix via curl
 

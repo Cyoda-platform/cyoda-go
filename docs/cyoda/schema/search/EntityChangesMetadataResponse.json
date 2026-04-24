@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityChangesMetadataResponse.json",
+  "title": "EntityChangesMetadataResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original request to get entity changes metadata."
+    },
+    "changeMeta": {
+      "$ref": "../common/EntityChangeMeta.json",
+      "description": "Metadata about a single entity change."
+    }
+  },
+  "required": [
+    "requestId",
+    "changeMeta"
+  ]
+}
+

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/model/EntityModelImportRequest.json",
+  "title": "EntityModelImportRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Entity model specification."
+    },
+    "converter": {
+      "$ref": "../common/ModelConverterType.json"
+    },
+    "dataFormat": {
+      "$ref": "../common/DataFormat.json"
+    },
+    "payload": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "The data to be used for importing the model."
+    }
+  },
+  "required": [
+    "model",
+    "dataFormat",
+    "converter",
+    "payload"
+  ]
+}

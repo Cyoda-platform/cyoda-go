@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityTransactionResponse.json",
+  "title": "EntityTransactionResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original request to save data."
+    },
+    "transactionInfo": {
+      "$ref": "./EntityTransactionInfo.json",
+      "description": "Entity transaction info."
+    }
+  },
+  "required": [
+    "requestId",
+    "transactionInfo"
+  ]
+}

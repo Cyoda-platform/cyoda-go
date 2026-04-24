@@ -23,6 +23,22 @@ jobs:
       - name: Run tests with race detector
         run: go test -race ./...
 
+      # Plugin submodules each have their own go.mod, so `./...` from the root
+      # does not recurse into them. Run tests inside each module so CI does
+      # not miss regressions (issue #46). Postgres plugin uses testcontainers-go;
+      # ubuntu-latest provides the Docker socket.
+      - name: Run plugins/memory tests
+        working-directory: plugins/memory
+        run: go test -v ./...
+
+      - name: Run plugins/sqlite tests
+        working-directory: plugins/sqlite
+        run: go test -v ./...
+
+      - name: Run plugins/postgres tests
+        working-directory: plugins/postgres
+        run: go test -v ./...
+
       - name: Build
         run: go build -o bin/cyoda ./cmd/cyoda
 

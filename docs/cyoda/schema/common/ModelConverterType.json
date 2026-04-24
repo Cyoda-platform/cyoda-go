@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/ModelConverterType.json",
+  "title": "ModelConverterType",
+  "type": "string",
+  "enum": [
+    "SAMPLE_DATA",
+    "SIMPLE_VIEW"
+  ],
+  "description": "Defines the type of converter to use when importing the model (e.g., SAMPLE_DATA to use sample object)"
+}

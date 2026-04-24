@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityTransactionInfo.json",
+  "title": "EntityTransactionInfo",
+  "type": "object",
+  "properties": {
+    "transactionId": {
+      "type": "string",
+      "description": "ID of the transaction.",
+      "format": "uuid"
+    },
+    "entityIds": {
+      "type": "array",
+      "description": "IDs of entities in this transaction.",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "required": [
+    "entityIds"
+  ]
+}

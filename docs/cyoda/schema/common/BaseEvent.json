@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/BaseEvent.json",
+  "title": "BaseEvent",
+  "type": "object",
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "Flag indicates whether this message relates to some failure.",
+      "default": true
+    },
+    "id": {
+      "type": "string",
+      "description": "Event ID."
+    },
+    "error": {
+      "type": "object",
+      "description": "Error details (if present).",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Error code."
+        },
+        "message": {
+          "type": "string",
+          "description": "Error message."
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Flag indicates whether this error is retryable (for example, whether cyoda should retry the calculation request)."
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Warnings (if applicable).",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "id"
+  ]
+}

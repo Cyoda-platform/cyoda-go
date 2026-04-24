@@ -359,7 +359,7 @@ func TestWriteTreeSummary_ListsTopicsWithActions(t *testing.T) {
 	if !strings.Contains(s, "TOPIC ACTIONS") {
 		t.Errorf("summary missing TOPIC ACTIONS block: %q", s)
 	}
-	if !strings.Contains(s, "cyoda help openapi json|yaml") {
+	if !strings.Contains(s, "cyoda help openapi json|tags|yaml") {
 		t.Errorf("summary missing openapi actions: %q", s)
 	}
 	if !strings.Contains(s, "cyoda help grpc") {

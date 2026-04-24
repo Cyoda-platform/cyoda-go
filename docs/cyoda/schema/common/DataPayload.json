@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/DataPayload.json",
+  "title": "DataPayload",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Payload type."
+    },
+    "data": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "Payload data."
+    },
+    "meta": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "Metadata for the payload."
+    }
+  },
+  "required": [
+    "type"
+  ]
+}

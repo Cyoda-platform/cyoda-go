@@ -457,6 +457,38 @@ func (c *Client) UpdateEntity(t *testing.T, entityID uuid.UUID, transition, body
 	return err
 }
 
+// UpdateCollectionItem is one entry in a PUT /api/entity/{format} body.
+// Payload is a JSON-encoded string (not a nested object) per the collection
+// update wire contract.
+type UpdateCollectionItem struct {
+	ID         uuid.UUID
+	Payload    string
+	Transition string // optional; "" = loopback
+}
+
+// UpdateCollection issues PUT /api/entity/JSON with a batch of
+// UpdateCollectionItem. Returns the raw response body on success so
+// callers can assert the [{transactionId, entityIds}] shape, or an error
+// wrapping the body on non-2xx.
+// Canonical: docs/cyoda/openapi.yml (collection update).
+func (c *Client) UpdateCollection(t *testing.T, items []UpdateCollectionItem) ([]byte, error) {
+	t.Helper()
+	type rawItem struct {
+		ID         string `json:"id"`
+		Payload    string `json:"payload"`
+		Transition string `json:"transition,omitempty"`
+	}
+	raw := make([]rawItem, 0, len(items))
+	for _, it := range items {
+		raw = append(raw, rawItem{ID: it.ID.String(), Payload: it.Payload, Transition: it.Transition})
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal UpdateCollection items: %w", err)
+	}
+	return c.doRaw(t, http.MethodPut, "/api/entity/JSON", string(body))
+}
+
 // GetEntityRaw issues GET /api/entity/{entityId} and returns the HTTP
 // status code without decoding the body. Used by tests that expect
 // non-200 responses (e.g., tenant isolation cross-tenant GET → 404).

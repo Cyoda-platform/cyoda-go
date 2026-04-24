@@ -3,9 +3,11 @@ package search
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,7 +20,23 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-const maxSearchBodySize = 10 * 1024 * 1024 // 10 MiB
+const (
+	maxSearchBodySize = 10 * 1024 * 1024 // 10 MiB
+	// maxPageSize caps sync and async pagination limits. Attacker-supplied
+	// values above this would let a single request pull an unreasonable
+	// volume of data (issue #98).
+	maxPageSize = 10000
+)
+
+// jobLookupError maps a service-level error to a handler response. Job-not-
+// found is reported as 404 + SEARCH_JOB_NOT_FOUND (issue #93); any other
+// lookup error is treated as an internal failure.
+func jobLookupError(err error) *common.AppError {
+	if errors.Is(err, ErrSearchJobNotFound) {
+		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
+	}
+	return common.Internal("job lookup failed", err)
+}
 
 // Handler handles search-related HTTP endpoints.
 type Handler struct {
@@ -47,6 +65,10 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
+	if err := ValidateCondition(cond); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+		return
+	}
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -59,8 +81,12 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit"))
 			return
 		}
-		if lim > 10000 {
-			lim = 10000
+		// Reject (don't silently clamp): the async path does the same.
+		// Silent clamping would hide misuse from clients and mask bugs
+		// where a caller assumed a larger window than the server allows.
+		if lim > maxPageSize {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("limit exceeds maximum %d", maxPageSize)))
+			return
 		}
 		opts.Limit = lim
 	}
@@ -110,6 +136,10 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
+	if err := ValidateCondition(cond); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+		return
+	}
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -137,7 +167,7 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 func (h *Handler) GetAsyncSearchStatus(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
 	status, err := h.searchSvc.GetAsyncStatus(r.Context(), jobId.String())
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("job not found: %v", err)))
+		common.WriteError(w, r, jobLookupError(err))
 		return
 	}
 
@@ -159,6 +189,13 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pageSize"))
 			return
 		}
+		// Match the sync path's ceiling (handler.go sync branch): a
+		// pageSize above the cap would let attackers pull much more data
+		// per request than the endpoint is designed for (issue #98).
+		if ps > maxPageSize {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("pageSize exceeds maximum %d", maxPageSize)))
+			return
+		}
 		opts.Limit = ps
 		pageSize = ps
 	}
@@ -171,15 +208,25 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		pageNumber = pn
-		// Convert page number to offset: offset = pageNumber * limit.
 		if pageSize <= 0 {
 			pageSize = 1000
+		}
+		// Guard against int overflow when computing offset = pn*pageSize
+		// with attacker-supplied values (issue #98). Reject anything whose
+		// product would wrap int.
+		if pn > 0 && pageSize > 0 && pn > math.MaxInt/pageSize {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "pageNumber*pageSize overflows int"))
+			return
 		}
 		opts.Offset = pn * pageSize
 	}
 
 	page, err := h.searchSvc.GetAsyncResults(r.Context(), jobId.String(), opts)
 	if err != nil {
+		if errors.Is(err, ErrSearchJobNotFound) {
+			common.WriteError(w, r, jobLookupError(err))
+			return
+		}
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
 		return
 	}
@@ -217,7 +264,7 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 func (h *Handler) CancelAsyncSearch(w http.ResponseWriter, r *http.Request, jobId openapi_types.UUID) {
 	result, err := h.searchSvc.CancelAsync(r.Context(), jobId.String())
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("job not found: %v", err)))
+		common.WriteError(w, r, jobLookupError(err))
 		return
 	}
 

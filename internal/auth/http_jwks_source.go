@@ -19,27 +19,40 @@ import (
 // the result for cacheTTL. Its http.Transport pins TLS 1.3 as the minimum
 // version and the response must carry a JSON content-type — any deviation is
 // treated as a potentially hostile substitution and rejected.
+//
+// The cache is keyed on (issuer, kid) rather than kid alone (issue #97) so
+// that if a future refactor ever accidentally shares a single source across
+// multiple issuers, a kid collision between them cannot cause key confusion.
 type httpJWKSSource struct {
 	jwksURL   string
+	issuer    string
 	cacheTTL  time.Duration
 	client    *http.Client
 	mu        sync.RWMutex
-	cache     map[string]*rsa.PublicKey
+	cache     map[jwksCacheKey]*rsa.PublicKey
 	lastFetch time.Time
+}
+
+// jwksCacheKey binds a cached public key to the issuer it was fetched for.
+// See issue #97.
+type jwksCacheKey struct {
+	issuer string
+	kid    string
 }
 
 // NewHTTPJWKSSource returns a KeySource that fetches JWKS from the given URL.
 // The client pins TLS 1.3 and validates Content-Type on each response.
-func NewHTTPJWKSSource(jwksURL string, cacheTTL time.Duration) KeySource {
-	return newHTTPJWKSSource(jwksURL, cacheTTL, defaultJWKSTransport())
+// The issuer argument binds cache entries to that issuer (issue #97).
+func NewHTTPJWKSSource(jwksURL, issuer string, cacheTTL time.Duration) KeySource {
+	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, defaultJWKSTransport())
 }
 
 // NewHTTPJWKSSourceWithTransportForTesting returns a KeySource with a
 // caller-supplied transport. Reserved for tests that need to trust an
 // httptest.Server's self-signed certificate. Production code MUST use
 // NewHTTPJWKSSource; grep-enforced.
-func NewHTTPJWKSSourceWithTransportForTesting(jwksURL string, cacheTTL time.Duration, transport *http.Transport) KeySource {
-	return newHTTPJWKSSource(jwksURL, cacheTTL, transport)
+func NewHTTPJWKSSourceWithTransportForTesting(jwksURL, issuer string, cacheTTL time.Duration, transport *http.Transport) KeySource {
+	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, transport)
 }
 
 // NewHTTPJWKSSourceWithRootCAsForTesting returns a KeySource built via the
@@ -48,17 +61,18 @@ func NewHTTPJWKSSourceWithTransportForTesting(jwksURL string, cacheTTL time.Dura
 // the **production** MinVersion is TLS 1.3 end-to-end against an httptest
 // TLS server — not just the test-transport variant. Production code MUST
 // use NewHTTPJWKSSource; grep-enforced.
-func NewHTTPJWKSSourceWithRootCAsForTesting(jwksURL string, cacheTTL time.Duration, rootCAs *x509.CertPool) KeySource {
+func NewHTTPJWKSSourceWithRootCAsForTesting(jwksURL, issuer string, cacheTTL time.Duration, rootCAs *x509.CertPool) KeySource {
 	transport := defaultJWKSTransport()
 	transport.TLSClientConfig.RootCAs = rootCAs
-	return newHTTPJWKSSource(jwksURL, cacheTTL, transport)
+	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, transport)
 }
 
-func newHTTPJWKSSource(jwksURL string, cacheTTL time.Duration, transport *http.Transport) *httpJWKSSource {
+func newHTTPJWKSSource(jwksURL, issuer string, cacheTTL time.Duration, transport *http.Transport) *httpJWKSSource {
 	return &httpJWKSSource{
 		jwksURL:  jwksURL,
+		issuer:   issuer,
 		cacheTTL: cacheTTL,
-		cache:    make(map[string]*rsa.PublicKey),
+		cache:    make(map[jwksCacheKey]*rsa.PublicKey),
 		client: &http.Client{
 			Timeout:   10 * time.Second,
 			Transport: transport,
@@ -77,8 +91,10 @@ func defaultJWKSTransport() *http.Transport {
 }
 
 func (s *httpJWKSSource) GetKey(kid string) (*rsa.PublicKey, error) {
+	cKey := jwksCacheKey{issuer: s.issuer, kid: kid}
+
 	s.mu.RLock()
-	key, found := s.cache[kid]
+	key, found := s.cache[cKey]
 	stale := time.Since(s.lastFetch) > s.cacheTTL
 	s.mu.RUnlock()
 
@@ -95,7 +111,7 @@ func (s *httpJWKSSource) GetKey(kid string) (*rsa.PublicKey, error) {
 	}
 
 	s.mu.RLock()
-	key, found = s.cache[kid]
+	key, found = s.cache[cKey]
 	s.mu.RUnlock()
 
 	if !found {
@@ -127,14 +143,20 @@ func (s *httpJWKSSource) refreshCache() error {
 		return fmt.Errorf("failed to read JWKS response: %w", err)
 	}
 
-	keys, err := parseJWKSResponse(body)
+	keysByKID, err := parseJWKSResponse(body)
 	if err != nil {
 		return fmt.Errorf("failed to parse JWKS response: %w", err)
 	}
 
+	// Re-key by (issuer, kid) so the cache is issuer-bound (issue #97).
+	cache := make(map[jwksCacheKey]*rsa.PublicKey, len(keysByKID))
+	for kid, key := range keysByKID {
+		cache[jwksCacheKey{issuer: s.issuer, kid: kid}] = key
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cache = keys
+	s.cache = cache
 	s.lastFetch = time.Now()
 	return nil
 }
