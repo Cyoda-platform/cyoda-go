@@ -62,7 +62,7 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 - `CYODA_ERROR_RESPONSE_MODE` (string, default: `sanitized`) — error detail level: `sanitized` (generic message + ticket UUID for 5xx) or `verbose` (internal error detail included in responses; development use only).
 - `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
 - `CYODA_SUPPRESS_BANNER` (bool, default: `false`) — silence startup and mock-auth banners.
-- `CYODA_STARTUP_TIMEOUT` (duration, default: `30s`) — deadline for plugin and TM init.
+- `CYODA_STARTUP_TIMEOUT` (duration, default: `30s`) — deadline for plugin init, TM init, and (cluster mode) the gossip seed-join retry loop.
 - `CYODA_DEBUG` — reserved; not currently read by the server.
 - `CYODA_MAX_STATE_VISITS` (int, default: `10`) — max visits per state in workflow cascade.
 - `CYODA_MODEL_CACHE_LEASE` (duration, default: `5m`) — model cache lease duration; actual expiry is jittered ±10%.
