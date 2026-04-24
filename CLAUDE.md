@@ -25,7 +25,7 @@ Every data path must be verified for tenant isolation — no cross-tenant leakag
 Validate input at system boundaries. Sanitize output — no stack traces or internals in responses.
 
 ### Gate 4: Documentation hygiene
-When changing env vars, update `printHelp()`, `README.md`, and `DefaultConfig()` together.
+When changing env vars, update the relevant `cmd/cyoda/help/content/config/*.md` help topic, `README.md`, and `DefaultConfig()` together.
 When changing public interfaces or developer workflow, check `README.md` and `CONTRIBUTING.md`.
 
 ### Gate 5: Verify before claiming done

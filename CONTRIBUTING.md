@@ -98,3 +98,54 @@ Canonical provisioning artifacts (Helm chart, Docker Compose files) live under `
 1. [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) with [superpowers](https://github.com/obra/superpowers)
 2. [agent-safehouse](https://github.com/eugene1g/safehouse) — `brew install eugene1g/safehouse/agent-safehouse`
 3. [Zed editor](https://zed.dev) — `brew install --cask zed`
+
+## Help topic tree
+
+The `cyoda help` topic tree is a stable interface. Topic paths (e.g. `config.database`, `errors.MODEL_NOT_FOUND`) are committed for the duration of a major version — tooling, documentation sites, and AI agents rely on them.
+
+### Additions
+
+New topics may be added freely at any point under existing parent paths. Adding a top-level topic is also permitted but update the hardcoded list in `cmd/cyoda/help/help_test.go` (`topLevelTopicsV061`) at the same time.
+
+### Renames / removals
+
+A rename or removal requires:
+
+1. A deprecation window of at least one minor release — the old path continues to work (renders the new topic's content with a deprecation notice).
+2. An entry in the release notes calling out the change.
+3. An update to CONTRIBUTING.md that documents the new path.
+
+### Stability markers
+
+Per-topic `stability:` value governs what consumers should expect:
+
+- `stable` — content semantics locked. Wording may evolve; structure does not.
+- `evolving` — may be reorganised between minors. No path changes without deprecation.
+- `experimental` — may be reorganised or removed without deprecation. Used for stubs and early drafts.
+
+### Primary audience — AI agents
+
+`cyoda help` is optimised first for **AI agents** (Claude Skills, code-generation tools, embedded assistants) that discover the cyoda-go contract and produce working application code from it. Humans reading in a terminal are a second-order audience.
+
+That primacy sets the content bar:
+
+- **Enumerate, don't summarise.** List every env var, every error code, every endpoint, every CLI flag, every schema field. An agent benefits from the complete set; it does not skim. Phrases like *"and others"* / *"e.g."* / *"among others"* are forbidden — finish the list.
+- **Exact signatures.** Request/response schemas go in fenced JSON/YAML blocks that an agent can copy verbatim. CLI flags and env vars include name, type, default, and validation rule. Proto method signatures are shown in full.
+- **Concrete invocations.** Examples are full, runnable commands — complete `curl`, `docker run`, `grpcurl` calls with all required flags — not fragments. A fragment forces an agent to hallucinate the rest.
+- **No hedging.** Never say *"usually"*, *"typically"*, *"in most cases"*. State the exact behaviour under exact conditions. If behaviour depends on a condition, spell the condition out.
+- **Canonical IDs for cross-reference.** Use dotted paths (`errors.MODEL_NOT_FOUND`, `config.database`) — these resolve deterministically through `tree.Find` and the JSON payload's `see_also` field.
+- **Predictable section headings.** `NAME`, `SYNOPSIS`, `DESCRIPTION`, `OPTIONS`, `FIELDS`, `REQUEST`, `RESPONSE`, `ERRORS`, `EXAMPLES`, `SEE ALSO` — agents parse by H2. Adding a section is fine; renaming an established one is not.
+
+Line count is not a constraint. Exhaustive beats brief.
+
+### Content voice — definitive, not tutorial
+
+`cyoda help` is the **definitive reference** for flags, env vars, endpoints, schemas, error codes, and runtime options. Tutorials, narrative walkthroughs, and "getting started" storytelling live in the cyoda-docs site — which **references `cyoda help`** for contract details.
+
+That division makes two rules binding on help authors:
+
+1. **No outbound cross-references.** Help topic bodies must not point at `cyoda-docs`, external URLs, or "see the documentation site" footers. Internal `see_also` entries referencing other help topics are fine and expected. The cyoda-docs site is a research input when authoring — it is not a citation target.
+
+2. **Contract, not prose.** Help states *what* a thing is, its *inputs*, *outputs*, and *errors*. It does not narrate ("first you'll want to…", "imagine you have a case where…"). Concrete examples are welcome when they *are* the contract — a minimal `curl` invocation, a sample env var block, a proto method signature. Multi-step walkthroughs belong in cyoda-docs.
+
+If a topic seems hard to write without tutorial prose, that usually means the contract underneath is fuzzy — sharpen the contract before writing the help.

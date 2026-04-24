@@ -10,6 +10,8 @@ before:
   hooks:
     - env GOWORK=off go mod download
     - env GOWORK=off go mod verify
+    - bash -c 'mkdir -p .release-extras && tar -czf ".release-extras/cyoda_help_{{ .Version }}.tar.gz" -C cmd/cyoda/help content'
+    - bash -c 'go run ./cmd/cyoda help --format=json > ".release-extras/cyoda_help_{{ .Version }}.json"'
 
 builds:
   - id: cyoda
@@ -97,6 +99,9 @@ brews:
 checksum:
   name_template: 'SHA256SUMS'
   algorithm: sha256
+  extra_files:
+    - glob: ./.release-extras/cyoda_help_*.tar.gz
+    - glob: ./.release-extras/cyoda_help_*.json
 
 dockers_v2:
   - id: cyoda
@@ -156,3 +161,6 @@ sboms:
 release:
   prerelease: auto
   draft: false
+  extra_files:
+    - glob: ./.release-extras/cyoda_help_*.tar.gz
+    - glob: ./.release-extras/cyoda_help_*.json

@@ -20,6 +20,9 @@ type Config struct {
 	ErrorResponseMode  string
 	MaxStateVisits     int
 	LogLevel           string
+	// Version is the ldflag-injected binary version string reported in the
+	// REST /help payload. Defaults to "dev" when unset.
+	Version            string
 	IAM                IAMConfig
 	GRPC               GRPCConfig
 	Admin              AdminConfig
@@ -96,6 +99,7 @@ func DefaultConfig() Config {
 		ErrorResponseMode: envString("CYODA_ERROR_RESPONSE_MODE", "sanitized"),
 		MaxStateVisits:    envInt("CYODA_MAX_STATE_VISITS", 10),
 		LogLevel:          envString("CYODA_LOG_LEVEL", "info"),
+		Version:           "dev",
 		GRPC: GRPCConfig{
 			Port:              envInt("CYODA_GRPC_PORT", 9090),
 			KeepAliveInterval: envInt("CYODA_KEEPALIVE_INTERVAL", 10),
