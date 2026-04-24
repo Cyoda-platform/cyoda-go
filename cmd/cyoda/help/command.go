@@ -22,8 +22,9 @@ import (
 //	args    — positional and --format args after "help"
 //	out     — stdout of the CLI
 //	version — binary version string for HelpPayload.Version
-//	isTTY   — whether out is a TTY (governs text vs markdown default)
-func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY bool) int {
+//	isTTY   — whether out is a TTY (governs text vs markdown default format)
+//	style   — glamour theme name: "dark", "light", or "" for no-ANSI
+func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY bool, style string) int {
 	format := "auto"
 	var positional []string
 	for _, a := range args {
@@ -64,7 +65,7 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 	case "markdown":
 		return writeTopicMarkdown(topic, out)
 	default:
-		return writeTopicText(topic, out, isTTY)
+		return writeTopicText(topic, out, style)
 	}
 }
 
@@ -88,8 +89,8 @@ func resolveFormat(f string, isTTY bool) string {
 	return "markdown"
 }
 
-func writeTopicText(t *Topic, out io.Writer, isTTY bool) int {
-	if err := renderer.RenderText(out, t.Body, isTTY); err != nil {
+func writeTopicText(t *Topic, out io.Writer, style string) int {
+	if err := renderer.RenderText(out, t.Body, style); err != nil {
 		fmt.Fprintf(out, "cyoda help: render failed: %v\n", err)
 		return 1
 	}

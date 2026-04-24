@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -41,7 +42,15 @@ func printVersion(w io.Writer) {
 // runHelpCmd is the entry point for `cyoda help [args...]`.
 func runHelpCmd(args []string) int {
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	return help.RunHelp(help.DefaultTree, args, os.Stdout, version, isTTY)
+	style := ""
+	if isTTY {
+		if termenv.NewOutput(os.Stdout).HasDarkBackground() {
+			style = "dark"
+		} else {
+			style = "light"
+		}
+	}
+	return help.RunHelp(help.DefaultTree, args, os.Stdout, version, isTTY, style)
 }
 
 func main() {

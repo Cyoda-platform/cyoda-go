@@ -6,28 +6,42 @@ import (
 	"testing"
 )
 
-func TestRenderText_EmitsANSIOnTTY(t *testing.T) {
+func TestRenderText_EmitsANSIOnDarkStyle(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderText(&buf, []byte("# Title\n\nBody.\n"), true)
+	err := RenderText(&buf, []byte("# Title\n\nBody.\n"), "dark")
 	if err != nil {
 		t.Fatalf("RenderText: %v", err)
 	}
 	if !strings.Contains(buf.String(), "\x1b[") {
-		t.Errorf("TTY output should contain ANSI: %q", buf.String())
+		t.Errorf("dark style output should contain ANSI: %q", buf.String())
 	}
 	if !strings.Contains(buf.String(), "Title") {
 		t.Errorf("output missing heading content: %q", buf.String())
 	}
 }
 
-func TestRenderText_NoANSIOffTTY(t *testing.T) {
+func TestRenderText_EmitsANSIOnLightStyle(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderText(&buf, []byte("# Title\n\nBody.\n"), false)
+	err := RenderText(&buf, []byte("# Title\n\nBody.\n"), "light")
+	if err != nil {
+		t.Fatalf("RenderText: %v", err)
+	}
+	if !strings.Contains(buf.String(), "\x1b[") {
+		t.Errorf("light style output should contain ANSI: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Title") {
+		t.Errorf("output missing heading content: %q", buf.String())
+	}
+}
+
+func TestRenderText_NoANSIOnEmptyStyle(t *testing.T) {
+	var buf bytes.Buffer
+	err := RenderText(&buf, []byte("# Title\n\nBody.\n"), "")
 	if err != nil {
 		t.Fatalf("RenderText: %v", err)
 	}
 	if strings.Contains(buf.String(), "\x1b[") {
-		t.Errorf("non-TTY output must NOT contain ANSI: %q", buf.String())
+		t.Errorf("empty style must NOT emit ANSI: %q", buf.String())
 	}
 	if !strings.Contains(buf.String(), "Title") {
 		t.Errorf("output missing heading content: %q", buf.String())
@@ -36,7 +50,7 @@ func TestRenderText_NoANSIOffTTY(t *testing.T) {
 
 func TestRenderText_FencedCodeBlockRenders(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderText(&buf, []byte("```\nhello\n```\n"), false)
+	err := RenderText(&buf, []byte("```\nhello\n```\n"), "")
 	if err != nil {
 		t.Fatalf("RenderText: %v", err)
 	}
@@ -47,7 +61,7 @@ func TestRenderText_FencedCodeBlockRenders(t *testing.T) {
 
 func TestRenderText_BulletsRender(t *testing.T) {
 	var buf bytes.Buffer
-	err := RenderText(&buf, []byte("- one\n- two\n"), false)
+	err := RenderText(&buf, []byte("- one\n- two\n"), "")
 	if err != nil {
 		t.Fatalf("RenderText: %v", err)
 	}

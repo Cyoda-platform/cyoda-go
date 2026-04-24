@@ -53,7 +53,7 @@ Body.
 
 func TestRunHelp_NoArgs_ShowsTopics(t *testing.T) {
 	var out bytes.Buffer
-	code := RunHelp(testTree(t), []string{}, &out, "0.6.1", false)
+	code := RunHelp(testTree(t), []string{}, &out, "0.6.1", false, "")
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -65,7 +65,7 @@ func TestRunHelp_NoArgs_ShowsTopics(t *testing.T) {
 
 func TestRunHelp_TopicLookup(t *testing.T) {
 	var out bytes.Buffer
-	code := RunHelp(testTree(t), []string{"cli"}, &out, "0.6.1", false)
+	code := RunHelp(testTree(t), []string{"cli"}, &out, "0.6.1", false, "")
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -76,7 +76,7 @@ func TestRunHelp_TopicLookup(t *testing.T) {
 
 func TestRunHelp_Subtopic(t *testing.T) {
 	var out bytes.Buffer
-	code := RunHelp(testTree(t), []string{"cli", "serve"}, &out, "0.6.1", false)
+	code := RunHelp(testTree(t), []string{"cli", "serve"}, &out, "0.6.1", false, "")
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -87,7 +87,7 @@ func TestRunHelp_Subtopic(t *testing.T) {
 
 func TestRunHelp_UnknownTopic_Exit2(t *testing.T) {
 	var out bytes.Buffer
-	code := RunHelp(testTree(t), []string{"widgetry"}, &out, "0.6.1", false)
+	code := RunHelp(testTree(t), []string{"widgetry"}, &out, "0.6.1", false, "")
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}
@@ -98,7 +98,7 @@ func TestRunHelp_UnknownTopic_Exit2(t *testing.T) {
 
 func TestRunHelp_FormatJSON(t *testing.T) {
 	var out bytes.Buffer
-	code := RunHelp(testTree(t), []string{"--format=json"}, &out, "0.6.1", false)
+	code := RunHelp(testTree(t), []string{"--format=json"}, &out, "0.6.1", false, "")
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -113,7 +113,7 @@ func TestRunHelp_FormatJSON(t *testing.T) {
 
 func TestRunHelp_FormatJSONSingleTopic(t *testing.T) {
 	var out bytes.Buffer
-	code := RunHelp(testTree(t), []string{"--format=json", "cli"}, &out, "0.6.1", false)
+	code := RunHelp(testTree(t), []string{"--format=json", "cli"}, &out, "0.6.1", false, "")
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -129,7 +129,7 @@ func TestRunHelp_FormatJSONSingleTopic(t *testing.T) {
 
 func TestRunHelp_UnknownFormat_Exit2(t *testing.T) {
 	var out bytes.Buffer
-	code := RunHelp(testTree(t), []string{"--format=bogus"}, &out, "0.6.1", false)
+	code := RunHelp(testTree(t), []string{"--format=bogus"}, &out, "0.6.1", false, "")
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}

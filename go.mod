@@ -11,6 +11,7 @@ require (
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/joho/godotenv v1.5.1
+	github.com/muesli/termenv v0.16.0
 	github.com/oapi-codegen/runtime v1.3.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.41.0
@@ -54,7 +55,6 @@ require (
 	github.com/moby/moby/api v1.54.1 // indirect
 	github.com/moby/moby/client v0.4.0 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-sqlite3 v0.33.3 // indirect
 	github.com/ncruces/go-sqlite3-wasm v1.1.1-0.20260409221933-87e4b35a38d0 // indirect
