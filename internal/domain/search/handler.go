@@ -66,8 +66,12 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid limit"))
 			return
 		}
+		// Reject (don't silently clamp): the async path does the same.
+		// Silent clamping would hide misuse from clients and mask bugs
+		// where a caller assumed a larger window than the server allows.
 		if lim > maxPageSize {
-			lim = maxPageSize
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("limit exceeds maximum %d", maxPageSize)))
+			return
 		}
 		opts.Limit = lim
 	}
