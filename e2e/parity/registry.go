@@ -41,6 +41,8 @@ var allTests = []NamedTest{
 	{"EntityCreateAndGet", RunEntityCreateAndGet},
 	{"EntityDelete", RunEntityDelete},
 	{"EntityListByModel", RunEntityListByModel},
+	{"EntityUpdateCollectionHappyPath", RunEntityUpdateCollectionHappyPath},
+	{"EntityUpdateCollectionRollback", RunEntityUpdateCollectionRollback},
 
 	// Phase 4a — bi-temporal (Task 4a.3)
 	{"TemporalPointInTimeRetrieval", RunTemporalPointInTimeRetrieval},
