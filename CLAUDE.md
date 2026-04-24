@@ -97,8 +97,15 @@ Review and security audit prevent defects reaching main.
 
 ## Common Commands
 
-- Test (all): `go test ./... -v` (includes E2E — requires Docker)
-- Test (unit only): `go test -short ./... -v`
+Plugin submodules (`plugins/memory`, `plugins/sqlite`, `plugins/postgres`)
+each have their own `go.mod`; Go's `./...` recursion does **not** cross
+module boundaries, so root-module commands miss them. Use the `-all`
+aggregator targets below when you want coverage across the whole repo.
+
+- Test (root module): `go test ./... -v` — root incl. internal/e2e (requires Docker)
+- Test (root module, unit only): `go test -short ./... -v`
+- Test (root + every plugin submodule): `make test-all` — covers root + `plugins/memory|sqlite|postgres`; Docker required for postgres testcontainers
+- Test (root + plugins, short): `make test-short-all`
 - Test (E2E only): `go test ./internal/e2e/... -v`
 - Coverage: `go test -coverprofile=coverage.out ./...`
 - Race detector: `go test -race ./...`
