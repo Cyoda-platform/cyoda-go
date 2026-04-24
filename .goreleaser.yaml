@@ -82,18 +82,22 @@ brews:
       bin.install "cyoda"
     test: |
       system bin/"cyoda", "--help"
-    post_install: |
-      system bin/"cyoda", "init"
+    # No post_install: Homebrew sandboxes post_install and denies writes to
+    # $HOME, so `cyoda init` always failed on macOS and emitted a warning on
+    # every install. The caveats block below already tells users how to run
+    # init when they want to (issue #96).
     caveats: |
       ==============================================================
-      cyoda is configured to use sqlite with data stored in
-      #{Dir.home}/.local/share/cyoda/cyoda.db
+      cyoda is installed but not yet initialised. Run:
 
-      If you want to reconfigure, run:
-        cyoda init --force
+        cyoda init
 
-      Or set CYODA_STORAGE_BACKEND in your shell environment to
-      override the packaged default.
+      to write the default sqlite configuration to
+      #{Dir.home}/.config/cyoda/ with data stored in
+      #{Dir.home}/.local/share/cyoda/cyoda.db.
+
+      Alternatively, set CYODA_STORAGE_BACKEND and related env vars
+      in your shell environment to run without an on-disk config.
       ==============================================================
 
 checksum:
