@@ -6,25 +6,27 @@ import (
 )
 
 // cyodaLightStyle is glamour's LightStyleConfig with background fills removed
-// from inline code spans and fenced code blocks, and brand aqua foreground
-// applied. #4FB8B0 is a softer, mint-leaning aqua tuned for contrast on white
-// terminals.
-var cyodaLightStyle = applyCyodaTheme(styles.LightStyleConfig, "#4FB8B0") // brand aqua (light)
+// from inline code spans and fenced code blocks, brand logo-teal foreground
+// applied to code, and deep-blue foreground applied to headings (with heading
+// backgrounds cleared). #118080 is the exact logo teal from the Cyoda brand.
+var cyodaLightStyle = applyCyodaTheme(styles.LightStyleConfig, "#118080", "#081780")
 
 // cyodaDarkStyle is glamour's DarkStyleConfig with the same background-fill
-// suppression and brand aqua (#5FD7D7) foreground applied. This matches the
-// 256-color index 80 used in the cyoda banner.
-var cyodaDarkStyle = applyCyodaTheme(styles.DarkStyleConfig, "#5FD7D7") // brand aqua (banner)
+// suppression and brand aqua (#5FD7D7) foreground applied to code. This matches
+// the 256-color index 80 used in the cyoda banner. Headings are left at the
+// dark preset defaults (no headingColor).
+var cyodaDarkStyle = applyCyodaTheme(styles.DarkStyleConfig, "#5FD7D7", "")
 
-// applyCyodaTheme copies the preset, clears the grey code backgrounds,
-// and sets teal foreground colors for inline code and plain fenced
-// blocks. Chroma (syntax highlighting) is untouched — language-tagged
-// fences retain their full syntax color palette.
+// applyCyodaTheme copies the preset, applies cyoda brand colors:
+//   - teal on inline code and plain fenced blocks (+bold, backgrounds cleared)
+//   - headingColor on all H1–H6 (background cleared)
+//
+// If headingColor is empty, headings are left untouched.
 //
 // The Chroma pointer is deep-copied so the global preset is never mutated.
 // Chroma.Error.BackgroundColor is intentionally left intact — it marks syntax
 // errors and is not cosmetic fill.
-func applyCyodaTheme(base ansi.StyleConfig, teal string) ansi.StyleConfig {
+func applyCyodaTheme(base ansi.StyleConfig, teal, headingColor string) ansi.StyleConfig {
 	s := base
 
 	// Clear inline-code background.
@@ -54,7 +56,27 @@ func applyCyodaTheme(base ansi.StyleConfig, teal string) ansi.StyleConfig {
 	s.Code.Bold = boolPtr(true)
 	s.CodeBlock.StyleBlock.Bold = boolPtr(true)
 
+	// Headings: apply deep-blue foreground and clear background fills.
+	// Only applied when headingColor is non-empty (light theme).
+	if headingColor != "" {
+		applyHeadingColor(&s.Heading, headingColor)
+		applyHeadingColor(&s.H1, headingColor)
+		applyHeadingColor(&s.H2, headingColor)
+		applyHeadingColor(&s.H3, headingColor)
+		applyHeadingColor(&s.H4, headingColor)
+		applyHeadingColor(&s.H5, headingColor)
+		applyHeadingColor(&s.H6, headingColor)
+	}
+
 	return s
+}
+
+// applyHeadingColor sets the heading foreground to color and clears any
+// background fill. Existing Bold is preserved — glamour's presets set headings
+// bold by default and we want to keep that.
+func applyHeadingColor(b *ansi.StyleBlock, color string) {
+	b.Color = strPtr(color)
+	b.BackgroundColor = nil
 }
 
 // strPtr returns a pointer to a copy of s. Used to set *string fields in

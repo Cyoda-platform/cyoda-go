@@ -125,8 +125,8 @@ func TestRenderText_NoGreyBackgroundDark(t *testing.T) {
 }
 
 // TestRenderText_LightTealOnInlineCode verifies that the light style emits a
-// teal foreground (#4FB8B0 → SGR 38;2;79;184;176 in truecolor) on inline code
-// spans. We force truecolor via COLORTERM so glamour/lipgloss does not
+// logo-teal foreground (#118080 → SGR 38;2;17;128;128 in truecolor) on inline
+// code spans. We force truecolor via COLORTERM so glamour/lipgloss does not
 // downgrade to a 256-color approximation in the test environment.
 func TestRenderText_LightTealOnInlineCode(t *testing.T) {
 	t.Setenv("COLORTERM", "truecolor")
@@ -135,9 +135,9 @@ func TestRenderText_LightTealOnInlineCode(t *testing.T) {
 		t.Fatalf("RenderText: %v", err)
 	}
 	out := buf.String()
-	// #4FB8B0 in truecolor SGR: 38;2;79;184;176 (0x4F=79, 0xB8=184, 0xB0=176)
-	if !strings.Contains(out, "38;2;79;184;176") {
-		t.Errorf("light style inline code must use brand aqua (#4FB8B0 → 38;2;79;184;176); got %q", out)
+	// #118080 in truecolor SGR: 38;2;17;128;128 (0x11=17, 0x80=128)
+	if !strings.Contains(out, "38;2;17;128;128") {
+		t.Errorf("light style inline code must use logo teal (#118080 → 38;2;17;128;128); got %q", out)
 	}
 }
 
@@ -186,7 +186,7 @@ func hasBoldAndTeal(out, tealSGR string) bool {
 }
 
 // TestRenderText_InlineCodeIsBold verifies that the light cyoda theme emits
-// SGR bold (1) together with the brand aqua truecolor foreground on inline code
+// SGR bold (1) together with the logo-teal truecolor foreground on inline code
 // spans. Both must appear in the same CSI escape block.
 func TestRenderText_InlineCodeIsBold(t *testing.T) {
 	t.Setenv("COLORTERM", "truecolor")
@@ -195,9 +195,9 @@ func TestRenderText_InlineCodeIsBold(t *testing.T) {
 		t.Fatalf("RenderText: %v", err)
 	}
 	out := buf.String()
-	// Light brand aqua is #4FB8B0 → 38;2;79;184;176 (0x4F=79, 0xB8=184, 0xB0=176)
-	if !hasBoldAndTeal(out, "38;2;79;184;176") {
-		t.Errorf("inline code must emit Bold + brand aqua SGR in same CSI block; got %q", out)
+	// Light logo teal is #118080 → 38;2;17;128;128 (0x11=17, 0x80=128)
+	if !hasBoldAndTeal(out, "38;2;17;128;128") {
+		t.Errorf("inline code must emit Bold + logo teal SGR in same CSI block; got %q", out)
 	}
 }
 
@@ -239,4 +239,29 @@ func hasStandaloneBold(s string) bool {
 		i += 2 + end
 	}
 	return false
+}
+
+// TestRenderText_LightHeadingColor verifies that the light theme emits the
+// deep-blue heading color (#081780 → SGR 38;2;8;23;128 in truecolor) on H1
+// headings, and does not emit a background-color fill before the heading text.
+func TestRenderText_LightHeadingColor(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+	var buf bytes.Buffer
+	if err := RenderText(&buf, []byte("# Title\n\nBody.\n"), "light"); err != nil {
+		t.Fatalf("RenderText: %v", err)
+	}
+	// #081780 = 0x08=8, 0x17=23, 0x80=128
+	out := buf.String()
+	if !strings.Contains(out, "38;2;8;23;128") {
+		t.Errorf("light heading must emit #081780 SGR (38;2;8;23;128); got %q", out)
+	}
+	// Heading must not carry a background-color fill. Trim to everything before
+	// the heading text so we inspect only the SGR sequence that opens the heading.
+	headingPreamble := out
+	if idx := strings.Index(out, "Title"); idx >= 0 {
+		headingPreamble = out[:idx]
+	}
+	if strings.Contains(headingPreamble, "48;2;") || strings.Contains(headingPreamble, "48;5;") {
+		t.Errorf("heading must not emit background SGR; got preamble %q", headingPreamble)
+	}
 }
