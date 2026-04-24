@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/model/EntityModelTransitionResponse.json",
+  "title": "EntityModelTransitionResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "modelId": {
+      "type": "string",
+      "description": "ID of the entity model.",
+      "format": "uuid"
+    },
+    "state": {
+      "type": "string",
+      "description": "State of the entity model."
+    }
+  },
+  "required": [
+    "modelId",
+    "state"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityResponse.json",
+  "title": "EntityResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original request to get data."
+    },
+    "payload": {
+      "description": "Payload with entity data and meta information.",
+      "$ref": "../common/DataPayload.json"
+    }
+  },
+  "required": [
+    "requestId",
+    "payload"
+  ]
+}

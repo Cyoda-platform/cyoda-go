@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityGetAllRequest.json",
+  "title": "EntityGetAllRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Information about the model to search."
+    },
+    "pageSize": {
+      "type": "integer",
+      "description": "Page size.",
+      "default": 20
+    },
+    "pageNumber": {
+      "type": "integer",
+      "description": "Page number (from 0).",
+      "default": 0
+    },
+    "pointInTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "point in time"
+    }
+  },
+  "required": [
+    "model"
+  ]
+}

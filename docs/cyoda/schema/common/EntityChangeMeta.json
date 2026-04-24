@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/EntityChangeMeta.json",
+  "title": "EntityChangeMeta",
+  "description": "Metadata about entity changes including transaction information and change type.",
+  "type": "object",
+  "properties": {
+    "transactionId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID of the transaction that made this change."
+    },
+    "timeOfChange": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the change occurred."
+    },
+    "user": {
+      "type": "string",
+      "description": "User who made the change."
+    },
+    "changeType": {
+      "type": "string",
+      "enum": [
+        "CREATE",
+        "UPDATE",
+        "DELETE"
+      ],
+      "description": "Type of change that was made to the entity."
+    },
+    "fieldsChangedCount": {
+      "type": "integer",
+      "description": "Number of fields changed in the entity for this change."
+    }
+  },
+  "required": [
+    "timeOfChange",
+    "changeType",
+    "user"
+  ]
+}
+

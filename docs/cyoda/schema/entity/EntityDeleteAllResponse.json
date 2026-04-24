@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityDeleteAllResponse.json",
+  "title": "EntityDeleteAllResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original request to get data."
+    },
+    "entityIds": {
+      "type": "array",
+      "description": "IDs of the removed entities.",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "modelId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "ID of the model."
+    },
+    "numDeleted": {
+      "type": "integer",
+      "description": "Number of the deleted entities."
+    },
+    "errorsById": {
+      "type": "object",
+      "description": "Collections of errors by ids if any.",
+      "existingJavaType": "java.util.Map<String,String>"
+    }
+  },
+  "required": [
+    "requestId",
+    "entityIds",
+    "modelId",
+    "numDeleted"
+  ]
+}

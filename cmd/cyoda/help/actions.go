@@ -38,6 +38,9 @@ var actionRegistry = map[string]map[string]ActionFunc{
 		"proto": emitGRPCProto,
 		"json":  emitGRPCDescriptorJSON,
 	},
+	"cloudevents": {
+		"json": emitCloudEventsJSON,
+	},
 }
 
 // lookupAction returns the handler for a topic action, if registered.

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/common/statemachine/WorkflowInfo.json",
+  "title": "WorkflowInfo",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Workflow ID."
+    },
+    "name": {
+      "type": "string",
+      "description": "Workflow name."
+    }
+  },
+  "required": [
+    "id",
+    "name"
+  ]
+}

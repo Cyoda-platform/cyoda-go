@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/entity/EntityTransitionResponse.json",
+  "title": "EntityTransitionResponse",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "availableTransitions": {
+      "type": "array",
+      "description": "Available transitions from the current state.",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/processing/CalculationMemberGreetEvent.json",
+  "title": "CalculationMemberGreetEvent",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "memberId": {
+      "type": "string",
+      "description": "Assigned member ID."
+    },
+    "joinedLegalEntityId": {
+      "type": "string",
+      "description": "ID of the legal entity under which this member has joined."
+    }
+  },
+  "required": [
+    "memberId",
+    "joinedLegalEntityId"
+  ]
+}

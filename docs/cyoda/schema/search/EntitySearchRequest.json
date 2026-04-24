@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntitySearchRequest.json",
+  "title": "EntitySearchRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Entity model to use for building this snapshot."
+    },
+    "condition": {
+      "type": "object",
+      "existingJavaType": "org.cyoda.cloud.api.common.model.GroupConditionDto",
+      "description": "Query condition to use for building this snapshot."
+    },
+    "pointInTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "point in time"
+    },
+    "timeoutMillis": {
+      "type": "integer",
+      "description": "The maximum time to wait in milliseconds for the query to complete."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "The maximum number of rows to return."
+    }
+  },
+  "required": [
+    "model",
+    "condition"
+  ]
+}

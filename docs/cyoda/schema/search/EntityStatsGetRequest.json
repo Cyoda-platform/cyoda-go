@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/search/EntityStatsGetRequest.json",
+  "title": "EntityStatsGetRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "pointInTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The point-in-time for statistics in ISO 8601 format. Defaults to current consistency time if not provided."
+    },
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Optional specifier of the Entity model to calculate statistics for."
+    }
+  }
+}
+

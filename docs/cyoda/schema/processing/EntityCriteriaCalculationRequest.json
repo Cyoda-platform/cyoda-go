@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/processing/EntityCriteriaCalculationRequest.json",
+  "title": "EntityCriteriaCalculationRequest",
+  "type": "object",
+  "extends": {
+    "$ref": "../common/BaseEvent.json"
+  },
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "Request ID."
+    },
+    "entityId": {
+      "type": "string",
+      "description": "Entity ID.",
+      "format": "uuid"
+    },
+    "criteriaId": {
+      "type": "string",
+      "description": "Criteria ID."
+    },
+    "criteriaName": {
+      "type": "string",
+      "description": "Criteria name."
+    },
+    "target": {
+      "type": "string",
+      "description": "Target to which this condition is attached. NA is reserved for future cases.",
+      "enum": [
+        "NA",
+        "WORKFLOW",
+        "PROCESSOR",
+        "TRANSITION"
+      ]
+    },
+    "workflow": {
+      "description": "Workflow information, available for targets WORKFLOW, PROCESSOR, TRANSITION.",
+      "$ref": "../common/statemachine/WorkflowInfo.json"
+    },
+    "processor": {
+      "description": "Processor information, available for targets PROCESSOR.",
+      "$ref": "../common/statemachine/ProcessorInfo.json"
+    },
+    "transition": {
+      "description": "Transition information, available for targets TRANSITION and PROCESSOR.",
+      "$ref": "../common/statemachine/TransitionInfo.json"
+    },
+    "transactionId": {
+      "type": "string",
+      "description": "Transaction ID."
+    },
+    "parameters": {
+      "type": "any",
+      "existingJavaType": "com.fasterxml.jackson.databind.JsonNode",
+      "description": "Configured parameters, if any."
+    },
+    "payload": {
+      "$ref": "../common/DataPayload.json"
+    }
+  },
+  "required": [
+    "requestId",
+    "entityId",
+    "criteriaId",
+    "criteriaName",
+    "target"
+  ]
+}
