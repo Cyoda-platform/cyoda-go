@@ -125,7 +125,7 @@ func TestRenderText_NoGreyBackgroundDark(t *testing.T) {
 }
 
 // TestRenderText_LightTealOnInlineCode verifies that the light style emits a
-// teal foreground (#007777 → SGR 38;2;0;119;119 in truecolor) on inline code
+// teal foreground (#4FB8B0 → SGR 38;2;79;184;176 in truecolor) on inline code
 // spans. We force truecolor via COLORTERM so glamour/lipgloss does not
 // downgrade to a 256-color approximation in the test environment.
 func TestRenderText_LightTealOnInlineCode(t *testing.T) {
@@ -135,9 +135,9 @@ func TestRenderText_LightTealOnInlineCode(t *testing.T) {
 		t.Fatalf("RenderText: %v", err)
 	}
 	out := buf.String()
-	// #007777 in truecolor SGR: 38;2;0;119;119 (hex 0x77 = 119)
-	if !strings.Contains(out, "38;2;0;119;119") {
-		t.Errorf("light style inline code must use brand aqua (#007777 → 38;2;0;119;119); got %q", out)
+	// #4FB8B0 in truecolor SGR: 38;2;79;184;176 (0x4F=79, 0xB8=184, 0xB0=176)
+	if !strings.Contains(out, "38;2;79;184;176") {
+		t.Errorf("light style inline code must use brand aqua (#4FB8B0 → 38;2;79;184;176); got %q", out)
 	}
 }
 
@@ -195,8 +195,8 @@ func TestRenderText_InlineCodeIsBold(t *testing.T) {
 		t.Fatalf("RenderText: %v", err)
 	}
 	out := buf.String()
-	// Light brand aqua is #007777 → 38;2;0;119;119 (hex 0x77 = 119)
-	if !hasBoldAndTeal(out, "38;2;0;119;119") {
+	// Light brand aqua is #4FB8B0 → 38;2;79;184;176 (0x4F=79, 0xB8=184, 0xB0=176)
+	if !hasBoldAndTeal(out, "38;2;79;184;176") {
 		t.Errorf("inline code must emit Bold + brand aqua SGR in same CSI block; got %q", out)
 	}
 }

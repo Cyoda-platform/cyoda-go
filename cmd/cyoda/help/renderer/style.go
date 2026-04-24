@@ -7,9 +7,9 @@ import (
 
 // cyodaLightStyle is glamour's LightStyleConfig with background fills removed
 // from inline code spans and fenced code blocks, and brand aqua foreground
-// applied. #007777 is a darker variant of the brand aqua (same hue as 256
-// index 80 = #5FD7D7) tuned for contrast on white terminals.
-var cyodaLightStyle = applyCyodaTheme(styles.LightStyleConfig, "#007777") // darker brand aqua
+// applied. #4FB8B0 is a softer, mint-leaning aqua tuned for contrast on white
+// terminals.
+var cyodaLightStyle = applyCyodaTheme(styles.LightStyleConfig, "#4FB8B0") // brand aqua (light)
 
 // cyodaDarkStyle is glamour's DarkStyleConfig with the same background-fill
 // suppression and brand aqua (#5FD7D7) foreground applied. This matches the
