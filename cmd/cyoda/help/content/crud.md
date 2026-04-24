@@ -163,10 +163,9 @@ Response: `200 OK`, `application/json`:
 
 Response: `200 OK`, same shape as loopback update.
 
-**PUT /api/entity/{format}** — Update a collection (mixed entities) — **NOT YET IMPLEMENTED**
+**PUT /api/entity/{format}** — Update a collection (mixed entities) — **NOT YET IMPLEMENTED (#92)**
 
-> **Status:** This endpoint exists in the route table but currently returns `501 Not Implemented`.
-> Do not rely on it in production. Tracked for implementation.
+**Status**: This endpoint is registered in the route table but currently returns `501 Not Implemented`. The response body carries `errorCode: BAD_REQUEST` (another bug tracked in #92). Do not use. The signature below documents the planned contract.
 
 - `format` (path): `JSON` or `XML`
 - `transactionWindow` (query, optional): int32, default `100` — max entities per transaction batch
@@ -346,12 +345,12 @@ All entity read operations return entities in the standard envelope:
 - `type` — always `"ENTITY"`
 - `data` — the entity's JSON payload (decoded with `json.Number` for numeric precision)
 - `meta.id` — UUID string
-- `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present in single-entity `GET /entity/{id}` responses; may be absent in list and search results
+- `meta.modelKey` — object with `name` (string) and `version` (int32) identifying the model; present in single-entity `GET /entity/{id}` responses. Omitted from list/search results because the model is already part of the request path (`/api/entity/{entityName}/{modelVersion}`).
 - `meta.state` — current workflow state string
 - `meta.creationDate` — RFC 3339 with nanoseconds
 - `meta.lastUpdateTime` — RFC 3339 with nanoseconds
 - `meta.transactionId` — present when a transaction ID exists
-- `meta.transitionForLatestSave` — transition name that produced the latest save; `"loopback"` for loopback updates, `"workflow"` for engine-driven transitions, or the named transition string
+- `meta.transitionForLatestSave` — transition name that produced the latest save. Valid values: `"loopback"` (loopback update with no transition supplied by the client) or the named transition string. **Known bug (#94):** the server currently stores the literal `"workflow"` for engine-driven initial-state writes; there is no valid `"workflow"` value and this is tracked for fix.
 
 ## OPTIMISTIC CONCURRENCY
 

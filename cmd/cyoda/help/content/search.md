@@ -296,7 +296,7 @@ Synchronous search does not paginate; use the `limit` parameter (max 10000) to b
 
 ## ERRORS
 
-- `errors.ENTITY_NOT_FOUND` — `404` — async job UUID does not exist (error code in response is `ENTITY_NOT_FOUND`; the `errors.SEARCH_JOB_NOT_FOUND` topic describes this condition)
+- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist. **Known bug (#93):** the server currently returns `ENTITY_NOT_FOUND` in the response `errorCode` field; it should be `SEARCH_JOB_NOT_FOUND`. Clients classifying errors by `errorCode` must handle both until the fix ships.
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
 - `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
