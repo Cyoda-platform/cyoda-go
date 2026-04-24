@@ -49,7 +49,7 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 		if format == "json" {
 			return writeFullTreeJSON(tree, out, version)
 		}
-		return writeTreeSummary(tree, out, isTTY)
+		return writeTreeSummary(tree, out, style)
 	}
 
 	// Topic lookup.
@@ -137,9 +137,27 @@ func writeFullTreeJSON(tree *Tree, out io.Writer, version string) int {
 	return 0
 }
 
-func writeTreeSummary(tree *Tree, out io.Writer, isTTY bool) int {
-	fmt.Fprintln(out, "cyoda help — topic reference")
+func writeTreeSummary(tree *Tree, out io.Writer, style string) int {
+	// ANSI bold accents — only when a theme is active (i.e. a TTY).
+	bold, reset := "", ""
+	if style != "" {
+		bold = "\x1b[1m"
+		reset = "\x1b[0m"
+	}
+
+	fmt.Fprintf(out, "%scyoda help — browse the topic tree%s\n\n", bold, reset)
+	fmt.Fprintf(out, "%sUSAGE%s\n", bold, reset)
+	fmt.Fprintln(out, "  cyoda help [<topic>...] [--format=<fmt>]")
+	fmt.Fprintln(out, "  cyoda --help                  alias for 'cyoda help'")
 	fmt.Fprintln(out)
+	fmt.Fprintf(out, "%sFLAGS%s\n", bold, reset)
+	fmt.Fprintln(out, "  --format=<fmt>   output format: auto (default), text, markdown, json")
+	fmt.Fprintln(out, "                   auto selects text on a TTY, markdown off-TTY")
+	fmt.Fprintln(out, "  --help, -h       show this summary")
+	fmt.Fprintln(out, "  --version, -v    print version info")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "%sTOPICS%s\n\n", bold, reset)
+
 	buckets := map[string][]*Topic{}
 	for _, t := range tree.Root.Children {
 		buckets[t.Stability] = append(buckets[t.Stability], t)

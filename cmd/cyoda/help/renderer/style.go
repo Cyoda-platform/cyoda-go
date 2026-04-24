@@ -6,14 +6,15 @@ import (
 )
 
 // cyodaLightStyle is glamour's LightStyleConfig with background fills removed
-// from inline code spans and fenced code blocks, and teal foreground colors
-// applied. Dark teal (#008080) is used for readability on white terminals.
-var cyodaLightStyle = applyCyodaTheme(styles.LightStyleConfig, "#008080") // CSS teal
+// from inline code spans and fenced code blocks, and brand aqua foreground
+// applied. #007777 is a darker variant of the brand aqua (same hue as 256
+// index 80 = #5FD7D7) tuned for contrast on white terminals.
+var cyodaLightStyle = applyCyodaTheme(styles.LightStyleConfig, "#007777") // darker brand aqua
 
 // cyodaDarkStyle is glamour's DarkStyleConfig with the same background-fill
-// suppression and bright teal (#5FDDD7) foreground applied for readability on
-// dark terminals.
-var cyodaDarkStyle = applyCyodaTheme(styles.DarkStyleConfig, "#5FDDD7") // bright teal
+// suppression and brand aqua (#5FD7D7) foreground applied. This matches the
+// 256-color index 80 used in the cyoda banner.
+var cyodaDarkStyle = applyCyodaTheme(styles.DarkStyleConfig, "#5FD7D7") // brand aqua (banner)
 
 // applyCyodaTheme copies the preset, clears the grey code backgrounds,
 // and sets teal foreground colors for inline code and plain fenced

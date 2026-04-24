@@ -58,8 +58,10 @@ func main() {
 		switch os.Args[1] {
 		case "--help", "-h":
 			// Delegate to the help subsystem so there is a single source
-			// of truth. Matches `cyoda help cli` exactly.
-			os.Exit(runHelpCmd([]string{"cli"}))
+			// of truth. No positional args → writeTreeSummary with USAGE +
+			// FLAGS + TOPICS block. Users can still run 'cyoda help cli'
+			// for the full CLI reference.
+			os.Exit(runHelpCmd(nil))
 		case "--version", "-v":
 			printVersion(os.Stdout)
 			return

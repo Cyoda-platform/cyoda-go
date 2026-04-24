@@ -125,7 +125,7 @@ func TestRenderText_NoGreyBackgroundDark(t *testing.T) {
 }
 
 // TestRenderText_LightTealOnInlineCode verifies that the light style emits a
-// teal foreground (#008080 → SGR 38;2;0;128;128 in truecolor) on inline code
+// teal foreground (#007777 → SGR 38;2;0;119;119 in truecolor) on inline code
 // spans. We force truecolor via COLORTERM so glamour/lipgloss does not
 // downgrade to a 256-color approximation in the test environment.
 func TestRenderText_LightTealOnInlineCode(t *testing.T) {
@@ -135,15 +135,15 @@ func TestRenderText_LightTealOnInlineCode(t *testing.T) {
 		t.Fatalf("RenderText: %v", err)
 	}
 	out := buf.String()
-	// #008080 in truecolor SGR: 38;2;0;128;128
-	if !strings.Contains(out, "38;2;0;128;128") {
-		t.Errorf("light style inline code must use teal (#008080 → 38;2;0;128;128); got %q", out)
+	// #007777 in truecolor SGR: 38;2;0;119;119 (hex 0x77 = 119)
+	if !strings.Contains(out, "38;2;0;119;119") {
+		t.Errorf("light style inline code must use brand aqua (#007777 → 38;2;0;119;119); got %q", out)
 	}
 }
 
 // TestRenderText_DarkTealOnInlineCode verifies that the dark style emits a
-// bright teal foreground (#5FDDD7 → SGR 38;2;95;221;215 in truecolor) on
-// inline code spans.
+// brand aqua foreground (#5FD7D7 → SGR 38;2;95;215;215 in truecolor) on
+// inline code spans. This matches 256-color index 80 used in the banner.
 func TestRenderText_DarkTealOnInlineCode(t *testing.T) {
 	t.Setenv("COLORTERM", "truecolor")
 	var buf bytes.Buffer
@@ -151,9 +151,9 @@ func TestRenderText_DarkTealOnInlineCode(t *testing.T) {
 		t.Fatalf("RenderText: %v", err)
 	}
 	out := buf.String()
-	// #5FDDD7 in truecolor SGR: 38;2;95;221;215
-	if !strings.Contains(out, "38;2;95;221;215") {
-		t.Errorf("dark style inline code must use teal (#5FDDD7 → 38;2;95;221;215); got %q", out)
+	// #5FD7D7 in truecolor SGR: 38;2;95;215;215 (hex 0xD7 = 215)
+	if !strings.Contains(out, "38;2;95;215;215") {
+		t.Errorf("dark style inline code must use brand aqua (#5FD7D7 → 38;2;95;215;215); got %q", out)
 	}
 }
 
@@ -186,7 +186,7 @@ func hasBoldAndTeal(out, tealSGR string) bool {
 }
 
 // TestRenderText_InlineCodeIsBold verifies that the light cyoda theme emits
-// SGR bold (1) together with the teal truecolor foreground on inline code
+// SGR bold (1) together with the brand aqua truecolor foreground on inline code
 // spans. Both must appear in the same CSI escape block.
 func TestRenderText_InlineCodeIsBold(t *testing.T) {
 	t.Setenv("COLORTERM", "truecolor")
@@ -195,9 +195,9 @@ func TestRenderText_InlineCodeIsBold(t *testing.T) {
 		t.Fatalf("RenderText: %v", err)
 	}
 	out := buf.String()
-	// Light teal is #008080 → 38;2;0;128;128
-	if !hasBoldAndTeal(out, "38;2;0;128;128") {
-		t.Errorf("inline code must emit Bold + teal SGR in same CSI block; got %q", out)
+	// Light brand aqua is #007777 → 38;2;0;119;119 (hex 0x77 = 119)
+	if !hasBoldAndTeal(out, "38;2;0;119;119") {
+		t.Errorf("inline code must emit Bold + brand aqua SGR in same CSI block; got %q", out)
 	}
 }
 

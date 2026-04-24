@@ -61,6 +61,27 @@ func TestRunHelp_NoArgs_ShowsTopics(t *testing.T) {
 	if !strings.Contains(s, "cli") || !strings.Contains(s, "config") {
 		t.Errorf("top-level summary missing topics: %q", s)
 	}
+	// Summary must now include USAGE and FLAGS headings.
+	if !strings.Contains(s, "USAGE") {
+		t.Errorf("top-level summary missing USAGE heading: %q", s)
+	}
+	if !strings.Contains(s, "FLAGS") {
+		t.Errorf("top-level summary missing FLAGS heading: %q", s)
+	}
+}
+
+func TestRunHelp_NoArgs_IncludesUsageAndFlags(t *testing.T) {
+	var out bytes.Buffer
+	code := RunHelp(testTree(t), []string{}, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	for _, want := range []string{"USAGE", "FLAGS", "TOPICS", "--format", "--version"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("summary missing %q:\n%s", want, s)
+		}
+	}
 }
 
 func TestRunHelp_TopicLookup(t *testing.T) {
