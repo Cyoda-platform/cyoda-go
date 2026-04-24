@@ -69,6 +69,22 @@ func actionsFor(topic string) []string {
 	return out
 }
 
+// topicsWithActions returns the sorted list of topic dotted-paths
+// that have registered actions.
+func topicsWithActions() []string {
+	out := make([]string, 0, len(actionRegistry))
+	for k := range actionRegistry {
+		out = append(out, k)
+	}
+	// insertion sort for deterministic output without importing sort
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
+}
+
 // emitOpenAPIJSON writes the embedded OpenAPI spec to w as pretty JSON.
 func emitOpenAPIJSON(w io.Writer) int {
 	swagger, err := genapi.GetSwagger()

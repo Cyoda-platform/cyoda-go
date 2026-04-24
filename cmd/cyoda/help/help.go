@@ -236,12 +236,16 @@ func sortTree(t *Topic) {
 }
 
 // Descriptor builds a renderer.TopicDescriptor for this topic. SeeAlso
-// is always a non-nil slice so the JSON representation is consistently
-// an array even when front-matter see_also is absent.
+// and Actions are always non-nil slices so the JSON representation is
+// consistently an array even when absent.
 func (t *Topic) Descriptor() renderer.TopicDescriptor {
 	seeAlso := []string{}
 	if len(t.SeeAlso) > 0 {
 		seeAlso = append(seeAlso, t.SeeAlso...)
+	}
+	actions := actionsFor(t.DottedPath())
+	if actions == nil {
+		actions = []string{}
 	}
 	desc := renderer.TopicDescriptor{
 		Topic:     t.DottedPath(),
@@ -252,6 +256,7 @@ func (t *Topic) Descriptor() renderer.TopicDescriptor {
 		Sections:  renderer.ExtractSections(t.Body),
 		SeeAlso:   seeAlso,
 		Stability: t.Stability,
+		Actions:   actions,
 	}
 	for _, c := range t.Children {
 		desc.Children = append(desc.Children, c.DottedPath())

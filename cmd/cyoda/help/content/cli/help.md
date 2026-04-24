@@ -30,12 +30,11 @@ The same topic tree is also available as a REST endpoint on the running server: 
 
 ## TOPIC ACTIONS
 
-Some topics publish machine-readable actions invoked as `cyoda help <topic> <action>`:
+Some topics publish machine-readable actions invoked as `cyoda help <topic> <action>`. Actions emit raw content to stdout without rendering the help body.
 
-- `cyoda help openapi json` / `yaml` — OpenAPI spec in either format
-- `cyoda help grpc proto` / `json` — gRPC proto source or descriptor JSON
+The `cyoda help` top-level summary lists topics that have actions registered. Each topic's render output includes an `ACTIONS` footer enumerating its actions. The JSON payload of `cyoda help <topic> --format=json` carries an `actions` array of the same names.
 
-Actions emit raw content to stdout without rendering the help body. They do not accept `--format`.
+Actions do not accept `--format` (that flag governs the help body's output form, not action emission).
 
 ## STABILITY
 

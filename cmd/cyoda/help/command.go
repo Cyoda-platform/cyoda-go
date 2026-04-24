@@ -113,6 +113,17 @@ func writeTopicText(t *Topic, out io.Writer, style string) int {
 		fmt.Fprintf(out, "cyoda help: render failed: %v\n", err)
 		return 1
 	}
+	if actions := actionsFor(t.DottedPath()); len(actions) > 0 {
+		bold, reset := "", ""
+		if style != "" {
+			bold = "\x1b[1m"
+			reset = "\x1b[0m"
+		}
+		fmt.Fprintf(out, "\n%sACTIONS%s\n", bold, reset)
+		for _, a := range actions {
+			fmt.Fprintf(out, "  cyoda help %s %s\n", strings.Join(t.Path, " "), a)
+		}
+	}
 	if len(t.SeeAlso) > 0 {
 		fmt.Fprintln(out, "\nSEE ALSO")
 		for _, s := range t.SeeAlso {
@@ -132,6 +143,13 @@ func dottedToCLIArgs(dotted string) string {
 
 func writeTopicMarkdown(t *Topic, out io.Writer) int {
 	renderer.RenderMarkdown(out, t.Body, t.SeeAlso)
+	if actions := actionsFor(t.DottedPath()); len(actions) > 0 {
+		fmt.Fprintln(out, "\n## ACTIONS")
+		fmt.Fprintln(out)
+		for _, a := range actions {
+			fmt.Fprintf(out, "- `cyoda help %s %s`\n", strings.Join(t.Path, " "), a)
+		}
+	}
 	return 0
 }
 
@@ -192,6 +210,18 @@ func writeTreeSummary(tree *Tree, out io.Writer, style string) int {
 		fmt.Fprintln(out, title)
 		for _, t := range list {
 			fmt.Fprintf(out, "  %-16s %s\n", t.Path[0], renderer.ExtractTagline(t.Body))
+		}
+		fmt.Fprintln(out)
+	}
+	if topics := topicsWithActions(); len(topics) > 0 {
+		fmt.Fprintf(out, "%sTOPIC ACTIONS%s\n", bold, reset)
+		fmt.Fprintln(out, "  Some topics support machine-readable output via actions:")
+		fmt.Fprintln(out)
+		for _, tp := range topics {
+			acts := actionsFor(tp)
+			fmt.Fprintf(out, "  cyoda help %s %s\n",
+				strings.ReplaceAll(tp, ".", " "),
+				strings.Join(acts, "|"))
 		}
 		fmt.Fprintln(out)
 	}

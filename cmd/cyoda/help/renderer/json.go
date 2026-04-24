@@ -85,6 +85,7 @@ type TopicDescriptor struct {
 	Sections  []Section `json:"sections"`
 	SeeAlso   []string  `json:"see_also"`
 	Stability string    `json:"stability"`
+	Actions   []string  `json:"actions"`
 	Children  []string  `json:"children,omitempty"`
 }
 

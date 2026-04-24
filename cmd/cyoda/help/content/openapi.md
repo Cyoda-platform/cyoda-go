@@ -224,7 +224,7 @@ sleep 2
 curl -s http://localhost:8080/openapi.json | jq '.paths | keys | length'
 ```
 
-## ACTIONS
+## ACTION DETAILS
 
 - `cyoda help openapi json` — emit the embedded OpenAPI spec as JSON to stdout
 - `cyoda help openapi yaml` — emit the embedded OpenAPI spec as YAML to stdout

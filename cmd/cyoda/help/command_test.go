@@ -316,6 +316,80 @@ func TestRunHelp_UnknownActionOnKnownTopic(t *testing.T) {
 	}
 }
 
+func TestWriteTopicText_ShowsActionsFooter(t *testing.T) {
+	// Use an action-registered topic (openapi) in testTree.
+	tree := testTree(t)
+	var out bytes.Buffer
+	code := RunHelp(tree, []string{"openapi"}, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, "ACTIONS") {
+		t.Errorf("output missing ACTIONS footer: %q", s)
+	}
+	if !strings.Contains(s, "cyoda help openapi json") ||
+		!strings.Contains(s, "cyoda help openapi yaml") {
+		t.Errorf("footer missing action commands: %q", s)
+	}
+}
+
+func TestWriteTopicText_NoActionsFooterWhenNone(t *testing.T) {
+	// cli has no registered actions
+	tree := testTree(t)
+	var out bytes.Buffer
+	code := RunHelp(tree, []string{"cli"}, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	// "ACTIONS" may appear in authored content; check for the command lines instead
+	if strings.Contains(out.String(), "cyoda help cli json") {
+		t.Errorf("cli should have no actions footer; output: %q", out.String())
+	}
+}
+
+func TestWriteTreeSummary_ListsTopicsWithActions(t *testing.T) {
+	tree := testTree(t)
+	var out bytes.Buffer
+	code := RunHelp(tree, nil, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, "TOPIC ACTIONS") {
+		t.Errorf("summary missing TOPIC ACTIONS block: %q", s)
+	}
+	if !strings.Contains(s, "cyoda help openapi json|yaml") {
+		t.Errorf("summary missing openapi actions: %q", s)
+	}
+	if !strings.Contains(s, "cyoda help grpc") {
+		t.Errorf("summary missing grpc actions: %q", s)
+	}
+	// actions are sorted alphabetically: json before proto
+	if !strings.Contains(s, "cyoda help grpc json|proto") {
+		t.Errorf("summary missing grpc json|proto actions: %q", s)
+	}
+}
+
+func TestDescriptor_IncludesActions(t *testing.T) {
+	tree := testTree(t)
+	t2 := tree.Find([]string{"openapi"})
+	if t2 == nil {
+		t.Skip("openapi topic not in testTree")
+	}
+	d := t2.Descriptor()
+	wantSet := map[string]bool{"json": true, "yaml": true}
+	got := map[string]bool{}
+	for _, a := range d.Actions {
+		got[a] = true
+	}
+	for k := range wantSet {
+		if !got[k] {
+			t.Errorf("descriptor missing action %q; got %v", k, d.Actions)
+		}
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

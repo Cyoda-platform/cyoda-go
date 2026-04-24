@@ -401,7 +401,7 @@ grpcurl -plaintext \
   org.cyoda.cloud.api.grpc.CloudEventsService/StartStreaming
 ```
 
-## ACTIONS
+## ACTION DETAILS
 
 - `cyoda help grpc proto` — emit raw `.proto` source for `cyoda-cloud-api.proto` and `cloudevents.proto` (concatenated with separator comments)
 - `cyoda help grpc json` — emit the gRPC service `FileDescriptorSet` as JSON (standard protobuf descriptor form)

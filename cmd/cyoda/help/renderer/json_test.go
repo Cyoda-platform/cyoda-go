@@ -17,6 +17,7 @@ func TestRenderTopicDescriptor_Roundtrip(t *testing.T) {
 		Sections:  []Section{{Name: "SYNOPSIS", Body: "cyoda serve"}},
 		SeeAlso:   []string{"config.database"},
 		Stability: "stable",
+		Actions:   []string{},
 	}
 	b, err := json.Marshal(d)
 	if err != nil {
