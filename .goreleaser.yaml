@@ -11,7 +11,10 @@ before:
     - env GOWORK=off go mod download
     - env GOWORK=off go mod verify
     - bash -c 'mkdir -p .release-extras && tar -czf ".release-extras/cyoda_help_{{ .Version }}.tar.gz" -C cmd/cyoda/help content'
-    - bash -c 'go run ./cmd/cyoda help --format=json > ".release-extras/cyoda_help_{{ .Version }}.json"'
+    # `go run` does not apply the `builds:` ldflags, so stamp main.version
+    # explicitly — otherwise the emitted JSON ships with main.version="dev"
+    # instead of the tagged version (issue #101).
+    - bash -c 'go run -ldflags="-X main.version={{ .Version }}" ./cmd/cyoda help --format=json > ".release-extras/cyoda_help_{{ .Version }}.json"'
 
 builds:
   - id: cyoda
