@@ -10,32 +10,43 @@ import (
 
 // canonicalOperators is the single source of truth for the valid
 // `operatorType` values accepted by Simple / Lifecycle / Array conditions.
-// The list is mirrored in cmd/cyoda/help/content/search.md — any change to
-// one must be reflected in the other. Issue #90 closed the gap where
-// unknown operator strings silently fell through to a regex match.
+// The list is mirrored in cmd/cyoda/help/content/search.md and in the
+// OpenAPI schema (api/generated.go `*OperatorType` enum values). Any
+// change to one must be reflected in the others.
+//
+// The set must include every operator the runtime matcher
+// (internal/match/operators.go) accepts — otherwise previously-valid
+// requests that would have matched correctly in-memory are rejected at
+// the API boundary. Issue #90 closed the "silently falls through to
+// regex" gap at the default; the set must still admit every operator
+// the system actually supports.
 var canonicalOperators = map[string]struct{}{
-	"EQUALS":           {},
-	"NOT_EQUAL":        {},
-	"GREATER_THAN":     {},
-	"LESS_THAN":        {},
-	"GREATER_OR_EQUAL": {},
-	"LESS_OR_EQUAL":    {},
-	"CONTAINS":         {},
-	"STARTS_WITH":      {},
-	"ENDS_WITH":        {},
-	"LIKE":             {},
-	"IS_NULL":          {},
-	"NOT_NULL":         {},
-	"BETWEEN":          {},
-	"MATCHES_PATTERN":  {},
-	"IEQUALS":          {},
-	"INOT_EQUAL":       {},
-	"ICONTAINS":        {},
-	"INOT_CONTAINS":    {},
-	"ISTARTS_WITH":     {},
-	"INOT_STARTS_WITH": {},
-	"IENDS_WITH":       {},
-	"INOT_ENDS_WITH":   {},
+	"EQUALS":            {},
+	"NOT_EQUAL":         {},
+	"GREATER_THAN":      {},
+	"LESS_THAN":         {},
+	"GREATER_OR_EQUAL":  {},
+	"LESS_OR_EQUAL":     {},
+	"CONTAINS":          {},
+	"NOT_CONTAINS":      {},
+	"STARTS_WITH":       {},
+	"NOT_STARTS_WITH":   {},
+	"ENDS_WITH":         {},
+	"NOT_ENDS_WITH":     {},
+	"LIKE":              {},
+	"IS_NULL":           {},
+	"NOT_NULL":          {},
+	"BETWEEN":           {},
+	"BETWEEN_INCLUSIVE": {},
+	"MATCHES_PATTERN":   {},
+	"IEQUALS":           {},
+	"INOT_EQUAL":        {},
+	"ICONTAINS":         {},
+	"INOT_CONTAINS":     {},
+	"ISTARTS_WITH":      {},
+	"INOT_STARTS_WITH":  {},
+	"IENDS_WITH":        {},
+	"INOT_ENDS_WITH":    {},
 }
 
 // ValidateCondition walks a parsed condition tree and returns an error

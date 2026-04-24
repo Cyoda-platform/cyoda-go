@@ -69,12 +69,16 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 - `GREATER_OR_EQUAL` — greater-than or equal
 - `LESS_OR_EQUAL` — less-than or equal
 - `CONTAINS` — substring or array-element containment
+- `NOT_CONTAINS` — inverse of CONTAINS
 - `STARTS_WITH` — string prefix match
+- `NOT_STARTS_WITH` — inverse of STARTS_WITH
 - `ENDS_WITH` — string suffix match
+- `NOT_ENDS_WITH` — inverse of ENDS_WITH
 - `LIKE` — SQL-style LIKE pattern (`%` = any sequence, `_` = any single char)
 - `IS_NULL` — field is absent or JSON null
 - `NOT_NULL` — field is present and not JSON null
-- `BETWEEN` — range check; `value` must be a two-element array `[low, high]`
+- `BETWEEN` — range check (exclusive bounds); `value` must be a two-element array `[low, high]`
+- `BETWEEN_INCLUSIVE` — range check (inclusive bounds); same `value` shape as BETWEEN
 - `MATCHES_PATTERN` — regular expression match
 - `IEQUALS` — case-insensitive EQUALS
 - `INOT_EQUAL` — case-insensitive NOT_EQUAL
