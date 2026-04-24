@@ -65,10 +65,25 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 				if handler, ok := lookupAction(parent.DottedPath(), actionName); ok {
 					return handler(out)
 				}
+				// Dynamic action resolvers (issue #111): the openapi
+				// topic accepts any tag slug as an action, resolved at
+				// dispatch time. If a resolver matches, use it; if not,
+				// fall through to the unknown-action error which now
+				// includes "(and any tag slug — see 'cyoda help openapi
+				// tags')" for discoverability.
+				if parent.DottedPath() == "openapi" {
+					if handler, ok := lookupOpenAPITagAction(actionName, format); ok {
+						return handler(out)
+					}
+				}
 				// Topic exists but the action name is unknown — improve the error.
 				if avail := actionsFor(parent.DottedPath()); avail != nil {
-					fmt.Fprintf(out, "cyoda help %s: unknown action %q. Available actions: %s\n",
-						strings.Join(parentPath, " "), actionName, strings.Join(avail, ", "))
+					hint := ""
+					if parent.DottedPath() == "openapi" {
+						hint = " (or any tag slug — see 'cyoda help openapi tags')"
+					}
+					fmt.Fprintf(out, "cyoda help %s: unknown action %q. Available actions: %s%s\n",
+						strings.Join(parentPath, " "), actionName, strings.Join(avail, ", "), hint)
 					return 2
 				}
 			}
@@ -89,7 +104,7 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 
 func validFormat(f string) bool {
 	switch f {
-	case "auto", "", "text", "markdown", "json":
+	case "auto", "", "text", "markdown", "json", "yaml":
 		return true
 	}
 	return false
