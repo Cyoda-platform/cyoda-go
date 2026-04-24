@@ -24,7 +24,8 @@ requires no additional configuration.
 ### Backend selection
 
 - `CYODA_STORAGE_BACKEND` — storage backend to use: `sqlite`, `postgres`, or `memory`
-  (default: `sqlite`)
+  (bare default: `memory`; `cyoda init` writes `CYODA_STORAGE_BACKEND=sqlite` to
+  `~/.config/cyoda/cyoda.env`, so the effective default after `cyoda init` is `sqlite`)
 
 ### SQLite backend (`CYODA_SQLITE_*`)
 
@@ -59,7 +60,7 @@ not persisted across restarts. Suitable for development and testing only.
 
 ## EXAMPLES
 
-**SQLite (default):**
+**SQLite (default after `cyoda init`):**
 
 ```
 CYODA_STORAGE_BACKEND=sqlite

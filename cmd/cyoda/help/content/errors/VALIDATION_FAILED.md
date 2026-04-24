@@ -16,7 +16,7 @@ VALIDATION_FAILED — the request payload is structurally valid JSON but fails t
 
 ## SYNOPSIS
 
-HTTP: `422` `Unprocessable Entity`. Retryable: `no`.
+HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 

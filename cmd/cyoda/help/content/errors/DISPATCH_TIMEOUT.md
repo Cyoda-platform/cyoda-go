@@ -16,13 +16,15 @@ DISPATCH_TIMEOUT — the dispatcher waited longer than the configured timeout fo
 
 ## SYNOPSIS
 
-HTTP: `503` `Service Unavailable`. Retryable: `yes`.
+HTTP: `503` `Service Unavailable`.
 
 ## DESCRIPTION
 
 A workflow processor or criteria evaluation was dispatched to a compute member but the response did not arrive within the dispatch timeout window. The underlying task may or may not have completed on the remote node.
 
-Retry the request. If timeouts recur, check compute member load, network latency, and the `CYODA_DISPATCH_TIMEOUT` configuration value.
+Retryable. Completion on the remote node is not guaranteed; retries must be idempotent or carry an idempotency key.
+
+If timeouts recur, check compute member load and network latency. The relevant configuration variables are `CYODA_DISPATCH_WAIT_TIMEOUT` (how long the dispatcher polls gossip for a compute member with matching tags; default `5s`) and `CYODA_DISPATCH_FORWARD_TIMEOUT` (HTTP timeout for the cross-node forwarding call; default `30s`).
 
 ## SEE ALSO
 

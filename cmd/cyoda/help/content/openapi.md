@@ -139,15 +139,21 @@ The binary version is injected at build time via `-ldflags` and reported in:
 
 ## ERRORS
 
-The REST API uses `application/json` error responses. `4xx` errors include a domain-specific error code and message. `5xx` errors include a generic message and a ticket UUID for server-side correlation.
+The REST API uses `application/problem+json` (RFC 9457 Problem Details) error responses. See `errors` for the canonical shape and the full error code catalogue.
 
 Error response shape (4xx example):
 
 ```json
 {
-  "code": "MODEL_NOT_FOUND",
-  "message": "MODEL_NOT_FOUND: model nobel-prize:1 not found",
-  "retryable": false
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "MODEL_NOT_FOUND: model nobel-prize:1 not found",
+  "instance": "/api/model/nobel-prize/1",
+  "properties": {
+    "errorCode": "MODEL_NOT_FOUND",
+    "retryable": false
+  }
 }
 ```
 
@@ -155,11 +161,19 @@ Error response shape (5xx example):
 
 ```json
 {
-  "message": "internal error [ticket: 3fa85f64-5717-4562-b3fc-2c963f66afa6]"
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "detail": "SERVER_ERROR: internal error [ticket: 3fa85f64-5717-4562-b3fc-2c963f66afa6]",
+  "instance": "/api/entity/abc",
+  "ticket": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "properties": {
+    "errorCode": "SERVER_ERROR"
+  }
 }
 ```
 
-`CYODA_ERROR_RESPONSE_MODE=sanitized` (default) suppresses stack traces and internal detail from 5xx responses. `CYODA_ERROR_RESPONSE_MODE=full` includes full detail — for development environments only.
+`CYODA_ERROR_RESPONSE_MODE=sanitized` (default) suppresses internal detail from 5xx `detail` fields. `CYODA_ERROR_RESPONSE_MODE=verbose` includes full error detail — for development environments only.
 
 ## EXAMPLES
 

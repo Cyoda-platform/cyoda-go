@@ -89,7 +89,7 @@ export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
 cyoda
 ```
 
-The binary accepts env vars from the process environment, from `.env` files loaded by `CYODA_PROFILES`, and from the user config written by `cyoda init`. The `CYODA_PROFILES` variable selects which `.env` profile files to load from `~/.config/cyoda/`. For example, `CYODA_PROFILES=postgres,jwt` loads `~/.config/cyoda/postgres.env` then `~/.config/cyoda/jwt.env`.
+The binary accepts env vars from the process environment, from `.env` files loaded by `CYODA_PROFILES`, and from the user config written by `cyoda init`. The `CYODA_PROFILES` variable selects which `.env` profile files to load from the **current working directory**. For example, `CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt` from the working directory. The user config at `~/.config/cyoda/cyoda.env` (written by `cyoda init`) is always loaded automatically as a separate step — it is not a profile file.
 
 ### Docker
 
