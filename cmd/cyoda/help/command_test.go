@@ -396,3 +396,121 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+func TestWriteTopicText_ShowsSubtopicsFooter(t *testing.T) {
+	// Build a tree with a parent + 2 children.
+	fsys := fstest.MapFS{
+		"content/x.md": &fstest.MapFile{Data: []byte(`---
+topic: x
+title: x
+stability: stable
+---
+
+# x
+
+body
+`)},
+		"content/x/child-a.md": &fstest.MapFile{Data: []byte(`---
+topic: x.child-a
+title: a
+stability: stable
+---
+
+# a
+`)},
+		"content/x/child-b.md": &fstest.MapFile{Data: []byte(`---
+topic: x.child-b
+title: b
+stability: stable
+---
+
+# b
+`)},
+	}
+	tree, err := Load(fsys)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var out bytes.Buffer
+	code := RunHelp(tree, []string{"x"}, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, "SUBTOPICS") {
+		t.Errorf("output missing SUBTOPICS footer: %q", s)
+	}
+	if !strings.Contains(s, "cyoda help x child-a") {
+		t.Errorf("footer missing child-a: %q", s)
+	}
+	if !strings.Contains(s, "cyoda help x child-b") {
+		t.Errorf("footer missing child-b: %q", s)
+	}
+}
+
+func TestWriteTopicText_NoSubtopicsFooterWhenLeaf(t *testing.T) {
+	// A leaf topic (no children) should NOT emit SUBTOPICS.
+	fsys := fstest.MapFS{
+		"content/leaf.md": &fstest.MapFile{Data: []byte(`---
+topic: leaf
+title: leaf
+stability: stable
+---
+
+# leaf
+
+body
+`)},
+	}
+	tree, err := Load(fsys)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var out bytes.Buffer
+	code := RunHelp(tree, []string{"leaf"}, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if strings.Contains(out.String(), "SUBTOPICS") {
+		t.Errorf("leaf topic should not have SUBTOPICS footer; got: %q", out.String())
+	}
+}
+
+func TestWriteTopicMarkdown_ShowsSubtopicsSection(t *testing.T) {
+	fsys := fstest.MapFS{
+		"content/x.md": &fstest.MapFile{Data: []byte(`---
+topic: x
+title: x
+stability: stable
+---
+
+# x
+
+body
+`)},
+		"content/x/child.md": &fstest.MapFile{Data: []byte(`---
+topic: x.child
+title: c
+stability: stable
+---
+
+# c
+`)},
+	}
+	tree, err := Load(fsys)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var out bytes.Buffer
+	code := RunHelp(tree, []string{"--format=markdown", "x"}, &out, "0.6.1", false, "")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, "## SUBTOPICS") {
+		t.Errorf("markdown output missing ## SUBTOPICS: %q", s)
+	}
+	if !strings.Contains(s, "`cyoda help x child`") {
+		t.Errorf("markdown subtopic entry missing: %q", s)
+	}
+}

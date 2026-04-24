@@ -113,6 +113,19 @@ func writeTopicText(t *Topic, out io.Writer, style string) int {
 		fmt.Fprintf(out, "cyoda help: render failed: %v\n", err)
 		return 1
 	}
+	if len(t.Children) > 0 {
+		bold, reset := "", ""
+		if style != "" {
+			bold = "\x1b[1m"
+			reset = "\x1b[0m"
+		}
+		fmt.Fprintf(out, "\n%sSUBTOPICS%s\n", bold, reset)
+		// Children are already sorted in Load via sortTree — emit in order.
+		for _, c := range t.Children {
+			// c.Path contains the full path; emit only the last segment as the invocable child.
+			fmt.Fprintf(out, "  cyoda help %s\n", strings.Join(c.Path, " "))
+		}
+	}
 	if actions := actionsFor(t.DottedPath()); len(actions) > 0 {
 		bold, reset := "", ""
 		if style != "" {
@@ -143,6 +156,13 @@ func dottedToCLIArgs(dotted string) string {
 
 func writeTopicMarkdown(t *Topic, out io.Writer) int {
 	renderer.RenderMarkdown(out, t.Body, t.SeeAlso)
+	if len(t.Children) > 0 {
+		fmt.Fprintln(out, "\n## SUBTOPICS")
+		fmt.Fprintln(out)
+		for _, c := range t.Children {
+			fmt.Fprintf(out, "- `cyoda help %s`\n", strings.Join(c.Path, " "))
+		}
+	}
 	if actions := actionsFor(t.DottedPath()); len(actions) > 0 {
 		fmt.Fprintln(out, "\n## ACTIONS")
 		fmt.Fprintln(out)
