@@ -107,8 +107,8 @@ aggregator targets below when you want coverage across the whole repo.
 - Test (root + every plugin submodule): `make test-all` — covers root + `plugins/memory|sqlite|postgres`; Docker required for postgres testcontainers
 - Test (root + plugins, short): `make test-short-all`
 - Test (E2E only): `go test ./internal/e2e/... -v`
-- Coverage: `go test -coverprofile=coverage.out ./...`
-- Race detector: `go test -race ./...`
+- Coverage (root module): `go test -coverprofile=coverage.out ./...` — run inside each `plugins/*` for per-plugin coverage
+- Race detector (root module): `go test -race ./...`
 - Build: `go build -o bin/cyoda ./cmd/cyoda`
 - Tidy: `go mod tidy`
-- Vet: `go vet ./...`
+- Vet (root module): `go vet ./...` — the `per-module-hygiene` CI job vets each plugin separately
