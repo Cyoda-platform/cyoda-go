@@ -59,7 +59,9 @@ func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDG
 }
 
 func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
-	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeBadRequest, "not yet implemented"))
+	// NOT_IMPLEMENTED matches the HTTP status and aligns with
+	// internal/api/unimplemented.go's fallback (#92 secondary fix).
+	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplemented, "not yet implemented"))
 }
 
 // validateOrExtend validates parsedData against the model schema. When
@@ -507,7 +509,52 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 }
 
 func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, format genapi.UpdateCollectionParamsFormat, params genapi.UpdateCollectionParams) {
-	h.stub(w, r)
+	// Only JSON is wired up today — parity with CreateCollection, which
+	// also accepts the format path param but consumes JSON.
+	if format != genapi.UpdateCollectionParamsFormatJSON {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "only JSON format is supported"))
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
+		return
+	}
+
+	// Per docs: `payload` is a JSON-encoded STRING (not a nested object).
+	// Match CreateCollection's wire contract exactly.
+	var rawItems []struct {
+		ID         string `json:"id"`
+		Payload    string `json:"payload"`
+		Transition string `json:"transition"`
+	}
+	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array (payload must be a JSON-encoded string)"))
+		return
+	}
+
+	items := make([]UpdateCollectionItem, 0, len(rawItems))
+	for _, raw := range rawItems {
+		items = append(items, UpdateCollectionItem{
+			EntityID:   raw.ID,
+			Payload:    json.RawMessage(raw.Payload),
+			Transition: raw.Transition,
+		})
+	}
+
+	result, err := h.UpdateEntityCollection(r.Context(), items)
+	if err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
+	}
+
+	resp := map[string]any{
+		"transactionId": result.TransactionID,
+		"entityIds":     result.EntityIDs,
+	}
+	common.WriteJSON(w, http.StatusOK, []any{resp})
 }
 
 func (h *Handler) UpdateSingleWithLoopback(w http.ResponseWriter, r *http.Request, format genapi.UpdateSingleWithLoopbackParamsFormat, entityId openapi_types.UUID, params genapi.UpdateSingleWithLoopbackParams) {

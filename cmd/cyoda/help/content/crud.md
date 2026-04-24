@@ -163,12 +163,9 @@ Response: `200 OK`, `application/json`:
 
 Response: `200 OK`, same shape as loopback update.
 
-**PUT /api/entity/{format}** — Update a collection (mixed entities) — **NOT YET IMPLEMENTED (#92)**
+**PUT /api/entity/{format}** — Update a collection (mixed entities)
 
-**Status**: This endpoint is registered in the route table but currently returns `501 Not Implemented`. The response body carries `errorCode: BAD_REQUEST` (another bug tracked in #92). Do not use. The signature below documents the planned contract.
-
-- `format` (path): `JSON` or `XML`
-- `transactionWindow` (query, optional): int32, default `100` — max entities per transaction batch
+- `format` (path): `JSON` (only supported format today)
 - `transactionTimeoutMillis` (query, optional): int64, default `10000`
 - `waitForConsistencyAfter` (query, optional): boolean, default `false`
 
@@ -191,9 +188,18 @@ Request body: JSON array of update items:
 ]
 ```
 
-If any entity in the collection is not found, the entire operation fails and no entities are updated.
+If any entity in the collection is not found, the entire operation fails and no entities are updated (all-or-nothing).
 
-Response (when implemented): `200 OK`, `application/json`, `EntityTransactionResponse` array.
+Response: `200 OK`, `application/json`, `EntityTransactionResponse` array (one element — the whole collection runs in a single transaction):
+
+```json
+[
+  {
+    "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16",
+    "entityIds": ["8824c480-c166-11ee-9e63-ae468cd3ed16"]
+  }
+]
+```
 
 **DELETE /api/entity/{entityId}** — Delete a single entity by UUID
 
