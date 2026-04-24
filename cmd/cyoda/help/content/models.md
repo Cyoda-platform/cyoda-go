@@ -203,20 +203,23 @@ The importer walks the JSON structure and infers a typed schema. Subsequent impo
   "currentState": "LOCKED",
   "model": {
     "$": {
+      "#.laureates": "OBJECT",
       ".category": "STRING",
       ".year": "STRING"
     },
     "$.laureates[*]": {
+      "#": "ARRAY_ELEMENT",
       ".firstname": "STRING",
       ".id": "STRING",
       ".motivation": "STRING",
       ".share": "STRING",
-      ".surname": "STRING",
-      "#": "ARRAY_ELEMENT"
+      ".surname": "STRING"
     }
   }
 }
 ```
+
+The `"$"` bucket includes a `"#.fieldname": "OBJECT"` entry for each array field in the root object. The `"$.fieldname[*]"` bucket contains the array element schema with `"#": "ARRAY_ELEMENT"` as a type marker.
 
 **Export — JSON_SCHEMA format**:
 
@@ -230,15 +233,16 @@ The importer walks the JSON structure and infers a typed schema. Subsequent impo
       "year": { "type": "string" },
       "laureates": {
         "type": "array",
-        "prefixItems": [
-          {
+        "items": {
+          "type": "object",
+          "properties": {
             "firstname": { "type": "string" },
             "share": { "type": "string" },
             "id": { "type": "string" },
             "surname": { "type": "string" },
             "motivation": { "type": "string" }
           }
-        ]
+        }
       }
     }
   }
