@@ -1,9 +1,350 @@
 ---
 topic: search
-title: "search — content pending"
-stability: experimental
+title: "search — entity search API"
+stability: stable
+see_also:
+  - crud
+  - models
+  - analytics
+  - errors.SEARCH_JOB_NOT_FOUND
+  - errors.SEARCH_JOB_ALREADY_TERMINAL
+  - errors.SEARCH_RESULT_LIMIT
+  - errors.SEARCH_SHARD_TIMEOUT
+  - openapi
 ---
 
 # search
 
-**Content pending in v0.6.1.** See the cyoda-go README for current external documentation while this topic is authored.
+## NAME
+
+search — entity search API: synchronous direct search, asynchronous snapshot search, and entity statistics.
+
+## SYNOPSIS
+
+```
+POST   /api/search/direct/{entityName}/{modelVersion}
+POST   /api/search/async/{entityName}/{modelVersion}
+GET    /api/search/async/{jobId}
+GET    /api/search/async/{jobId}/status
+DELETE /api/search/async/{jobId}/cancel
+```
+
+Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints require `Authorization: Bearer <token>` except when `CYODA_IAM_MODE=mock`.
+
+## DESCRIPTION
+
+Search operates against a specific entity model `(entityName, modelVersion)`. Two modes are supported:
+
+**Synchronous (direct) search**: `POST /search/direct/{entityName}/{modelVersion}`. Executes inline within the HTTP request. The response is an NDJSON stream (`application/x-ndjson`), one entity envelope per line. The default result limit is 1000 entities per request; the maximum is 10000 (values above 10000 are clamped to 10000).
+
+**Asynchronous search**: `POST /search/async/{entityName}/{modelVersion}`. Submits a search job and returns a job UUID immediately. The search executes in a background goroutine (or in the plugin's own executor for `SelfExecutingSearchStore` plugins). Results are retrieved by polling status and then fetching pages.
+
+Both modes accept the same `Condition` DSL as the request body. When the storage plugin implements `spi.Searcher`, the condition is translated to a plugin-level predicate and pushed down to the backend. When translation fails (unsupported condition type) or an active transaction is present, the service falls back to in-memory filtering after a full `GetAll` scan.
+
+## CONDITION DSL
+
+All search requests accept a `Condition` JSON document as the POST body. Conditions are parsed recursively up to a maximum nesting depth of 50. Body size limit: 10 MiB.
+
+**SimpleCondition** — match a single JSON path against a scalar value:
+
+```json
+{
+  "type": "simple",
+  "jsonPath": "$.category",
+  "operatorType": "EQUALS",
+  "value": "physics"
+}
+```
+
+- `type`: `"simple"`
+- `jsonPath`: JSONPath string (e.g., `"$.year"`, `"$.laureates[0].firstname"`)
+- `operatorType` (also accepted as `operator` or `operation`): operator string
+- `value`: any JSON scalar
+
+**LifecycleCondition** — match entity lifecycle metadata:
+
+```json
+{
+  "type": "lifecycle",
+  "field": "state",
+  "operatorType": "EQUALS",
+  "value": "APPROVED"
+}
+```
+
+- `type`: `"lifecycle"`
+- `field`: `"state"`, `"creationDate"`, or `"previousTransition"`
+- `operatorType` (also accepted as `operator` or `operation`): operator string
+- `value`: any JSON scalar
+
+**GroupCondition** — combine conditions with a logical operator:
+
+```json
+{
+  "type": "group",
+  "operator": "AND",
+  "conditions": [
+    { "type": "simple", "jsonPath": "$.year", "operatorType": "EQUALS", "value": "2024" },
+    { "type": "lifecycle", "field": "state", "operatorType": "EQUALS", "value": "NEW" }
+  ]
+}
+```
+
+- `type`: `"group"`
+- `operator`: `"AND"` or `"OR"`
+- `conditions`: array of `Condition` objects (recursive; maximum nesting depth 50)
+
+**ArrayCondition** — match positional values in a JSON array:
+
+```json
+{
+  "type": "array",
+  "jsonPath": "$.laureates",
+  "values": ["John", null, "Hopfield"]
+}
+```
+
+- `type`: `"array"`
+- `jsonPath`: path to the array field
+- `values`: positional values; `null` entries match any value at that index
+
+**FunctionCondition** — server-side function predicate placeholder:
+
+```json
+{ "type": "function" }
+```
+
+- `type`: `"function"`
+- No additional fields; reserved for server-side computed predicates.
+
+## ENDPOINTS
+
+**POST /api/search/direct/{entityName}/{modelVersion}** — Synchronous search
+
+- `entityName` (path): string
+- `modelVersion` (path): int32
+- `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant
+- `limit` (query, optional): string-encoded integer, clamped to maximum 10000; default 1000
+
+Request body: `Condition` JSON document.
+
+Response: `200 OK`, `Content-Type: application/x-ndjson`.
+
+Each line is a complete entity envelope JSON object:
+
+```
+{"type":"ENTITY","data":{"category":"physics","year":"2024"},"meta":{"id":"74807f00-ed0d-11ee-a357-ae468cd3ed16","state":"NEW","creationDate":"2025-08-01T10:00:00.000000000Z","lastUpdateTime":"2025-08-01T10:00:00.000000000Z"}}
+{"type":"ENTITY","data":{"category":"chemistry","year":"2023"},"meta":{"id":"89abc100-ed0d-11ee-a357-ae468cd3ed16","state":"APPROVED","creationDate":"2025-07-15T09:00:00.000000000Z","lastUpdateTime":"2025-07-20T14:00:00.000000000Z"}}
+```
+
+The stream is truncated on encode failure after the header has been sent; the client detects truncation via a connection error or incomplete last line.
+
+**POST /api/search/async/{entityName}/{modelVersion}** — Submit async search job
+
+- `entityName` (path): string
+- `modelVersion` (path): int32
+- `pointInTime` (query, optional): RFC 3339 — if not provided, the current time is captured at submission
+
+Request body: `Condition` JSON document.
+
+Response: `200 OK`, `application/json` — bare UUID string (job ID):
+
+```
+"a1b2c3d4-e5f6-11ee-9e63-ae468cd3ed16"
+```
+
+The job is stored with status `RUNNING`. For non-`SelfExecutingSearchStore` backends, a goroutine begins the search immediately using a background context derived from the submitting user's tenant context.
+
+**GET /api/search/async/{jobId}/status** — Get async job status
+
+- `jobId` (path): UUID
+
+Response: `200 OK`, `application/json`:
+
+```json
+{
+  "searchJobStatus": "SUCCESSFUL",
+  "createTime": "2025-08-01T10:00:00.000000000Z",
+  "entitiesCount": 42,
+  "calculationTimeMillis": 145,
+  "finishTime": "2025-08-01T10:00:00.145000000Z",
+  "expirationDate": "2025-08-02T10:00:00.000000000Z"
+}
+```
+
+- `searchJobStatus`: `"RUNNING"`, `"SUCCESSFUL"`, `"FAILED"`, or `"CANCELLED"`
+- `createTime`: RFC 3339 with nanoseconds
+- `entitiesCount`: total matching entities (0 while running)
+- `calculationTimeMillis`: elapsed search time in milliseconds
+- `finishTime`: RFC 3339 with nanoseconds; absent when status is `RUNNING`
+- `expirationDate`: `createTime + 24h` — job results expire after this time
+
+**GET /api/search/async/{jobId}** — Retrieve async job results (paginated)
+
+- `jobId` (path): UUID
+- `pageSize` (query, optional): string-encoded integer, default `1000`
+- `pageNumber` (query, optional): string-encoded integer, default `0`; offset = `pageNumber * pageSize`
+
+The job must be in `SUCCESSFUL` status. Returns `400 BAD_REQUEST` if the job is not yet complete.
+
+Response: `200 OK`, `application/json`:
+
+```json
+{
+  "content": [
+    {
+      "type": "ENTITY",
+      "data": { "category": "physics", "year": "2024" },
+      "meta": {
+        "id": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
+        "state": "NEW",
+        "creationDate": "2025-08-01T10:00:00.000000000Z",
+        "lastUpdateTime": "2025-08-01T10:00:00.000000000Z"
+      }
+    }
+  ],
+  "page": {
+    "number": 0,
+    "size": 1000,
+    "totalElements": 42,
+    "totalPages": 1
+  }
+}
+```
+
+Results are fetched from the stored entity snapshots at the job's `pointInTime`. Entities deleted or modified after submission are returned as they existed at submission time.
+
+**DELETE /api/search/async/{jobId}/cancel** — Cancel a running async job
+
+- `jobId` (path): UUID
+
+Cancellation succeeds only when the job status is `RUNNING`. If the job has already reached a terminal state (`SUCCESSFUL`, `FAILED`, or `CANCELLED`), the server returns `400 Bad Request`:
+
+```json
+{
+  "detail": "snapshot by id=<jobId> is not running. current status=SUCCESSFUL",
+  "properties": {
+    "currentStatus": "SUCCESSFUL",
+    "snapshotId": "<jobId>"
+  },
+  "status": 400,
+  "title": "Bad Request",
+  "type": "about:blank"
+}
+```
+
+On successful cancellation, response: `200 OK`, `application/json`:
+
+```json
+{
+  "isCancelled": true,
+  "cancelled": true,
+  "currentSearchJobStatus": "CANCELLED"
+}
+```
+
+## PAGINATION
+
+Async search results use page-number pagination: `pageNumber=0` is the first page, `offset = pageNumber * pageSize`. `pageNumber` and `pageSize` are both string-encoded integers in query parameters.
+
+Synchronous search does not paginate; use the `limit` parameter (max 10000) to bound results. For large datasets, use async search with page retrieval.
+
+## ERRORS
+
+- `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist
+- `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`
+- `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
+- `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
+- `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job
+
+## EXAMPLES
+
+**Synchronous search — match by field value:**
+
+```
+curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"simple","jsonPath":"$.category","operatorType":"EQUALS","value":"physics"}' \
+  "http://localhost:8080/api/search/direct/nobel-prize/1"
+```
+
+**Synchronous search — match by lifecycle state:**
+
+```
+curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"APPROVED"}' \
+  "http://localhost:8080/api/search/direct/nobel-prize/1"
+```
+
+**Synchronous search — AND group:**
+
+```
+curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "group",
+    "operator": "AND",
+    "conditions": [
+      {"type":"simple","jsonPath":"$.year","operatorType":"EQUALS","value":"2024"},
+      {"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"NEW"}
+    ]
+  }' \
+  "http://localhost:8080/api/search/direct/nobel-prize/1"
+```
+
+**Synchronous search at point in time with limit:**
+
+```
+curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"group","operator":"AND","conditions":[]}' \
+  "http://localhost:8080/api/search/direct/nobel-prize/1?pointInTime=2025-08-01T00:00:00Z&limit=100"
+```
+
+**Submit async search:**
+
+```
+JOB_ID=$(curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"simple","jsonPath":"$.year","operatorType":"EQUALS","value":"2024"}' \
+  "http://localhost:8080/api/search/async/nobel-prize/1" | tr -d '"')
+```
+
+**Poll async job status:**
+
+```
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/search/async/$JOB_ID/status"
+```
+
+**Retrieve async results (page 0):**
+
+```
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/search/async/$JOB_ID?pageNumber=0&pageSize=500"
+```
+
+**Cancel an async job:**
+
+```
+curl -s -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/search/async/$JOB_ID/cancel"
+```
+
+## SEE ALSO
+
+- crud
+- models
+- analytics
+- errors.SEARCH_JOB_NOT_FOUND
+- errors.SEARCH_JOB_ALREADY_TERMINAL
+- errors.SEARCH_RESULT_LIMIT
+- errors.SEARCH_SHARD_TIMEOUT
+- openapi
