@@ -209,6 +209,8 @@ Response: `200 OK`, `application/json`:
 
 Returns `404 WORKFLOW_NOT_FOUND` when no workflows have been imported for the model.
 
+**Export field omission:** The export response omits optional fields that were not explicitly set or are default values. Specifically, `TransitionDefinition` objects in the export may omit `disabled` (when `false`) and `processors` (when empty). States with no transitions are serialised as `{}` rather than `{"transitions":[]}`. The `desc` field on `WorkflowDefinition` is omitted when empty.
+
 ## ENGINE EXECUTION
 
 The workflow engine runs synchronously within the entity write transaction. The execution sequence for a CREATE:
