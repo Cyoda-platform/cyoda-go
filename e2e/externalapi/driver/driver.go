@@ -172,6 +172,36 @@ func (d *Driver) LockModelRaw(name string, version int) (int, []byte, error) {
 	return d.client.LockModelRaw(d.t, name, version)
 }
 
+// SetChangeLevelRaw issues POST /api/model/{name}/{version}/changeLevel/{level}
+// with raw response for negative-path assertions.
+func (d *Driver) SetChangeLevelRaw(name string, version int, level string) (int, []byte, error) {
+	return d.client.SetChangeLevelRaw(d.t, name, version, level)
+}
+
+// ImportModelRaw issues the import-from-sample endpoint with raw response
+// for negative-path assertions.
+func (d *Driver) ImportModelRaw(name string, version int, sample string) (int, []byte, error) {
+	return d.client.ImportModelRaw(d.t, name, version, sample)
+}
+
+// UpdateEntityRaw issues PUT /api/entity/JSON/{id}/{transition} with raw
+// response for negative-path assertions.
+func (d *Driver) UpdateEntityRaw(id uuid.UUID, transition, body string) (int, []byte, error) {
+	return d.client.UpdateEntityRaw(d.t, id, transition, body)
+}
+
+// GetEntityChangesRaw issues GET /api/entity/{id}/changes with raw response
+// for negative-path assertions.
+func (d *Driver) GetEntityChangesRaw(id uuid.UUID) (int, []byte, error) {
+	return d.client.GetEntityChangesRaw(d.t, id)
+}
+
+// ImportWorkflowRaw issues POST /api/model/{name}/{version}/workflow/import
+// with raw response for negative-path assertions.
+func (d *Driver) ImportWorkflowRaw(name string, version int, body string) (int, []byte, error) {
+	return d.client.ImportWorkflowRaw(d.t, name, version, body)
+}
+
 // GetEntity issues GET /api/entity/{id}.
 func (d *Driver) GetEntity(id uuid.UUID) (parityclient.EntityResult, error) {
 	return d.client.GetEntity(d.t, id)

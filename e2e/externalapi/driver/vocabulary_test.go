@@ -284,3 +284,94 @@ func TestDriver_GetEntityChanges_GET(t *testing.T) {
 		t.Errorf("got %s %s", cap.method, cap.path)
 	}
 }
+
+func TestDriver_SetChangeLevelRaw(t *testing.T) {
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	status, _, err := d.SetChangeLevelRaw("m", 1, "wrong")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/model/m/1/changeLevel/wrong" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status: got %d", status)
+	}
+}
+
+func TestDriver_ImportModelRaw(t *testing.T) {
+	cap := &capturedReq{}
+	srv := fakeServer(t, cap)
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	if _, _, err := d.ImportModelRaw("m", 1, `{"a":1}`); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/model/import/JSON/SAMPLE_DATA/m/1" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+}
+
+func TestDriver_UpdateEntityRaw(t *testing.T) {
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	id := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	if _, _, err := d.UpdateEntityRaw(id, "BadTransition", `{"k":1}`); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPut {
+		t.Errorf("method: got %q", cap.method)
+	}
+}
+
+func TestDriver_GetEntityChangesRaw(t *testing.T) {
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	id := uuid.New()
+	if _, _, err := d.GetEntityChangesRaw(id); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodGet {
+		t.Errorf("method: got %q", cap.method)
+	}
+}
+
+func TestDriver_ImportWorkflowRaw(t *testing.T) {
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	if _, _, err := d.ImportWorkflowRaw("m", 1, `{}`); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/model/m/1/workflow/import" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+}
