@@ -146,11 +146,9 @@ func RunExternalAPI_12_07_DeleteByConditionTooManyMatches(t *testing.T, fixture 
 
 // RunExternalAPI_12_08_UpdateUnknownTransition — dictionary 12/neg/08.
 // Dictionary expects HTTP 400 + (IllegalTransition|TransitionNotFound).
-// different_naming_same_level: cyoda-go emits WORKFLOW_FAILED (HTTP 400)
-// with detail "transition not found in state". This carries the transition-
-// not-found semantic; cloud uses a more specific code (IllegalTransition /
-// TransitionNotFound). Tightening to WORKFLOW_FAILED preserves the signal
-// until a dedicated TRANSITION_NOT_FOUND code is introduced.
+// matches dictionary's (IllegalTransition|TransitionNotFound) — equiv_or_better
+// after wiring TRANSITION_NOT_FOUND code into the engine-failure code path
+// (was previously emitting generic WORKFLOW_FAILED — review finding C1).
 func RunExternalAPI_12_08_UpdateUnknownTransition(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -168,12 +166,9 @@ func RunExternalAPI_12_08_UpdateUnknownTransition(t *testing.T, fixture parity.B
 	if err != nil {
 		t.Fatalf("UpdateEntityRaw: %v", err)
 	}
-	// different_naming_same_level: WORKFLOW_FAILED carries "transition not found in state" in the
-	// detail string; cloud equivalent is IllegalTransition / TransitionNotFound.
-	// Reconcile with a dedicated TRANSITION_NOT_FOUND code in v0.7.0+ if introduced.
 	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
 		HTTPStatus: http.StatusBadRequest,
-		ErrorCode:  "WORKFLOW_FAILED",
+		ErrorCode:  "TRANSITION_NOT_FOUND",
 	})
 }
 

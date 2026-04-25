@@ -27,6 +27,13 @@ var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
 //go:embed default_workflow.json
 var defaultWorkflowJSON []byte
 
+// ErrTransitionNotFound is returned by ManualTransition (and surfaces from
+// Execute) when the requested transition name is absent from the entity's
+// current state — either because no such transition exists or because it is
+// disabled. Callers can discriminate this case from other engine failures via
+// errors.Is(err, ErrTransitionNotFound).
+var ErrTransitionNotFound = errors.New("transition not found")
+
 // maxCascadeDepth is an absolute safety net for total cascade steps.
 const maxCascadeDepth = 100
 
@@ -360,13 +367,13 @@ func (e *Engine) attemptTransition(ctx context.Context, entity *spi.Entity, wf *
 	if transition == nil {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q not found in state %q", transitionName, entity.Meta.State), nil)
-		return fmt.Errorf("transition %q not found in state %q", transitionName, entity.Meta.State)
+		return fmt.Errorf("transition %q not found in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
 	}
 
 	if transition.Disabled {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventTransitionNotFound, fmt.Sprintf("Transition %q is disabled", transitionName), nil)
-		return fmt.Errorf("transition %q is disabled in state %q", transitionName, entity.Meta.State)
+		return fmt.Errorf("transition %q is disabled in state %q: %w", transitionName, entity.Meta.State, ErrTransitionNotFound)
 	}
 
 	// Evaluate transition criterion.
