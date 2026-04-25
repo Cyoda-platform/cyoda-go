@@ -29,7 +29,7 @@ Status vocabulary:
 | model-lifecycle/04-reregister-same-schema | new:RunExternalAPI_01_04_ReregisterIdempotent | tranche 1 |
 | model-lifecycle/05-lock-model | new:RunExternalAPI_01_05_LockModel | tranche 1 |
 | model-lifecycle/06-unlock-model | new:RunExternalAPI_01_06_UnlockModel | tranche 1 |
-| model-lifecycle/07-lock-twice-is-rejected | new:RunExternalAPI_01_07_LockTwiceRejected | tranche 1 |
+| model-lifecycle/07-lock-twice-is-rejected | gap_on_our_side (#128) | tranche 1 implemented and skipped under tranche-2's discover-and-compare rubric: cyoda-go emits the generic `CONFLICT` code while the dictionary requires `MODEL_ALREADY_LOCKED`. Test body and `LockModelRaw` helper remain in place — flipping the `t.Skip` is the close-the-issue checklist item. |
 | model-lifecycle/08-delete-model | new:RunExternalAPI_01_08_DeleteModel | tranche 1 |
 | model-lifecycle/09-list-models-empty | new:RunExternalAPI_01_09_ListModelsEmpty | tranche 1 |
 | model-lifecycle/10-list-models-non-empty | new:RunExternalAPI_01_10_ListModelsNonEmpty | tranche 1 |
