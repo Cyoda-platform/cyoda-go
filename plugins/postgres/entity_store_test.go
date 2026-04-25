@@ -782,3 +782,20 @@ func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
 		}
 	}
 }
+
+// TestEntityStore_GetVersionHistory_NonExistent asserts that GetVersionHistory
+// returns spi.ErrNotFound for an entity that has never been saved. This pins
+// the contract that the postgres plugin matches the memory and sqlite backends.
+func TestEntityStore_GetVersionHistory_NonExistent(t *testing.T) {
+	factory := setupEntityTest(t)
+	ctx := ctxWithTenant("entity-nonexistent-tenant")
+	store, _ := factory.EntityStore(ctx)
+
+	_, err := store.GetVersionHistory(ctx, "does-not-exist")
+	if err == nil {
+		t.Fatal("expected error for non-existent entity, got nil")
+	}
+	if !errors.Is(err, spi.ErrNotFound) {
+		t.Errorf("expected spi.ErrNotFound, got: %v", err)
+	}
+}
