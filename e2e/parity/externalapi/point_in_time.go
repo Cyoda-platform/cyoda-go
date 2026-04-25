@@ -1,13 +1,14 @@
 package externalapi
 
 import (
-	"strings"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 )
 
@@ -123,16 +124,18 @@ func RunExternalAPI_07_04_ChangeHistoryAtPointInTime(t *testing.T, fixture parit
 }
 
 // RunExternalAPI_07_05_ChangeHistoryNonExistent — dictionary 07/05 (NEGATIVE).
-// Stopgap until GetEntityChangesRaw lands in Phase 5.
+// Dictionary expects HTTP 404 + EntityNotFoundException.
+// equiv_or_better: cyoda-go emits ENTITY_NOT_FOUND @404 — matches exactly.
 func RunExternalAPI_07_05_ChangeHistoryNonExistent(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
 	bogus := uuid.New()
-	_, err := d.GetEntityChanges(bogus)
-	if err == nil {
-		t.Fatal("expected error for non-existent entity")
+	status, body, err := d.GetEntityChangesRaw(bogus)
+	if err != nil {
+		t.Fatalf("GetEntityChangesRaw: %v", err)
 	}
-	if !strings.Contains(err.Error(), "404") {
-		t.Errorf("expected 404 in error: %v", err)
-	}
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusNotFound,
+		ErrorCode:  "ENTITY_NOT_FOUND",
+	})
 }

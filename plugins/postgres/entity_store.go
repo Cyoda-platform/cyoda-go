@@ -466,7 +466,7 @@ func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([
 	}
 
 	if len(history) == 0 {
-		return nil, fmt.Errorf("ENTITY_NOT_FOUND: entity %s not found: %w", entityID, spi.ErrNotFound)
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
 	}
 
 	return history, nil
