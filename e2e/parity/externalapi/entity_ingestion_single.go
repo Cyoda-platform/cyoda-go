@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
-	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
 func init() {
@@ -24,23 +24,22 @@ func init() {
 // returned UUID is non-zero and the data round-trips correctly.
 func RunExternalAPI_03_01_CreateEntitySuccess(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	d := driver.NewInProcess(t, fixture)
 
-	if err := c.ImportModel(t, "simple1", 1, `{"key1": 123}`); err != nil {
+	if err := d.CreateModelFromSample("simple1", 1, `{"key1": 123}`); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
-	if err := c.LockModel(t, "simple1", 1); err != nil {
+	if err := d.LockModel("simple1", 1); err != nil {
 		t.Fatalf("LockModel: %v", err)
 	}
-	id, err := c.CreateEntity(t, "simple1", 1, `{"key1": 42}`)
+	id, err := d.CreateEntity("simple1", 1, `{"key1": 42}`)
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
 	}
 	if id.String() == "00000000-0000-0000-0000-000000000000" {
 		t.Fatal("expected non-zero entityId")
 	}
-	got, err := c.GetEntity(t, id)
+	got, err := d.GetEntity(id)
 	if err != nil {
 		t.Fatalf("GetEntity: %v", err)
 	}
@@ -55,20 +54,19 @@ func RunExternalAPI_03_01_CreateEntitySuccess(t *testing.T, fixture parity.Backe
 // The YAML scenario uses a 2-element array and asserts entity_count=2.
 func RunExternalAPI_03_02_ListOfObjects(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	d := driver.NewInProcess(t, fixture)
 
 	// Register from a single-object sample so the model root type is
 	// OBJECT (not ARRAY). The create endpoint accepts either an object or
 	// a JSON array of objects and creates one entity per element —
 	// regardless of how the model was registered.
-	if err := c.ImportModel(t, "simple2", 1, `{"key": 123}`); err != nil {
+	if err := d.CreateModelFromSample("simple2", 1, `{"key": 123}`); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
-	if err := c.LockModel(t, "simple2", 1); err != nil {
+	if err := d.LockModel("simple2", 1); err != nil {
 		t.Fatalf("LockModel: %v", err)
 	}
-	status, body, err := c.CreateEntityRaw(t, "simple2", 1, `[{"key": 123}, {"key": 456}]`)
+	status, body, err := d.CreateEntityRaw("simple2", 1, `[{"key": 123}, {"key": 456}]`)
 	if err != nil {
 		t.Fatalf("CreateEntityRaw: %v (status %d body %s)", err, status, string(body))
 	}
@@ -90,7 +88,7 @@ func RunExternalAPI_03_02_ListOfObjects(t *testing.T, fixture parity.BackendFixt
 	if totalIDs != 2 {
 		t.Errorf("got %d total entity IDs, want 2 (txInfos=%v)", totalIDs, txInfos)
 	}
-	list, err := c.ListEntitiesByModel(t, "simple2", 1)
+	list, err := d.ListEntitiesByModel("simple2", 1)
 	if err != nil {
 		t.Fatalf("ListEntitiesByModel: %v", err)
 	}
@@ -104,23 +102,22 @@ func RunExternalAPI_03_02_ListOfObjects(t *testing.T, fixture parity.BackendFixt
 // entity, and verify that each field is present in the read-back data.
 func RunExternalAPI_03_03_AllFieldsRoundTrip(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	d := driver.NewInProcess(t, fixture)
 
 	// Sample covers every supported field class: string, integer, bool,
 	// null, float, array, nested object.
 	sample := `{"s":"hi","i":7,"b":true,"n":null,"f":1.5,"arr":[1,2],"obj":{"x":1}}`
-	if err := c.ImportModel(t, "allfields", 1, sample); err != nil {
+	if err := d.CreateModelFromSample("allfields", 1, sample); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
-	if err := c.LockModel(t, "allfields", 1); err != nil {
+	if err := d.LockModel("allfields", 1); err != nil {
 		t.Fatalf("LockModel: %v", err)
 	}
-	id, err := c.CreateEntity(t, "allfields", 1, sample)
+	id, err := d.CreateEntity("allfields", 1, sample)
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
 	}
-	got, err := c.GetEntity(t, id)
+	got, err := d.GetEntity(id)
 	if err != nil {
 		t.Fatalf("GetEntity: %v", err)
 	}
@@ -141,28 +138,27 @@ func RunExternalAPI_03_03_AllFieldsRoundTrip(t *testing.T, fixture parity.Backen
 // were stored.
 func RunExternalAPI_03_04_FamilyNested(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	d := driver.NewInProcess(t, fixture)
 
 	// Per YAML 03/04: the model is a family-member object. Register using a
 	// single-object sample so the model root type is OBJECT (not ARRAY).
 	// The create endpoint accepts a JSON array and creates one entity per
 	// element — each family member becomes its own entity.
-	if err := c.ImportModel(t, "family", 1, `{"name":"Father","age":50,"relation":"FATHER"}`); err != nil {
+	if err := d.CreateModelFromSample("family", 1, `{"name":"Father","age":50,"relation":"FATHER"}`); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
 	familyArray := `[{"name":"Father","age":50,"relation":"FATHER"},{"name":"Daughter","age":20,"relation":"DAUGHTER"},{"name":"Son","age":18,"relation":"SON"},{"name":"GrandDaughter","age":2,"relation":"GRANDDAUGHTER"},{"name":"GrandSon","age":1,"relation":"GRANDSON"}]`
-	if err := c.LockModel(t, "family", 1); err != nil {
+	if err := d.LockModel("family", 1); err != nil {
 		t.Fatalf("LockModel: %v", err)
 	}
-	status, body, err := c.CreateEntityRaw(t, "family", 1, familyArray)
+	status, body, err := d.CreateEntityRaw("family", 1, familyArray)
 	if err != nil {
 		t.Fatalf("CreateEntityRaw: %v (status %d body %s)", err, status, string(body))
 	}
 	if status != 200 {
 		t.Fatalf("status: got %d, want 200 (body=%s)", status, string(body))
 	}
-	list, err := c.ListEntitiesByModel(t, "family", 1)
+	list, err := d.ListEntitiesByModel("family", 1)
 	if err != nil {
 		t.Fatalf("ListEntitiesByModel: %v", err)
 	}
