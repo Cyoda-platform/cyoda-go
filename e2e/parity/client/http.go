@@ -457,6 +457,62 @@ func (c *Client) UpdateEntity(t *testing.T, entityID uuid.UUID, transition, body
 	return err
 }
 
+// CollectionItem is one entry in a POST /api/entity/{format} body for
+// heterogeneous collection creation. Payload is a JSON-encoded string
+// (not a nested object) per the wire contract — the handler in
+// internal/domain/entity.Handler.CreateCollection unmarshals it as such.
+type CollectionItem struct {
+	ModelName    string
+	ModelVersion int
+	Payload      string
+}
+
+// CreateEntitiesCollection issues POST /api/entity/JSON with a
+// heterogeneous batch. Returns the list of created entity IDs (parsed
+// from the response array's entityIds field).
+func (c *Client) CreateEntitiesCollection(t *testing.T, items []CollectionItem) ([]uuid.UUID, error) {
+	t.Helper()
+	type modelRef struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+	}
+	type rawItem struct {
+		Model   modelRef `json:"model"`
+		Payload string   `json:"payload"`
+	}
+	raw := make([]rawItem, 0, len(items))
+	for _, it := range items {
+		raw = append(raw, rawItem{
+			Model:   modelRef{Name: it.ModelName, Version: it.ModelVersion},
+			Payload: it.Payload,
+		})
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CreateEntitiesCollection items: %w", err)
+	}
+	resp, err := c.doRaw(t, http.MethodPost, "/api/entity/JSON", string(body))
+	if err != nil {
+		return nil, err
+	}
+	// Response shape: [{"transactionId":"...","entityIds":["<uuid>", ...]}]
+	var parsed []EntityTransactionInfo
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		return nil, fmt.Errorf("decode CreateEntitiesCollection response: %w (body=%s)", err, string(resp))
+	}
+	var out []uuid.UUID
+	for _, tx := range parsed {
+		for _, idStr := range tx.EntityIDs {
+			id, perr := uuid.Parse(idStr)
+			if perr != nil {
+				return nil, fmt.Errorf("parse entityId %q: %w", idStr, perr)
+			}
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 // UpdateCollectionItem is one entry in a PUT /api/entity/{format} body.
 // Payload is a JSON-encoded string (not a nested object) per the collection
 // update wire contract.
