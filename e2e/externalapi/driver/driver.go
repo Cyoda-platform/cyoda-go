@@ -182,6 +182,37 @@ func (d *Driver) ListEntitiesByModel(name string, version int) ([]parityclient.E
 	return d.client.ListEntitiesByModel(d.t, name, version)
 }
 
+// SetChangeLevel issues POST /api/model/{name}/{version}/changeLevel/{level}.
+// YAML action: set_change_level. Valid levels: ARRAY_LENGTH, ARRAY_ELEMENTS,
+// TYPE, STRUCTURAL.
+func (d *Driver) SetChangeLevel(name string, version int, level string) error {
+	return d.client.SetChangeLevel(d.t, name, version, level)
+}
+
+// UpdateEntity issues PUT /api/entity/JSON/{entityId}/{transition}.
+// YAML action: update_entity_transition.
+func (d *Driver) UpdateEntity(id uuid.UUID, transition, body string) error {
+	return d.client.UpdateEntity(d.t, id, transition, body)
+}
+
+// UpdateEntityData issues PUT /api/entity/JSON/{entityId} (no transition;
+// loopback). YAML action: update_entity_loopback.
+func (d *Driver) UpdateEntityData(id uuid.UUID, body string) error {
+	return d.client.UpdateEntityData(d.t, id, body)
+}
+
+// GetEntityAt issues GET /api/entity/{entityId}?pointInTime=<ISO8601>.
+// YAML action: get_entity (with pointInTime).
+func (d *Driver) GetEntityAt(id uuid.UUID, pointInTime time.Time) (parityclient.EntityResult, error) {
+	return d.client.GetEntityAt(d.t, id, pointInTime)
+}
+
+// GetEntityChanges issues GET /api/entity/{entityId}/changes.
+// YAML action: get_entity_changes.
+func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta, error) {
+	return d.client.GetEntityChanges(d.t, id)
+}
+
 // --- Type re-exports for test-side ergonomics ---
 
 // CollectionItem mirrors parityclient.CollectionItem so external callers
