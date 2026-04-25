@@ -112,6 +112,13 @@ var allTests = []NamedTest{
 // creating an import cycle (e.g. e2e/parity/externalapi imports parity for
 // BackendFixture). Call Register from an init() function in those packages,
 // and add a blank import in each backend test file to trigger the side effect.
+//
+// Per-backend test wrappers (memory, sqlite, postgres, and any out-of-tree
+// plugin like cyoda-go-cassandra) MUST blank-import every parity-extension
+// package — otherwise the extension's init() never runs and the wrapper
+// silently misses the entire scenario set. Currently the only extension
+// package is `e2e/parity/externalapi`. New parity-extension packages added
+// in future tranches must be added to all backend wrappers in lockstep.
 func Register(tests ...NamedTest) {
 	allTests = append(allTests, tests...)
 }

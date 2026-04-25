@@ -96,8 +96,8 @@ Status vocabulary:
 |-----------|-----------------|-------|
 | delete/01-single-by-id | new:RunExternalAPI_06_01_DeleteSingle | tranche 1 |
 | delete/02-all-by-model-version | new:RunExternalAPI_06_02_DeleteByModel | tranche 1 |
-| delete/03-by-condition-jsonpath-equals | gap_on_our_side | `DELETE /entity/{name}/{version}` has no condition body today; `DeleteEntitiesParams` carries only `transactionSize`/`pointInTime`/`verbose`. Server-side condition body parsing is missing. |
-| delete/04-by-condition-not-null | gap_on_our_side | same as 06/03 — condition body on DELETE not supported |
+| delete/03-by-condition-jsonpath-equals | gap_on_our_side | The OpenAPI generator emits `DeleteEntitiesJSONRequestBody = AbstractConditionDto` (`api/generated.go:DeleteEntitiesJSONRequestBody`), but `internal/domain/entity/handler.go:DeleteEntities` does not read the body — it only consults `DeleteEntitiesParams` (`transactionSize`/`pointInTime`/`verbose`) and calls `DeleteAllEntities(name, version)`. Implementing this means parsing the existing `AbstractConditionDto` typedef, extending the service with a condition-aware delete path, and propagating to the storage SPI. |
+| delete/04-by-condition-not-null | gap_on_our_side | same as 06/03 — handler ignores the existing `AbstractConditionDto` body type |
 | delete/05-by-condition-at-point-in-time-too-many-entities | gap_on_our_side | same as 06/03 + `entitySearchLimit` enforcement on condition+pointInTime deletes is missing |
 | delete/06-all-by-model-at-point-in-time | new:RunExternalAPI_06_06_DeleteAtPointInTime (skipped pending #124) | tranche 1 — test body in place; t.Skip until #124 ships in v0.7.0. `Handler.DeleteEntities` ignores `params.PointInTime`; storage SPI has no `DeleteAllAsAt`. Cross-repo fix (SPI tag + plugin impls + handler wiring) tracked in #124. |
 

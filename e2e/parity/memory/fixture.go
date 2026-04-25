@@ -65,8 +65,15 @@ func setup() (*memoryFixture, func(), error) {
 // (e.g., e2e/externalapi/driver/remote_smoke_test.go) that need access
 // to BaseURL + a tenant without going through the full AllTests loop.
 //
-// Fails the test on setup error. Callers `defer cleanup()` to tear the
-// fixture down.
+// Fails the test on setup error. Callers MUST `defer cleanup()` on the
+// line immediately following MustSetup — a panic before the defer
+// registers will leave the cyoda-go + compute-test-client subprocesses
+// running.
+//
+// Symmetric helpers do not yet exist on the sqlite/postgres fixtures
+// because tranche-1's only consumer is a memory-backed remote-mode
+// smoke. If a future test needs a sqlite/postgres equivalent, add the
+// helper there with the same signature.
 func MustSetup(t *testing.T) (parity.BackendFixture, func()) {
 	t.Helper()
 	fix, cleanup, err := setup()
