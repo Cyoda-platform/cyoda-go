@@ -1,0 +1,260 @@
+# Numeric representation edge cases.
+#
+# Cyoda assigns each JSON number a `DataType` when a model is registered.
+# The mapping depends on the JSON value AND on the `ParsingSpec` applied by
+# the receiving layer. Defaults: `intScope = INTEGER`, `decimalScope = DOUBLE`.
+# Narrowing the scope (e.g. `intScope = BYTE`) forces the model to land the
+# field at the narrower type; subsequent ingest requests are then validated
+# against that landed type.
+#
+# External-surface note:
+#   Neither the REST `POST /model/import/...` controller nor the gRPC
+#   `entityModelManage(EntityModelImportRequest)` surface expose
+#   `intScope` / `decimalScope`. REST builds `ParsingSpec(parseStrings=true)`
+#   internally and gRPC uses a default `ParsingSpec()`. Scenarios that
+#   depend on narrowed scopes are therefore reachable only through direct
+#   calls to `EntityModelFacade.upsert(...)`; such scenarios carry
+#   `internal_only: true`.
+#
+# These scenarios exercise:
+#   - default landing of integers and decimals,
+#   - polymorphic fields produced by merging two sample JSONs,
+#   - round-trip of very large / high-precision numeric values
+#     (DOUBLE at boundary, BIG_DECIMAL, UNBOUND_DECIMAL, BIG_INTEGER,
+#      UNBOUND_INTEGER),
+#   - search-time numeric compatibility across types.
+
+scenarios:
+  - id: numeric/01-compatible-int-lands-in-double-field
+    name: Integer JSON value is accepted for a DOUBLE-locked field
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#try to save data with compatible types
+    description: |
+      Model locked with `{"price": 13.111}` → `$.price` lands as DOUBLE.
+      Subsequent POST of `{"price": 13}` (JSON integer) must be accepted
+      and readback must yield exactly one entity.
+    data:
+      model: { name: simple3, version: 1 }
+      model_sample_json: '{"price": 13.111}'
+      entity_json: '{"price": 13}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple3/1 }, body_ref: data.model_sample_json }
+      - { action: lock_model, endpoint: { rest: PUT /model/simple3/1/lock } }
+      - { action: create_entity,  endpoint: { rest: POST /entity/JSON/simple3/1 }, body_ref: data.entity_json }
+    assertions:
+      - { type: entity_count_for_model, model: { name: simple3, version: 1 }, value: 1 }
+
+  - id: numeric/02-incompatible-decimal-after-int-cross-ref
+    name: Cross-ref to neg/02 — decimal rejected against INT-locked field
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#try save data with incompatible types
+    description: |
+      See `12-negative-validation.yaml#neg/02-create-entity-with-incompatible-type`.
+      Included here as an explicit symmetric pair with numeric/01.
+    see_also: neg/02-create-entity-with-incompatible-type
+
+  - id: numeric/03-parsing-spec-intScope-byte
+    name: intScope=BYTE forces $.key2=123 to land as BYTE instead of INTEGER
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to save entity model
+    internal_only: true
+    description: |
+      Registering `{"key1":"abc","key2":123}` with
+      `ParsingSpec(intScope=BYTE, decimalScope=FLOAT)` must yield a model
+      whose SIMPLE_VIEW reports `$.key2 = BYTE` (not `INTEGER`).
+
+      NOT EXTERNALLY REACHABLE. Neither the REST import controller nor the
+      gRPC `entityModelManage` request exposes `intScope`/`decimalScope`;
+      both build a default `ParsingSpec` internally. The scenario is
+      described for completeness of the internal facade contract and is
+      kept aligned with `numeric/04` as the externally-reachable baseline.
+    data:
+      model: { name: testModel, version: 1 }
+      sample_json: '{"key1":"abc","key2":123}'
+      parsing_spec: { intScope: BYTE, decimalScope: FLOAT }
+    steps:
+      - action: upsert_model_facade
+        target: EntityModelFacade.upsert(SAMPLE_DATA, payload, EntityModelKey("testModel",1), ParsingSpec(intScope=BYTE, decimalScope=FLOAT))
+        body_ref: data.sample_json
+      - action: export_model_facade
+        target: EntityModelFacade.export(SIMPLE_VIEW, EntityModelKey("testModel",1))
+        capture: exported
+    assertions:
+      - { type: field_equals, target: 'exported.model["$"][".key1"]', expected: STRING }
+      - { type: field_equals, target: 'exported.model["$"][".key2"]', expected: BYTE }
+
+  - id: numeric/04-default-intScope-integer-external
+    name: Default intScope=INTEGER lands $.key2=123 as INTEGER over external APIs
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelGrpcApiIT.kt#test new model saved successfully
+    description: |
+      Without a ParsingSpec override — which is the only mode the external
+      REST and gRPC surfaces support — `{"key1":"abc","key2":123}` must
+      land as `$.key1=STRING`, `$.key2=INTEGER`. This is the paired
+      externally-reachable baseline for `numeric/03`.
+    data:
+      model: { name: testModel, version: 2 }
+      sample_json: '{"key1":"abc","key2":123}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/testModel/2 }, body_ref: data.sample_json }
+      - { action: export_model, endpoint: { rest: GET /model/export/SIMPLE_VIEW/testModel/2 }, capture: exported }
+    assertions:
+      - { type: field_equals, target: 'exported.model["$"][".key1"]', expected: STRING }
+      - { type: field_equals, target: 'exported.model["$"][".key2"]', expected: INTEGER }
+
+  - id: numeric/05-polymorphic-field-after-merge
+    name: Merging two sample JSONs produces Polymorphic field sets
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to merge metadata with different types
+    internal_only: true
+    description: |
+      Register `{"key1":"abc","key2":123}` with narrowed scope, then merge
+      `{"key1":456,"key2":false,"key3":true}`. The resulting model must
+      report polymorphic field types `(SHORT, STRING)`, `(BYTE, BOOLEAN)`,
+      `(BOOLEAN)`.
+
+      NOT EXTERNALLY REACHABLE — same reason as `numeric/03`. Via the
+      external REST/gRPC surface (default `intScope=INTEGER`,
+      `decimalScope=DOUBLE`) the externally-observable outcome on the same
+      inputs would instead be `(INTEGER, STRING)`, `(INTEGER, BOOLEAN)`,
+      `(BOOLEAN)`. That external variant is captured in `numeric/05ext`.
+    data:
+      model: { name: testModel_3, version: 1 }
+      sample_v1: '{"key1":"abc","key2":123}'
+      sample_v2: '{"key1":456,"key2":false,"key3":true}'
+      parsing_spec: { intScope: BYTE, decimalScope: FLOAT }
+    steps:
+      - action: upsert_model_facade
+        target: EntityModelFacade.upsert(SAMPLE_DATA, v1, EntityModelKey("testModel_3",1), ParsingSpec(intScope=BYTE, decimalScope=FLOAT))
+        body_ref: data.sample_v1
+      - action: upsert_model_facade
+        target: EntityModelFacade.upsert(SAMPLE_DATA, v2, EntityModelKey("testModel_3",1), ParsingSpec(intScope=BYTE, decimalScope=FLOAT))
+        body_ref: data.sample_v2
+      - action: export_model_facade
+        target: EntityModelFacade.export(SIMPLE_VIEW, EntityModelKey("testModel_3",1))
+        capture: exported
+    assertions:
+      - { type: field_polymorphic, target: 'exported.model["$"][".key1"]', expected: [SHORT, STRING] }
+      - { type: field_polymorphic, target: 'exported.model["$"][".key2"]', expected: [BYTE, BOOLEAN] }
+      - { type: field_equals,      target: 'exported.model["$"][".key3"]', expected: BOOLEAN }
+
+  - id: numeric/05ext-polymorphic-field-after-merge-external
+    name: Externally-reachable merge with default scopes yields INTEGER-based polymorphism
+    source_test: "[Inference] derived from numeric/05 under REST defaults"
+    description: |
+      External equivalent of `numeric/05`. Using the default
+      `ParsingSpec(parseStrings=true)` applied by the REST import
+      controller, the integer operands in both samples land as `INTEGER`
+      rather than `BYTE`/`SHORT`.
+    data:
+      model: { name: testModel_3e, version: 1 }
+      sample_v1: '{"key1":"abc","key2":123}'
+      sample_v2: '{"key1":456,"key2":false,"key3":true}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/testModel_3e/1 }, body_ref: data.sample_v1 }
+      - { action: update_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/testModel_3e/1 }, body_ref: data.sample_v2 }
+      - { action: export_model,             endpoint: { rest: GET  /model/export/SIMPLE_VIEW/testModel_3e/1 }, capture: exported }
+    assertions:
+      - { type: field_polymorphic, target: 'exported.model["$"][".key1"]', expected: [INTEGER, STRING] }
+      - { type: field_polymorphic, target: 'exported.model["$"][".key2"]', expected: [INTEGER, BOOLEAN] }
+      - { type: field_equals,      target: 'exported.model["$"][".key3"]', expected: BOOLEAN }
+
+  - id: numeric/06-double-at-max-boundary-round-trip
+    name: DOUBLE value near Double.MAX_VALUE round-trips exactly
+    source_test: integration-tests/src/test/kotlin/net/cyoda/dataload/TestTrinoIntegration.kt
+    description: |
+      Field declared as `DOUBLE` must accept `Double.MAX_VALUE` and values
+      decremented by `Double.MAX_VALUE/100`. Readback via GET must return
+      the same floating-point bits (`BigDecimal.valueOf(d).toPlainString`
+      used for stable comparison).
+    data:
+      model: { name: numDouble, version: 1 }
+      sample_json: '{"v": 1.7976931348623157E308}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/numDouble/1 }, body_ref: data.sample_json }
+      - { action: lock_model, endpoint: { rest: PUT /model/numDouble/1/lock } }
+      - { action: create_entity, endpoint: { rest: POST /entity/JSON/numDouble/1 }, body_ref: data.sample_json, capture: entityId }
+    assertions:
+      - { type: entity_equals_json, target: entityId, expected_ref: data.sample_json }
+
+  - id: numeric/07-big-decimal-high-precision-round-trip
+    name: BIG_DECIMAL with 20 int digits + 18 fractional digits round-trips
+    source_test: integration-tests/src/test/kotlin/net/cyoda/dataload/TestTrinoIntegration.kt
+    data:
+      model: { name: numBigDecimal, version: 1 }
+      sample_json: '{"v": 12345678901234567800.123456789012345670}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/numBigDecimal/1 }, body_ref: data.sample_json }
+      - { action: lock_model,                endpoint: { rest: PUT  /model/numBigDecimal/1/lock } }
+      - { action: create_entity,             endpoint: { rest: POST /entity/JSON/numBigDecimal/1 }, body_ref: data.sample_json, capture: entityId }
+      - { action: export_model,              endpoint: { rest: GET  /model/export/SIMPLE_VIEW/numBigDecimal/1 }, capture: exported }
+    assertions:
+      - { type: entity_equals_json_numeric, target: entityId, expected_ref: data.sample_json, comparison: stripTrailingZeros }
+      - { type: field_equals, target: 'exported.model["$"][".v"]', expected: BIG_DECIMAL }
+
+  - id: numeric/08-unbound-decimal-arbitrary-precision
+    name: UNBOUND_DECIMAL with >18 fractional digits round-trips exactly
+    source_test: integration-tests/src/test/kotlin/net/cyoda/dataload/TestTrinoIntegration.kt
+    description: |
+      Values with fractional precision beyond BIG_DECIMAL's scope must land
+      as `UNBOUND_DECIMAL` and round-trip via `toPlainString` comparison.
+    data:
+      model: { name: numUnboundDecimal, version: 1 }
+      sample_json: '{"v": 12345678901234567800.1234567890123456789}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/numUnboundDecimal/1 }, body_ref: data.sample_json }
+      - { action: lock_model,                endpoint: { rest: PUT  /model/numUnboundDecimal/1/lock } }
+      - { action: create_entity,             endpoint: { rest: POST /entity/JSON/numUnboundDecimal/1 }, body_ref: data.sample_json, capture: entityId }
+      - { action: export_model,              endpoint: { rest: GET  /model/export/SIMPLE_VIEW/numUnboundDecimal/1 }, capture: exported }
+    assertions:
+      - { type: entity_equals_json_numeric, target: entityId, expected_ref: data.sample_json, comparison: toPlainString }
+      - { type: field_equals, target: 'exported.model["$"][".v"]', expected: UNBOUND_DECIMAL }
+
+  - id: numeric/09-big-integer-38-digits
+    name: BIG_INTEGER (38-digit integer) round-trips
+    source_test: integration-tests/src/test/kotlin/net/cyoda/dataload/TestTrinoIntegration.kt
+    data:
+      model: { name: numBigInteger, version: 1 }
+      sample_json: '{"v": 12345678901234567890123456789012345678}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/numBigInteger/1 }, body_ref: data.sample_json }
+      - { action: lock_model,                endpoint: { rest: PUT  /model/numBigInteger/1/lock } }
+      - { action: create_entity,             endpoint: { rest: POST /entity/JSON/numBigInteger/1 }, body_ref: data.sample_json, capture: entityId }
+      - { action: export_model,              endpoint: { rest: GET  /model/export/SIMPLE_VIEW/numBigInteger/1 }, capture: exported }
+    assertions:
+      - { type: entity_equals_json, target: entityId, expected_ref: data.sample_json }
+      - { type: field_equals, target: 'exported.model["$"][".v"]', expected: BIG_INTEGER }
+
+  - id: numeric/10-unbound-integer-40-digits
+    name: UNBOUND_INTEGER (40-digit integer) round-trips
+    source_test: integration-tests/src/test/kotlin/net/cyoda/dataload/TestTrinoIntegration.kt
+    data:
+      model: { name: numUnboundInteger, version: 1 }
+      sample_json: '{"v": 1234567890123456789012345678901234567890}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/numUnboundInteger/1 }, body_ref: data.sample_json }
+      - { action: lock_model,                endpoint: { rest: PUT  /model/numUnboundInteger/1/lock } }
+      - { action: create_entity,             endpoint: { rest: POST /entity/JSON/numUnboundInteger/1 }, body_ref: data.sample_json, capture: entityId }
+      - { action: export_model,              endpoint: { rest: GET  /model/export/SIMPLE_VIEW/numUnboundInteger/1 }, capture: exported }
+    assertions:
+      - { type: entity_equals_json, target: entityId, expected_ref: data.sample_json }
+      - { type: field_equals, target: 'exported.model["$"][".v"]', expected: UNBOUND_INTEGER }
+
+  - id: numeric/11-search-condition-integer-against-double-field
+    name: Search condition with INTEGER value matches DOUBLE-typed field
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/search/EntitySearchFacadeIT.kt#try to search with compatible type in condition
+    description: |
+      Ingest the `orders` dataset (`$.price` lands as DOUBLE). Run a
+      search whose condition value is a JSON integer (`70`). The async
+      job result and the direct (in-memory) result must each contain 4
+      matching entities.
+    data:
+      model: { name: orders, version: 1 }
+      condition_json: |
+        { "type": "group", "operator": "AND",
+          "conditions": [
+            { "type": "simple", "jsonPath": "$.price",
+              "operatorType": "GREATER_OR_EQUAL", "value": 70 } ] }
+    steps:
+      - { action: submit_async_search, endpoint: { rest: POST /search/async/orders/1 },           body_ref: data.condition_json, capture: jobId }
+      - { action: await_async_search,  endpoint: { rest: GET  /search/async/{jobId}/status },     expected_status: SUCCESSFUL }
+      - { action: get_async_results,   endpoint: { rest: GET  /search/async/{jobId} },            capture: asyncPage }
+      - { action: direct_search,       endpoint: { rest: POST /search/direct/orders/1 },          body_ref: data.condition_json, capture: directResult }
+    assertions:
+      - { type: collection_size, target: asyncPage.content, value: 4 }
+      - { type: collection_size, target: directResult,      value: 4 }

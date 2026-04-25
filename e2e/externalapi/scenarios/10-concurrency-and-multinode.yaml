@@ -1,0 +1,97 @@
+# Concurrency and multi-node behaviour.
+#
+# These scenarios exercise the external HTTP surface from a client that
+# is not pinned to a single backend node: the cluster is expected to
+# route requests via a load balancer and every replica must reflect the
+# same committed state.
+
+scenarios:
+  - id: multi/01-create-and-delete-through-load-balancer
+    name: End-to-end ingestion path through the load balancer
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/MultiNodeDataIngestionIT.kt#test
+    description: |
+      A single external client talks only to the load balancer URL. It
+      registers a model from a synthetic "AllFields" sample, sets the
+      change level to TYPE, locks the model, ingests 100 random entities
+      of that model, deletes them all, deletes the model, and finally
+      asserts that the model is gone.
+    data:
+      model: { name: simple1, version: 1 }
+      change_level: TYPE
+      entity_count: 100
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple1/1 }
+        body: "AllFieldsModel random instance"
+      - action: set_change_level
+        endpoint: { rest: POST /model/simple1/1/changeLevel/TYPE }
+      - action: lock_model
+        endpoint: { rest: PUT /model/simple1/1/lock }
+      - action: create_entities_collection
+        endpoint: { rest: POST /entity/JSON/simple1/1 }
+        body: "array of 100 random AllFieldsModel instances"
+      - action: delete_entities_by_model
+        endpoint: { rest: DELETE /entity/simple1/1 }
+        capture: deleteAllResp
+      - action: delete_model
+        endpoint: { rest: DELETE /model/simple1/1 }
+      - action: get_model
+        endpoint: { rest: GET /model/simple1/1 }
+        capture: getAfterDelete
+    assertions:
+      - type: not_null
+        target: deleteAllResp
+      - type: http_status
+        target: getAfterDelete
+        expected: 404
+
+  - id: multi/02-readback-reaches-all-replicas
+    name: Writes to any node are visible on any node
+    description: |
+      After a successful create on node A, a GET /entity/{id} routed via
+      the load balancer to node B must return the same payload. This is
+      the basic consistency expectation from the external perspective.
+    data:
+      model: { name: simple1, version: 1 }
+    steps:
+      - action: create_entity
+        endpoint: { rest: "POST /entity/JSON/simple1/1?waitForConsistencyAfter=true" }
+        body: "<<valid json>>"
+        capture: createResp
+      - action: get_entity
+        endpoint: { rest: GET /entity/{createResp.entityId} }
+        capture: readBack
+    assertions:
+      - type: entity_equals_json
+        target: readBack
+        expected_ref: "<<same body as create>>"
+
+  - id: multi/03-parallel-updates-to-same-entity
+    name: Parallel update requests serialise without data loss
+    description: |
+      Two concurrent PUT /entity/JSON/{id}/UPDATE calls with disjoint
+      field modifications must commit in some order; the final readback
+      must reflect both modifications. No request may return a 5xx error.
+    data:
+      model: { name: simple1, version: 1 }
+    steps:
+      - action: create_entity
+        body: '{"a":0,"b":0}'
+        capture: createResp
+      - action: parallel
+        branches:
+          - update_entity_transition:
+              body: '{"a":1,"b":0}'
+          - update_entity_transition:
+              body: '{"a":0,"b":1}'
+      - action: get_entity
+        endpoint: { rest: GET /entity/{createResp.entityId} }
+        capture: final
+    assertions:
+      - type: field_greater_or_equal
+        target: final.a
+        expected: 0
+      - type: field_greater_or_equal
+        target: final.b
+        expected: 0
+      - type: no_5xx_responses

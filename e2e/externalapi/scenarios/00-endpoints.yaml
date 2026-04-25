@@ -1,0 +1,120 @@
+# Canonical REST and gRPC endpoints referenced by the scenarios in this
+# directory. Path prefixes are the controller base paths as they appear
+# in the running services.
+
+rest:
+  base_paths:
+    entity: /entity                 # EntityController (tree-node-api)
+    model: /model                   # EntityModelController (tree-node-api)
+    search: /search                 # EntitySearchController (tree-node-api, SearchApi OpenAPI)
+    sql_schema: /sql/schema         # TrinoSchemasController (api module)
+    # The workflow endpoints are served by EntityModelWorkflowController
+    # (backend module) and are published under the model base path.
+
+  search:
+    submit_async:  POST /search/async/{entityName}/{modelVersion}   # returns UUID jobId
+    get_status:    GET  /search/async/{jobId}/status
+    get_results:   GET  /search/async/{jobId}                       # ?pageSize=&pageNumber=&pointInTime=
+    cancel:        PUT  /search/async/{jobId}/cancel
+    direct:        POST /search/direct/{entityName}/{modelVersion}  # streaming in-memory search
+
+  rsocket:
+    # Trino data-fetch surface on TreeNodeTrinoAPIController.
+    # Not a REST endpoint; included here because poly/05 references it.
+    trino_get_data:    "treeNode.getData  (DataRequestDto → Flux<EntityContentDto>)"
+    trino_get_raw:     "treeNode.getRawData (userId → Flux<RawEntityContentDto>)"
+    trino_get_schemas: "treeNode.getSchemas (userId → Flux<SchemaConfigDto>)"
+    trino_get_schema:  "treeNode.getSchema  (schemaName → Mono<SchemaConfigDto>)"
+
+  entity:
+    # Create one entity (or a JSON array of entities) for a (name, version).
+    # The payload may be a single object OR a JSON array of objects.
+    create_single: POST /entity/{format}/{entityName}/{modelVersion}
+    # Create a heterogeneous collection; body lists {modelSpec, json} items.
+    create_collection: POST /entity/{format}
+    # Update a heterogeneous collection; body lists {entityId, json, transition}.
+    update_collection: PUT /entity/{format}
+    # Update one entity using the loopback transition (no explicit transition).
+    update_single_loopback: PUT /entity/{format}/{entityId}
+    # Update one entity and advance along the named workflow transition.
+    update_single_transition: PUT /entity/{format}/{entityId}/{transition}
+    get_one: GET /entity/{entityId}          # supports ?pointInTime=... or ?transactionId=...
+    get_changes: GET /entity/{entityId}/changes   # supports ?pointInTime=...
+    get_all_by_model: GET /entity/{entityName}/{modelVersion}
+    delete_one: DELETE /entity/{entityId}
+    # Delete every entity for a (name, version); supports pointInTime and
+    # a GroupCondition JSON body for condition-based deletion.
+    delete_all_by_model: DELETE /entity/{entityName}/{modelVersion}
+    # Statistics surface (out of core scope, referenced only for completeness).
+    stats_all: GET /entity/stats
+    stats_model: GET /entity/stats/{entityName}/{modelVersion}
+    stats_states: GET /entity/stats/states
+    stats_states_model: GET /entity/stats/states/{entityName}/{modelVersion}
+
+  model:
+    # Register a model from an inline JSON sample document.
+    import_from_sample: POST /model/import/JSON/SAMPLE_DATA/{entityName}/{modelVersion}
+    # Re-import/merge an existing model from a new sample JSON document.
+    upsert_from_sample: POST /model/import/JSON/SAMPLE_DATA/{entityName}/{modelVersion}
+    export_simple_view: GET /model/export/SIMPLE_VIEW/{entityName}/{modelVersion}
+    export_full: GET /model/export/FULL/{entityName}/{modelVersion}
+    delete: DELETE /model/{entityName}/{modelVersion}
+    lock: PUT /model/{entityName}/{modelVersion}/lock
+    unlock: PUT /model/{entityName}/{modelVersion}/unlock
+    # Set the change-level governance for subsequent entity saves.
+    set_change_level: POST /model/{entityName}/{modelVersion}/changeLevel/{changeLevel}
+    list: GET /model
+
+  workflow:
+    # EntityModelWorkflowController - OpenAPI-generated.
+    import: POST /model/{entityName}/{modelVersion}/workflow/import
+    export: GET /model/{entityName}/{modelVersion}/workflow/export
+
+  edge_message:
+    # EdgeMessageController (message module). Body = EdgeMessage envelope
+    # with header + blob payload reference.
+    save: POST /edge-message
+    get: GET /edge-message/{messageId}
+    delete_one: DELETE /edge-message/{messageId}
+    delete_collection: DELETE /edge-message      # body = list of ids
+
+grpc:
+  # cyoda-cloud-api.proto service surfaces.
+  entity:
+    service: org.cyoda.cloud.api.grpc.EntityService
+    rpcs:
+      - entityManage            # unary: create/update/delete single
+      - entityManageCollection  # bidi: batch create/update/delete
+      - entitySearch            # unary: search
+      - entityRead              # unary: read by id (supports pointInTime)
+      - entityTransition        # unary: advance workflow transition
+      - entityStats             # unary: statistics
+  externalize:
+    service: org.cyoda.cloud.api.grpc.CloudEventsService
+    rpcs:
+      # Bidirectional stream - external calculation members connect and
+      # process EntityProcessorCalculationRequest / EntityCriteriaCalculationRequest.
+      - startStreaming
+
+# Placeholder / path-variable vocabulary used across the dictionary.
+variables:
+  entityName:    "string identifier of a model family"
+  modelVersion:  "1-based integer version"
+  modelKey:      "composite of (entityName, modelVersion)"
+  format:        "JSON"
+  changeLevel:   "ARRAY_LENGTH | ARRAY_ELEMENTS | TYPE | STRUCTURAL"
+  transition:    "workflow transition name; absence implies loopback"
+  pointInTime:   "ISO-8601 OffsetDateTime, e.g. 2025-05-12T09:00:00Z"
+  transactionId: "UUID of a committed transaction"
+
+# Query parameters accepted by save/update endpoints. Internal tests set
+# these via ParsingSpec; external clients expose them as query params.
+query_params:
+  waitForConsistencyAfter:
+    type: boolean
+    default: false
+    purpose: block response until indexing catches up
+  transactionWindow:
+    type: duration
+    default: "provider-specific"
+    purpose: group inbound entities into the same transaction boundary
