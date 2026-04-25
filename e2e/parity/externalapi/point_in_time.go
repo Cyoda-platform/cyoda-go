@@ -78,7 +78,7 @@ func RunExternalAPI_07_01_GetEntityAtPointInTime(t *testing.T, fixture parity.Ba
 // surface addition; tracked alongside tranche-2 follow-up.
 func RunExternalAPI_07_02_GetEntityByTransactionID(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: parity client does not yet expose transactionId-scoped GET; tracked alongside tranche-2 follow-up issue")
+	t.Skip("pending #132: parity client does not yet expose transactionId-scoped GET")
 }
 
 // RunExternalAPI_07_03_ChangeHistoryFull — dictionary 07/03.
@@ -120,7 +120,7 @@ func RunExternalAPI_07_03_ChangeHistoryFull(t *testing.T, fixture parity.Backend
 // Skipped: parity client's GetEntityChanges has no pointInTime variant.
 func RunExternalAPI_07_04_ChangeHistoryAtPointInTime(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: parity client does not yet expose pointInTime-scoped change history")
+	t.Skip("pending #132: parity client does not yet expose pointInTime-scoped change history")
 }
 
 // RunExternalAPI_07_05_ChangeHistoryNonExistent — dictionary 07/05 (NEGATIVE).

@@ -29,7 +29,13 @@ func init() {
 // RunExternalAPI_12_01_CreateEntityOnUnlockedModel — dictionary 12/neg/01.
 // Dictionary expects HTTP 409 + EntityModelWrongStateException.
 // equiv_or_better: cyoda-go emits MODEL_NOT_LOCKED which carries the
-// wrong-state semantic precisely; cloud maps to EntityModelWrongStateException.
+// wrong-state semantic precisely; cloud maps to the more generic umbrella
+// EntityModelWrongStateException. Our code is strictly more specific —
+// propose upstream tightening.
+//
+// Note: this is the opposite direction from #128 (where cyoda-go's generic
+// CONFLICT was less specific than cloud's MODEL_ALREADY_LOCKED). The two
+// codes are walking toward each other from opposite directions.
 func RunExternalAPI_12_01_CreateEntityOnUnlockedModel(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -109,14 +115,14 @@ func RunExternalAPI_12_03_SetChangeLevelInvalidEnum(t *testing.T, fixture parity
 // HTTP 404. Skipped pending GetEntityAtRaw returning the body on Driver.
 func RunExternalAPI_12_04_GetEntityAtTimeBeforeCreation(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: GetEntityAtRaw not exposed on Driver; tracked alongside tranche-2 follow-up issue")
+	t.Skip("pending #132: GetEntityAtRaw not yet exposed on Driver")
 }
 
 // RunExternalAPI_12_05_GetEntityWithBogusTransactionID — dictionary 12/neg/05.
 // HTTP 404. Skipped — transactionId-scoped GET surface absent (same gap as 07/02).
 func RunExternalAPI_12_05_GetEntityWithBogusTransactionID(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending: parity client does not yet expose transactionId-scoped GET (same gap as 07/02)")
+	t.Skip("pending #132: parity client does not yet expose transactionId-scoped GET (same gap as 07/02)")
 }
 
 // RunExternalAPI_12_06_GetChangesForMissingEntity — dictionary 12/neg/06.

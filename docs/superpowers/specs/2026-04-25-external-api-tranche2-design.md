@@ -68,25 +68,25 @@ e2e/parity/externalapi/
 All thin pass-throughs to existing `e2e/parity/client.Client` methods.
 Driver layer adds the dictionary-vocabulary names.
 
+Actual shipped surface (reconciled after implementation — see note below):
+
 | Driver method | Underlying client method | Source file |
 |---|---|---|
 | `SetChangeLevel(name, version, level string)` | `c.SetChangeLevel(t, ...)` | file 02 |
-| `SetChangeLevelRaw(name, version, level string)` | new client `*Raw` | file 02 neg paths |
 | `UpdateEntity(id uuid.UUID, transition, body string)` | `c.UpdateEntity(t, ...)` | file 05 |
-| `UpdateEntityRaw(id uuid.UUID, transition, body string)` | new client `*Raw` | file 05 neg paths |
 | `UpdateEntityData(id uuid.UUID, body string)` | `c.UpdateEntityData(t, ...)` | file 05 (loopback) |
-| `UpdateEntityDataRaw(id uuid.UUID, body string)` | new client `*Raw` | file 05 / file 12 |
 | `GetEntityAt(id uuid.UUID, pointInTime time.Time)` | `c.GetEntityAt(t, ...)` | file 07 |
 | `GetEntityChanges(id uuid.UUID)` | `c.GetEntityChanges(t, ...)` | file 07 |
-| `CreateModelFromSampleRaw(name, version, sample string)` | new client `*Raw` | file 12 neg paths |
-| `LockModelRaw` | already added in tranche 1 | reused |
-| `CreateEntityRaw` | already in client/Driver | reused |
-| `DeleteEntityRaw` | already in client | wrap in Driver |
-| `DeleteEntitiesByModelRaw` | new client `*Raw` | file 12 neg paths |
+| `SetChangeLevelRaw(name, version, level string)` | new client `*Raw` | file 12 (12/03) |
+| `ImportModelRaw(name, version, sample string)` | new client `*Raw` | file 12 (kept available for future) |
+| `UpdateEntityRaw(id, transition, body string)` | new client `*Raw` | file 12 (12/08) |
+| `GetEntityChangesRaw(id uuid.UUID)` | new client `*Raw` | file 12 (12/06), 07/05 |
+| `ImportWorkflowRaw(name, version, body string)` | new client `*Raw` | file 12 (12/10) |
 
-Add-as-needed: helpers land alongside the first scenario that needs
-them, not pre-emptively. TDD per helper (httptest test asserting on
-captured method/path/body, then minimal implementation).
+The set of `*Raw` helpers shipped during implementation differs slightly from the design table draft:
+scenarios that ended up `t.Skip`-gated (12/04, 12/07) didn't need their planned `*Raw` helpers, and
+12/06 + 12/10 surfaced the need for `GetEntityChangesRaw` + `ImportWorkflowRaw` that weren't
+pre-listed. The actual 5+5 set fits the actual scenarios.
 
 ### 4.2 Discover-and-compare error-code discipline
 
