@@ -72,16 +72,9 @@ func RunExternalAPI_06_02_DeleteByModel(t *testing.T, fixture parity.BackendFixt
 
 // RunExternalAPI_06_06_DeleteAtPointInTime — dictionary 06/06.
 //
-// The full scenario asserts that delete-all-by-model with pointInTime=T1
-// only removes entities created before T1. The Driver does not yet
-// expose a pointInTime parameter on DeleteEntitiesByModel, so for
-// tranche-1 we exercise the delete-all spine only.
-//
-// TODO(#118-followup): once the Driver gains a pointInTime helper,
-// tighten this to assert that only the first N entities are removed
-// at pointInTime=T1, leaving the post-T1 entities intact.
+// delete-all-by-model with pointInTime=T1 selectively removes only
+// entities created at or before T1, leaving newer entities intact.
 func RunExternalAPI_06_06_DeleteAtPointInTime(t *testing.T, fixture parity.BackendFixture) {
-	t.Helper()
 	d := driver.NewInProcess(t, fixture)
 	if err := d.CreateModelFromSample("delpit", 1, `{"k":1}`); err != nil {
 		t.Fatalf("CreateModelFromSample: %v", err)
@@ -89,29 +82,35 @@ func RunExternalAPI_06_06_DeleteAtPointInTime(t *testing.T, fixture parity.Backe
 	if err := d.LockModel("delpit", 1); err != nil {
 		t.Fatalf("LockModel: %v", err)
 	}
+	// Phase A: 3 entities created before T1.
 	for i := 0; i < 3; i++ {
 		if _, err := d.CreateEntity("delpit", 1, `{"k":1}`); err != nil {
 			t.Fatalf("CreateEntity[before-T1][%d]: %v", i, err)
 		}
 	}
+	// Capture T1 *after* phase A is fully durable.
 	t1 := time.Now().UTC()
-	// Ensure observable delta between T1 and subsequent creations.
-	time.Sleep(50 * time.Millisecond)
+	// Ensure observable temporal delta. Server timestamps are usually
+	// millisecond-precision; sleep beyond that.
+	time.Sleep(100 * time.Millisecond)
+	// Phase B: 2 entities created after T1.
 	for i := 0; i < 2; i++ {
 		if _, err := d.CreateEntity("delpit", 1, `{"k":1}`); err != nil {
 			t.Fatalf("CreateEntity[after-T1][%d]: %v", i, err)
 		}
 	}
-	_ = t1 // captured for the future pointInTime helper
 
-	if err := d.DeleteEntitiesByModel("delpit", 1); err != nil {
-		t.Fatalf("DeleteEntitiesByModel: %v", err)
+	// Delete with pointInTime=T1 — only the 3 phase-A entities should go.
+	if err := d.DeleteEntitiesByModelAt("delpit", 1, t1); err != nil {
+		t.Fatalf("DeleteEntitiesByModelAt: %v", err)
 	}
+
+	// Phase B's 2 entities must remain.
 	list, err := d.ListEntitiesByModel("delpit", 1)
 	if err != nil {
 		t.Fatalf("ListEntitiesByModel: %v", err)
 	}
-	if len(list) != 0 {
-		t.Errorf("after delete-all: got %d, want 0", len(list))
+	if len(list) != 2 {
+		t.Errorf("after delete-at-T1: got %d entities, want 2 (only post-T1 entities should remain)", len(list))
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
 )
@@ -146,6 +147,29 @@ func TestDriver_DeleteEntitiesByModel_DELETE(t *testing.T) {
 	}
 	if cap.method != http.MethodDelete || cap.path != "/api/entity/m/1" {
 		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+}
+
+func TestDriver_DeleteEntitiesByModelAt_DELETE_PointInTime(t *testing.T) {
+	cap := &capturedReq{}
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	if err := d.DeleteEntitiesByModelAt("m", 1, time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodDelete || cap.path != "/api/entity/m/1" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if !strings.Contains(gotQuery, "pointInTime=") {
+		t.Errorf("missing pointInTime in query: %q", gotQuery)
 	}
 }
 
