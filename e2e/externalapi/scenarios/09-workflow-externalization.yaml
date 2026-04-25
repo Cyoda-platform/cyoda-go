@@ -1,0 +1,180 @@
+# Externalized processors and criteria.
+#
+# These scenarios cover entity ingestion/update where the workflow FSM
+# delegates a step to an external calculation member over the gRPC
+# bidirectional-streaming `CloudEventsService.startStreaming` channel.
+# The external node receives an `EntityProcessorCalculationRequest` or an
+# `EntityCriteriaCalculationRequest` and returns a matching response
+# event. Three execution modes are exercised:
+#   SYNC              - processor is invoked within the save transaction
+#                       (processor field syncProcess=true)
+#   ASYNC_SAME_TX     - invoked asynchronously but still inside the same
+#                       logical transaction (newTransactionForAsync=false)
+#   ASYNC_NEW_TX      - invoked asynchronously in a fresh transaction
+#                       (newTransactionForAsync=true)
+#
+# The workflow used is minimal:
+#   states: CREATED --via `process`--> PROCESSED --via `finish`--> DONE
+#   transition `process` carries a single externalized processor bound to
+#   a `calculationNodesTags` value that only the test client advertises.
+
+scenarios:
+  - id: ext/01-sync-processor-success
+    name: Save entity with SYNC processor completes transition in-transaction
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt
+    description: |
+      A client registered for the processor tag returns success. The save
+      response must indicate a single committed transaction and a readback
+      must show state=PROCESSED.
+    data:
+      model: { name: extSync, version: 1 }
+      workflow_mode: SYNC
+    preconditions:
+      - "One calculation member is connected via gRPC startStreaming and accepts the processor tag."
+    steps:
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/extSync/1 }
+        body: "<<valid json>>"
+        capture: createResp
+    assertions:
+      - type: transaction_status
+        target: createResp.transactionId
+        expected: SUCCEEDED
+      - type: entity_state
+        expected: PROCESSED
+
+  - id: ext/02-sync-processor-exception-rolls-back
+    name: SYNC processor throws → transaction cancelled → entity not saved
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenExternalExceptionAndSyncAndTxThenNoEntitySaved
+    data:
+      model: { name: extSyncError, version: 1 }
+      workflow_mode: SYNC
+    preconditions:
+      - "Calculation member replies with an exception for every request."
+    steps:
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/extSyncError/1 }
+        body: "<<valid json>>"
+        capture: createResp
+    assertions:
+      - type: transaction_status
+        target: createResp.transactionId
+        expected: CANCELLED
+      - type: entity_not_found
+        via: GET /entity/{createResp.entityId}
+
+  - id: ext/03-async-same-tx-exception-rolls-back
+    name: ASYNC_SAME_TX processor throws → transaction cancelled → entity not saved
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenExternalExceptionAndAsyncSameTxThenNoEntitySaved
+    data:
+      model: { name: extAsyncSameErr, version: 1 }
+      workflow_mode: ASYNC_SAME_TX
+    steps:
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/extAsyncSameErr/1 }
+        body: "<<valid json>>"
+        capture: createResp
+    assertions:
+      - type: transaction_status
+        target: createResp.transactionId
+        expected: CANCELLED
+      - type: entity_not_found
+        via: GET /entity/{createResp.entityId}
+
+  - id: ext/04-async-new-tx-exception-keeps-initial-save
+    name: ASYNC_NEW_TX processor throws → entity saved, follow-up tx cancelled
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenExternalExceptionAndAsyncNewTxThenNoEntityStateChanged
+    description: |
+      ASYNC_NEW_TX runs in a fresh transaction; a failure there leaves the
+      original save intact, with the entity at the pre-processor state.
+    data:
+      model: { name: extAsyncNewErr, version: 1 }
+      workflow_mode: ASYNC_NEW_TX
+    steps:
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/extAsyncNewErr/1 }
+        body: "<<valid json>>"
+        capture: createResp
+    assertions:
+      - type: transaction_status
+        target: createResp.transactionId
+        expected: SUCCEEDED
+      - type: transaction_status
+        target: followUpTxId
+        expected: CANCELLED
+      - type: entity_state
+        expected: PROCESSED
+
+  - id: ext/05-sync-error-flag-rolls-back
+    name: SYNC processor returns success=false (error flag) → rollback
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenExternalResultErrorFlagAndSyncThenNoEntitySaved
+    data:
+      model: { name: extSyncErrFlag, version: 1 }
+      workflow_mode: SYNC
+    preconditions:
+      - "Calculation member returns EntityProcessorCalculationResponse with success=false and an Error body."
+    assertions:
+      - type: transaction_status
+        target: createResp.transactionId
+        expected: CANCELLED
+      - type: entity_not_found
+
+  - id: ext/06-async-same-tx-error-flag-rolls-back
+    name: ASYNC_SAME_TX processor returns error flag → rollback
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenExternalResultErrorFlagAndAsyncSameTxThenNoEntitySaved
+    data: { model: { name: extAsyncSameErrFlag, version: 1 }, workflow_mode: ASYNC_SAME_TX }
+
+  - id: ext/07-async-new-tx-error-flag-keeps-initial-save
+    name: ASYNC_NEW_TX processor returns error flag → initial save remains
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenExternalResultErrorFlagAndAsyncNewTxThenNoEntityStateChanged
+    data: { model: { name: extAsyncNewErrFlag, version: 1 }, workflow_mode: ASYNC_NEW_TX }
+    assertions:
+      - type: entity_state
+        expected: PROCESSED
+
+  - id: ext/08-no-external-registered-fails
+    name: No calculation member registered → save fails
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenNoAvailableExternalThenFlowFails
+    description: |
+      A save that requires an external processor must fail when no client
+      is connected for the required `calculationNodesTags`.
+    negative: true
+    data: { model: { name: extNoClient, version: 1 }, workflow_mode: SYNC }
+    expected_error:
+      transaction_status: CANCELLED
+      class_or_message_pattern: "no available calculation member"
+
+  - id: ext/09-external-disconnect-succeeds-on-retry
+    name: First member disconnects, a second responds → save eventually succeeds
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenNoAvailableExternalAndOneConnectedThenSuccessAfterRetry
+    data: { model: { name: extRetry, version: 1 }, workflow_mode: ASYNC_SAME_TX }
+    assertions:
+      - type: transaction_status
+        expected: SUCCEEDED
+      - type: entity_state
+        expected: PROCESSED
+
+  - id: ext/10-external-timeout-failover
+    name: Slow member times out, fast member satisfies request
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenExternalCodeTimeoutAndOneFastConnectedThenSuccessAfterRetry
+    data: { model: { name: extTimeout, version: 1 }, workflow_mode: ASYNC_SAME_TX }
+
+  - id: ext/11-processing-node-disconnects-mid-request
+    name: Processing node disconnects mid-request → retry on other node succeeds
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizationExtendedIT.kt#testWhenProcessingNodeDisconnectsThenSuccessRetryOnOtherNode
+    data: { model: { name: extDisc, version: 1 }, workflow_mode: ASYNC_SAME_TX }
+
+  - id: ext/12-externalized-criterion-skips-call-when-not-matched
+    name: Externalized criterion skips the external call when upstream filter excludes entity
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/externalize/ExternalizedGrpcProcessorIT.kt#testExternalizedCriteriaConditionSkipsExternalCallWhenNotMatched
+    description: |
+      When a transition has both a simple (jsonPath-based) criterion AND
+      an externalized (function) criterion combined under AND, and the
+      simple one evaluates to false, the external call must not be made.
+    data:
+      model: { name: extCritSkip, version: 1 }
+    assertions:
+      - type: external_calls_count
+        expected: 0
+      - type: entity_state
+        expected: CREATED

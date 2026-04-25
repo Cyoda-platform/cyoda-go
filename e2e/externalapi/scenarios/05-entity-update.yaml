@@ -1,0 +1,147 @@
+# Entity update scenarios. The canonical nested JSON update cases come from
+# `TEST_TREE_NODE_ENTITY_UPDATE_CASES` in EntityInteractorIT.kt. They cover:
+#   - array-element modification + append (growth)
+#   - array-element modification + shrink
+#   - object + array removal
+#   - fresh population of an originally minimal entity
+
+scenarios:
+  - id: update/01-nested-array-append-and-modify
+    name: Update nested array: modify first element and append a second
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#when updating entity of the same model then no issues (case 1)
+    description: |
+      Create an entity with a one-element nested array, then update with
+      the first element's inner field modified and an additional array
+      element. Readback must equal the updated JSON exactly.
+    data:
+      model: { name: testTreeNodeEntityUpdate, version: 1 }
+      sample_json: |
+        { "field1":"a",
+          "objectField":{"field2":"b"},
+          "arrayField":[{"field3":"c"}] }
+      payload_json: |
+        { "field1":"a",
+          "objectField":{"field2":"b"},
+          "arrayField":[{"field3":"c-updated"},{"field3":"d"}] }
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/testTreeNodeEntityUpdate/1 }
+        body_ref: data.sample_json
+      - action: lock_model
+        endpoint: { rest: PUT /model/testTreeNodeEntityUpdate/1/lock }
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/testTreeNodeEntityUpdate/1 }
+        body_ref: data.sample_json
+        capture: entityId
+      - action: update_entity_transition
+        endpoint: { rest: PUT /entity/JSON/{entityId}/UPDATE }
+        body_ref: data.payload_json
+    assertions:
+      - type: entity_equals_json
+        target: entityId
+        expected_ref: data.payload_json
+
+  - id: update/02-nested-array-shrink-and-modify-top-level
+    name: Shrink array and change a top-level string
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#when updating entity of the same model then no issues (case 2)
+    data:
+      model: { name: testTreeNodeEntityUpdate, version: 1 }
+      sample_json: |
+        { "field1":"a","objectField":{"field2":"b"},
+          "arrayField":[{"field3":"c"},{"field3":"d"}] }
+      payload_json: |
+        { "field1":"a-updated","objectField":{"field2":"b"},
+          "arrayField":[{"field3":"c-updated"}] }
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/testTreeNodeEntityUpdate/1 }, body_ref: data.sample_json }
+      - { action: lock_model, endpoint: { rest: PUT /model/testTreeNodeEntityUpdate/1/lock } }
+      - { action: create_entity, endpoint: { rest: POST /entity/JSON/testTreeNodeEntityUpdate/1 }, body_ref: data.sample_json, capture: entityId }
+      - { action: update_entity_transition, endpoint: { rest: PUT /entity/JSON/{entityId}/UPDATE }, body_ref: data.payload_json }
+    assertions:
+      - type: entity_equals_json
+        target: entityId
+        expected_ref: data.payload_json
+
+  - id: update/03-remove-object-and-array-keep-one-field
+    name: Remove entire objectField + arrayField, keep a renamed field1
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#when updating entity of the same model then no issues (case 3)
+    data:
+      model: { name: testTreeNodeEntityUpdate, version: 1 }
+      sample_json: |
+        { "field1":"a","objectField":{"field2":"b"},
+          "arrayField":[{"field3":"c"},{"field3":"d"}] }
+      payload_json: |
+        { "field1":"a-updated" }
+    steps:
+      - { action: create_entity, endpoint: { rest: POST /entity/JSON/testTreeNodeEntityUpdate/1 }, body_ref: data.sample_json, capture: entityId }
+      - { action: update_entity_transition, endpoint: { rest: PUT /entity/JSON/{entityId}/UPDATE }, body_ref: data.payload_json }
+    assertions:
+      - type: entity_equals_json
+        target: entityId
+        expected_ref: data.payload_json
+
+  - id: update/04-populate-minimal-into-full
+    name: Update a minimal entity by adding nested object and array
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#when updating entity of the same model then no issues (case 4)
+    data:
+      model: { name: testTreeNodeEntityUpdate, version: 1 }
+      sample_json: |
+        { "field1":"a" }
+      payload_json: |
+        { "field1":"a-updated",
+          "objectField":{"field2":"b"},
+          "arrayField":[{"field3":"c-updated"},{"field3":"hello"}] }
+    steps:
+      - { action: create_entity, endpoint: { rest: POST /entity/JSON/testTreeNodeEntityUpdate/1 }, body_ref: data.sample_json, capture: entityId }
+      - { action: update_entity_transition, endpoint: { rest: PUT /entity/JSON/{entityId}/UPDATE }, body_ref: data.payload_json }
+    assertions:
+      - type: entity_equals_json
+        target: entityId
+        expected_ref: data.payload_json
+
+  - id: update/05-loopback-absent-transition
+    name: PUT without a transition performs the loopback transition
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#when updating entity with no transition then loopback is used
+    description: |
+      The loopback transition (`UPDATE`) is selected when the client omits
+      the transition path segment. The resulting entity must equal the
+      updated payload and must remain in its originating state.
+    data:
+      model: { name: testTreeNodeEntityUpdate, version: 1 }
+      sample_json_ref: update/01.data.sample_json
+      payload_json_ref: update/01.data.payload_json
+    steps:
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/testTreeNodeEntityUpdate/1 }
+        body_ref: data.sample_json_ref
+        capture: entityId
+      - action: update_entity_loopback
+        endpoint:
+          rest: PUT /entity/JSON/{entityId}
+          grpc: EntityService.entityManage (EntityUpdateRequest without transition)
+        body_ref: data.payload_json_ref
+    assertions:
+      - type: entity_equals_json
+        target: entityId
+        expected_ref: data.payload_json_ref
+
+  - id: update/06-unchanged-payload-still-transitions
+    name: PUT identical payload still advances the workflow transition
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#test that transitioning an unchanged entity works
+    description: |
+      Submitting the same JSON back must succeed: the content is unchanged,
+      but the workflow must still record that transition was applied. The
+      entity count must remain 1 and readback must equal the original JSON.
+    data:
+      model: { name: testTreeNodeEntityUpdate, version: 1 }
+      sample_json_ref: update/01.data.sample_json
+    steps:
+      - { action: create_entity, endpoint: { rest: POST /entity/JSON/testTreeNodeEntityUpdate/1 }, body_ref: data.sample_json_ref, capture: entityId }
+      - { action: update_entity_transition, endpoint: { rest: PUT /entity/JSON/{entityId}/UPDATE }, body_ref: data.sample_json_ref }
+    assertions:
+      - type: entity_count_for_model
+        model: { name: testTreeNodeEntityUpdate, version: 1 }
+        value: 1
+      - type: entity_equals_json
+        target: entityId
+        expected_ref: data.sample_json_ref

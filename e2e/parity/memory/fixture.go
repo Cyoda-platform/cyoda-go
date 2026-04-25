@@ -59,3 +59,27 @@ func setup() (*memoryFixture, func(), error) {
 
 	return fix, cleanup, nil
 }
+
+// MustSetup is a test helper that boots the memory fixture and returns
+// it along with a cleanup func. It exists for external callers
+// (currently only e2e/externalapi/driver/remote_smoke_test.go) that
+// need access to BaseURL + a tenant without going through the full
+// AllTests loop.
+//
+// Fails the test on setup error. Callers MUST `defer cleanup()` on the
+// line immediately following MustSetup — a panic before the defer
+// registers will leave the cyoda-go + compute-test-client subprocesses
+// running.
+//
+// Symmetric helpers do not yet exist on the sqlite/postgres fixtures
+// because tranche-1's only consumer is a memory-backed remote-mode
+// smoke. If a future test needs a sqlite/postgres equivalent, add the
+// helper there with the same signature.
+func MustSetup(t *testing.T) (parity.BackendFixture, func()) {
+	t.Helper()
+	fix, cleanup, err := setup()
+	if err != nil {
+		t.Fatalf("memory fixture setup: %v", err)
+	}
+	return fix, cleanup
+}

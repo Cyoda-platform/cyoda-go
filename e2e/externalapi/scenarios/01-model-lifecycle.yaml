@@ -1,0 +1,293 @@
+scenarios:
+  - id: model-lifecycle/01-register-model-from-sample
+    name: Register a new model from a sample JSON document
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to save entity model
+    description: |
+      Registering a previously-unknown (name, version) with a sample JSON
+      document creates the model in the unlocked state. The simple-view
+      export round-trips the inferred field types.
+    data:
+      model: { name: simple1, version: 1, change_level: null }
+      sample_json: |
+        {"key1": 123}
+    steps:
+      - action: create_model_from_sample
+        endpoint:
+          rest: POST /model/import/JSON/SAMPLE_DATA/simple1/1
+          grpc: EntityService.entityManage (ModelImportRequest)
+        body_ref: data.sample_json
+      - action: export_model
+        endpoint: { rest: GET /model/export/SIMPLE_VIEW/simple1/1 }
+        capture: simpleView
+    assertions:
+      - type: http_status
+        value: 200
+      - type: json_equals
+        target: simpleView
+        expected: |
+          { "$": { ".key1": "INTEGER" } }
+
+  - id: model-lifecycle/02-upsert-model-extends-schema
+    name: Re-import a model with a superset schema extends it
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to merge metadata
+    description: |
+      Re-posting sample data with additional fields to an unlocked model
+      extends the schema to include the new fields; the model remains
+      unlocked and the union of fields is observable on export.
+    data:
+      model: { name: merged, version: 1, change_level: null }
+      sample_json: |
+        {"a": 1}
+      payload_json: |
+        {"a": 2, "b": "hello"}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/merged/1 }
+        body_ref: data.sample_json
+      - action: update_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/merged/1 }
+        body_ref: data.payload_json
+      - action: export_model
+        endpoint: { rest: GET /model/export/SIMPLE_VIEW/merged/1 }
+        capture: simpleView
+    assertions:
+      - type: json_contains_fields
+        target: simpleView
+        fields: [".a", ".b"]
+
+  - id: model-lifecycle/03-upsert-model-with-incompatible-type
+    name: Re-import a model with an incompatible type on an existing field
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to merge metadata with different types
+    description: |
+      When a field's sample type changes (e.g. integer → string) on an
+      unlocked model, the import is accepted and the field type is
+      adjusted (TYPE change). Entity creation is still rejected if the
+      resulting model is later locked and the stored changeLevel does
+      not permit the type transition.
+    data:
+      model: { name: types, version: 1, change_level: null }
+      sample_json: |
+        {"price": 13}
+      payload_json: |
+        {"price": "expensive"}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/types/1 }
+        body_ref: data.sample_json
+      - action: update_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/types/1 }
+        body_ref: data.payload_json
+    assertions:
+      - type: http_status
+        value: 200
+
+  - id: model-lifecycle/04-reregister-same-schema
+    name: Re-registering the same schema is idempotent
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to register same schema again
+    description: Re-posting an identical sample to an already-registered model is a no-op.
+    data:
+      model: { name: idem, version: 1 }
+      sample_json: |
+        {"k": 1}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/idem/1 }
+        body_ref: data.sample_json
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/idem/1 }
+        body_ref: data.sample_json
+    assertions:
+      - type: http_status
+        value: 200
+      - type: model_change_log_size
+        model: { name: idem, version: 1 }
+        max: 1
+
+  - id: model-lifecycle/05-lock-model
+    name: Lock a model so entity ingestion is allowed
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelGrpcApiIT.kt#test lock and unlock model
+    description: |
+      Locking a model is required before entities can be saved. An unlocked
+      model rejects ingestion with a wrong-state error.
+    data:
+      model: { name: simple1, version: 1 }
+      sample_json: |
+        {"k1": 1}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple1/1 }
+        body_ref: data.sample_json
+      - action: lock_model
+        endpoint:
+          rest: PUT /model/simple1/1/lock
+          grpc: EntityService.entityManage (ModelLockRequest)
+    assertions:
+      - type: http_status
+        value: 200
+
+  - id: model-lifecycle/06-unlock-model
+    name: Unlock a locked model
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelGrpcApiIT.kt#test lock and unlock model
+    description: Unlocking restores mutability of the model schema.
+    data:
+      model: { name: simple1, version: 1 }
+    steps:
+      - action: lock_model
+        endpoint: { rest: PUT /model/simple1/1/lock }
+      - action: unlock_model
+        endpoint: { rest: PUT /model/simple1/1/unlock }
+    assertions:
+      - type: http_status
+        value: 200
+
+
+  - id: model-lifecycle/07-lock-twice-is-rejected
+    name: Locking an already-locked model fails
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to lock metadata again
+    description: The second lock call on the same (name, version) returns a 4xx.
+    data:
+      model: { name: lockTwice, version: 1 }
+      sample_json: |
+        {"x": 1}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/lockTwice/1 }
+        body_ref: data.sample_json
+      - action: lock_model
+        endpoint: { rest: PUT /model/lockTwice/1/lock }
+      - action: lock_model
+        endpoint: { rest: PUT /model/lockTwice/1/lock }
+    negative: true
+    expected_error:
+      http_status: 409
+      class_or_message_pattern: "EntityModel.*already locked|WrongState"
+
+  - id: model-lifecycle/08-delete-model
+    name: Delete an existing model
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelGrpcApiIT.kt#try delete model successfully
+    description: |
+      Deleting a model removes both the schema and (cascading) the ability
+      to read or list that (name, version). A subsequent GET must fail.
+    data:
+      model: { name: toDelete, version: 1 }
+      sample_json: |
+        {"k": 1}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/toDelete/1 }
+        body_ref: data.sample_json
+      - action: delete_model
+        endpoint:
+          rest: DELETE /model/toDelete/1
+          grpc: EntityService.entityManage (ModelDeleteRequest)
+      - action: export_model
+        endpoint: { rest: GET /model/export/SIMPLE_VIEW/toDelete/1 }
+    assertions:
+      - type: http_status_at_step
+        step: 2
+        value: 200
+      - type: http_status_at_step
+        step: 3
+        in: [404, 400]
+
+  - id: model-lifecycle/09-list-models-empty
+    name: Listing models on a fresh namespace returns an empty list
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#get empty list of entity models
+    description: |
+      When no models are registered the list endpoint returns an empty
+      collection (not an error).
+    steps:
+      - action: list_models
+        endpoint:
+          rest: GET /model
+          grpc: EntityService.entityManage (ModelListRequest)
+        capture: list
+    assertions:
+      - type: http_status
+        value: 200
+      - type: list_size
+        target: list
+        value: 0
+
+  - id: model-lifecycle/10-list-models-non-empty
+    name: Listing models reflects previously-registered models
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#get not empty list of entity models
+    description: Each successful import adds one entry to the list response.
+    data:
+      model: { name: simple1, version: 1 }
+      sample_json: |
+        {"k": 1}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple1/1 }
+        body_ref: data.sample_json
+      - action: list_models
+        endpoint: { rest: GET /model }
+        capture: list
+    assertions:
+      - type: list_contains_model
+        target: list
+        model: { name: simple1, version: 1 }
+
+  - id: model-lifecycle/11-export-metadata-as-json-schema
+    name: Export model metadata in multiple views
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try to export metadata to json schema
+    description: |
+      The model can be exported in multiple views (SIMPLE_VIEW, FULL,
+      JSON_SCHEMA). Each view must be retrievable as JSON.
+    data:
+      model: { name: export1, version: 1 }
+      sample_json: |
+        {"a": 1, "b": "x"}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/export1/1 }
+        body_ref: data.sample_json
+      - action: export_model
+        endpoint: { rest: GET /model/export/SIMPLE_VIEW/export1/1 }
+      - action: export_model
+        endpoint: { rest: GET /model/export/FULL/export1/1 }
+    assertions:
+      - type: http_status
+        all_steps: true
+        value: 200
+
+  - id: model-lifecycle/12-parse-nobel-laureates-sample
+    name: Register a realistic nested sample (Nobel laureates)
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try parse nobel laureates
+    description: |
+      Nested + array sample documents must be accepted and the model
+      must be lockable and usable for ingestion afterwards.
+    data:
+      model: { name: nobel, version: 1 }
+      sample_json_ref: classpath:test-data/nobel-laureates.json
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/nobel/1 }
+        body_ref: data.sample_json_ref
+      - action: lock_model
+        endpoint: { rest: PUT /model/nobel/1/lock }
+      - action: export_model
+        endpoint: { rest: GET /model/export/SIMPLE_VIEW/nobel/1 }
+    assertions:
+      - type: http_status
+        all_steps: true
+        value: 200
+
+  - id: model-lifecycle/13-parse-lei-data-sample
+    name: Register an LEI (Legal Entity Identifier) sample
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#try parse lei data
+    description: Another realistic nested sample, exercises the same model-ingestion path.
+    data:
+      model: { name: lei, version: 1 }
+      sample_json_ref: classpath:test-data/lei-data.json
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/lei/1 }
+        body_ref: data.sample_json_ref
+      - action: lock_model
+        endpoint: { rest: PUT /model/lei/1/lock }
+    assertions:
+      - type: http_status
+        all_steps: true
+        value: 200

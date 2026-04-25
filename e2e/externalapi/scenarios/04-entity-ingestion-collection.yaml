@@ -1,0 +1,146 @@
+# Heterogeneous collection ingestion: a single HTTP request ingests entities
+# of two or more different (name, version) models in one transaction.
+
+scenarios:
+  - id: ingest-collection/01-family-and-pets-single-transaction
+    name: Create family + pets across two models in one request
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testCreatingAndUpdatingCollection
+    description: |
+      Register two independent models (`family`, `pets`), lock both, then
+      post a heterogeneous collection that contains 5 family members and
+      2 pets. Exactly one transaction must be reported and it must carry
+      the ids of all 7 created entities.
+    data:
+      models:
+        - { name: family, version: 1 }
+        - { name: pets,  version: 1 }
+      family_sample_json: |
+        [
+          {"name":"father","age":50,"relation":"FATHER","kids":[
+            {"name":"daughter","age":20,"relation":"DAUGHTER"},
+            {"name":"son","age":18,"relation":"SON","kids":[
+              {"name":"grandDaughter","age":2,"relation":"GRANDDAUGHTER"},
+              {"name":"grandSon","age":1,"relation":"GRANDSON"}
+            ]}
+          ]}
+        ]
+      pets_sample_json: |
+        [
+          {"name":"cat","age":3,"species":"CAT"},
+          {"name":"dog","age":5,"species":"DOG"}
+        ]
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/family/1 }
+        body_ref: data.family_sample_json
+      - action: lock_model
+        endpoint: { rest: PUT /model/family/1/lock }
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/pets/1 }
+        body_ref: data.pets_sample_json
+      - action: lock_model
+        endpoint: { rest: PUT /model/pets/1/lock }
+      - action: create_entities_collection
+        endpoint:
+          rest: POST /entity/JSON
+          grpc: EntityService.entityManageCollection (bidi create)
+        body: |
+          [
+            { "modelSpec": {"name": "family", "version": 1},
+              "json": "<<data.family_sample_json>>" },
+            { "modelSpec": {"name": "pets", "version": 1},
+              "json": "<<data.pets_sample_json>>" }
+          ]
+        capture: entityIds
+    assertions:
+      - type: transaction_count
+        value: 1
+      - type: entity_id_count
+        target: entityIds
+        value: 7
+      - type: entity_count_global
+        value: 7
+
+  - id: ingest-collection/02-update-collection-age-increment
+    name: Update all entities of two models in a single collection PUT
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testCreatingAndUpdatingCollection
+    description: |
+      Continuation of 04/01: read all 7 entities, increment `age` by 10 on
+      every one, and submit the full collection via PUT /entity/JSON. A
+      single transaction must report 7 ids and each readback must confirm
+      the incremented `age` for its original id.
+    preconditions:
+      - "Scenario ingest-collection/01-family-and-pets-single-transaction completed."
+    data:
+      transition: UPDATE
+    steps:
+      - action: update_entities_collection
+        endpoint:
+          rest: PUT /entity/JSON
+          grpc: EntityService.entityManageCollection (bidi update)
+        body: |
+          [
+            { "entityId": "<<id1>>", "transition": "UPDATE",
+              "json": "<<incremented-json-1>>" },
+            ... one per original entity ...
+          ]
+    assertions:
+      - type: transaction_count
+        value: 1
+      - type: entity_id_count
+        value: 7
+      - type: entity_equals_json_per_id
+        expectation: "age == original_age + 10"
+
+  - id: ingest-collection/03-grpc-create-multiple-by-collection-rpc
+    name: Create multiple entities via gRPC entityManageCollection
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityGrpcApiIT.kt#test save multiple entities by entityManageCollection
+    description: |
+      `entityManageCollection` is a bidirectional streaming RPC. The client
+      sends a create request carrying several entities of the same model;
+      the server returns a single transaction-complete response containing
+      all created ids.
+    data:
+      model: { name: simple1, version: 1 }
+      sample_json: |
+        [{"k1": 1}, {"k1": 2}, {"k1": 3}]
+    steps:
+      - action: create_entities_collection
+        endpoint: { grpc: EntityService.entityManageCollection }
+        body_ref: data.sample_json
+        capture: entityIds
+    assertions:
+      - type: entity_id_count
+        target: entityIds
+        value: 3
+
+  - id: ingest-collection/04-parsing-spec-transaction-window
+    name: transactionWindow splits one POST into several transactions
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteAllByModelVersion
+    description: |
+      Setting `transactionWindow` on the ingestion request limits how many
+      entities share one transaction. Posting 500 entities with window=1000
+      yields one transaction; with window=100 yields five transactions.
+      The final entity count must equal the input regardless of window.
+    data:
+      model: { name: family, version: 1 }
+      count: 500
+    steps:
+      - action: create_entity
+        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=1000&waitForConsistencyAfter=true" }
+        body_ref: "generated: list of 500 family members"
+        capture: txSingle
+      - action: create_entity
+        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=100&waitForConsistencyAfter=true" }
+        body_ref: "generated: list of 500 family members"
+        capture: txSplit
+    assertions:
+      - type: transaction_count_for
+        target: txSingle
+        value: 1
+      - type: transaction_count_for
+        target: txSplit
+        value: 5
+      - type: entity_count_for_model
+        model: { name: family, version: 1 }
+        value: 1000

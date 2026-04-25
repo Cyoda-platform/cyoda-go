@@ -457,6 +457,62 @@ func (c *Client) UpdateEntity(t *testing.T, entityID uuid.UUID, transition, body
 	return err
 }
 
+// CollectionItem is one entry in a POST /api/entity/{format} body for
+// heterogeneous collection creation. Payload is a JSON-encoded string
+// (not a nested object) per the wire contract — the handler in
+// internal/domain/entity.Handler.CreateCollection unmarshals it as such.
+type CollectionItem struct {
+	ModelName    string
+	ModelVersion int
+	Payload      string
+}
+
+// CreateEntitiesCollection issues POST /api/entity/JSON with a
+// heterogeneous batch. Returns the list of created entity IDs (parsed
+// from the response array's entityIds field).
+func (c *Client) CreateEntitiesCollection(t *testing.T, items []CollectionItem) ([]uuid.UUID, error) {
+	t.Helper()
+	type modelRef struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+	}
+	type rawItem struct {
+		Model   modelRef `json:"model"`
+		Payload string   `json:"payload"`
+	}
+	raw := make([]rawItem, 0, len(items))
+	for _, it := range items {
+		raw = append(raw, rawItem{
+			Model:   modelRef{Name: it.ModelName, Version: it.ModelVersion},
+			Payload: it.Payload,
+		})
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CreateEntitiesCollection items: %w", err)
+	}
+	resp, err := c.doRaw(t, http.MethodPost, "/api/entity/JSON", string(body))
+	if err != nil {
+		return nil, err
+	}
+	// Response shape: [{"transactionId":"...","entityIds":["<uuid>", ...]}]
+	var parsed []EntityTransactionInfo
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		return nil, fmt.Errorf("decode CreateEntitiesCollection response: %w (body=%s)", err, string(resp))
+	}
+	var out []uuid.UUID
+	for _, tx := range parsed {
+		for _, idStr := range tx.EntityIDs {
+			id, perr := uuid.Parse(idStr)
+			if perr != nil {
+				return nil, fmt.Errorf("parse entityId %q: %w", idStr, perr)
+			}
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 // UpdateCollectionItem is one entry in a PUT /api/entity/{format} body.
 // Payload is a JSON-encoded string (not a nested object) per the collection
 // update wire contract.
@@ -628,4 +684,52 @@ func (c *Client) GetAuditEvents(t *testing.T, entityID uuid.UUID) (EntityAuditEv
 		return EntityAuditEventsResponse{}, err
 	}
 	return resp, nil
+}
+
+// DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version},
+// removing all entities in that (name, version) namespace for the
+// calling tenant. Returns nil on 2xx; the response body's delete-stats
+// shape is not returned because tests typically re-verify via
+// ListEntitiesByModel rather than parsing stats.
+func (c *Client) DeleteEntitiesByModel(t *testing.T, name string, version int) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d", name, version)
+	_, err := c.doRaw(t, http.MethodDelete, path, "")
+	return err
+}
+
+// DeleteEntitiesByModelAt issues DELETE /api/entity/{name}/{version}?pointInTime=<ISO8601>,
+// removing only entities whose creation time is at or before pointInTime
+// for the calling tenant. Wraps DeleteEntitiesByModel with a temporal
+// filter; everything else is identical.
+func (c *Client) DeleteEntitiesByModelAt(t *testing.T, name string, version int, pointInTime time.Time) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pointInTime=%s", name, version, pointInTime.UTC().Format(time.RFC3339Nano))
+	_, err := c.doRaw(t, http.MethodDelete, path, "")
+	return err
+}
+
+// LockModelRaw issues PUT /api/model/{name}/{version}/lock and returns
+// the HTTP status code + raw body without raising on non-2xx. Used by
+// negative-path tests that assert on the error body shape via
+// e2e/externalapi/errorcontract.Match. Mirrors the *Raw pattern of
+// CreateEntityRaw/GetEntityRaw/DeleteEntityRaw.
+func (c *Client) LockModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/lock", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
 }

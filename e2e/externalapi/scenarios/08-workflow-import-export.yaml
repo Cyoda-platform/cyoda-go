@@ -1,0 +1,212 @@
+# Workflow import/export round-trip scenarios.
+#
+# Endpoints:
+#   POST   /entity/{name}/{version}/workflow/import   body: WorkflowImportRequestDto
+#          - importMode ∈ { REPLACE, ACTIVATE, MERGE } (default MERGE per controller)
+#   GET    /entity/{name}/{version}/workflow/export   -> WorkflowExportResponseDto
+#
+# Preconditions common to every scenario:
+#   1. Register a fresh model via POST /model/import/JSON/SAMPLE_DATA/{name}/{version}
+#      with createDefaultWorkflow=false.
+#   2. Lock the model via PUT /model/{name}/{version}/lock.
+#
+# Each import scenario lists the full JSON body that flows through the REST
+# endpoint. Every assertion is expressed as a round-trip: after import,
+# export must return the same workflow (ordering-normalized, creationDate
+# stripped).
+
+scenarios:
+  - id: wf-import/01-simple-automated-transition
+    name: Simple workflow, one automated transition, one JSONPath criterion
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/model/workflow/EntityModelWorkflowInteractorIT.kt#test import simple workflow and verify export
+    data:
+      model: { name: wfSimple, version: 1 }
+      import_body: |
+        {
+          "workflows": [{
+            "version": "1.0",
+            "name": "Simple Test Workflow",
+            "desc": "A simple test workflow for integration testing",
+            "initialState": "draft",
+            "active": true,
+            "criterion": { "type":"simple", "jsonPath":"$.status",
+                           "operation":"EQUALS", "value":"active" },
+            "states": {
+              "draft":     { "transitions":[{"name":"Move to Published","next":"published","manual":false,"disabled":false}] },
+              "published": { "transitions":[] }
+            }
+          }]
+        }
+    steps:
+      - action: import_workflow
+        endpoint: { rest: POST /entity/wfSimple/1/workflow/import }
+        body_ref: data.import_body
+      - action: export_workflow
+        endpoint: { rest: GET /entity/wfSimple/1/workflow/export }
+        capture: exp
+      - action: import_workflow
+        repeat_note: "re-run to prove idempotency / id reuse"
+        endpoint: { rest: POST /entity/wfSimple/1/workflow/import }
+        body_ref: data.import_body
+      - action: export_workflow
+        endpoint: { rest: GET /entity/wfSimple/1/workflow/export }
+        capture: expAgain
+    assertions:
+      - type: json_equals_normalized
+        target: exp
+        expected_ref: data.import_body.workflows
+      - type: json_equals_normalized
+        target: expAgain
+        expected_ref: data.import_body.workflows
+
+  - id: wf-import/02-defaults-applied-and-returned
+    name: Unspecified fields get defaults, re-export shows defaults
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/model/workflow/EntityModelWorkflowInteractorIT.kt#test import workflow with defaults
+    description: |
+      A processor listed only by `name` must round-trip with
+      executionMode=ASYNC_NEW_TX, a transition without `disabled` must
+      round-trip with disabled=false, a transition without `active` must
+      round-trip active=true, a function-criterion without a config must
+      round-trip with no config.
+    data:
+      model: { name: wfDefaults, version: 1 }
+      import_body: |
+        {"workflows":[{
+          "version":"1.0","name":"Workflow with defaults",
+          "desc":"A workflow with defaults","initialState":"start",
+          "states":{
+            "start":{"transitions":[{
+              "name":"To end","next":"end","manual":true,
+              "criterion":{"type":"function","function":{"name":"validate_entity_eligibility"}},
+              "processors":[
+                {"name":"some_function"},
+                {"name":"some_function_with_empty_config","config":{}}
+              ]}]},
+            "end":{}
+          }
+        }]}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfDefaults/1/workflow/import }, body_ref: data.import_body }
+      - { action: export_workflow, endpoint: { rest: GET /entity/wfDefaults/1/workflow/export }, capture: exp }
+    assertions:
+      - type: field_equals
+        target: "exp.workflows[0].active"
+        expected: true
+      - type: field_equals
+        target: "exp.workflows[0].states.start.transitions[0].disabled"
+        expected: false
+      - type: field_equals
+        target: "exp.workflows[0].states.start.transitions[0].processors[0].executionMode"
+        expected: "ASYNC_NEW_TX"
+
+  - id: wf-import/03-advanced-criteria-and-processors
+    name: Advanced FSM: group criterion (AND), function criterion, scheduled processor
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/model/workflow/EntityModelWorkflowInteractorIT.kt#test import workflow with criterion on transition and processors
+    data:
+      model: { name: wfAdvanced, version: 1 }
+      import_body: |
+        {"workflows":[{
+          "version":"1.0","name":"Advanced Test Workflow",
+          "desc":"A workflow with transition criteria and processors",
+          "initialState":"pending","active":true,
+          "criterion":{"type":"simple","jsonPath":"$.category",
+                       "operation":"EQUALS","value":"premium"},
+          "states":{
+            "pending":{"transitions":[{
+              "name":"Approve with Validation","next":"approved",
+              "manual":true,"disabled":false,
+              "criterion":{"type":"group","operator":"AND","conditions":[
+                {"type":"simple","jsonPath":"$.score","operation":"GREATER_OR_EQUAL","value":80},
+                {"type":"function","function":{"name":"validate_entity_eligibility",
+                  "config":{"attachEntity":true,"calculationNodesTags":"validation,eligibility",
+                            "responseTimeoutMs":3000,"retryPolicy":"FIXED"}}}
+              ]},
+              "processors":[
+                {"name":"send_approval_notification","executionMode":"ASYNC_NEW_TX",
+                 "config":{"attachEntity":true,"calculationNodesTags":"notification,approval",
+                           "responseTimeoutMs":5000,"retryPolicy":"NONE"}},
+                {"type":"scheduled","name":"schedule_close_process",
+                 "config":{"delayMs":300,"timeoutMs":30000,"transition":"Close"}}
+              ]}]},
+            "approved":{"transitions":[{"name":"Close","manual":true,"next":"closed","disabled":false}]},
+            "closed":{"transitions":[]}
+          }
+        }]}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfAdvanced/1/workflow/import }, body_ref: data.import_body }
+      - { action: export_workflow, endpoint: { rest: GET /entity/wfAdvanced/1/workflow/export }, capture: exp }
+    assertions:
+      - type: json_equals_normalized
+        target: exp.workflows
+        expected_ref: data.import_body.workflows
+
+  - id: wf-import/04-strategy-replace
+    name: importMode=REPLACE removes all previous workflows
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/model/workflow/EntityModelWorkflowInteractorIT.kt#test import workflow with REPLACE strategy
+    data:
+      model: { name: wfReplace, version: 1 }
+      initial_body: |
+        {"workflows":[{"version":"1.0","name":"Initial Workflow","initialState":"pending","active":true,
+          "states":{"pending":{"transitions":[{"name":"Approve","next":"approved","manual":true,"disabled":false,
+            "criterion":{"type":"simple","jsonPath":"$.score","operation":"GREATER_OR_EQUAL","value":80},
+            "processors":[{"name":"send_approval_notification","executionMode":"ASYNC_NEW_TX"}]}]}}
+        }]}
+      replacement_body: |
+        {"workflows":[{"version":"1.0","name":"Replacement Workflow","initialState":"start","active":true,
+          "states":{"start":{"transitions":[{"name":"Complete","next":"end","manual":true,"disabled":false}]}}
+        }],"importMode":"REPLACE"}
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfReplace/1/workflow/import }, body_ref: data.initial_body }
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfReplace/1/workflow/import }, body_ref: data.replacement_body }
+      - { action: export_workflow, endpoint: { rest: GET /entity/wfReplace/1/workflow/export }, capture: exp }
+    assertions:
+      - type: length
+        target: exp.workflows
+        expected: 1
+      - type: field_equals
+        target: exp.workflows[0].name
+        expected: "Replacement Workflow"
+
+  - id: wf-import/05-strategy-activate
+    name: importMode=ACTIVATE deactivates existing and activates the new one
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/model/workflow/EntityModelWorkflowInteractorIT.kt#test import workflow with ACTIVATE strategy
+    description: |
+      With ACTIVATE, the old workflow must remain in the export but with
+      active=false; the newly imported one must be active=true. Exported
+      list must contain both workflows.
+    data:
+      model: { name: wfActivate, version: 1 }
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfActivate/1/workflow/import }, body: "{...Initial Workflow active=true, importMode=ACTIVATE}" }
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfActivate/1/workflow/import }, body: "{...New Active Workflow active=true, importMode=ACTIVATE}" }
+      - { action: export_workflow, endpoint: { rest: GET /entity/wfActivate/1/workflow/export }, capture: exp }
+    assertions:
+      - type: length
+        target: exp.workflows
+        expected: 2
+      - type: workflow_active_state
+        expected:
+          "New Active Workflow": true
+          "Initial Workflow": false
+
+  - id: wf-import/06-strategy-merge
+    name: importMode=MERGE updates existing workflow in place and adds new one
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/model/workflow/EntityModelWorkflowInteractorIT.kt#test import workflow with MERGE strategy
+    description: |
+      The initial workflow defines two transitions from `pending`. A second
+      MERGE import submits the same workflow with only one transition and
+      an additional, different workflow. After merge, the export must show
+      the updated (one-transition) workflow and the new workflow.
+    data:
+      model: { name: wfMerge, version: 1 }
+    steps:
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfMerge/1/workflow/import }, body: "{workflows:[Initial Workflow with 2 transitions], importMode:ACTIVATE}" }
+      - { action: import_workflow, endpoint: { rest: POST /entity/wfMerge/1/workflow/import }, body: "{workflows:[New Active Workflow, Initial Workflow (updated, 1 transition)], importMode:MERGE}" }
+      - { action: export_workflow, endpoint: { rest: GET /entity/wfMerge/1/workflow/export }, capture: exp }
+    assertions:
+      - type: length
+        target: exp.workflows
+        expected: 2
+      - type: length
+        target: "exp.workflows[name=Initial Workflow].states.pending.transitions"
+        expected: 1
