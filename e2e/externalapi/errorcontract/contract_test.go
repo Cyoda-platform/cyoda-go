@@ -1,6 +1,8 @@
 package errorcontract_test
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
@@ -77,6 +79,20 @@ func TestMatch_MalformedBody_Fails(t *testing.T) {
 	})
 	if !ft.failed {
 		t.Fatal("expected Match to fail on malformed body")
+	}
+}
+
+func TestSchemaJSON_IsValidJSON(t *testing.T) {
+	b, err := os.ReadFile("schema.json")
+	if err != nil {
+		t.Fatalf("read schema.json: %v", err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatalf("schema.json is not valid JSON: %v", err)
+	}
+	if v["$schema"] == nil {
+		t.Fatal("schema.json missing $schema key")
 	}
 }
 

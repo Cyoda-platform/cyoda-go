@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.net/schemas/external-api/expected-error.json",
+  "title": "ExpectedError",
+  "description": "Normalised view of an HTTP error response. Cyoda-go emits RFC 9457 Problem Details on the wire; this schema describes the post-parse shape that tests assert against. Cyoda-cloud is required to map its own emissions into this shape.",
+  "type": "object",
+  "required": ["http_status"],
+  "properties": {
+    "http_status": { "type": "integer", "minimum": 100, "maximum": 599 },
+    "error_code": { "type": "string" },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "entityName", "entityVersion"],
+        "properties": {
+          "path":          { "type": "string" },
+          "value":         { },
+          "entityName":    { "type": "string" },
+          "entityVersion": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
