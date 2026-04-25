@@ -62,8 +62,9 @@ func setup() (*memoryFixture, func(), error) {
 
 // MustSetup is a test helper that boots the memory fixture and returns
 // it along with a cleanup func. It exists for external callers
-// (e.g., e2e/externalapi/driver/remote_smoke_test.go) that need access
-// to BaseURL + a tenant without going through the full AllTests loop.
+// (currently only e2e/externalapi/driver/remote_smoke_test.go) that
+// need access to BaseURL + a tenant without going through the full
+// AllTests loop.
 //
 // Fails the test on setup error. Callers MUST `defer cleanup()` on the
 // line immediately following MustSetup — a panic before the defer

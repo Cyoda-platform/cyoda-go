@@ -196,6 +196,12 @@ func RunExternalAPI_01_07_LockTwiceRejected(t *testing.T, fixture parity.Backend
 	if status == http.StatusOK {
 		t.Fatal("second LockModel should have failed but returned 200")
 	}
+	// "CONFLICT" is what cyoda-go emits today — `common.Conflict()` →
+	// `ErrCodeConflict` in `internal/common/error_codes.go`. cyoda-cloud
+	// likely uses a more specific code (e.g. MODEL_ALREADY_LOCKED) on this
+	// branch; the assertion will need to be widened or split when running
+	// the suite against live cloud. See #126 for the related cyoda-go-side
+	// observation that `Conflict()` unconditionally sets Retryable=true.
 	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
 		HTTPStatus: http.StatusConflict,
 		ErrorCode:  "CONFLICT",
