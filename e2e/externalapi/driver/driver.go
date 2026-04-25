@@ -13,7 +13,10 @@
 package driver
 
 import (
+	"encoding/json"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	parityclient "github.com/cyoda-platform/cyoda-go/e2e/parity/client"
@@ -54,4 +57,131 @@ func NewRemote(t *testing.T, baseURL, jwtToken string) *Driver {
 func (d *Driver) ListModelsDiscard() error {
 	_, err := d.client.ListModels(d.t)
 	return err
+}
+
+// --- Model lifecycle ---
+
+// CreateModelFromSample issues POST /api/model/import/JSON/SAMPLE_DATA/{name}/{version}.
+// YAML action: create_model_from_sample.
+func (d *Driver) CreateModelFromSample(name string, version int, sample string) error {
+	return d.client.ImportModel(d.t, name, version, sample)
+}
+
+// UpdateModelFromSample issues POST /api/model/import/JSON/SAMPLE_DATA/{name}/{version}
+// against an existing (unlocked) model — same endpoint, upsert semantics.
+// YAML action: update_model_from_sample.
+func (d *Driver) UpdateModelFromSample(name string, version int, sample string) error {
+	return d.client.ImportModel(d.t, name, version, sample)
+}
+
+// LockModel issues PUT /api/model/{name}/{version}/lock.
+func (d *Driver) LockModel(name string, version int) error {
+	return d.client.LockModel(d.t, name, version)
+}
+
+// UnlockModel issues PUT /api/model/{name}/{version}/unlock.
+func (d *Driver) UnlockModel(name string, version int) error {
+	return d.client.UnlockModel(d.t, name, version)
+}
+
+// DeleteModel issues DELETE /api/model/{name}/{version}.
+func (d *Driver) DeleteModel(name string, version int) error {
+	return d.client.DeleteModel(d.t, name, version)
+}
+
+// ExportModel issues GET /api/model/export/{converter}/{name}/{version}.
+// Returns the raw JSON body.
+func (d *Driver) ExportModel(converter, name string, version int) (json.RawMessage, error) {
+	return d.client.ExportModel(d.t, converter, name, version)
+}
+
+// ListModels issues GET /api/model/.
+func (d *Driver) ListModels() ([]parityclient.EntityModelDto, error) {
+	return d.client.ListModels(d.t)
+}
+
+// --- Entity CRUD ---
+
+// CreateEntity issues POST /api/entity/JSON/{name}/{version}. Returns the
+// first entity ID produced.
+func (d *Driver) CreateEntity(name string, version int, body string) (uuid.UUID, error) {
+	return d.client.CreateEntity(d.t, name, version, body)
+}
+
+// CreateEntityRaw issues the same POST but returns the status code + raw
+// body for negative-path tests.
+func (d *Driver) CreateEntityRaw(name string, version int, body string) (int, []byte, error) {
+	return d.client.CreateEntityRaw(d.t, name, version, body)
+}
+
+// CreateEntitiesCollection issues POST /api/entity/JSON with a
+// heterogeneous body.
+func (d *Driver) CreateEntitiesCollection(items []CollectionItem) ([]uuid.UUID, error) {
+	converted := make([]parityclient.CollectionItem, 0, len(items))
+	for _, it := range items {
+		converted = append(converted, parityclient.CollectionItem{
+			ModelName: it.ModelName, ModelVersion: it.ModelVersion, Payload: it.Payload,
+		})
+	}
+	return d.client.CreateEntitiesCollection(d.t, converted)
+}
+
+// UpdateEntitiesCollection issues PUT /api/entity/JSON with a
+// {id, payload, transition} batch. Returns the raw response body.
+func (d *Driver) UpdateEntitiesCollection(items []UpdateCollectionItem) ([]byte, error) {
+	converted := make([]parityclient.UpdateCollectionItem, 0, len(items))
+	for _, it := range items {
+		converted = append(converted, parityclient.UpdateCollectionItem{
+			ID: it.ID, Payload: it.Payload, Transition: it.Transition,
+		})
+	}
+	return d.client.UpdateCollection(d.t, converted)
+}
+
+// DeleteEntity issues DELETE /api/entity/{id}.
+func (d *Driver) DeleteEntity(id uuid.UUID) error {
+	return d.client.DeleteEntity(d.t, id)
+}
+
+// DeleteEntityByIDString is a convenience for test code that holds IDs
+// as strings (e.g., echoed from a prior capture). It parses then delegates.
+func (d *Driver) DeleteEntityByIDString(idStr string) error {
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		return err
+	}
+	return d.client.DeleteEntity(d.t, id)
+}
+
+// DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version}.
+func (d *Driver) DeleteEntitiesByModel(name string, version int) error {
+	return d.client.DeleteEntitiesByModel(d.t, name, version)
+}
+
+// GetEntity issues GET /api/entity/{id}.
+func (d *Driver) GetEntity(id uuid.UUID) (parityclient.EntityResult, error) {
+	return d.client.GetEntity(d.t, id)
+}
+
+// ListEntitiesByModel issues GET /api/entity/{name}/{version}.
+func (d *Driver) ListEntitiesByModel(name string, version int) ([]parityclient.EntityResult, error) {
+	return d.client.ListEntitiesByModel(d.t, name, version)
+}
+
+// --- Type re-exports for test-side ergonomics ---
+
+// CollectionItem mirrors parityclient.CollectionItem so external callers
+// don't need to import the parity/client package directly.
+type CollectionItem struct {
+	ModelName    string
+	ModelVersion int
+	Payload      string
+}
+
+// UpdateCollectionItem mirrors parityclient.UpdateCollectionItem for the
+// same reason.
+type UpdateCollectionItem struct {
+	ID         uuid.UUID
+	Payload    string
+	Transition string
 }
