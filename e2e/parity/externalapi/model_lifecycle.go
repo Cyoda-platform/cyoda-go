@@ -13,9 +13,12 @@ package externalapi
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -185,26 +188,25 @@ func RunExternalAPI_01_06_UnlockModel(t *testing.T, fixture parity.BackendFixtur
 
 // RunExternalAPI_01_07_LockTwiceRejected — dictionary 01/07 (negative).
 func RunExternalAPI_01_07_LockTwiceRejected(t *testing.T, fixture parity.BackendFixture) {
-	t.Helper()
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
-
-	_ = c.ImportModel(t, "locktwice", 1, `{"k": 1}`)
-	_ = c.LockModel(t, "locktwice", 1)
-	// Second lock attempt: must be rejected with a non-success status.
-	err := c.LockModel(t, "locktwice", 1)
-	if err == nil {
-		t.Fatal("second LockModel should have failed but did not")
+	d := driver.NewInProcess(t, fixture)
+	if err := d.CreateModelFromSample("locktwice", 1, `{"k": 1}`); err != nil {
+		t.Fatalf("CreateModelFromSample: %v", err)
 	}
-	// NOTE: LockModel returns a wrapped error, not the raw body. The
-	// client doesn't currently expose a LockModelRaw helper — the
-	// assertion here is best-effort on the wrapped error message
-	// (pinning it to a stable substring chosen from the existing server
-	// error). If future work adds LockModelRaw, replace with a proper
-	// errorcontract.Match call.
-	if !strings.Contains(err.Error(), "409") && !strings.Contains(err.Error(), "Conflict") {
-		t.Errorf("lock-twice error did not indicate 409 Conflict: %v", err)
+	if err := d.LockModel("locktwice", 1); err != nil {
+		t.Fatalf("first LockModel: %v", err)
 	}
+	// Second lock attempt: must be rejected with 409 + a recognisable error code.
+	status, body, err := d.LockModelRaw("locktwice", 1)
+	if err != nil {
+		t.Fatalf("LockModelRaw on second attempt: %v", err)
+	}
+	if status == http.StatusOK {
+		t.Fatal("second LockModel should have failed but returned 200")
+	}
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: http.StatusConflict,
+		ErrorCode:  "CONFLICT",
+	})
 }
 
 // RunExternalAPI_01_08_DeleteModel — dictionary 01/08.

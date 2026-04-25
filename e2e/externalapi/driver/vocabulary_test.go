@@ -148,3 +148,20 @@ func TestDriver_DeleteEntitiesByModel_DELETE(t *testing.T) {
 		t.Errorf("got %s %s", cap.method, cap.path)
 	}
 }
+
+func TestDriver_LockModelRaw_PUT_ReturnsStatus(t *testing.T) {
+	cap := &capturedReq{}
+	srv := fakeServer(t, cap)
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	status, body, err := d.LockModelRaw("m", 1)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPut || cap.path != "/api/model/m/1/lock" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if status != 200 || len(body) == 0 {
+		t.Errorf("expected (200, non-empty), got (%d, %dB)", status, len(body))
+	}
+}

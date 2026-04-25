@@ -15,6 +15,7 @@ package driver
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -156,6 +157,19 @@ func (d *Driver) DeleteEntityByIDString(idStr string) error {
 // DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version}.
 func (d *Driver) DeleteEntitiesByModel(name string, version int) error {
 	return d.client.DeleteEntitiesByModel(d.t, name, version)
+}
+
+// DeleteEntitiesByModelAt issues DELETE /api/entity/{name}/{version} with
+// pointInTime, removing only entities created at or before that timestamp.
+func (d *Driver) DeleteEntitiesByModelAt(name string, version int, pointInTime time.Time) error {
+	return d.client.DeleteEntitiesByModelAt(d.t, name, version, pointInTime)
+}
+
+// LockModelRaw issues PUT /api/model/{name}/{version}/lock and returns
+// the HTTP status + raw body for negative-path assertions via
+// errorcontract.Match.
+func (d *Driver) LockModelRaw(name string, version int) (int, []byte, error) {
+	return d.client.LockModelRaw(d.t, name, version)
 }
 
 // GetEntity issues GET /api/entity/{id}.
