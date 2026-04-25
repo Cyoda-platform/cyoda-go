@@ -15,7 +15,7 @@
         "required": ["path", "entityName", "entityVersion"],
         "properties": {
           "path":          { "type": "string" },
-          "value":         { },
+          "value":         { "description": "Field value; any JSON type." },
           "entityName":    { "type": "string" },
           "entityVersion": { "type": "integer", "minimum": 0 }
         },

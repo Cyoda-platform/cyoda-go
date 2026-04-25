@@ -20,7 +20,11 @@ type ExpectedError struct {
 
 // ErrorField is one entry in the optional per-field diagnostic array.
 type ErrorField struct {
-	Path          string
+	Path string
+	// Value is the raw field value as JSON-decoded by encoding/json. Compared
+	// stringwise (fmt.Sprint) — see Match. Use any matching JSON type from
+	// the test side; nil means "no expected value" only if Path/Name/Version
+	// are also zero (i.e. the whole ErrorField is being skipped via Fields=nil).
 	Value         any
 	EntityName    string
 	EntityVersion int
@@ -75,6 +79,11 @@ func Match(t TB, httpStatus int, body []byte, want ExpectedError) {
 			if got.Path != w.Path {
 				t.Errorf("fields[%d].path: got %q, want %q", i, got.Path, w.Path)
 			}
+			// Compare via fmt.Sprint so that JSON-decoded float64s compare equal to
+			// caller-provided ints/strings without forcing the test author to
+			// pre-stringify. Adequate for the entity-version/scalar values cyoda
+			// emits today; if precision-sensitive comparisons become a concern,
+			// switch to typed-aware comparison here.
 			if fmt.Sprint(got.Value) != fmt.Sprint(w.Value) {
 				t.Errorf("fields[%d].value: got %v, want %v", i, got.Value, w.Value)
 			}
