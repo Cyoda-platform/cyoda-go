@@ -172,6 +172,36 @@ func (d *Driver) LockModelRaw(name string, version int) (int, []byte, error) {
 	return d.client.LockModelRaw(d.t, name, version)
 }
 
+// SetChangeLevelRaw issues POST /api/model/{name}/{version}/changeLevel/{level}
+// with raw response for negative-path assertions.
+func (d *Driver) SetChangeLevelRaw(name string, version int, level string) (int, []byte, error) {
+	return d.client.SetChangeLevelRaw(d.t, name, version, level)
+}
+
+// ImportModelRaw issues the import-from-sample endpoint with raw response
+// for negative-path assertions.
+func (d *Driver) ImportModelRaw(name string, version int, sample string) (int, []byte, error) {
+	return d.client.ImportModelRaw(d.t, name, version, sample)
+}
+
+// UpdateEntityRaw issues PUT /api/entity/JSON/{id}/{transition} with raw
+// response for negative-path assertions.
+func (d *Driver) UpdateEntityRaw(id uuid.UUID, transition, body string) (int, []byte, error) {
+	return d.client.UpdateEntityRaw(d.t, id, transition, body)
+}
+
+// GetEntityChangesRaw issues GET /api/entity/{id}/changes with raw response
+// for negative-path assertions.
+func (d *Driver) GetEntityChangesRaw(id uuid.UUID) (int, []byte, error) {
+	return d.client.GetEntityChangesRaw(d.t, id)
+}
+
+// ImportWorkflowRaw issues POST /api/model/{name}/{version}/workflow/import
+// with raw response for negative-path assertions.
+func (d *Driver) ImportWorkflowRaw(name string, version int, body string) (int, []byte, error) {
+	return d.client.ImportWorkflowRaw(d.t, name, version, body)
+}
+
 // GetEntity issues GET /api/entity/{id}.
 func (d *Driver) GetEntity(id uuid.UUID) (parityclient.EntityResult, error) {
 	return d.client.GetEntity(d.t, id)
@@ -180,6 +210,37 @@ func (d *Driver) GetEntity(id uuid.UUID) (parityclient.EntityResult, error) {
 // ListEntitiesByModel issues GET /api/entity/{name}/{version}.
 func (d *Driver) ListEntitiesByModel(name string, version int) ([]parityclient.EntityResult, error) {
 	return d.client.ListEntitiesByModel(d.t, name, version)
+}
+
+// SetChangeLevel issues POST /api/model/{name}/{version}/changeLevel/{level}.
+// YAML action: set_change_level. Valid levels: ARRAY_LENGTH, ARRAY_ELEMENTS,
+// TYPE, STRUCTURAL.
+func (d *Driver) SetChangeLevel(name string, version int, level string) error {
+	return d.client.SetChangeLevel(d.t, name, version, level)
+}
+
+// UpdateEntity issues PUT /api/entity/JSON/{entityId}/{transition}.
+// YAML action: update_entity_transition.
+func (d *Driver) UpdateEntity(id uuid.UUID, transition, body string) error {
+	return d.client.UpdateEntity(d.t, id, transition, body)
+}
+
+// UpdateEntityData issues PUT /api/entity/JSON/{entityId} (no transition;
+// loopback). YAML action: update_entity_loopback.
+func (d *Driver) UpdateEntityData(id uuid.UUID, body string) error {
+	return d.client.UpdateEntityData(d.t, id, body)
+}
+
+// GetEntityAt issues GET /api/entity/{entityId}?pointInTime=<ISO8601>.
+// YAML action: get_entity (with pointInTime).
+func (d *Driver) GetEntityAt(id uuid.UUID, pointInTime time.Time) (parityclient.EntityResult, error) {
+	return d.client.GetEntityAt(d.t, id, pointInTime)
+}
+
+// GetEntityChanges issues GET /api/entity/{entityId}/changes.
+// YAML action: get_entity_changes.
+func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta, error) {
+	return d.client.GetEntityChanges(d.t, id)
 }
 
 // --- Type re-exports for test-side ergonomics ---

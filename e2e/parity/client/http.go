@@ -733,3 +733,115 @@ func (c *Client) LockModelRaw(t *testing.T, name string, version int) (int, []by
 	resp.Body.Close()
 	return resp.StatusCode, raw, nil
 }
+
+// SetChangeLevelRaw issues POST /api/model/{name}/{version}/changeLevel/{level}
+// and returns status+body for negative-path assertions via errorcontract.Match.
+func (c *Client) SetChangeLevelRaw(t *testing.T, name string, version int, level string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/changeLevel/%s", name, version, level)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// ImportModelRaw issues POST /api/model/import/JSON/SAMPLE_DATA/{name}/{version}
+// with the given sample document as the body, and returns status+body for
+// negative-path assertions.
+func (c *Client) ImportModelRaw(t *testing.T, name string, version int, sample string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/%d", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(sample))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// UpdateEntityRaw issues PUT /api/entity/JSON/{entityId}/{transition} with the
+// given body and returns status+body for negative-path assertions.
+func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%s", id.String(), transition)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityChangesRaw issues GET /api/entity/{entityId}/changes and returns
+// status+body for negative-path assertions.
+func (c *Client) GetEntityChangesRaw(t *testing.T, id uuid.UUID) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/changes", id.String())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// ImportWorkflowRaw issues POST /api/model/{name}/{version}/workflow/import
+// with the given workflow JSON as the body and returns status+body for
+// negative-path assertions.
+func (c *Client) ImportWorkflowRaw(t *testing.T, name string, version int, body string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/workflow/import", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}

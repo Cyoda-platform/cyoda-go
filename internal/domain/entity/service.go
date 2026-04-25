@@ -18,6 +18,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
 // decodeJSONPreservingNumbers is the precision-preserving counterpart to
@@ -195,7 +196,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	if err != nil {
 		h.txMgr.Rollback(txCtx, txID)
 		slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID)
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+		return nil, classifyWorkflowError(err)
 	}
 
 	// If no workflow was found, engine returns forced success and entity state stays empty.
@@ -890,7 +891,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		if _, err := h.engine.Loopback(txCtx, updated); err != nil {
 			h.txMgr.Rollback(txCtx, txID)
 			slog.Error("workflow loopback failed", "error", err.Error(), "entityId", updated.Meta.ID)
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+			return nil, classifyWorkflowError(err)
 		}
 		updated.Meta.TransitionForLatestSave = "loopback"
 	} else {
@@ -898,7 +899,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		if _, err := h.engine.ManualTransition(txCtx, updated, input.Transition); err != nil {
 			h.txMgr.Rollback(txCtx, txID)
 			slog.Error("workflow manual transition failed", "error", err.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+			return nil, classifyWorkflowError(err)
 		}
 		updated.Meta.TransitionForLatestSave = input.Transition
 	}
@@ -1042,16 +1043,14 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			if _, err := h.engine.Loopback(txCtx, updated); err != nil {
 				h.txMgr.Rollback(txCtx, txID)
 				slog.Error("workflow loopback failed", "error", err.Error(), "entityId", updated.Meta.ID)
-				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed,
-					fmt.Sprintf("item %d: %v", i, err))
+				return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
 			}
 			updated.Meta.TransitionForLatestSave = "loopback"
 		} else {
 			if _, err := h.engine.ManualTransition(txCtx, updated, item.transition); err != nil {
 				h.txMgr.Rollback(txCtx, txID)
 				slog.Error("workflow manual transition failed", "error", err.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
-				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed,
-					fmt.Sprintf("item %d: %v", i, err))
+				return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
 			}
 			updated.Meta.TransitionForLatestSave = item.transition
 		}
@@ -1083,4 +1082,15 @@ func classifyError(err error) *common.AppError {
 		return appErr
 	}
 	return common.Internal("unexpected error", err)
+}
+
+// classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
+// error code. The transition-not-found case (ErrTransitionNotFound sentinel)
+// receives the specific TRANSITION_NOT_FOUND code; all other engine errors
+// fall back to the generic WORKFLOW_FAILED code.
+func classifyWorkflowError(err error) *common.AppError {
+	if errors.Is(err, wfengine.ErrTransitionNotFound) {
+		return common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound, err.Error())
+	}
+	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
 }

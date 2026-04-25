@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -291,6 +292,68 @@ func TestNamedTransitionNotFound(t *testing.T) {
 	_, err := engine.Execute(ctx, entity, "NONEXISTENT")
 	if err == nil {
 		t.Fatalf("expected error for non-existent transition")
+	}
+}
+
+// TestErrTransitionNotFound_SentinelWrapped verifies that ManualTransition
+// wraps ErrTransitionNotFound when the requested transition is absent from
+// the entity's current state, enabling callers to discriminate this case
+// from other engine errors via errors.Is.
+func TestErrTransitionNotFound_SentinelWrapped(t *testing.T) {
+	eng, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sentinel-tnf", ModelVersion: "1"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "SentinelWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "GO", Next: "DONE", Manual: true},
+			}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("e-sentinel-tnf", modelRef, map[string]any{"x": 1})
+	entity.Meta.State = "INITIAL"
+
+	_, err := eng.ManualTransition(ctx, entity, "NONEXISTENT")
+	if err == nil {
+		t.Fatal("expected error for unknown transition")
+	}
+	if !errors.Is(err, ErrTransitionNotFound) {
+		t.Errorf("expected errors.Is(err, ErrTransitionNotFound) to be true; got: %v", err)
+	}
+}
+
+// TestErrTransitionNotFound_DisabledTransition verifies that a disabled
+// transition also wraps ErrTransitionNotFound.
+func TestErrTransitionNotFound_DisabledTransition(t *testing.T) {
+	eng, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "sentinel-disabled", ModelVersion: "1"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.0", Name: "DisabledWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "BLOCKED", Next: "DONE", Manual: true, Disabled: true},
+			}},
+			"DONE": {Transitions: []spi.TransitionDefinition{}},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("e-sentinel-disabled", modelRef, map[string]any{"x": 1})
+	entity.Meta.State = "INITIAL"
+
+	_, err := eng.ManualTransition(ctx, entity, "BLOCKED")
+	if err == nil {
+		t.Fatal("expected error for disabled transition")
+	}
+	if !errors.Is(err, ErrTransitionNotFound) {
+		t.Errorf("expected errors.Is(err, ErrTransitionNotFound) for disabled transition; got: %v", err)
 	}
 }
 
