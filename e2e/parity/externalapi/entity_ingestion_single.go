@@ -8,6 +8,18 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 )
 
+// bodyPreview returns the first 200 bytes of body for diagnostic logging,
+// suffixed with an ellipsis when truncated. Bounds test-output volume and
+// limits the surface for accidental sensitive-data leakage from server
+// responses to a single short prefix.
+func bodyPreview(body []byte) string {
+	const max = 200
+	if len(body) <= max {
+		return string(body)
+	}
+	return string(body[:max]) + "...(truncated)"
+}
+
 func init() {
 	// External API scenario suite — tranche 1 (issue #118)
 	// 03-entity-ingestion-single
@@ -68,10 +80,10 @@ func RunExternalAPI_03_02_ListOfObjects(t *testing.T, fixture parity.BackendFixt
 	}
 	status, body, err := d.CreateEntityRaw("simple2", 1, `[{"key": 123}, {"key": 456}]`)
 	if err != nil {
-		t.Fatalf("CreateEntityRaw: %v (status %d body %s)", err, status, string(body))
+		t.Fatalf("CreateEntityRaw: %v (status %d body=%s)", err, status, bodyPreview(body))
 	}
 	if status != 200 {
-		t.Fatalf("status: got %d, want 200 (body=%s)", status, string(body))
+		t.Fatalf("status: got %d, want 200 (body=%s)", status, bodyPreview(body))
 	}
 	// Decode the response as the standard EntityTransactionInfo array.
 	var txInfos []struct {
@@ -79,7 +91,7 @@ func RunExternalAPI_03_02_ListOfObjects(t *testing.T, fixture parity.BackendFixt
 		EntityIDs     []string `json:"entityIds"`
 	}
 	if err := json.Unmarshal(body, &txInfos); err != nil {
-		t.Fatalf("decode response: %v (body=%s)", err, string(body))
+		t.Fatalf("decode response: %v (body=%s)", err, bodyPreview(body))
 	}
 	var totalIDs int
 	for _, tx := range txInfos {
@@ -153,10 +165,10 @@ func RunExternalAPI_03_04_FamilyNested(t *testing.T, fixture parity.BackendFixtu
 	}
 	status, body, err := d.CreateEntityRaw("family", 1, familyArray)
 	if err != nil {
-		t.Fatalf("CreateEntityRaw: %v (status %d body %s)", err, status, string(body))
+		t.Fatalf("CreateEntityRaw: %v (status %d body=%s)", err, status, bodyPreview(body))
 	}
 	if status != 200 {
-		t.Fatalf("status: got %d, want 200 (body=%s)", status, string(body))
+		t.Fatalf("status: got %d, want 200 (body=%s)", status, bodyPreview(body))
 	}
 	list, err := d.ListEntitiesByModel("family", 1)
 	if err != nil {
