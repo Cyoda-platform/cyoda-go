@@ -107,9 +107,21 @@ var allTests = []NamedTest{
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 }
 
+// Register appends additional NamedTests to the canonical list at init time.
+// Use this from sub-packages that cannot be imported by registry.go without
+// creating an import cycle (e.g. e2e/parity/externalapi imports parity for
+// BackendFixture). Call Register from an init() function in those packages,
+// and add a blank import in each backend test file to trigger the side effect.
+func Register(tests ...NamedTest) {
+	allTests = append(allTests, tests...)
+}
+
 // AllTests returns the canonical list of parity scenarios in registration
 // order. The returned slice is a defensive copy — callers may iterate or
 // filter it freely without affecting subsequent calls.
+//
+// Note: all init() functions in imported packages run before TestMain, so
+// tests registered via Register are visible by the time TestParity runs.
 func AllTests() []NamedTest {
 	out := make([]NamedTest, len(allTests))
 	copy(out, allTests)
