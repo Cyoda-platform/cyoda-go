@@ -685,3 +685,15 @@ func (c *Client) GetAuditEvents(t *testing.T, entityID uuid.UUID) (EntityAuditEv
 	}
 	return resp, nil
 }
+
+// DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version},
+// removing all entities in that (name, version) namespace for the
+// calling tenant. Returns nil on 2xx; the response body's delete-stats
+// shape is not returned because tests typically re-verify via
+// ListEntitiesByModel rather than parsing stats.
+func (c *Client) DeleteEntitiesByModel(t *testing.T, name string, version int) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d", name, version)
+	_, err := c.doRaw(t, http.MethodDelete, path, "")
+	return err
+}
