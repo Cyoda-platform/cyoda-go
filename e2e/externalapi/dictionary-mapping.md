@@ -43,13 +43,13 @@ Status vocabulary:
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| change-level/01-set-structural | pending:tranche-2 | POST /model/{name}/{v}/changeLevel/{level}; issue #119 |
-| change-level/02-structural-null-field-does-not-grow-changelog | pending:tranche-2 | concurrent save with null fields; issue #119 |
-| change-level/03-type-widening-int-to-float-incompatible | pending:tranche-2 | incompatible type rejection; issue #119 |
-| change-level/04-type-narrowing-float-to-int-compatible | pending:tranche-2 | compatible subtype acceptance; issue #119 |
-| change-level/05-updated-schema-on-unlocked-then-lock-and-save | pending:tranche-2 | schema update before lock; issue #119 |
-| change-level/06-multinode-type-level-with-all-fields-model | pending:tranche-2 | full lifecycle with TYPE change level; issue #119 |
-| change-level/07-structural-concurrent-extend-30-versions | pending:tranche-2 | concurrent extension across 30 model versions; issue #119 |
+| change-level/01-set-structural | new:RunExternalAPI_02_01_SetChangeLevelStructural | tranche 2 — happy path |
+| change-level/02-structural-null-field-does-not-grow-changelog | new:RunExternalAPI_02_02_StructuralNullFieldNoChangelog | tranche 2 — null-array regression |
+| change-level/03-type-widening-int-to-float-incompatible | gap_on_our_side (#129) | tranche 2 negative path classified `worse`: cyoda-go emits generic `BAD_REQUEST`; dictionary requires `FoundIncompatibleTypeWitEntityModelException`. Detail string carries the type-mismatch info but the error code is generic. v0.7.0 fix tracked in #129. Test body in place; flipping `t.Skip` is the close-the-issue checklist item. |
+| change-level/04-type-narrowing-float-to-int-compatible | new:RunExternalAPI_02_04_TypeNarrowingFloatToInt | tranche 2 — int-into-float accepted |
+| change-level/05-updated-schema-on-unlocked-then-lock-and-save | new:RunExternalAPI_02_05_UpdatedSchemaThenLockAndSave | tranche 2 — schema-extend-then-lock |
+| change-level/06-multinode-type-level-with-all-fields-model | new:RunExternalAPI_02_06_MultinodeTypeLevelAllFields | tranche 2 — N=10 bounded (dictionary specifies 100; parity smoke does not need load testing) |
+| change-level/07-structural-concurrent-extend-30-versions | new:RunExternalAPI_02_07_ConcurrentExtendVersions | tranche 2 — N=5 bounded (dictionary specifies 30; parity smoke does not need load testing) |
 
 ---
 
@@ -81,12 +81,12 @@ Status vocabulary:
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| update/01-nested-array-append-and-modify | pending:tranche-2 | PUT /entity/JSON/{id}/UPDATE with nested array growth; issue #119 |
-| update/02-nested-array-shrink-and-modify-top-level | pending:tranche-2 | nested array shrink + top-level field change; issue #119 |
-| update/03-remove-object-and-array-keep-one-field | pending:tranche-2 | structural removal update; issue #119 |
-| update/04-populate-minimal-into-full | pending:tranche-2 | add nested object+array to minimal entity; issue #119 |
-| update/05-loopback-absent-transition | pending:tranche-2 | PUT without transition segment uses loopback; issue #119 |
-| update/06-unchanged-payload-still-transitions | pending:tranche-2 | identical payload still records transition; issue #119 |
+| update/01-nested-array-append-and-modify | new:RunExternalAPI_05_01_NestedArrayAppendAndModify | tranche 2 — uses UpdateEntity (UPDATE transition) per YAML's `update_entity_transition` |
+| update/02-nested-array-shrink-and-modify-top-level | new:RunExternalAPI_05_02_NestedArrayShrinkAndModify | tranche 2 |
+| update/03-remove-object-and-array-keep-one-field | new:RunExternalAPI_05_03_RemoveObjectAndArrayKeepOneField | tranche 2 — note: cyoda-go sets removed fields to null (does not drop) |
+| update/04-populate-minimal-into-full | new:RunExternalAPI_05_04_PopulateMinimalIntoFull | tranche 2 — adapted for isolated-tenant: model seeded with full schema upfront. The YAML implies cross-scenario shared model state (01-04 share a model), which doesn't hold per-tenant. Worth proposing upstream as an explicit `preconditions:` block. |
+| update/05-loopback-absent-transition | new:RunExternalAPI_05_05_LoopbackAbsentTransition | tranche 2 — uses UpdateEntityData (loopback path) |
+| update/06-unchanged-payload-still-transitions | new:RunExternalAPI_05_06_UnchangedPayloadStillTransitions | tranche 2 — verifies no error on identical-payload PUT; deeper assertion (audit-event count growing by 1) is tranche-3 audit work |
 
 ---
 
@@ -107,11 +107,11 @@ Status vocabulary:
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| pit/01-get-single-entity-at-point-in-time | pending:tranche-2 | GET /entity/{id}?pointInTime=...; issue #119 |
-| pit/02-get-single-entity-by-transaction-id | pending:tranche-2 | GET /entity/{id}?transactionId=...; issue #119 |
-| pit/03-entity-change-history-full | pending:tranche-2 | GET /entity/{id}/changes with CREATE+UPDATE sequence; issue #119 |
-| pit/04-entity-change-history-point-in-time | pending:tranche-2 | GET /entity/{id}/changes?pointInTime=...; issue #119 |
-| pit/05-change-history-non-existent-entity | pending:tranche-2 | GET /entity/{id}/changes for missing entity → 404; issue #119 |
+| pit/01-get-single-entity-at-point-in-time | new:RunExternalAPI_07_01_GetEntityAtPointInTime | tranche 2 — three timestamps, three states |
+| pit/02-get-single-entity-by-transaction-id | new:RunExternalAPI_07_02_GetEntityByTransactionID (skipped) | tranche 2 — t.Skip pending parity-client surface addition (no transactionId-scoped GET helper today). Same gap as 12/05. |
+| pit/03-entity-change-history-full | new:RunExternalAPI_07_03_ChangeHistoryFull | tranche 2 — note: cyoda-go uses `"CREATED"` / `"UPDATED"` enum values where the YAML spec uses `"CREATE"` / `"UPDATE"`. `different_naming_same_level`. Test asserts on cyoda-go's emission. |
+| pit/04-entity-change-history-point-in-time | new:RunExternalAPI_07_04_ChangeHistoryAtPointInTime (skipped) | tranche 2 — t.Skip pending parity-client surface addition (no pointInTime-scoped change history helper today) |
+| pit/05-change-history-non-existent-entity | new:RunExternalAPI_07_05_ChangeHistoryNonExistent | tranche 2 — string-based 404 detection (stopgap until GetEntityChangesRaw, added in Phase 5 of tranche 2, is wired in). NB: also surfaced and fixed a real parity bug in postgres plugin's `GetVersionHistory` (was returning empty slice instead of `spi.ErrNotFound` for unknown entities). |
 
 ---
 
@@ -177,16 +177,16 @@ rather than `internal_only_skip` because the primary action (`create_entity`) is
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| neg/01-create-entity-on-unlocked-model | pending:tranche-2 | 409 on entity create before lock; issue #119 |
-| neg/02-create-entity-with-incompatible-type | pending:tranche-2 | 400 on type mismatch at ingest; issue #119 |
-| neg/03-set-change-level-invalid-enum | pending:tranche-2 | 400 on unknown changeLevel enum; issue #119 |
-| neg/04-get-single-entity-at-time-before-creation | pending:tranche-2 | 404 on pointInTime before entity creation; issue #119 |
-| neg/05-get-single-entity-with-bogus-transaction-id | pending:tranche-2 | 404 on non-existent transactionId; issue #119 |
-| neg/06-get-changes-for-missing-entity | pending:tranche-2 | 404 on changes endpoint for unknown entity; issue #119 |
-| neg/07-condition-delete-at-pit-too-many-matches | pending:tranche-2 | 400 on entitySearchLimit breach; issue #119 |
-| neg/08-update-with-unknown-transition | pending:tranche-2 | 400 on unknown FSM transition name; issue #119 |
-| neg/09-get-model-after-delete | pending:tranche-2 | 404 on model GET after DELETE; issue #119 |
-| neg/10-import-workflow-on-unknown-model | pending:tranche-2 | 404 on workflow import for unregistered model; issue #119 |
+| neg/01-create-entity-on-unlocked-model | new:RunExternalAPI_12_01_CreateEntityOnUnlockedModel | tranche 2 — `equiv_or_better`: cyoda-go emits `MODEL_NOT_LOCKED` @409 (specific); dictionary's `EntityModelWrongStateException` is more generic. Tightened assertion uses cyoda-go's code; propose upstream tightening. |
+| neg/02-create-entity-with-incompatible-type | gap_on_our_side (#129) | tranche 2 negative path classified `worse`: cyoda-go emits generic `BAD_REQUEST`; dictionary requires `FoundIncompatibleTypeWitEntityModelException`. Same code path / same #129 as 02/03. |
+| neg/03-set-change-level-invalid-enum | gap_on_our_side (#130) | tranche 2 negative path classified `worse`: cyoda-go emits generic `BAD_REQUEST`; dictionary requires "Invalid enum value" detail. Test body in place; flipping `t.Skip` is the close-the-issue checklist item. |
+| neg/04-get-single-entity-at-time-before-creation | new:RunExternalAPI_12_04_GetEntityAtTimeBeforeCreation (skipped) | tranche 2 — t.Skip pending GetEntityAtRaw on Driver (no negative-path Raw variant for pointInTime GET today) |
+| neg/05-get-single-entity-with-bogus-transaction-id | new:RunExternalAPI_12_05_GetEntityWithBogusTransactionID (skipped) | tranche 2 — t.Skip pending parity-client transactionId-scoped GET (same gap as 07/02) |
+| neg/06-get-changes-for-missing-entity | new:RunExternalAPI_12_06_GetChangesForMissingEntity | tranche 2 — `equiv_or_better`: cyoda-go emits `ENTITY_NOT_FOUND` @404; matches dictionary's `EntityNotFoundException` semantically. Tightened assertion. |
+| neg/07-condition-delete-at-pit-too-many-matches | gap_on_our_side (#124) | tranche 2 — t.Skip pending #124. Whole delete-by-condition surface is a v0.7.0 server-side gap (handler ignores condition body and pointInTime). |
+| neg/08-update-with-unknown-transition | new:RunExternalAPI_12_08_UpdateUnknownTransition | tranche 2 — `different_naming_same_level`: cyoda-go emits `WORKFLOW_FAILED` @400; dictionary expects `(IllegalTransition\|TransitionNotFound)`. Same level of detail, different naming. Tightened to cyoda-go's code with cloud-equivalent comment. |
+| neg/09-get-model-after-delete | new:RunExternalAPI_12_09_GetModelAfterDelete | tranche 2 — `different_naming_same_level`: cyoda-go has no per-model GET endpoint; test verifies via `ListModels` and confirms absence. Semantically equivalent to per-model 404; reconcile in tranche-5 cloud smoke if cyoda-go ever adds a per-model GET. |
+| neg/10-import-workflow-on-unknown-model | gap_on_our_side (#131) | tranche 2 negative path classified `worse`: cyoda-go returns HTTP 200 `{"success":true}` instead of 404 for workflow imports on non-existent models. Real bug — dictionary requires HTTP 404 with `(ModelNotFound\|EntityModelNotFound)`. Test body in place; flipping `t.Skip` is the close-the-issue checklist item. |
 
 ---
 
