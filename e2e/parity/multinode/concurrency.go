@@ -139,7 +139,9 @@ func RunExternalAPI_10_03_ParallelUpdatesSameEntity(t *testing.T, fixture MultiN
 			defer wg.Done()
 			di := driver.NewRemote(t, u, tenant.Token)
 			body := fmt.Sprintf(`{"counter":%d}`, idx+1)
-			di.UpdateEntityData(id, body) //nolint:errcheck // last-writer-wins; final GET asserts the contract
+			if err := di.UpdateEntityData(id, body); err != nil {
+				t.Logf("10/03 goroutine %d: UpdateEntityData returned %v (last-writer-wins; final GET asserts the contract)", idx, err)
+			}
 		}(i, url)
 	}
 	wg.Wait()
