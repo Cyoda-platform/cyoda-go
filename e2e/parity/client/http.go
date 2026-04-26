@@ -587,6 +587,75 @@ func (c *Client) GetAuditEventsRaw(t *testing.T, entityID uuid.UUID) (int, error
 	return c.doJSON(t, http.MethodGet, path, nil, nil)
 }
 
+// MessageHeaderInput collects the optional message-header fields cyoda-go
+// reads from HTTP headers on POST /api/message/new/{subject}. Subject is
+// in the path, so it is not part of this struct.
+//
+// Content-Type is sent as the standard HTTP Content-Type header; if the
+// caller leaves it empty it defaults to "application/json". Content-Encoding
+// is sent as the standard Content-Encoding header. The X-* fields are sent
+// as the corresponding cyoda-specific request headers. Empty fields are
+// omitted from the request.
+//
+// Source of truth: api/generated.go NewMessageParams — all fields are
+// ParamLocationHeader (Content-Type and Content-Length are required;
+// Content-Encoding and X-* are optional).
+type MessageHeaderInput struct {
+	ContentType     string
+	ContentEncoding string
+	MessageID       string
+	UserID          string
+	Recipient       string
+	ReplyTo         string
+	CorrelationID   string
+}
+
+// doRawWithHeaders is like doRaw but accepts a set of additional HTTP
+// headers to merge into the request. The caller-supplied headers take
+// precedence over the defaults set by doRaw (Authorization is always
+// added; Content-Type is set to the caller-supplied value or falls back
+// to "application/json" if absent from extraHeaders).
+func (c *Client) doRawWithHeaders(t *testing.T, method, path, body string, extraHeaders http.Header) ([]byte, error) {
+	t.Helper()
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		// Apply caller-supplied headers first so they can override defaults.
+		for k, vs := range extraHeaders {
+			for _, v := range vs {
+				req.Header.Set(k, v)
+			}
+		}
+		// Fall back to application/json if the caller didn't specify Content-Type.
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("transport: %w", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return raw, nil
+		}
+		if resp.StatusCode == http.StatusConflict && isRetryableConflict(raw) && attempt < maxAttempts-1 {
+			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+			lastErr = fmt.Errorf("%s %s: status 409: %s", method, path, string(raw))
+			continue
+		}
+		return nil, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, string(raw))
+	}
+	return nil, lastErr
+}
+
 // CreateMessage issues POST /api/message/new/{subject} with the given
 // payload wrapped in the edge-message envelope {payload, meta-data}.
 // Returns the message ID.
@@ -608,6 +677,61 @@ func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, e
 	}
 	if len(results) == 0 || len(results[0].EntityIDs) == 0 {
 		return "", fmt.Errorf("CreateMessage returned empty entity IDs")
+	}
+	return results[0].EntityIDs[0], nil
+}
+
+// CreateMessageWithHeaders is the header-rich variant of CreateMessage.
+// It sends the fields in MessageHeaderInput as HTTP request headers so
+// cyoda-go's generated handler reads them via NewMessageParams. The body
+// envelope is identical to CreateMessage: {"payload": <payload>,
+// "meta-data": {"source": "parity"}}.
+//
+// If header.ContentType is empty it defaults to "application/json".
+// Empty fields in header are omitted from the request.
+// Returns the new message ID.
+func (c *Client) CreateMessageWithHeaders(t *testing.T, subject, payload string, header MessageHeaderInput) (string, error) {
+	t.Helper()
+	path := "/api/message/new/" + subject
+	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "parity"}}`, payload)
+
+	h := make(http.Header)
+	ct := header.ContentType
+	if ct == "" {
+		ct = "application/json"
+	}
+	h.Set("Content-Type", ct)
+	if header.ContentEncoding != "" {
+		h.Set("Content-Encoding", header.ContentEncoding)
+	}
+	if header.MessageID != "" {
+		h.Set("X-Message-ID", header.MessageID)
+	}
+	if header.UserID != "" {
+		h.Set("X-User-ID", header.UserID)
+	}
+	if header.Recipient != "" {
+		h.Set("X-Recipient", header.Recipient)
+	}
+	if header.ReplyTo != "" {
+		h.Set("X-Reply-To", header.ReplyTo)
+	}
+	if header.CorrelationID != "" {
+		h.Set("X-Correlation-ID", header.CorrelationID)
+	}
+
+	raw, err := c.doRawWithHeaders(t, http.MethodPost, path, body, h)
+	if err != nil {
+		return "", err
+	}
+	var results []EntityTransactionInfo
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&results); err != nil {
+		return "", fmt.Errorf("decode CreateMessageWithHeaders response: %w", err)
+	}
+	if len(results) == 0 || len(results[0].EntityIDs) == 0 {
+		return "", fmt.Errorf("CreateMessageWithHeaders returned empty entity IDs")
 	}
 	return results[0].EntityIDs[0], nil
 }
