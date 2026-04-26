@@ -202,6 +202,18 @@ func (d *Driver) ImportWorkflowRaw(name string, version int, body string) (int, 
 	return d.client.ImportWorkflowRaw(d.t, name, version, body)
 }
 
+// ImportWorkflow issues POST /api/model/{name}/{version}/workflow/import.
+// YAML action: import_workflow.
+func (d *Driver) ImportWorkflow(name string, version int, body string) error {
+	return d.client.ImportWorkflow(d.t, name, version, body)
+}
+
+// ExportWorkflow issues GET /api/model/{name}/{version}/workflow/export.
+// Returns the raw JSON body. YAML action: export_workflow.
+func (d *Driver) ExportWorkflow(name string, version int) (json.RawMessage, error) {
+	return d.client.ExportWorkflow(d.t, name, version)
+}
+
 // GetEntity issues GET /api/entity/{id}.
 func (d *Driver) GetEntity(id uuid.UUID) (parityclient.EntityResult, error) {
 	return d.client.GetEntity(d.t, id)

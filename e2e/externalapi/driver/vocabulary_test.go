@@ -375,3 +375,39 @@ func TestDriver_ImportWorkflowRaw(t *testing.T) {
 		t.Errorf("got %s %s", cap.method, cap.path)
 	}
 }
+
+func TestDriver_ImportWorkflow_POST(t *testing.T) {
+	cap := &capturedReq{}
+	srv := fakeServer(t, cap)
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	if err := d.ImportWorkflow("m", 1, `{"workflows":[]}`); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/model/m/1/workflow/import" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+}
+
+func TestDriver_ExportWorkflow_GET(t *testing.T) {
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"workflows":[]}`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	raw, err := d.ExportWorkflow("m", 1)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodGet || cap.path != "/api/model/m/1/workflow/export" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if len(raw) == 0 {
+		t.Fatal("expected non-empty body")
+	}
+}
