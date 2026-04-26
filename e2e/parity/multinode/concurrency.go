@@ -2,8 +2,6 @@ package multinode
 
 import (
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -19,8 +17,6 @@ func init() {
 		NamedTest{Name: "ExternalAPI_10_02_ReadbackReachesAllReplicas", Fn: RunExternalAPI_10_02_ReadbackReachesAllReplicas},
 		NamedTest{Name: "ExternalAPI_10_03_ParallelUpdatesSameEntity", Fn: RunExternalAPI_10_03_ParallelUpdatesSameEntity},
 	)
-	_ = httptest.NewServer // pull in httptest so the placeholder build keeps
-	_ = uuid.Nil
 }
 
 // RunExternalAPI_10_01_LoadBalancerEndToEnd — dictionary 10/01.
@@ -137,22 +133,16 @@ func RunExternalAPI_10_03_ParallelUpdatesSameEntity(t *testing.T, fixture MultiN
 
 	// N goroutines, one per node, each issuing a counter-set update.
 	var wg sync.WaitGroup
-	results := make(chan int, len(urls))
 	for i, url := range urls {
 		wg.Add(1)
 		go func(idx int, u string) {
 			defer wg.Done()
 			di := driver.NewRemote(t, u, tenant.Token)
 			body := fmt.Sprintf(`{"counter":%d}`, idx+1)
-			if err := di.UpdateEntityData(id, body); err != nil {
-				results <- -1
-				return
-			}
-			results <- idx + 1
+			di.UpdateEntityData(id, body) //nolint:errcheck // last-writer-wins; final GET asserts the contract
 		}(i, url)
 	}
 	wg.Wait()
-	close(results)
 
 	// Wait briefly for cluster gossip to converge.
 	time.Sleep(200 * time.Millisecond)
@@ -169,5 +159,4 @@ func RunExternalAPI_10_03_ParallelUpdatesSameEntity(t *testing.T, fixture MultiN
 	if int(final) < 1 || int(final) > len(urls) {
 		t.Errorf("final counter: got %v, want 1..%d (one of the parallel writes)", final, len(urls))
 	}
-	_ = http.StatusOK // silence unused import; counter assertion is the contract
 }
