@@ -1,6 +1,7 @@
 package driver_test
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -480,6 +481,37 @@ func TestDriver_DeleteMessage_DELETE(t *testing.T) {
 	}
 	if cap.method != http.MethodDelete || cap.path != "/api/message/msg-1" {
 		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+}
+
+func TestDriver_DeleteMessages_DELETE(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"entityIds":["m1","m2"],"success":true}]`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	deleted, err := d.DeleteMessages([]string{"m1", "m2"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("method: got %q, want DELETE", gotMethod)
+	}
+	if gotPath != "/api/message" {
+		t.Errorf("path: got %q, want /api/message", gotPath)
+	}
+	if len(gotBody) == 0 {
+		t.Error("expected non-empty request body")
+	}
+	if len(deleted) != 2 {
+		t.Errorf("deleted count: got %d, want 2", len(deleted))
 	}
 }
 

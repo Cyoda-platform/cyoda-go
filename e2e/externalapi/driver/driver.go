@@ -281,6 +281,12 @@ func (d *Driver) DeleteMessage(id string) error {
 	return d.client.DeleteMessage(d.t, id)
 }
 
+// DeleteMessages issues DELETE /api/message with a batch ID body.
+// Returns the deleted-IDs list. YAML action: delete_edge_messages.
+func (d *Driver) DeleteMessages(ids []string) ([]string, error) {
+	return d.client.DeleteMessages(d.t, ids)
+}
+
 // --- Type re-exports for test-side ergonomics ---
 
 // CollectionItem mirrors parityclient.CollectionItem so external callers
