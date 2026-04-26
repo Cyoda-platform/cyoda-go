@@ -30,6 +30,14 @@ For each negative-path scenario in file 09:
 
 ## Phase 0 — Pre-implementation gates
 
+> **Phase 0 outcomes (recorded 2026-04-25 — see findings below; do NOT re-run):**
+>
+> - **0.1 result:** cyoda-go's `internal/domain/messaging/handler.go:NewMessage` carries header fields (`MessageID`, `UserID`, `Recipient`, `ReplyTo`, `CorrelationID`, `ContentType`, `ContentEncoding`) via HTTP request **headers** (`X-Message-Id`, `X-User-Id`, `X-Recipient`, `X-Reply-To`, `X-Correlation-Id`) + **query params** (`contentType`, `contentEncoding`, `contentLength`). The body is `{payload, meta-data}` only. The dictionary embeds the same header fields IN the body. **Implication:** Phase 4's plan to wrap the existing `c.CreateMessage(t, subject, payload)` is insufficient — round-tripping the dictionary's header fields requires a richer client helper that sets the X-* headers + query params. Add `c.CreateMessageWithHeaders(t, subject, payload string, header MessageHeaderInput)` to the parity client + a Driver pass-through. The struct mirrors `spi.MessageHeader` minus the `Subject` field (which goes in the path).
+> - **0.2 result:** cyoda-go's `DELETE /api/message` is **delete-all-paged-by-tx-size**, not delete-by-id-list. `DeleteMessagesParams` has only `transactionSize`. **11/03 is `gap_on_our_side`** — file 11's batch-delete scenario is unimplementable today. Tracked in **#134** (target v0.7.0). Phase 4's `c.DeleteMessages` + Driver wrapper are **NOT added** in tranche 3. Phase 6's 11/03 Run* is `t.Skip("pending #134")` with the test body documenting intent.
+> - **0.3 result:** Cluster envs are wired in `app/config.go:141-146`. Multi-node fixture must set per-node: `CYODA_CLUSTER_ENABLED=true`, unique `CYODA_NODE_ID=node-{i}`, unique `CYODA_NODE_ADDR=http://127.0.0.1:{httpPort}`, unique `CYODA_GOSSIP_ADDR=:{gossipPort}`, shared `CYODA_SEED_NODES=<comma-separated all gossip addrs>`. NodeID is required when CLUSTER_ENABLED is true (validated at startup, `app/app.go:607`). `CYODA_GOSSIP_STABILITY_WINDOW` defaults to 2s — usable as-is.
+>
+> Phase 0 tasks below are kept for reference but do not need re-execution. Skip directly to Phase 1.
+
 ### Task 0.1: Verify edge-message wire shape
 
 The dictionary expects POST `/edge-message` with `{header: {subject, correlationId, userId, replyTo, recipient}, metaData: {...}, body: {...}}`. cyoda-go uses POST `/api/message/new/{subject}` with the payload as the body. Verify whether cyoda-go's existing surface round-trips the dictionary's full header set, or if some fields are lost.
