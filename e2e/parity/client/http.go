@@ -728,6 +728,40 @@ func (c *Client) DeleteMessage(t *testing.T, messageID string) error {
 	return err
 }
 
+// DeleteMessages issues DELETE /api/message with a JSON-array body of
+// message IDs. Returns the list of actually-deleted IDs from the
+// response. Paging by transactionSize is supported by the server via
+// query param (default 1000); this helper does not expose it because
+// every parity test deletes well under 1000 IDs at a time.
+//
+// Canonical: api/openapi.yaml deleteMessages operation. Despite the
+// generated DeleteMessagesParams struct only carrying TransactionSize,
+// the server reads the ID list from the request body — the param
+// struct is just for the query knob.
+func (c *Client) DeleteMessages(t *testing.T, ids []string) ([]string, error) {
+	t.Helper()
+	body, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal DeleteMessages ids: %w", err)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, "/api/message", string(body))
+	if err != nil {
+		return nil, err
+	}
+	// Response is [{"entityIds":[...],"success":true}].
+	var results []struct {
+		EntityIDs []string `json:"entityIds"`
+		Success   bool     `json:"success"`
+	}
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return nil, fmt.Errorf("decode DeleteMessages response: %w (body=%s)", err, string(raw))
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("DeleteMessages returned empty results array")
+	}
+	return results[0].EntityIDs, nil
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
