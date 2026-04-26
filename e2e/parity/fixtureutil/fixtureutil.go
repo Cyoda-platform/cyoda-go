@@ -498,3 +498,244 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 		ComputeCmd:   computeCmd,
 	}, cleanup, nil
 }
+
+// --- Multi-node cluster launch ---
+
+// ClusterLaunchResult holds the state from launching N cyoda-go
+// subprocesses sharing one backing storage, plus one shared
+// compute-test-client connected to node 0.
+type ClusterLaunchResult struct {
+	// BaseURLs is the per-node HTTP base URL list, in stable order
+	// (index i corresponds to node-{i}).
+	BaseURLs []string
+	// GRPCEndpoint is node 0's gRPC endpoint; the compute-test-client
+	// connects here.
+	GRPCEndpoint string
+	// CyodaCmds holds one *exec.Cmd per node, in the same order as
+	// BaseURLs. Exposed mainly for diagnostics; cleanup handles
+	// process termination.
+	CyodaCmds []*exec.Cmd
+	// ComputeCmd is the single compute-test-client subprocess.
+	ComputeCmd *exec.Cmd
+}
+
+// LaunchCyodaClusterAndCompute builds the stock cyoda + compute
+// binaries and launches n cyoda-go subprocesses sharing the supplied
+// backing storage (carried in extraEnv). Cluster bootstrap envs
+// (CYODA_CLUSTER_ENABLED, CYODA_NODE_ID, CYODA_NODE_ADDR,
+// CYODA_GOSSIP_ADDR, CYODA_SEED_NODES, CYODA_HMAC_SECRET) are added
+// per node by this function — callers MUST NOT supply them. extraEnv
+// is for backend wiring only (e.g. CYODA_STORAGE_BACKEND=postgres,
+// CYODA_POSTGRES_URL=...).
+//
+// Allocates n × 3 free ports (HTTP, gRPC, gossip) plus n admin ports
+// for per-node isolation.
+//
+// Migration discipline: when CYODA_POSTGRES_AUTO_MIGRATE is present in
+// extraEnv, only node 0 is launched with auto-migrate enabled — the
+// remaining nodes get auto-migrate disabled to avoid N concurrent
+// migration applications racing each other against a fresh database.
+//
+// The compute-test-client connects to node 0's gRPC. The returned
+// cleanup function kills all subprocesses; the caller is responsible
+// for any external resource (e.g. the postgres testcontainer).
+func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts ...LaunchOpts) (*ClusterLaunchResult, func(), error) {
+	if n < 1 {
+		return nil, nil, fmt.Errorf("LaunchCyodaClusterAndCompute: n must be >= 1, got %d", n)
+	}
+
+	cyodaBin, err := BuildCyodaBinary()
+	if err != nil {
+		return nil, nil, err
+	}
+	computeBin, err := BuildComputeBinary()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var opt LaunchOpts
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	cyodaReadinessTimeout := opt.ReadinessTimeout
+	if cyodaReadinessTimeout == 0 {
+		cyodaReadinessTimeout = 30 * time.Second
+	}
+
+	// Allocate n ports for each of HTTP, gRPC, gossip, admin.
+	httpPorts := make([]int, n)
+	grpcPorts := make([]int, n)
+	gossipPorts := make([]int, n)
+	adminPorts := make([]int, n)
+	for i := 0; i < n; i++ {
+		if httpPorts[i], err = FreePort(); err != nil {
+			return nil, nil, fmt.Errorf("failed to get HTTP port for node %d: %w", i, err)
+		}
+		if grpcPorts[i], err = FreePort(); err != nil {
+			return nil, nil, fmt.Errorf("failed to get gRPC port for node %d: %w", i, err)
+		}
+		if gossipPorts[i], err = FreePort(); err != nil {
+			return nil, nil, fmt.Errorf("failed to get gossip port for node %d: %w", i, err)
+		}
+		if adminPorts[i], err = FreePort(); err != nil {
+			return nil, nil, fmt.Errorf("failed to get admin port for node %d: %w", i, err)
+		}
+	}
+
+	// Build the seed-nodes CSV: host:port for every node.
+	seedAddrs := make([]string, n)
+	for i := 0; i < n; i++ {
+		seedAddrs[i] = fmt.Sprintf("127.0.0.1:%d", gossipPorts[i])
+	}
+	seedNodes := strings.Join(seedAddrs, ",")
+
+	// HMAC secret shared across the cluster. Random per fixture so
+	// concurrent test packages cannot accidentally talk to each other.
+	hmacBytes := make([]byte, 32)
+	if _, err := rand.Read(hmacBytes); err != nil {
+		return nil, nil, fmt.Errorf("failed to generate HMAC secret: %w", err)
+	}
+	hmacSecret := hex.EncodeToString(hmacBytes)
+
+	// Detect auto-migrate in extraEnv to apply the leader-only-migrate
+	// discipline. Build a stripped extraEnv that has auto-migrate removed
+	// (followers get explicit "false"; leader keeps the original value).
+	autoMigrateRequested := false
+	extraEnvWithoutMigrate := make([]string, 0, len(extraEnv))
+	for _, kv := range extraEnv {
+		if strings.HasPrefix(kv, "CYODA_POSTGRES_AUTO_MIGRATE=") {
+			val := strings.TrimPrefix(kv, "CYODA_POSTGRES_AUTO_MIGRATE=")
+			if strings.EqualFold(val, "true") {
+				autoMigrateRequested = true
+			}
+			continue
+		}
+		extraEnvWithoutMigrate = append(extraEnvWithoutMigrate, kv)
+	}
+
+	// Per-cluster cleanup tracker: anything started gets registered so a
+	// failure mid-launch tears down already-running children.
+	cyodaCmds := make([]*exec.Cmd, 0, n)
+	cleanup := func() {
+		for _, c := range cyodaCmds {
+			KillProcessGroup(c)
+		}
+	}
+
+	launchNode := func(i int, withAutoMigrate bool) error {
+		cmd := exec.Command(cyodaBin)
+		cmd.WaitDelay = 3 * time.Second
+		env := append(CyodaEnv(httpPorts[i], grpcPorts[i], ks), extraEnvWithoutMigrate...)
+		env = append(env,
+			fmt.Sprintf("CYODA_ADMIN_PORT=%d", adminPorts[i]),
+			"CYODA_CLUSTER_ENABLED=true",
+			fmt.Sprintf("CYODA_NODE_ID=node-%d", i),
+			fmt.Sprintf("CYODA_NODE_ADDR=http://127.0.0.1:%d", httpPorts[i]),
+			fmt.Sprintf("CYODA_GOSSIP_ADDR=127.0.0.1:%d", gossipPorts[i]),
+			fmt.Sprintf("CYODA_SEED_NODES=%s", seedNodes),
+			fmt.Sprintf("CYODA_HMAC_SECRET=%s", hmacSecret),
+		)
+		if autoMigrateRequested {
+			if withAutoMigrate {
+				env = append(env, "CYODA_POSTGRES_AUTO_MIGRATE=true")
+			} else {
+				env = append(env, "CYODA_POSTGRES_AUTO_MIGRATE=false")
+			}
+		}
+		cmd.Env = env
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start cyoda-go node %d: %w", i, err)
+		}
+		cyodaCmds = append(cyodaCmds, cmd)
+
+		baseURL := fmt.Sprintf("http://127.0.0.1:%d", httpPorts[i])
+		if err := WaitForHTTPHealth(baseURL+"/api/health", cyodaReadinessTimeout); err != nil {
+			return fmt.Errorf("cyoda node %d health probe failed: %w", i, err)
+		}
+		slog.Info("cyoda-go cluster node ready", "pkg", "fixtureutil", "node", i, "baseURL", baseURL)
+		return nil
+	}
+
+	// Launch node 0 first with auto-migrate (if requested) and wait for
+	// health. This serialises the migration apply against a fresh database
+	// so the followers can come up against an already-migrated schema.
+	if err := launchNode(0, true); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	for i := 1; i < n; i++ {
+		if err := launchNode(i, false); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+	}
+
+	// Brief settle for gossip convergence so the seed-nodes list is
+	// fully populated before the compute-test-client (and any test
+	// driver) starts hitting the cluster. Default StabilityWindow is
+	// 2s server-side; a short conservative pause here is still useful
+	// for the membership view to propagate after the last node joins.
+	time.Sleep(1 * time.Second)
+
+	// Mint M2M JWT for the compute client.
+	m2mToken, err := MintM2MJWT(ks)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
+	}
+
+	// Compute-test-client points at node 0's gRPC.
+	grpcEndpoint := fmt.Sprintf("127.0.0.1:%d", grpcPorts[0])
+	computeCmd := exec.Command(computeBin)
+	computeCmd.WaitDelay = 3 * time.Second
+	computeCmd.Env = append(os.Environ(),
+		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
+		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
+	)
+	computeCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	computeStdout, err := computeCmd.StdoutPipe()
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to create compute stdout pipe: %w", err)
+	}
+	if err := computeCmd.Start(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to start compute-test-client: %w", err)
+	}
+	cleanup = func() {
+		KillProcessGroup(computeCmd)
+		for _, c := range cyodaCmds {
+			KillProcessGroup(c)
+		}
+	}
+
+	healthAddr, err := ParseHealthAddr(computeStdout, 15*time.Second)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w", err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, computeStdout) }()
+
+	computeHealthURL := fmt.Sprintf("http://%s/healthz", healthAddr)
+	if err := WaitForHTTPHealth(computeHealthURL, 30*time.Second); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("compute-test-client health probe failed: %w", err)
+	}
+	slog.Info("compute-test-client (cluster) is ready", "pkg", "fixtureutil", "healthAddr", healthAddr, "nodes", n)
+
+	baseURLs := make([]string, n)
+	for i := 0; i < n; i++ {
+		baseURLs[i] = fmt.Sprintf("http://127.0.0.1:%d", httpPorts[i])
+	}
+
+	return &ClusterLaunchResult{
+		BaseURLs:     baseURLs,
+		GRPCEndpoint: grpcEndpoint,
+		CyodaCmds:    cyodaCmds,
+		ComputeCmd:   computeCmd,
+	}, cleanup, nil
+}
