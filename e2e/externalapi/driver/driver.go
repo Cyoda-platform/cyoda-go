@@ -202,6 +202,18 @@ func (d *Driver) ImportWorkflowRaw(name string, version int, body string) (int, 
 	return d.client.ImportWorkflowRaw(d.t, name, version, body)
 }
 
+// ImportWorkflow issues POST /api/model/{name}/{version}/workflow/import.
+// YAML action: import_workflow.
+func (d *Driver) ImportWorkflow(name string, version int, body string) error {
+	return d.client.ImportWorkflow(d.t, name, version, body)
+}
+
+// ExportWorkflow issues GET /api/model/{name}/{version}/workflow/export.
+// Returns the raw JSON body. YAML action: export_workflow.
+func (d *Driver) ExportWorkflow(name string, version int) (json.RawMessage, error) {
+	return d.client.ExportWorkflow(d.t, name, version)
+}
+
 // GetEntity issues GET /api/entity/{id}.
 func (d *Driver) GetEntity(id uuid.UUID) (parityclient.EntityResult, error) {
 	return d.client.GetEntity(d.t, id)
@@ -241,6 +253,38 @@ func (d *Driver) GetEntityAt(id uuid.UUID, pointInTime time.Time) (parityclient.
 // YAML action: get_entity_changes.
 func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta, error) {
 	return d.client.GetEntityChanges(d.t, id)
+}
+
+// --- Edge-message helpers ---
+
+// CreateMessage issues POST /api/message/new/{subject} with a JSON
+// payload body. Returns the message ID. YAML action: save_edge_message.
+func (d *Driver) CreateMessage(subject, payload string) (string, error) {
+	return d.client.CreateMessage(d.t, subject, payload)
+}
+
+// CreateMessageWithHeaders is the header-rich variant of CreateMessage.
+// See parityclient.MessageHeaderInput for the supported header fields.
+func (d *Driver) CreateMessageWithHeaders(subject, payload string, header parityclient.MessageHeaderInput) (string, error) {
+	return d.client.CreateMessageWithHeaders(d.t, subject, payload, header)
+}
+
+// GetMessage issues GET /api/message/{id}. Returns the full message
+// envelope as a map. YAML action: get_edge_message.
+func (d *Driver) GetMessage(id string) (map[string]any, error) {
+	return d.client.GetMessage(d.t, id)
+}
+
+// DeleteMessage issues DELETE /api/message/{id}. YAML action:
+// delete_edge_message.
+func (d *Driver) DeleteMessage(id string) error {
+	return d.client.DeleteMessage(d.t, id)
+}
+
+// DeleteMessages issues DELETE /api/message with a batch ID body.
+// Returns the deleted-IDs list. YAML action: delete_edge_messages.
+func (d *Driver) DeleteMessages(ids []string) ([]string, error) {
+	return d.client.DeleteMessages(d.t, ids)
 }
 
 // --- Type re-exports for test-side ergonomics ---
