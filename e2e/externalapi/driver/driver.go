@@ -255,6 +255,32 @@ func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta
 	return d.client.GetEntityChanges(d.t, id)
 }
 
+// --- Edge-message helpers ---
+
+// CreateMessage issues POST /api/message/new/{subject} with a JSON
+// payload body. Returns the message ID. YAML action: save_edge_message.
+func (d *Driver) CreateMessage(subject, payload string) (string, error) {
+	return d.client.CreateMessage(d.t, subject, payload)
+}
+
+// CreateMessageWithHeaders is the header-rich variant of CreateMessage.
+// See parityclient.MessageHeaderInput for the supported header fields.
+func (d *Driver) CreateMessageWithHeaders(subject, payload string, header parityclient.MessageHeaderInput) (string, error) {
+	return d.client.CreateMessageWithHeaders(d.t, subject, payload, header)
+}
+
+// GetMessage issues GET /api/message/{id}. Returns the full message
+// envelope as a map. YAML action: get_edge_message.
+func (d *Driver) GetMessage(id string) (map[string]any, error) {
+	return d.client.GetMessage(d.t, id)
+}
+
+// DeleteMessage issues DELETE /api/message/{id}. YAML action:
+// delete_edge_message.
+func (d *Driver) DeleteMessage(id string) error {
+	return d.client.DeleteMessage(d.t, id)
+}
+
 // --- Type re-exports for test-side ergonomics ---
 
 // CollectionItem mirrors parityclient.CollectionItem so external callers
