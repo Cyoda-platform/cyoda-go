@@ -119,37 +119,33 @@ Status vocabulary:
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| wf-import/01-simple-automated-transition | pending:tranche-3 | POST /entity/{name}/{v}/workflow/import round-trip; issue #120 |
-| wf-import/02-defaults-applied-and-returned | pending:tranche-3 | processor/transition defaults on export; issue #120 |
-| wf-import/03-advanced-criteria-and-processors | pending:tranche-3 | group criterion + scheduled processor; issue #120 |
-| wf-import/04-strategy-replace | pending:tranche-3 | importMode=REPLACE drops prior workflows; issue #120 |
-| wf-import/05-strategy-activate | pending:tranche-3 | importMode=ACTIVATE deactivates prior + activates new; issue #120 |
-| wf-import/06-strategy-merge | pending:tranche-3 | importMode=MERGE updates in place + adds new; issue #120 |
+| wf-import/01-simple-automated-transition | new:RunExternalAPI_08_01_SimpleAutomatedTransition | tranche 3; `different_naming_same_level` schema adaptations: dictionary `to`/`automated`/`criterion shape` → cyoda-go `next`/`manual:false`/`{type:"simple",jsonPath,operatorType,value}` |
+| wf-import/02-defaults-applied-and-returned | new:RunExternalAPI_08_02_DefaultsAppliedAndReturned | tranche 3 |
+| wf-import/03-advanced-criteria-and-processors | new:RunExternalAPI_08_03_AdvancedCriteriaAndProcessors | tranche 3; group-criterion `clauses` → `conditions` field |
+| wf-import/04-strategy-replace | new:RunExternalAPI_08_04_StrategyReplace | tranche 3 |
+| wf-import/05-strategy-activate | new:RunExternalAPI_08_05_StrategyActivate | tranche 3 |
+| wf-import/06-strategy-merge | new:RunExternalAPI_08_06_StrategyMerge | tranche 3 |
 
 ---
 
 ## 09-workflow-externalization.yaml
 
-All ext/ scenarios use REST entity-create endpoints (`POST /entity/JSON/{name}/{v}`) but
-require a gRPC calculation member connected via `CloudEventsService.startStreaming`.
-The entity-facing HTTP endpoint is present; the precondition of an active gRPC streaming
-client makes these untestable with HTTPDriver alone. They are marked `pending:tranche-3`
-rather than `internal_only_skip` because the primary action (`create_entity`) is REST.
+The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd/compute-test-client`; the workflow externalization scenarios use it to exercise the gRPC streaming path without a separate process.
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| ext/01-sync-processor-success | pending:tranche-3 | REST entry; requires gRPC calc member for SYNC mode; issue #120 |
-| ext/02-sync-processor-exception-rolls-back | pending:tranche-3 | SYNC processor exception rollback; issue #120 |
-| ext/03-async-same-tx-exception-rolls-back | pending:tranche-3 | ASYNC_SAME_TX exception rollback; issue #120 |
-| ext/04-async-new-tx-exception-keeps-initial-save | pending:tranche-3 | ASYNC_NEW_TX exception — initial save survives; issue #120 |
-| ext/05-sync-error-flag-rolls-back | pending:tranche-3 | SYNC success=false flag rollback; issue #120 |
-| ext/06-async-same-tx-error-flag-rolls-back | pending:tranche-3 | ASYNC_SAME_TX error flag rollback; issue #120 |
-| ext/07-async-new-tx-error-flag-keeps-initial-save | pending:tranche-3 | ASYNC_NEW_TX error flag — initial save survives; issue #120 |
-| ext/08-no-external-registered-fails | pending:tranche-3 | save fails when no calc member registered; issue #120 |
-| ext/09-external-disconnect-succeeds-on-retry | pending:tranche-3 | retry on second member after first disconnects; issue #120 |
-| ext/10-external-timeout-failover | pending:tranche-3 | slow member times out, fast member responds; issue #120 |
-| ext/11-processing-node-disconnects-mid-request | pending:tranche-3 | node disconnect mid-request, retry on other node; issue #120 |
-| ext/12-externalized-criterion-skips-call-when-not-matched | pending:tranche-3 | upstream filter short-circuits external call; issue #120 |
+| ext/01-sync-processor-success | new:RunExternalAPI_09_01_SyncProcessorSuccess | tranche 3 |
+| ext/02-sync-processor-exception-rolls-back | new:RunExternalAPI_09_02_SyncProcessorExceptionRollsBack | tranche 3 — `equiv_or_better`: cyoda-go emits `WORKFLOW_FAILED` @400 (specific code, transaction cancelled, entity not persisted); dictionary's implicit 5xx is more generic |
+| ext/03-async-same-tx-exception-rolls-back | new:RunExternalAPI_09_03_AsyncSameTxExceptionRollsBack | tranche 3 — same `WORKFLOW_FAILED` @400 as 09/02 (engine treats SYNC + ASYNC_SAME_TX exceptions identically) |
+| ext/04-async-new-tx-exception-keeps-initial-save | new:RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitial | tranche 3 — cyoda-go's `ASYNC_NEW_TX` failures are non-fatal per `engine.go`; entity reaches DONE matching dictionary's "initial save survives" semantic |
+| ext/05-sync-error-flag-rolls-back | (skipped) | pending compute-test-client error-flag processor; processorFunc signature doesn't expose ProcessorResponse warnings/errors; out of tranche-3 scope |
+| ext/06-async-same-tx-error-flag-rolls-back | (skipped) | same as 09/05 (ASYNC_SAME_TX) |
+| ext/07-async-new-tx-error-flag-keeps-initial-save | (skipped) | same as 09/05 (ASYNC_NEW_TX) |
+| ext/08-no-external-registered-fails | new:RunExternalAPI_09_08_NoExternalRegisteredFails | tranche 3 — `equiv_or_better`: cyoda-go emits `WORKFLOW_FAILED` @400 ("no matching calculation member"); fresh tenant has no calc member registered |
+| ext/09-external-disconnect-succeeds-on-retry | (skipped) | multi-member orchestration not in tranche-3 fixture |
+| ext/10-external-timeout-failover | (skipped) | no per-call timeout config visible in cyoda-go; non-deterministic without one |
+| ext/11-processing-node-disconnects-mid-request | (skipped) | needs deterministic mid-request gRPC disconnect (fixture orchestration) |
+| ext/12-externalized-criterion-skips-call-when-not-matched | new:RunExternalAPI_09_12_ExternalizedCriterionSkipsCall | tranche 3 — uses externalized `always-false` criterion; entity stays at CREATED |
 
 ---
 
@@ -157,9 +153,9 @@ rather than `internal_only_skip` because the primary action (`create_entity`) is
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| multi/01-create-and-delete-through-load-balancer | pending:tranche-3 | full lifecycle via load balancer; issue #120 |
-| multi/02-readback-reaches-all-replicas | pending:tranche-3 | write on node A visible from node B; issue #120 |
-| multi/03-parallel-updates-to-same-entity | pending:tranche-3 | concurrent disjoint-field updates serialise; issue #120 |
+| multi/01-create-and-delete-through-load-balancer | new:RunExternalAPI_10_01_LoadBalancerEndToEnd | tranche 3 — postgres-only (cluster-shareable via `e2e/parity/multinode/`); cassandra picks up via cyoda-go-cassandra#35 |
+| multi/02-readback-reaches-all-replicas | new:RunExternalAPI_10_02_ReadbackReachesAllReplicas | tranche 3 — postgres-only; same notes as 10/01 |
+| multi/03-parallel-updates-to-same-entity | new:RunExternalAPI_10_03_ParallelUpdatesSameEntity | tranche 3 — postgres-only; same notes as 10/01 |
 
 ---
 
@@ -167,9 +163,9 @@ rather than `internal_only_skip` because the primary action (`create_entity`) is
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| edge-msg/01-save-single | pending:tranche-3 | POST /edge-message + GET /edge-message/{id}; issue #120 |
-| edge-msg/02-delete-single | pending:tranche-3 | DELETE /edge-message/{id} drops payload blob; issue #120 |
-| edge-msg/03-delete-collection | pending:tranche-3 | DELETE /edge-message with id list; issue #120 |
+| edge-msg/01-save-single | new:RunExternalAPI_11_01_SaveSingle | tranche 3 — `different_naming_same_level` URL drift: cyoda-go uses `/api/message/new/{subject}` and reads X-* + Content-* fields from HTTP headers; dictionary uses `/edge-message` and embeds them in the body. Helper `client.CreateMessageWithHeaders` bridges the gap (Phase 4) |
+| edge-msg/02-delete-single | new:RunExternalAPI_11_02_DeleteSingle | tranche 3 — same URL drift as 11/01 |
+| edge-msg/03-delete-collection | new:RunExternalAPI_11_03_DeleteCollection | tranche 3 — same URL drift as 11/01; corrected Phase 0.2 misdiagnosis (handler at `messaging/handler.go:222` IS delete-by-id-list, not delete-all-paged); #134 closed |
 
 ---
 
