@@ -519,6 +519,19 @@ type ClusterLaunchResult struct {
 	ComputeCmd *exec.Cmd
 }
 
+// defaultCyodaReadinessTimeout is the default time to wait for each
+// cyoda-go node to pass its /api/health check.
+const defaultCyodaReadinessTimeout = 30 * time.Second
+
+// defaultComputeHealthAddrTimeout is the default time to wait for the
+// compute-test-client to print its HEALTH_ADDR line on stdout.
+const defaultComputeHealthAddrTimeout = 15 * time.Second
+
+// gossipSettleDelay is a brief pause after all nodes are healthy to
+// allow gossip membership views to fully converge before the
+// compute-test-client and test driver start hitting the cluster.
+const gossipSettleDelay = 1 * time.Second
+
 // LaunchCyodaClusterAndCompute builds the stock cyoda + compute
 // binaries and launches n cyoda-go subprocesses sharing the supplied
 // backing storage (carried in extraEnv). Cluster bootstrap envs
@@ -528,13 +541,8 @@ type ClusterLaunchResult struct {
 // is for backend wiring only (e.g. CYODA_STORAGE_BACKEND=postgres,
 // CYODA_POSTGRES_URL=...).
 //
-// Allocates n × 3 free ports (HTTP, gRPC, gossip) plus n admin ports
-// for per-node isolation.
-//
-// Migration discipline: when CYODA_POSTGRES_AUTO_MIGRATE is present in
-// extraEnv, only node 0 is launched with auto-migrate enabled — the
-// remaining nodes get auto-migrate disabled to avoid N concurrent
-// migration applications racing each other against a fresh database.
+// Allocates n × 4 free ports (HTTP, gRPC, gossip, admin) for per-node
+// isolation.
 //
 // The compute-test-client connects to node 0's gRPC. The returned
 // cleanup function kills all subprocesses; the caller is responsible
@@ -559,7 +567,7 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 	}
 	cyodaReadinessTimeout := opt.ReadinessTimeout
 	if cyodaReadinessTimeout == 0 {
-		cyodaReadinessTimeout = 30 * time.Second
+		cyodaReadinessTimeout = defaultCyodaReadinessTimeout
 	}
 
 	// Allocate n ports for each of HTTP, gRPC, gossip, admin.
@@ -667,7 +675,7 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 	// driver) starts hitting the cluster. Default StabilityWindow is
 	// 2s server-side; a short conservative pause here is still useful
 	// for the membership view to propagate after the last node joins.
-	time.Sleep(1 * time.Second)
+	time.Sleep(gossipSettleDelay)
 
 	// Mint M2M JWT for the compute client.
 	m2mToken, err := MintM2MJWT(ks)
@@ -702,7 +710,7 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 		}
 	}
 
-	healthAddr, err := ParseHealthAddr(computeStdout, 15*time.Second)
+	healthAddr, err := ParseHealthAddr(computeStdout, defaultComputeHealthAddrTimeout)
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("failed to parse HEALTH_ADDR from compute-test-client: %w", err)
@@ -710,7 +718,7 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 	go func() { _, _ = io.Copy(io.Discard, computeStdout) }()
 
 	computeHealthURL := fmt.Sprintf("http://%s/healthz", healthAddr)
-	if err := WaitForHTTPHealth(computeHealthURL, 30*time.Second); err != nil {
+	if err := WaitForHTTPHealth(computeHealthURL, defaultCyodaReadinessTimeout); err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("compute-test-client health probe failed: %w", err)
 	}
