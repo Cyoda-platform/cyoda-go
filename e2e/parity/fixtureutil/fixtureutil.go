@@ -597,35 +597,26 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 	}
 	hmacSecret := hex.EncodeToString(hmacBytes)
 
-	// Detect auto-migrate in extraEnv to apply the leader-only-migrate
-	// discipline. Build a stripped extraEnv that has auto-migrate removed
-	// (followers get explicit "false"; leader keeps the original value).
-	autoMigrateRequested := false
-	extraEnvWithoutMigrate := make([]string, 0, len(extraEnv))
-	for _, kv := range extraEnv {
-		if strings.HasPrefix(kv, "CYODA_POSTGRES_AUTO_MIGRATE=") {
-			val := strings.TrimPrefix(kv, "CYODA_POSTGRES_AUTO_MIGRATE=")
-			if strings.EqualFold(val, "true") {
-				autoMigrateRequested = true
-			}
-			continue
-		}
-		extraEnvWithoutMigrate = append(extraEnvWithoutMigrate, kv)
-	}
-
 	// Per-cluster cleanup tracker: anything started gets registered so a
 	// failure mid-launch tears down already-running children.
-	cyodaCmds := make([]*exec.Cmd, 0, n)
+	cyodaCmds := make([]*exec.Cmd, n)
 	cleanup := func() {
 		for _, c := range cyodaCmds {
-			KillProcessGroup(c)
+			if c != nil {
+				KillProcessGroup(c)
+			}
 		}
 	}
 
-	launchNode := func(i int, withAutoMigrate bool) error {
+	// Concurrent start, then concurrent health-wait. Cluster registration
+	// blocks until at least one seed is reachable; if we started node 0 in
+	// isolation it would deadlock waiting on nodes 1..n-1 that haven't been
+	// launched yet. Migration concurrency is safe — golang-migrate uses a
+	// database-level lock on the schema_migrations table.
+	for i := 0; i < n; i++ {
 		cmd := exec.Command(cyodaBin)
 		cmd.WaitDelay = 3 * time.Second
-		env := append(CyodaEnv(httpPorts[i], grpcPorts[i], ks), extraEnvWithoutMigrate...)
+		env := append(CyodaEnv(httpPorts[i], grpcPorts[i], ks), extraEnv...)
 		env = append(env,
 			fmt.Sprintf("CYODA_ADMIN_PORT=%d", adminPorts[i]),
 			"CYODA_CLUSTER_ENABLED=true",
@@ -635,42 +626,40 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 			fmt.Sprintf("CYODA_SEED_NODES=%s", seedNodes),
 			fmt.Sprintf("CYODA_HMAC_SECRET=%s", hmacSecret),
 		)
-		if autoMigrateRequested {
-			if withAutoMigrate {
-				env = append(env, "CYODA_POSTGRES_AUTO_MIGRATE=true")
-			} else {
-				env = append(env, "CYODA_POSTGRES_AUTO_MIGRATE=false")
-			}
-		}
 		cmd.Env = env
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start cyoda-go node %d: %w", i, err)
-		}
-		cyodaCmds = append(cyodaCmds, cmd)
-
-		baseURL := fmt.Sprintf("http://127.0.0.1:%d", httpPorts[i])
-		if err := WaitForHTTPHealth(baseURL+"/api/health", cyodaReadinessTimeout); err != nil {
-			return fmt.Errorf("cyoda node %d health probe failed: %w", i, err)
-		}
-		slog.Info("cyoda-go cluster node ready", "pkg", "fixtureutil", "node", i, "baseURL", baseURL)
-		return nil
-	}
-
-	// Launch node 0 first with auto-migrate (if requested) and wait for
-	// health. This serialises the migration apply against a fresh database
-	// so the followers can come up against an already-migrated schema.
-	if err := launchNode(0, true); err != nil {
-		cleanup()
-		return nil, nil, err
-	}
-	for i := 1; i < n; i++ {
-		if err := launchNode(i, false); err != nil {
 			cleanup()
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to start cyoda-go node %d: %w", i, err)
 		}
+		cyodaCmds[i] = cmd
+	}
+
+	// Concurrent health probe — every node needs to come ready within the
+	// readiness timeout. First failure is reported; cleanup tears down all.
+	healthErrCh := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			baseURL := fmt.Sprintf("http://127.0.0.1:%d", httpPorts[idx])
+			if err := WaitForHTTPHealth(baseURL+"/api/health", cyodaReadinessTimeout); err != nil {
+				healthErrCh <- fmt.Errorf("cyoda node %d health probe failed: %w", idx, err)
+				return
+			}
+			slog.Info("cyoda-go cluster node ready", "pkg", "fixtureutil", "node", idx, "baseURL", baseURL)
+			healthErrCh <- nil
+		}(i)
+	}
+	var firstHealthErr error
+	for i := 0; i < n; i++ {
+		if err := <-healthErrCh; err != nil && firstHealthErr == nil {
+			firstHealthErr = err
+		}
+	}
+	if firstHealthErr != nil {
+		cleanup()
+		return nil, nil, firstHealthErr
 	}
 
 	// Brief settle for gossip convergence so the seed-nodes list is
