@@ -112,36 +112,52 @@ func RunExternalAPI_11_02_DeleteSingle(t *testing.T, fixture parity.BackendFixtu
 }
 
 // RunExternalAPI_11_03_DeleteCollection — dictionary 11/03.
-// SKIPPED: cyoda-go's DELETE /api/message is delete-all-paged-by-tx-size,
-// not delete-by-id-list. See #134 (target v0.7.0) — batch delete by ID list
-// is missing on the server side. Once #134 lands, uncomment the body below
-// and add Driver.DeleteMessages.
+// Creates two messages, batch-deletes both via DELETE /api/message with a
+// JSON-array body, then verifies both return 404 on subsequent GET.
+//
+// Phase 0.2 incorrectly skipped this scenario under #134, believing the
+// endpoint was delete-all-paged-by-tx-size. The handler
+// (internal/domain/messaging/handler.go:222) in fact reads the ID list
+// from the request body and calls store.DeleteBatch. transactionSize is
+// only a paging knob (default 1000) and irrelevant for handfuls of IDs.
+// #134 should be closed — no server-side change was ever needed.
 func RunExternalAPI_11_03_DeleteCollection(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #134 — cyoda-go's DELETE /api/message is delete-all-paged-by-tx-size, not delete-by-id-list (batch delete by ID list missing server-side; target v0.7.0)")
-	/*
-		d := driver.NewInProcess(t, fixture)
-		id1, err := d.CreateMessage("Publication", edgeMessagePayload)
-		if err != nil {
-			t.Fatalf("create m1: %v", err)
+	d := driver.NewInProcess(t, fixture)
+
+	id1, err := d.CreateMessage("Publication", edgeMessagePayload)
+	if err != nil {
+		t.Fatalf("create m1: %v", err)
+	}
+	id2, err := d.CreateMessage("Publication", edgeMessagePayload)
+	if err != nil {
+		t.Fatalf("create m2: %v", err)
+	}
+
+	deleted, err := d.DeleteMessages([]string{id1, id2})
+	if err != nil {
+		t.Fatalf("DeleteMessages: %v", err)
+	}
+
+	// Verify deleted count.
+	if len(deleted) != 2 {
+		t.Errorf("deleted count: got %d, want 2", len(deleted))
+	}
+
+	// Verify the returned IDs match the requested IDs (order-insensitive).
+	requested := map[string]struct{}{id1: {}, id2: {}}
+	for _, del := range deleted {
+		if _, ok := requested[del]; !ok {
+			t.Errorf("DeleteMessages returned unexpected ID %q", del)
 		}
-		id2, err := d.CreateMessage("Publication", edgeMessagePayload)
-		if err != nil {
-			t.Fatalf("create m2: %v", err)
+	}
+
+	// Verify both messages are gone.
+	for _, id := range []string{id1, id2} {
+		if _, err := d.GetMessage(id); err == nil {
+			t.Errorf("GetMessage(%s) succeeded after batch delete; expected 404", id)
 		}
-		deleted, err := d.DeleteMessages([]string{id1, id2})
-		if err != nil {
-			t.Fatalf("DeleteMessages: %v", err)
-		}
-		if len(deleted) != 2 {
-			t.Errorf("deleted count: got %d, want 2", len(deleted))
-		}
-		for _, idDel := range []string{id1, id2} {
-			if _, err := d.GetMessage(idDel); err == nil {
-				t.Errorf("GetMessage(%s) succeeded after batch delete", idDel)
-			}
-		}
-	*/
+	}
 }
 
 // checkHeaderField asserts that hdr[key] == want and reports a test failure
