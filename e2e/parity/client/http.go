@@ -150,34 +150,7 @@ func (c *Client) doJSON(t *testing.T, method, path string, body any, out any, op
 // bounded jitter and per-operation policies.
 func (c *Client) doRaw(t *testing.T, method, path, body string) ([]byte, error) {
 	t.Helper()
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("build request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("transport: %w", err)
-		}
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return raw, nil
-		}
-		if resp.StatusCode == http.StatusConflict && isRetryableConflict(raw) && attempt < maxAttempts-1 {
-			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
-			lastErr = fmt.Errorf("%s %s: status 409: %s", method, path, string(raw))
-			continue
-		}
-		return nil, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, string(raw))
-	}
-	return nil, lastErr
+	return c.doRawWithHeaders(t, method, path, body, nil)
 }
 
 // isRetryableConflict reports whether a 409 body advertises
@@ -610,11 +583,11 @@ type MessageHeaderInput struct {
 	CorrelationID   string
 }
 
-// doRawWithHeaders is like doRaw but accepts a set of additional HTTP
-// headers to merge into the request. The caller-supplied headers take
-// precedence over the defaults set by doRaw (Authorization is always
-// added; Content-Type is set to the caller-supplied value or falls back
-// to "application/json" if absent from extraHeaders).
+// doRawWithHeaders is like doRaw but accepts caller-supplied HTTP headers.
+// Headers in extraHeaders are applied first; the client's Authorization
+// header is always set last from c.token, so caller-supplied headers
+// CANNOT override Authorization. Content-Type defaults to
+// "application/json" when extraHeaders does not contain one.
 func (c *Client) doRawWithHeaders(t *testing.T, method, path, body string, extraHeaders http.Header) ([]byte, error) {
 	t.Helper()
 	const maxAttempts = 5
@@ -624,11 +597,9 @@ func (c *Client) doRawWithHeaders(t *testing.T, method, path, body string, extra
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
-		// Apply caller-supplied headers first so they can override defaults.
+		// Apply caller-supplied headers first; Authorization is overwritten below.
 		for k, vs := range extraHeaders {
-			for _, v := range vs {
-				req.Header.Set(k, v)
-			}
+			req.Header[k] = append([]string(nil), vs...) // defensive copy; replaces any existing
 		}
 		// Fall back to application/json if the caller didn't specify Content-Type.
 		if req.Header.Get("Content-Type") == "" {
