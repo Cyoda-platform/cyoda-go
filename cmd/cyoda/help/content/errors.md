@@ -70,6 +70,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.FORBIDDEN` — `403` — not retryable — authenticated caller lacks the required role or the tenant does not match
 - `errors.HELP_TOPIC_NOT_FOUND` — `404` — not retryable — help topic path does not resolve to any topic in the tree
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — not retryable — request with the same idempotency key was received but payload differs from the original
+- `errors.INVALID_CHANGE_LEVEL` — `400` — not retryable — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`
 - `errors.MODEL_ALREADY_LOCKED` — `409` — not retryable — admin operation requires `UNLOCKED` state but the model is `LOCKED` (relock attempt or re-import on a locked model)
 - `errors.MODEL_ALREADY_UNLOCKED` — `409` — not retryable — admin operation requires `LOCKED` state but the model is `UNLOCKED` (unlock-of-already-unlocked-model)
 - `errors.MODEL_HAS_ENTITIES` — `409` — not retryable — unlock or delete blocked because at least one entity of the model exists
