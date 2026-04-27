@@ -7,6 +7,36 @@ import (
 	"testing"
 )
 
+func TestClient_GetAsyncSearchResults_GET(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"content":[{"id":"00000000-0000-0000-0000-000000000001","data":{"k":1}}],"page":{"number":0,"size":1000,"totalElements":1,"totalPages":1}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	page, err := c.GetAsyncSearchResults(t, "job-abc-123")
+	if err != nil {
+		t.Fatalf("GetAsyncSearchResults: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Errorf("method: got %q want GET", gotMethod)
+	}
+	if gotPath != "/api/search/async/job-abc-123" {
+		t.Errorf("path: got %q", gotPath)
+	}
+	if len(page.Content) != 1 {
+		t.Errorf("content len: got %d want 1", len(page.Content))
+	}
+	if page.Page.TotalElements != 1 {
+		t.Errorf("totalElements: got %d want 1", page.Page.TotalElements)
+	}
+}
+
 func TestClient_GetAsyncSearchStatus_GET(t *testing.T) {
 	var gotMethod, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

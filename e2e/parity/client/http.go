@@ -803,6 +803,24 @@ func (c *Client) GetAsyncSearchStatus(t *testing.T, jobID string) (string, error
 	return resp.SearchJobStatus, nil
 }
 
+// GetAsyncSearchResults issues GET /api/search/async/{jobId}. Returns
+// the Spring-style page envelope (PagedEntityResults) with entity
+// results in Content and pagination metadata under Page.
+// Canonical: api/openapi.yaml /search/async/{jobId}.
+func (c *Client) GetAsyncSearchResults(t *testing.T, jobID string) (PagedEntityResults, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return PagedEntityResults{}, err
+	}
+	var page PagedEntityResults
+	if err := json.Unmarshal(raw, &page); err != nil {
+		return PagedEntityResults{}, fmt.Errorf("decode GetAsyncSearchResults response: %w (body=%s)", err, string(raw))
+	}
+	return page, nil
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
