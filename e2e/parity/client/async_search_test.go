@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestClient_CancelAsyncSearch_PUT(t *testing.T) {
@@ -117,5 +119,82 @@ func TestClient_SubmitAsyncSearch_POST(t *testing.T) {
 	}
 	if jobID != "job-abc-123" {
 		t.Errorf("jobID: got %q want job-abc-123", jobID)
+	}
+}
+
+func TestClient_AwaitAsyncSearchResults_Success(t *testing.T) {
+	var statusCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		switch {
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/search/async/orders/"):
+			_, _ = w.Write([]byte(`"job-1"`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/search/async/job-1/status":
+			n := statusCalls.Add(1)
+			if n < 2 {
+				_, _ = w.Write([]byte(`{"searchJobStatus":"RUNNING"}`))
+			} else {
+				_, _ = w.Write([]byte(`{"searchJobStatus":"SUCCESSFUL"}`))
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/search/async/job-1":
+			_, _ = w.Write([]byte(`{"content":[{"id":"00000000-0000-0000-0000-000000000001","data":{}}],"page":{"totalElements":1}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	page, err := c.AwaitAsyncSearchResults(t, "orders", 1, `{}`, 5*time.Second)
+	if err != nil {
+		t.Fatalf("AwaitAsyncSearchResults: %v", err)
+	}
+	if len(page.Content) != 1 {
+		t.Errorf("content len: got %d want 1", len(page.Content))
+	}
+}
+
+func TestClient_AwaitAsyncSearchResults_Timeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		switch {
+		case r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`"job-timeout"`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"searchJobStatus":"RUNNING"}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	_, err := c.AwaitAsyncSearchResults(t, "orders", 1, `{}`, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("expected timeout in error message, got: %v", err)
+	}
+}
+
+func TestClient_AwaitAsyncSearchResults_Failed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		switch {
+		case r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`"job-fail"`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"searchJobStatus":"FAILED"}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	_, err := c.AwaitAsyncSearchResults(t, "orders", 1, `{}`, 5*time.Second)
+	if err == nil {
+		t.Fatal("expected error for FAILED status, got nil")
+	}
+	if !strings.Contains(err.Error(), "FAILED") {
+		t.Errorf("expected FAILED in error message, got: %v", err)
 	}
 }

@@ -833,6 +833,39 @@ func (c *Client) CancelAsyncSearch(t *testing.T, jobID string) error {
 	return err
 }
 
+// AwaitAsyncSearchResults submits an async search and polls
+// GetAsyncSearchStatus until the job reaches a terminal state or
+// timeout elapses. On SUCCESSFUL, fetches and returns the results via
+// GetAsyncSearchResults. Terminal failure states (FAILED, CANCELLED,
+// NOT_FOUND) return an error. Unknown status values also return an
+// error. The polling interval is 100ms.
+func (c *Client) AwaitAsyncSearchResults(t *testing.T, modelName string, modelVersion int, condition string, timeout time.Duration) (PagedEntityResults, error) {
+	t.Helper()
+	jobID, err := c.SubmitAsyncSearch(t, modelName, modelVersion, condition)
+	if err != nil {
+		return PagedEntityResults{}, fmt.Errorf("submit: %w", err)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := c.GetAsyncSearchStatus(t, jobID)
+		if err != nil {
+			return PagedEntityResults{}, fmt.Errorf("status (jobId=%s): %w", jobID, err)
+		}
+		switch status {
+		case "SUCCESSFUL":
+			return c.GetAsyncSearchResults(t, jobID)
+		case "FAILED", "CANCELLED", "NOT_FOUND":
+			return PagedEntityResults{}, fmt.Errorf("async search reached terminal status %s (jobId=%s)", status, jobID)
+		case "RUNNING", "":
+			// continue polling
+		default:
+			return PagedEntityResults{}, fmt.Errorf("unexpected async search status %q (jobId=%s)", status, jobID)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return PagedEntityResults{}, fmt.Errorf("timeout (%s) waiting for async search jobId=%s", timeout, jobID)
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
