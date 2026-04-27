@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -243,6 +246,61 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	}
 	if !got3.Active {
 		t.Error("expected key to be active after reactivate persist")
+	}
+}
+
+// TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys verifies that the store
+// rejects Register once the configured cap is reached — defence against
+// memory/storage exhaustion via runaway trusted-key registration (#34 item 2).
+func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := systemCtx()
+	kvStore, err := factory.KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+
+	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore, auth.WithMaxTrustedKeys(3))
+	if err != nil {
+		t.Fatalf("NewKVTrustedKeyStore: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		key, _ := rsa.GenerateKey(rand.Reader, 2048)
+		tk := &auth.TrustedKey{
+			KID:       "cap-key-" + string(rune('a'+i)),
+			PublicKey: &key.PublicKey,
+			Audience:  "svc",
+			Active:    true,
+			ValidFrom: time.Now().UTC(),
+		}
+		if err := store.Register(tk); err != nil {
+			t.Fatalf("Register %d: %v", i, err)
+		}
+	}
+
+	// Fourth registration must fail with a 409 Conflict AppError.
+	overflowKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	overflow := &auth.TrustedKey{
+		KID:       "cap-key-overflow",
+		PublicKey: &overflowKey.PublicKey,
+		Audience:  "svc",
+		Active:    true,
+		ValidFrom: time.Now().UTC(),
+	}
+	err = store.Register(overflow)
+	if err == nil {
+		t.Fatal("expected Register to reject 4th key when MaxTrustedKeys=3, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeConflict {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeConflict)
 	}
 }
 

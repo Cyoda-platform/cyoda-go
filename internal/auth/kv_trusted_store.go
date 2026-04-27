@@ -7,13 +7,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net/http"
 	"sync"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 const trustedKeysNamespace = "trusted-keys"
+
+// defaultMaxTrustedKeys caps the number of trusted keys a store will accept by
+// default. Trusted keys are an admin-managed registry — a 100-key default
+// covers expected operational use (rotations, multi-issuer federation) and
+// defends against runaway registration if the admin endpoint is ever
+// misconfigured. Override via WithMaxTrustedKeys.
+const defaultMaxTrustedKeys = 100
+
+// KVTrustedKeyStoreOption configures a KVTrustedKeyStore at construction time.
+type KVTrustedKeyStoreOption func(*kvTrustedKeyStoreConfig)
+
+type kvTrustedKeyStoreConfig struct {
+	maxTrustedKeys int
+}
+
+// WithMaxTrustedKeys overrides the default cap on registered trusted keys.
+// Values <= 0 disable the cap (registration becomes unbounded — only use this
+// in tests that exercise the unbounded path; production deployments must keep
+// the default).
+func WithMaxTrustedKeys(n int) KVTrustedKeyStoreOption {
+	return func(c *kvTrustedKeyStoreConfig) {
+		c.maxTrustedKeys = n
+	}
+}
 
 // trustedKeyRecord is the JSON-serializable form of a TrustedKey.
 type trustedKeyRecord struct {
@@ -38,14 +64,22 @@ type KVTrustedKeyStore struct {
 	// because the TrustedKeyStore interface does not accept context parameters.
 	// This context must never carry cancellation or deadlines.
 	ctx context.Context
+	// maxTrustedKeys is the cap enforced by Register; <=0 means unbounded.
+	maxTrustedKeys int
 }
 
-// NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys from the KV backend.
-func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore) (*KVTrustedKeyStore, error) {
+// NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
+// from the KV backend. Pass WithMaxTrustedKeys to override the default cap.
+func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVTrustedKeyStoreOption) (*KVTrustedKeyStore, error) {
+	cfg := kvTrustedKeyStoreConfig{maxTrustedKeys: defaultMaxTrustedKeys}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	s := &KVTrustedKeyStore{
-		keys: make(map[string]*TrustedKey),
-		kv:   kv,
-		ctx:  ctx,
+		keys:           make(map[string]*TrustedKey),
+		kv:             kv,
+		ctx:            ctx,
+		maxTrustedKeys: cfg.maxTrustedKeys,
 	}
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
@@ -92,10 +126,15 @@ func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
 	return s.kv.Put(s.ctx, trustedKeysNamespace, tk.KID, data)
 }
 
-// Register adds a trusted key and persists it.
+// Register adds a trusted key and persists it. Returns a 409 Conflict
+// AppError when the configured cap on registered trusted keys is reached.
 func (s *KVTrustedKeyStore) Register(tk *TrustedKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
+		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full")
+	}
 
 	copied := copyTrustedKey(tk)
 	if err := s.persist(copied); err != nil {
