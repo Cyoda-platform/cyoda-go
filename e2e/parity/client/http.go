@@ -762,6 +762,27 @@ func (c *Client) DeleteMessages(t *testing.T, ids []string) ([]string, error) {
 	return results[0].EntityIDs, nil
 }
 
+// SubmitAsyncSearch issues POST /api/search/async/{name}/{version} with
+// the given condition JSON. Returns the jobId (bare JSON string) for
+// status/results polling.
+// Canonical: api/openapi.yaml /search/async/{entityName}/{modelVersion}.
+func (c *Client) SubmitAsyncSearch(t *testing.T, modelName string, modelVersion int, condition string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return "", err
+	}
+	var jobID string
+	if err := json.Unmarshal(raw, &jobID); err != nil {
+		return "", fmt.Errorf("decode SubmitAsyncSearch response: %w (body=%s)", err, string(raw))
+	}
+	if jobID == "" {
+		return "", fmt.Errorf("SubmitAsyncSearch returned empty jobId (body=%s)", string(raw))
+	}
+	return jobID, nil
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
