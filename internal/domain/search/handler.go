@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"math/bits"
 	"net/http"
 	"strconv"
 	"time"
@@ -27,6 +28,14 @@ const (
 	// values above this would let a single request pull an unreasonable
 	// volume of data (issue #98).
 	maxPageSize = 10000
+	// maxPageNumber caps the async pageNumber. Even when the offset
+	// multiplication fits in int64, an absurd pageNumber by itself is a
+	// sign of misuse: with the maximum allowed pageSize (10000), a result
+	// set that fills MaxInt32 pages would contain ~2.1e13 entities — orders
+	// of magnitude beyond any realistic snapshot. Capping pageNumber
+	// independently catches this earlier than the overflow guard alone
+	// (issue #68 item 10).
+	maxPageNumber = math.MaxInt32 / maxPageSize
 )
 
 // jobLookupError maps a service-level error to a handler response. Job-not-
@@ -267,18 +276,30 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pageNumber"))
 			return
 		}
+		// Explicit upper cap on pageNumber, defense-in-depth alongside the
+		// offset-overflow check below. Catches absurd values that would
+		// otherwise pass overflow validation when paired with a small
+		// pageSize (issue #68 item 10).
+		if pn > maxPageNumber {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("pageNumber exceeds maximum %d", maxPageNumber)))
+			return
+		}
 		pageNumber = pn
 		if pageSize <= 0 {
 			pageSize = 1000
 		}
-		// Guard against int overflow when computing offset = pn*pageSize
-		// with attacker-supplied values (issue #98). Reject anything whose
-		// product would wrap int.
-		if pn > 0 && pageSize > 0 && pn > math.MaxInt/pageSize {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "pageNumber*pageSize overflows int"))
+		// Guard against int64 overflow when computing offset = pn*pageSize
+		// with attacker-supplied values (issue #98, #68 item 10). Use
+		// bits.Mul64 for an explicit, platform-independent overflow check:
+		// hi != 0 means the product does not fit in uint64 (and therefore
+		// cannot fit in int64 either). lo > MaxInt64 means the product
+		// fits in uint64 but overflows int64.
+		hi, lo := bits.Mul64(uint64(pn), uint64(pageSize))
+		if hi != 0 || lo > math.MaxInt64 {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "pageNumber*pageSize overflows int64"))
 			return
 		}
-		opts.Offset = pn * pageSize
+		opts.Offset = int(lo)
 	}
 
 	page, err := h.searchSvc.GetAsyncResults(r.Context(), jobId.String(), opts)
