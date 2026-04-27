@@ -287,6 +287,43 @@ func (d *Driver) DeleteMessages(ids []string) ([]string, error) {
 	return d.client.DeleteMessages(d.t, ids)
 }
 
+// --- Async-search helpers ---
+
+// SubmitAsyncSearch issues POST /api/search/async/{name}/{version}.
+// Returns the jobId string for status/results polling.
+// YAML action: submit_async_search.
+func (d *Driver) SubmitAsyncSearch(name string, version int, condition string) (string, error) {
+	return d.client.SubmitAsyncSearch(d.t, name, version, condition)
+}
+
+// GetAsyncSearchStatus issues GET /api/search/async/{jobId}/status.
+// Returns the searchJobStatus string.
+// YAML action: get_async_search_status.
+func (d *Driver) GetAsyncSearchStatus(jobID string) (string, error) {
+	return d.client.GetAsyncSearchStatus(d.t, jobID)
+}
+
+// GetAsyncSearchResults issues GET /api/search/async/{jobId}.
+// Returns the Spring-style page envelope.
+// YAML action: get_async_search_results.
+func (d *Driver) GetAsyncSearchResults(jobID string) (parityclient.PagedEntityResults, error) {
+	return d.client.GetAsyncSearchResults(d.t, jobID)
+}
+
+// CancelAsyncSearch issues PUT /api/search/async/{jobId}/cancel.
+// YAML action: cancel_async_search.
+func (d *Driver) CancelAsyncSearch(jobID string) error {
+	return d.client.CancelAsyncSearch(d.t, jobID)
+}
+
+// AwaitAsyncSearchResults submits an async search and polls until
+// SUCCESSFUL (returns results) or a terminal failure state (returns
+// error). Timeout controls the maximum wait duration.
+// YAML action: await_async_search_results.
+func (d *Driver) AwaitAsyncSearchResults(name string, version int, condition string, timeout time.Duration) (parityclient.PagedEntityResults, error) {
+	return d.client.AwaitAsyncSearchResults(d.t, name, version, condition, timeout)
+}
+
 // --- Type re-exports for test-side ergonomics ---
 
 // CollectionItem mirrors parityclient.CollectionItem so external callers
