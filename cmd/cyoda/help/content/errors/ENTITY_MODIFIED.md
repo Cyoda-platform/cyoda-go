@@ -44,7 +44,17 @@ Not retryable in the protocol sense — replaying the same payload with the same
 
 A second `412 ENTITY_MODIFIED` on retry means another writer raced you again. Either accept the loss (drop your change), back off and retry the read-reconcile-write loop with jitter, or escalate to a coarser locking strategy (lock the model, or coordinate writers out of band) — naive looping will livelock under contention.
 
-Omitting the `If-Match` header on the next update bypasses the precondition entirely and produces a last-writer-wins update; do this only when the desired semantics genuinely tolerate clobbering concurrent changes.
+## RELATIONSHIP TO TRANSACTION-LEVEL CONFLICT DETECTION
+
+`If-Match` is **not** the only conflict guard on entity updates; it is an additional, narrower one. Every PUT runs inside a SERIALIZABLE transaction with first-committer-wins (SI+FCW) validation at commit time. The handler reads the entity inside the transaction, the read is recorded in the read-set, and any concurrent committer who changes the same entity between this PUT's transaction start and its commit is detected — the commit fails with `409 CONFLICT` and `retryable: true` (the `RetryableConflict` path). PostgreSQL's own SQLSTATE 40001 detection covers write-write races equivalently. So a PUT *cannot* silently overwrite a concurrent writer that committed during its own transaction window, regardless of whether `If-Match` was supplied.
+
+What `If-Match` adds is a precondition tied to **the caller's earlier read in a different HTTP request**, before this PUT's transaction even began. Two concrete scenarios:
+
+**Cross-request race (caller GET-then-PUT, another writer commits in between).** Caller GETs at `t0` and observes `transactionId` `T0`. Another writer commits a change at `t1`. Caller submits the PUT at `t2`, with `t0 < t1 < t2`. With `If-Match: T0`, the PUT fails `412 ENTITY_MODIFIED` because the entity's current `transactionId` is no longer `T0`. Without `If-Match`, the PUT's own intra-transaction GET at `t2` already sees the writer's change as the current baseline; the PUT proceeds and applies the caller's payload on top of the writer's change — the caller never sees that they overwrote a state they hadn't read.
+
+**Overlapping-transaction race (two PUTs starting from the same baseline).** Two PUTs both begin a transaction and read the same entity version. With `If-Match`, the loser fails fast at write-time as `412 ENTITY_MODIFIED` via `CompareAndSave`. Without `If-Match`, the loser fails at commit-time as `409 CONFLICT` with `retryable: true` via SI+FCW read-set validation.
+
+So omitting `If-Match` does not turn off all concurrency control — but it does silence the cross-request precondition. Use it when reconciling against the live state at PUT-time is what you actually want; supply it when you specifically need to detect that the entity has changed since *your* last read and refuse to clobber.
 
 ## SEE ALSO
 
