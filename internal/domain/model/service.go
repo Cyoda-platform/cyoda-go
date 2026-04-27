@@ -112,7 +112,9 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	}
 
 	if existing != nil && existing.State == spi.ModelLocked {
-		appErr := common.Conflict(
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelAlreadyLocked,
 			fmt.Sprintf("cannot save entityModel{name=%s, version=%d} because this model has already been registered", input.EntityName, ver))
 		appErr.Props = map[string]any{
 			"entityName":    input.EntityName,
@@ -218,7 +220,9 @@ func (h *Handler) LockModel(ctx context.Context, entityName, modelVersion string
 	}
 
 	if desc.State == spi.ModelLocked {
-		appErr := common.Conflict(
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelAlreadyLocked,
 			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=UNLOCKED, actualState=LOCKED", entityName, ver))
 		appErr.Props = map[string]any{
 			"entityName":    entityName,
@@ -260,7 +264,17 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 	}
 
 	if desc.State != spi.ModelLocked {
-		return nil, common.Conflict("model is not locked")
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelAlreadyUnlocked,
+			fmt.Sprintf("cannot process entityModel{entityName=%s, entityVersion=%d}. expectedState=LOCKED, actualState=UNLOCKED", entityName, ver))
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"expectedState": "LOCKED",
+			"actualState":   "UNLOCKED",
+		}
+		return nil, appErr
 	}
 
 	entityStore, err := h.factory.EntityStore(ctx)
@@ -273,8 +287,16 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 		return nil, common.Internal("failed to count entities", err)
 	}
 	if count > 0 {
-		return nil, common.Conflict(
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelHasEntities,
 			fmt.Sprintf("cannot unlock: %d entities exist", count))
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"entityCount":   count,
+		}
+		return nil, appErr
 	}
 
 	if err := modelStore.Unlock(ctx, ref); err != nil {
@@ -317,8 +339,16 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 		return common.Internal("failed to count entities", err)
 	}
 	if count > 0 {
-		return common.Conflict(
+		appErr := common.Operational(
+			http.StatusConflict,
+			common.ErrCodeModelHasEntities,
 			fmt.Sprintf("cannot delete: %d entities exist", count))
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"entityCount":   count,
+		}
+		return appErr
 	}
 
 	if err := modelStore.Delete(ctx, ref); err != nil {

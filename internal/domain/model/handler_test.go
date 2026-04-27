@@ -134,6 +134,28 @@ func expectStatus(t *testing.T, resp *http.Response, want int) {
 	}
 }
 
+// expectErrorCode parses an RFC 9457 problem-detail body and asserts that
+// `properties.errorCode` matches `want`. The response body is consumed and
+// re-buffered so callers can still close it.
+func expectErrorCode(t *testing.T, resp *http.Response, want string) {
+	t.Helper()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp.Body = io.NopCloser(strings.NewReader(string(body)))
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, string(body))
+	}
+	got, _ := pd.Properties["errorCode"].(string)
+	if got != want {
+		t.Errorf("expected errorCode %q, got %q; body: %s", want, got, string(body))
+	}
+}
+
 func ctxWithTenant(tid spi.TenantID) context.Context {
 	uc := &spi.UserContext{
 		UserID: "test-user",
@@ -564,9 +586,10 @@ func TestUnlockBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	// Attempt unlock — should be blocked with 409.
+	// Attempt unlock — should be blocked with 409 + MODEL_HAS_ENTITIES code.
 	resp = doUnlock(t, srv.URL, "UnlockGuard", 1)
 	expectStatus(t, resp, http.StatusConflict)
+	expectErrorCode(t, resp, "MODEL_HAS_ENTITIES")
 	resp.Body.Close()
 }
 
@@ -597,9 +620,10 @@ func TestDeleteBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	// Attempt delete — should be blocked with 409.
+	// Attempt delete — should be blocked with 409 + MODEL_HAS_ENTITIES code.
 	resp = doDelete(t, srv.URL, "DeleteGuard", 1)
 	expectStatus(t, resp, http.StatusConflict)
+	expectErrorCode(t, resp, "MODEL_HAS_ENTITIES")
 	resp.Body.Close()
 }
 

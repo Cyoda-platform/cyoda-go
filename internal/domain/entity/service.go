@@ -909,8 +909,10 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		if _, err := entityStore.CompareAndSave(txCtx, updated, input.IfMatch); err != nil {
 			h.txMgr.Rollback(txCtx, txID)
 			if errors.Is(err, spi.ErrConflict) {
-				appErr := common.Conflict("entity has been modified since last read")
-				appErr.Status = http.StatusPreconditionFailed
+				appErr := common.Operational(
+					http.StatusPreconditionFailed,
+					common.ErrCodeEntityModified,
+					"entity has been modified since last read")
 				appErr.Props = map[string]any{
 					"entityId": input.EntityID,
 				}
