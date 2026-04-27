@@ -7,6 +7,7 @@ see_also:
   - search
   - workflows
   - errors.ENTITY_NOT_FOUND
+  - errors.ENTITY_MODIFIED
   - errors.MODEL_NOT_FOUND
   - errors.MODEL_NOT_LOCKED
   - errors.VALIDATION_FAILED
@@ -368,10 +369,11 @@ To use: read the entity (`GET /entity/{id}`), note `meta.transactionId`, include
 ## ERRORS
 
 - `errors.ENTITY_NOT_FOUND` — `404` — entity UUID does not exist
+- `errors.ENTITY_MODIFIED` — `412` — `If-Match`-guarded update rejected; supplied transaction ID does not match the entity's current version
 - `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist
 - `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
-- `errors.CONFLICT` — `409` — transaction conflict (retryable)
+- `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented (#91). Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
@@ -483,6 +485,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 - search
 - workflows
 - errors.ENTITY_NOT_FOUND
+- errors.ENTITY_MODIFIED
 - errors.MODEL_NOT_FOUND
 - errors.MODEL_NOT_LOCKED
 - errors.VALIDATION_FAILED
