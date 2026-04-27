@@ -11,6 +11,7 @@ see_also:
   - errors.MODEL_NOT_FOUND
   - errors.MODEL_NOT_LOCKED
   - errors.VALIDATION_FAILED
+  - errors.INCOMPATIBLE_TYPE
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
   - errors.TRANSITION_NOT_FOUND
@@ -378,6 +379,7 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist
 - `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
+- `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented (#91). Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
@@ -494,6 +496,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 - errors.MODEL_NOT_FOUND
 - errors.MODEL_NOT_LOCKED
 - errors.VALIDATION_FAILED
+- errors.INCOMPATIBLE_TYPE
 - errors.CONFLICT
 - errors.TRANSITION_NOT_FOUND
 - openapi

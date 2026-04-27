@@ -38,6 +38,67 @@ func TestValidationError_ErrKindGeneric_ForTypeMismatch(t *testing.T) {
 	}
 }
 
+// TestValidationError_ErrKindIncompatibleType_LeafTypeMismatch asserts that
+// scalar value-vs-type leaf mismatches (the canonical "incompatible type"
+// signal — Cloud's FoundIncompatibleTypeWithEntityModelException) are
+// classified as ErrKindIncompatibleType and carry the expected/actual
+// DataType structure for downstream Props rendering.
+func TestValidationError_ErrKindIncompatibleType_LeafTypeMismatch(t *testing.T) {
+	model := NewObjectNode()
+	model.SetChild("price", NewLeafNode(Integer))
+	// price is INTEGER; submit a STRING value (unambiguously incompatible).
+	data := map[string]any{"price": "not-a-number"}
+	errs := Validate(model, data)
+	if len(errs) == 0 {
+		t.Fatal("expected type-mismatch error")
+	}
+	var match *ValidationError
+	for i := range errs {
+		if errs[i].Kind == ErrKindIncompatibleType {
+			match = &errs[i]
+			break
+		}
+	}
+	if match == nil {
+		t.Fatalf("expected at least one ErrKindIncompatibleType error, got: %+v", errs)
+	}
+	if match.Path != "price" {
+		t.Errorf("path: got %q, want %q", match.Path, "price")
+	}
+	if match.ActualType != String {
+		t.Errorf("ActualType: got %v, want %v", match.ActualType, String)
+	}
+	if len(match.ExpectedTypes) != 1 || match.ExpectedTypes[0] != Integer {
+		t.Errorf("ExpectedTypes: got %v, want [INTEGER]", match.ExpectedTypes)
+	}
+}
+
+// TestHasIncompatibleType_Match returns the first incompatible-type error
+// from a slice, or nil when none is present. Mirrors HasUnknownSchemaElement
+// shape so handlers can branch on classification.
+func TestHasIncompatibleType_Match(t *testing.T) {
+	errs := []ValidationError{
+		{Path: "x", Message: "extra", Kind: ErrKindUnknownElement},
+		{Path: "price", Message: "value of type STRING is not compatible with [INTEGER]", Kind: ErrKindIncompatibleType, ActualType: String, ExpectedTypes: []DataType{Integer}},
+	}
+	got := FirstIncompatibleType(errs)
+	if got == nil {
+		t.Fatal("expected non-nil match")
+	}
+	if got.Path != "price" {
+		t.Errorf("path: got %q, want %q", got.Path, "price")
+	}
+}
+
+func TestHasIncompatibleType_NoMatch(t *testing.T) {
+	errs := []ValidationError{
+		{Path: "x", Message: "extra", Kind: ErrKindUnknownElement},
+	}
+	if got := FirstIncompatibleType(errs); got != nil {
+		t.Errorf("expected nil, got %+v", got)
+	}
+}
+
 func TestHasUnknownSchemaElement_Empty(t *testing.T) {
 	if HasUnknownSchemaElement(nil) {
 		t.Error("nil slice must not match")

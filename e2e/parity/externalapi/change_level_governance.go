@@ -65,9 +65,10 @@ func RunExternalAPI_02_02_StructuralNullFieldNoChangelog(t *testing.T, fixture p
 
 // RunExternalAPI_02_03_TypeWideningIntToFloat — dictionary 02/03 (NEGATIVE).
 // Dictionary expects HTTP 400 + FoundIncompatibleTypeWitEntityModelException.
+// equiv_or_better after #129: cyoda-go emits INCOMPATIBLE_TYPE @400 with
+// structured Props (fieldPath, expectedType, actualType).
 func RunExternalAPI_02_03_TypeWideningIntToFloat(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #129 — cyoda-go emits generic BAD_REQUEST; dictionary requires FoundIncompatibleTypeWitEntityModelException-level specificity (TYPE_MISMATCH). Discover-and-compare worse case.")
 	d := driver.NewInProcess(t, fixture)
 	if err := d.CreateModelFromSample("cl3", 1, `{"price": 13}`); err != nil {
 		t.Fatalf("create: %v", err)
@@ -79,13 +80,13 @@ func RunExternalAPI_02_03_TypeWideningIntToFloat(t *testing.T, fixture parity.Ba
 	if err != nil {
 		t.Fatalf("CreateEntityRaw: %v", err)
 	}
-	// Tighten to TYPE_MISMATCH once #129 lands. The detail string already
-	// carries the right information ("value of type DOUBLE is not compatible
-	// with [INTEGER]") but properties.errorCode remains generic BAD_REQUEST.
-	// Cloud equivalent: FoundIncompatibleTypeWitEntityModelException.
+	// equiv_or_better: INCOMPATIBLE_TYPE maps to
+	// FoundIncompatibleTypeWithEntityModelException in the cloud dictionary;
+	// detail string carries "value of type DOUBLE is not compatible with [INTEGER]"
+	// and properties carries the structured (fieldPath, expectedType, actualType).
 	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
 		HTTPStatus: http.StatusBadRequest,
-		ErrorCode:  "TYPE_MISMATCH",
+		ErrorCode:  "INCOMPATIBLE_TYPE",
 	})
 }
 
