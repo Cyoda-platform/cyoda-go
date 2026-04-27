@@ -197,18 +197,18 @@ decimalScope=FLOAT)`, which is not reachable through any REST or gRPC endpoint.
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| numeric/01-compatible-int-lands-in-double-field | pending:tranche-4 | integer value accepted for DOUBLE-locked field; issue #121 |
-| numeric/02-incompatible-decimal-after-int-cross-ref | shape_only_skip | cross-reference to neg/02; no independent steps |
-| numeric/03-parsing-spec-intScope-byte | internal_only_skip | requires `EntityModelFacade.upsert()` with custom `ParsingSpec`; not reachable via REST or gRPC |
-| numeric/04-default-intScope-integer-external | pending:tranche-4 | default intScope=INTEGER over REST; issue #121 |
+| numeric/01-compatible-int-lands-in-double-field | new:RunExternalAPI_13_01_IntegerLandsInDoubleField | tranche 4 |
+| numeric/02-incompatible-decimal-after-int-cross-ref | cross_ref:neg/02 | tranche 2 — listed in 12/02; no independent test |
+| numeric/03-parsing-spec-intScope-byte | internal_only_skip | requires `EntityModelFacade.upsert(ParsingSpec(intScope=BYTE))`; not on external surface |
+| numeric/04-default-intScope-integer-external | new:RunExternalAPI_13_04_DefaultIntegerScopeINTEGER | tranche 4 |
 | numeric/05-polymorphic-field-after-merge | internal_only_skip | requires `EntityModelFacade.upsert()` with custom `ParsingSpec`; not reachable via REST or gRPC |
-| numeric/05ext-polymorphic-field-after-merge-external | pending:tranche-4 | REST-reachable polymorphism with default scopes; issue #121 |
-| numeric/06-double-at-max-boundary-round-trip | pending:tranche-4 | DOUBLE boundary round-trip; issue #121 |
-| numeric/07-big-decimal-high-precision-round-trip | pending:tranche-4 | BIG_DECIMAL 20+18 digit round-trip; issue #121 |
-| numeric/08-unbound-decimal-arbitrary-precision | pending:tranche-4 | UNBOUND_DECIMAL >18 fractional digits; issue #121 |
-| numeric/09-big-integer-38-digits | pending:tranche-4 | BIG_INTEGER 38-digit round-trip; issue #121 |
-| numeric/10-unbound-integer-40-digits | pending:tranche-4 | UNBOUND_INTEGER 40-digit round-trip; issue #121 |
-| numeric/11-search-condition-integer-against-double-field | pending:tranche-4 | search with INTEGER value against DOUBLE field; issue #121 |
+| numeric/05ext-polymorphic-field-after-merge-external | new:RunExternalAPI_13_05ext_PolymorphicMergeWithDefaultScopes | tranche 4 — uses `UpdateModelFromSample` for the second sample; polymorphic ordering follows iota stability ([INTEGER, BOOLEAN], [INTEGER, STRING]) |
+| numeric/06-double-at-max-boundary-round-trip | new:RunExternalAPI_13_06_DoubleAtMaxBoundary | tranche 4 |
+| numeric/07-big-decimal-high-precision-round-trip | new:RunExternalAPI_13_07_BigDecimal20Plus18 | tranche 4 — `stripTrailingZeros` numeric comparison via `math/big.Float`; uses `GetEntityBodyRaw` to preserve precision |
+| numeric/08-unbound-decimal-arbitrary-precision | new:RunExternalAPI_13_08_UnboundDecimalGT18Frac | tranche 4 — `toPlainString` numeric comparison |
+| numeric/09-big-integer-38-digits | new:RunExternalAPI_13_09_BigInteger38Digit | tranche 4 |
+| numeric/10-unbound-integer-40-digits | new:RunExternalAPI_13_10_UnboundInteger40Digit | tranche 4 |
+| numeric/11-search-condition-integer-against-double-field | new:RunExternalAPI_13_11_SearchIntegerAgainstDouble | tranche 4 — uses async + direct search; sample value adapted to `100.1` (instead of dictionary's `100.0`) because cyoda-go's classifier routes scale=0 values to INTEGER |
 
 ---
 
@@ -222,12 +222,12 @@ direct-search fallback step; it is `pending:tranche-4` (the REST step is exercis
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
-| poly/01-mixed-object-or-string-at-same-path | pending:tranche-4 | polymorphic search via async+direct REST paths; issue #121 |
+| poly/01-mixed-object-or-string-at-same-path | new:RunExternalAPI_14_01_MixedObjectOrStringAtSamePath | tranche 4 — surfaced server-side gap; FIXED IN-TRANCHE via `validatePolymorphicFallback` in `internal/domain/model/schema/validate.go` |
 | poly/02-tree-node-mixed-children-round-trip | internal_only_skip | `internal_only: true` in YAML; requires internal TreeNode save/reconstruct API |
-| poly/03-polymorphic-value-array-in-all-fields-model | pending:tranche-4 | PolymorphicValue variants round-trip via REST; issue #121 |
-| poly/04-polymorphic-timestamp-array-in-all-fields-model | pending:tranche-4 | PolymorphicTimestamp variants round-trip via REST; issue #121 |
-| poly/05-trino-search-on-polymorphic-scalar | pending:tranche-4 | REST direct-search step exercisable; RSocket step skipped; issue #121 |
-| poly/06-reject-condition-with-wrong-scalar-type | pending:tranche-4 | 400 on wrong-type condition value; issue #121 |
+| poly/03-polymorphic-value-array-in-all-fields-model | new:RunExternalAPI_14_03_PolymorphicValueArray | tranche 4 — STRING/DOUBLE/BOOLEAN classified; UUID detection deferred to v0.7.0 (#136); inline assertion omits UUID type-set entry |
+| poly/04-polymorphic-timestamp-array-in-all-fields-model | gap_on_our_side (#137) | tranche 4 — `t.Skip("pending #137")`; cyoda-go classifies all temporal strings as STRING; LOCAL_DATE / YEAR_MONTH / ZONED_DATE_TIME subtype detection deferred to v0.7.0 (#137); round-trip itself works |
+| poly/05-trino-search-on-polymorphic-scalar | new:RunExternalAPI_14_05_TrinoSearchOnPolymorphicScalarRESTHalf | tranche 4 — REST half only; RSocket leg unreachable (no cyoda-go analogue) |
+| poly/06-reject-condition-with-wrong-scalar-type | new:RunExternalAPI_14_06_RejectWrongTypeCondition | tranche 4 — surfaced server-side gap (silent acceptance); FIXED IN-TRANCHE via search-time condition-value validator (`internal/domain/search/condition_type_validate.go` + `ErrCodeConditionTypeMismatch`); `equiv_or_better`: cyoda-go emits `CONDITION_TYPE_MISMATCH` @400 vs dictionary's `InvalidTypesInClientConditionException` |
 | poly/07-error-body-shape-for-invalid-polymorphic-types | shape_only_skip | `shape_only: true` in YAML; shape contract verified by JSON Schema, not scenario run |
 
 ---
