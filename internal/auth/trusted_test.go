@@ -297,6 +297,66 @@ func TestTrustedKeysHandler_RegisterAcceptsValidKIDChars(t *testing.T) {
 	}
 }
 
+// TestParseRSAPublicKeyFromJWK_RejectsOversizedExponent guards against silent
+// truncation when an RSA public-key exponent does not fit in int (#34 item 4).
+// Today's code does int(big.Int.Int64()) which silently mis-decodes anything
+// > MaxInt; verification then fails downstream in a confusing way. Validate
+// explicitly: positive, fits in int, odd.
+func TestParseRSAPublicKeyFromJWK_RejectsOversizedExponent(t *testing.T) {
+	cases := []struct {
+		name    string
+		eBase64 string
+	}{
+		// 8 bytes = 2^63 - cannot fit in signed int64 / int.
+		{"too-large", base64.RawURLEncoding.EncodeToString([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})},
+		// 0 — not positive.
+		{"zero", base64.RawURLEncoding.EncodeToString([]byte{0x00})},
+		// 4 — even, invalid as RSA public exponent.
+		{"even", base64.RawURLEncoding.EncodeToString([]byte{0x04})},
+	}
+
+	// Use a real modulus to isolate exponent validation from N-validation.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	nB64 := base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes())
+
+	for _, tc := range cases {
+		jwk := json.RawMessage(`{"kty":"RSA","n":"` + nB64 + `","e":"` + tc.eBase64 + `"}`)
+		_, err := parseRSAPublicKeyFromJWK(jwk)
+		if err == nil {
+			t.Errorf("%s: expected error, got nil", tc.name)
+		}
+	}
+}
+
+// TestDeserializeTrustedKey_RejectsOversizedExponent mirrors the JWK guard for
+// the persistence boundary (#34 item 4). A corrupt KV record must be rejected
+// rather than silently truncated to a different exponent.
+func TestDeserializeTrustedKey_RejectsOversizedExponent(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	nB64 := base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes())
+	// 9 bytes = > 64 bits, cannot fit in int.
+	eOverflow := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	rec := trustedKeyRecord{
+		KID:       "bad-e",
+		Audience:  "svc",
+		Active:    true,
+		ValidFrom: "2026-01-01T00:00:00Z",
+		N:         nB64,
+		E:         eOverflow,
+	}
+	data, _ := json.Marshal(rec)
+	_, err = deserializeTrustedKey(data)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
 func TestTrustedKeysHandler_RegisterInvalidJWK(t *testing.T) {
 	store := NewInMemoryTrustedKeyStore()
 	handler := NewTrustedKeysHandler(store)

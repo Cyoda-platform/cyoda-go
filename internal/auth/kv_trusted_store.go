@@ -260,9 +260,13 @@ func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
 		return nil, fmt.Errorf("invalid e value: %w", err)
 	}
 
+	eVal, err := validateRSAPublicExponent(new(big.Int).SetBytes(eBytes))
+	if err != nil {
+		return nil, fmt.Errorf("invalid e value: %w", err)
+	}
 	pubKey := &rsa.PublicKey{
 		N: new(big.Int).SetBytes(nBytes),
-		E: int(new(big.Int).SetBytes(eBytes).Int64()),
+		E: eVal,
 	}
 
 	validFrom, err := time.Parse(time.RFC3339Nano, rec.ValidFrom)

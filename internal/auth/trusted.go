@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"math"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -267,9 +268,35 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	}
 
 	n := new(big.Int).SetBytes(nBytes)
-	e := int(new(big.Int).SetBytes(eBytes).Int64())
+	eBig := new(big.Int).SetBytes(eBytes)
+	e, err := validateRSAPublicExponent(eBig)
+	if err != nil {
+		return nil, err
+	}
 
 	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+// validateRSAPublicExponent enforces the integrity invariants on an RSA
+// public-key exponent (#34 item 4): positive, fits in int, and odd. RFC 3447
+// allows e in [3, 2^256-1] and the practical universe of public exponents
+// (3, 17, 65537) all fit comfortably; rejecting anything that overflows int
+// avoids the silent-truncation hazard at int(big.Int.Int64()) call sites.
+func validateRSAPublicExponent(e *big.Int) (int, error) {
+	if e.Sign() <= 0 {
+		return 0, fmt.Errorf("rsa exponent must be positive")
+	}
+	if !e.IsInt64() {
+		return 0, fmt.Errorf("rsa exponent does not fit in int64")
+	}
+	v := e.Int64()
+	if v > int64(math.MaxInt) {
+		return 0, fmt.Errorf("rsa exponent does not fit in int")
+	}
+	if v&1 == 0 {
+		return 0, fmt.Errorf("rsa exponent must be odd")
+	}
+	return int(v), nil
 }
 
 // toTrustedKeyInfoResponse converts a TrustedKey to its JSON response representation.
