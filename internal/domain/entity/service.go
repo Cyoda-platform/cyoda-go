@@ -904,7 +904,12 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		updated.Meta.TransitionForLatestSave = input.Transition
 	}
 
-	// Atomic MVCC save: if If-Match was provided, use CompareAndSave for atomicity.
+	// Optimistic-concurrency check on the cross-request precondition: if
+	// If-Match was provided, CompareAndSave fails fast at write-time when
+	// the supplied transactionId no longer matches the entity's current
+	// version. The transaction-level SI+FCW guard at Commit() protects
+	// against concurrent committers within this request's transaction
+	// window regardless of which branch we take.
 	if input.IfMatch != "" {
 		if _, err := entityStore.CompareAndSave(txCtx, updated, input.IfMatch); err != nil {
 			h.txMgr.Rollback(txCtx, txID)

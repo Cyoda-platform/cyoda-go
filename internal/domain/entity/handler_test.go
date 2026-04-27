@@ -1643,7 +1643,7 @@ func TestWaitForConsistencyFalse(t *testing.T) {
 	resp.Body.Close()
 }
 
-// --- MVCC If-Match tests ---
+// --- If-Match optimistic-concurrency tests ---
 
 func getEntityTransactionID(t *testing.T, base, entityID string) string {
 	t.Helper()
