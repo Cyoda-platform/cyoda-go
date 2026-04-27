@@ -1830,6 +1830,80 @@ EOF
 
 ---
 
+### Probe: 14/01 entity validator scope
+
+**Status:** DONE — bounded fix, fix in tranche 4.
+
+#### Rejecting validator location
+
+`internal/domain/model/schema/validate.go:73–76` — function `validateObject`.
+
+```go
+func validateObject(model *ModelNode, data any, path string) []ValidationError {
+    obj, ok := data.(map[string]any)
+    if !ok {
+        return []ValidationError{{Path: path, Message: fmt.Sprintf("expected object, got %T", data)}}
+    }
+```
+
+This is the exact line that emits `"expected object, got string"` for the 14/01 case.
+
+#### Root cause
+
+When the walker (`internal/domain/model/importer/walker.go:walkArray`) processes
+`$.some-array`, it calls `schema.Merge(element0, element1)` where `element0` is the
+`KindObject` node for `some-object={"some-key":…}` and `element1` is a `KindLeaf/String`
+node for `some-object="abc"`.
+
+`schema.Merge` (`internal/domain/model/schema/merge.go:43–49`) resolves the kind conflict
+via `mergeKind(KindObject, KindLeaf) → KindObject` (leaf always loses), while correctly
+unioning the TypeSets (`types = {String}` ends up on the merged node). The model's
+serialized wire form (`codec.go:toWire`) stores `kind:"OBJECT"` with `types:["STRING"]`.
+
+On validation, `validateNode` dispatches on `Kind()` alone → sees `KindObject` → calls
+`validateObject` → the `data.(map[string]any)` assertion fails for the string branch → error.
+
+The TypeSet on the merged node correctly contains `String`, but `validateNode` never
+reaches `validateLeaf` (which does consult the full TypeSet) because the Kind dispatch
+short-circuits to `validateObject` first.
+
+#### Does the validator have TypeSet access?
+
+Yes. `ModelNode.Types()` is available on every node. `validateLeaf` already iterates
+`model.Types().Types()` and accepts any participating type. The fix does not need new
+plumbing — it needs a guard at the top of `validateObject` (and symmetrically
+`validateArray`) that checks whether the incoming data is a non-object (or non-array)
+value that matches one of the node's explicitly-recorded leaf types.
+
+#### Estimated LOC and scope
+
+**~20 lines in `internal/domain/model/schema/validate.go`** plus a corresponding
+test addition in `validate_test.go` (~25 lines).
+
+Specifically:
+1. Add a helper `validatePolymorphicLeafFallback(model, data, path)` (~8 lines): if
+   `model.Types()` is non-empty and `data` is not the structural type implied by
+   `model.Kind()`, check whether `inferDataType(data)` satisfies any type in the
+   TypeSet. Return `nil` on match; fall through to structural validation otherwise.
+2. Call the helper at the top of `validateObject` (2 lines) and `validateArray` (2 lines)
+   before the type assertion — total guard cost ~4 lines per function.
+3. Test: `TestValidatePolymorphicObjectOrStringAtSamePath` exercises a `KindObject` node
+   with `types={String}` accepting a string value, and a `KindObject` node with no leaf
+   types still rejecting a non-object.
+
+No SPI changes. No plumbing changes. No new files. The TypeSet is already populated
+correctly by `Merge` and survives the codec round-trip; the validator just needs to
+consult it before dispatching on Kind.
+
+#### Recommendation
+
+**Fix in tranche 4.** The change is fully bounded (~45 lines total across validate.go +
+validate_test.go), the TypeSet is already correct, no new plumbing is required, and the
+test (14/01) is already written and `t.Skip`-annotated waiting for this fix. The
+`t.Skip` can be removed as part of the same commit.
+
+---
+
 ## Phase 4 — Mapping doc finalisation
 
 ### Task 4.1: Flip 14 implemented + 4 skipped rows to status-of-record
