@@ -76,9 +76,13 @@ func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVT
 		opt(&cfg)
 	}
 	s := &KVTrustedKeyStore{
-		keys:           make(map[string]*TrustedKey),
-		kv:             kv,
-		ctx:            ctx,
+		keys: make(map[string]*TrustedKey),
+		kv:   kv,
+		// context.WithoutCancel ensures the long-lived store ctx never propagates
+		// a cancellation or deadline from the caller (#34 item 5). Defence in
+		// depth: a future caller passing a request-scoped ctx would otherwise
+		// silently abort KV operations on request completion.
+		ctx:            context.WithoutCancel(ctx),
 		maxTrustedKeys: cfg.maxTrustedKeys,
 	}
 	if err := s.loadAll(); err != nil {
