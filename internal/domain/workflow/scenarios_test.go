@@ -503,6 +503,19 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 
 	ctx := ctxWithTenant(testTenant)
 
+	// Register the target model so the import handler reaches static
+	// validation (since #131, the handler returns 404 if the model is missing).
+	mstore, err := factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	if err := mstore.Save(ctx, &spi.ModelDescriptor{
+		Ref:   spi.ModelRef{EntityName: "looptest", ModelVersion: "1"},
+		State: spi.ModelLocked,
+	}); err != nil {
+		t.Fatalf("ModelStore.Save: %v", err)
+	}
+
 	// Prepare the HTTP request with a looping workflow.
 	body := `{
 		"importMode": "REPLACE",

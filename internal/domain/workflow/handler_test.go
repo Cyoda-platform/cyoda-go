@@ -12,6 +12,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
 // newTestServer creates an App with default config and returns an httptest.Server.
@@ -447,6 +448,36 @@ func TestImportFullWorkflow(t *testing.T) {
 			t.Errorf("%s: expected 0 transitions, got %d", state, len(s.Transitions))
 		}
 	}
+}
+
+// TestImport_UnknownModel_Returns404 covers issue #131: importing a workflow
+// targeting a model that does not exist must return HTTP 404 with the
+// MODEL_NOT_FOUND error code, rather than the legacy 200 {"success":true}.
+func TestImport_UnknownModel_Returns404(t *testing.T) {
+	srv := newTestServer(t)
+	// NOTE: deliberately do NOT call importModel — the model "Ghost" does not exist.
+
+	body := `{
+		"importMode": "MERGE",
+		"workflows": [
+			{
+				"version": "1.0",
+				"name": "ghost-flow",
+				"initialState": "S1",
+				"active": true,
+				"states": {"S1": {"transitions": []}}
+			}
+		]
+	}`
+
+	resp := doWorkflowImport(t, srv.URL, "Ghost", 1, body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 404 for workflow import on unknown model, got %d: %s", resp.StatusCode, b)
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeModelNotFound)
 }
 
 func TestImportDefaultMode(t *testing.T) {
