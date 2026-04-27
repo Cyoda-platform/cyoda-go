@@ -1046,6 +1046,7 @@ func (c *Client) GetEntityBodyRaw(t *testing.T, entityID uuid.UUID) (int, []byte
 		return 0, nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}

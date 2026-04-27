@@ -298,7 +298,10 @@ func RunExternalAPI_13_07_BigDecimal20Plus18(t *testing.T, fixture parity.Backen
 	if err != nil {
 		t.Fatalf("extract field v: %v (body=%s)", err, string(rawBody))
 	}
-	want, _, _ := new(big.Float).SetPrec(256).Parse(numStr, 10)
+	want, _, wantErr := new(big.Float).SetPrec(256).Parse(numStr, 10)
+	if wantErr != nil {
+		t.Fatalf("parse expected value %q as big.Float: %v", numStr, wantErr)
+	}
 	gotF, _, err2 := new(big.Float).SetPrec(256).Parse(gotStr, 10)
 	if err2 != nil {
 		t.Fatalf("parse readback %q as big.Float: %v", gotStr, err2)
@@ -346,7 +349,10 @@ func RunExternalAPI_13_08_UnboundDecimalGT18Frac(t *testing.T, fixture parity.Ba
 	if err != nil {
 		t.Fatalf("extract field v: %v (body=%s)", err, string(rawBody))
 	}
-	want, _, _ := new(big.Float).SetPrec(256).Parse(numStr, 10)
+	want, _, wantErr := new(big.Float).SetPrec(256).Parse(numStr, 10)
+	if wantErr != nil {
+		t.Fatalf("parse expected value %q as big.Float: %v", numStr, wantErr)
+	}
 	gotF, _, err2 := new(big.Float).SetPrec(256).Parse(gotStr, 10)
 	if err2 != nil {
 		t.Fatalf("parse readback %q: %v", gotStr, err2)
