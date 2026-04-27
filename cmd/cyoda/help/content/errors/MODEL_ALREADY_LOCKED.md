@@ -21,7 +21,12 @@ HTTP: `409` `Conflict`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Returned when a lock-transition request (e.g. `POST /model/{name}/{version}/lock`) is issued against a model that is already `LOCKED`. The relock is rejected because the caller's expected pre-state (`UNLOCKED`) does not match the actual state (`LOCKED`).
+Returned by any admin operation that requires the model be in the `UNLOCKED` state, including:
+
+- `POST /model/{name}/{version}/lock` — the relock is rejected because the model is already locked.
+- Re-importing a model whose existing descriptor is already `LOCKED`.
+
+The problem-detail body carries `entityName` and `entityVersion` on every emit; the relock branch additionally sets `expectedState` (always `UNLOCKED`) and `actualState` (always `LOCKED`) so callers can branch on the precondition without scraping the message string.
 
 Not retryable. To proceed, either accept the existing lock or unlock the model first via `POST /model/{name}/{version}/unlock`.
 

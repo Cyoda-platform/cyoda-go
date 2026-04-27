@@ -16,6 +16,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/app"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -100,28 +101,6 @@ func expectStatus(t *testing.T, resp *http.Response, want int) {
 	if resp.StatusCode != want {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected status %d, got %d; body: %s", want, resp.StatusCode, string(body))
-	}
-}
-
-// expectErrorCode parses an RFC 9457 problem-detail body and asserts that
-// `properties.errorCode` matches `want`. The response body is consumed and
-// re-buffered so callers can still close it.
-func expectErrorCode(t *testing.T, resp *http.Response, want string) {
-	t.Helper()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	resp.Body = io.NopCloser(strings.NewReader(string(body)))
-	var pd struct {
-		Properties map[string]any `json:"properties"`
-	}
-	if err := json.Unmarshal(body, &pd); err != nil {
-		t.Fatalf("decode problem detail: %v; body: %s", err, string(body))
-	}
-	got, _ := pd.Properties["errorCode"].(string)
-	if got != want {
-		t.Errorf("expected errorCode %q, got %q; body: %s", want, got, string(body))
 	}
 }
 
@@ -1720,7 +1699,7 @@ func TestMVCCMismatchFails(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	expectStatus(t, resp, http.StatusPreconditionFailed)
-	expectErrorCode(t, resp, "ENTITY_MODIFIED")
+	commontest.ExpectErrorCode(t, resp, "ENTITY_MODIFIED")
 	resp.Body.Close()
 }
 

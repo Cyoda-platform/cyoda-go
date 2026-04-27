@@ -6,6 +6,7 @@ see_also:
   - errors
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
+  - errors.EPOCH_MISMATCH
 ---
 
 # errors.ENTITY_MODIFIED
@@ -31,3 +32,4 @@ Not retryable in the protocol sense — replaying the same payload with the same
 - errors
 - errors.CONFLICT
 - errors.IDEMPOTENCY_CONFLICT
+- errors.EPOCH_MISMATCH
