@@ -84,7 +84,42 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		return nil
 	}
 
-	valueType := inferValueDataType(c.Value)
+	// Branch on composite vs scalar values before calling inferValueDataType.
+	switch v := c.Value.(type) {
+	case []any:
+		// Array values (e.g. BETWEEN [lo, hi], IN [a, b, c]): every element
+		// must type-check against the field. An empty array is accepted (no
+		// elements means nothing to mismatch).
+		for i, elem := range v {
+			if err := checkSingleValueType(fd, c.JsonPath, elem); err != nil {
+				return fmt.Errorf("value[%d]: %w", i, err)
+			}
+		}
+		return nil
+	case map[string]any:
+		// No search operator accepts an object value.
+		_ = v
+		return fmt.Errorf("condition value for field %q is an object, which is not valid for any operator type: %w",
+			c.JsonPath, errConditionTypeMismatch)
+	default:
+		return checkSingleValueType(fd, c.JsonPath, c.Value)
+	}
+}
+
+// errConditionTypeMismatch is the sentinel error for condition type mismatch.
+// Handlers check errors.Is(err, errConditionTypeMismatch) to emit HTTP 400
+// with ErrCodeConditionTypeMismatch.
+var errConditionTypeMismatch = fmt.Errorf("condition type mismatch")
+
+// checkSingleValueType checks whether a single scalar value is compatible with
+// the field's TypeSet. Null values are accepted for any field type. String-only
+// fields accept any value type (lexicographic comparison semantics).
+func checkSingleValueType(fd schema.FieldDescriptor, jsonPath string, v any) error {
+	if v == nil {
+		return nil // null compatible with any type
+	}
+
+	valueType := inferValueDataType(v)
 	if valueType == schema.Null {
 		return nil // null compatible with any type
 	}
@@ -112,13 +147,8 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 
 	return fmt.Errorf("condition value type %s is not compatible with field %q (expected %v): %w",
-		valueType, c.JsonPath, fd.Types, errConditionTypeMismatch)
+		valueType, jsonPath, fd.Types, errConditionTypeMismatch)
 }
-
-// errConditionTypeMismatch is the sentinel error for condition type mismatch.
-// Handlers check errors.Is(err, errConditionTypeMismatch) to emit HTTP 400
-// with ErrCodeConditionTypeMismatch.
-var errConditionTypeMismatch = fmt.Errorf("condition type mismatch")
 
 // inferValueDataType infers the DataType of a condition value.
 //
