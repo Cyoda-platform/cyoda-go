@@ -306,3 +306,45 @@ func TestConditionToFilter_Nil(t *testing.T) {
 		t.Fatal("expected error for nil condition, got nil")
 	}
 }
+
+// TestConditionToFilter_WildcardPath_ReturnsError verifies that paths
+// containing JSONPath array-wildcard or subscript syntax (e.g. "[*]", "[0]")
+// cause ConditionToFilter to return an error so the search service falls back
+// to in-memory evaluation. Such paths cannot be translated to pushdown filters.
+func TestConditionToFilter_WildcardPath_ReturnsError(t *testing.T) {
+	wildcardPaths := []string{
+		"$.items[*].name",
+		"$.arr[0].field",
+		"$.foo[*]",
+	}
+	for _, path := range wildcardPaths {
+		cond := &predicate.SimpleCondition{
+			JsonPath:     path,
+			OperatorType: "EQUALS",
+			Value:        "x",
+		}
+		_, err := ConditionToFilter(cond)
+		if err == nil {
+			t.Errorf("ConditionToFilter with path %q: expected error (non-pushdownable), got nil", path)
+		}
+	}
+}
+
+// TestConditionToFilter_HyphenatedPath_Accepted verifies that hyphenated
+// field names (e.g. "some-array", "some-object") are accepted by
+// ConditionToFilter — they are valid JSON key characters and safe for
+// storage backend pushdown.
+func TestConditionToFilter_HyphenatedPath_Accepted(t *testing.T) {
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.some-array.some-object",
+		OperatorType: "EQUALS",
+		Value:        "abc",
+	}
+	f, err := ConditionToFilter(cond)
+	if err != nil {
+		t.Fatalf("ConditionToFilter with hyphenated path: unexpected error: %v", err)
+	}
+	if f.Path != "some-array.some-object" {
+		t.Errorf("Path = %q, want some-array.some-object", f.Path)
+	}
+}

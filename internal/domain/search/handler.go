@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 const (
@@ -41,11 +42,62 @@ func jobLookupError(err error) *common.AppError {
 // Handler handles search-related HTTP endpoints.
 type Handler struct {
 	searchSvc *SearchService
+	factory   spi.StoreFactory
 }
 
 // NewHandler creates a new search handler wired to the given SearchService.
 func NewHandler(searchSvc *SearchService) *Handler {
 	return &Handler{searchSvc: searchSvc}
+}
+
+// NewHandlerWithModel creates a search handler that additionally validates
+// condition value types against the model schema before executing search.
+// Pass a nil factory to disable condition-type validation (e.g. in tests
+// that don't need it).
+func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory) *Handler {
+	return &Handler{searchSvc: searchSvc, factory: factory}
+}
+
+// lookupModelSchema fetches the parsed model schema for the given entity/version.
+// Returns nil (with no error) when the model is not found or cannot be parsed —
+// callers treat this as "no type constraints available".
+func (h *Handler) lookupModelSchema(r *http.Request, entityName string, modelVersion int32) *schema.ModelNode {
+	if h.factory == nil {
+		return nil
+	}
+	modelStore, err := h.factory.ModelStore(r.Context())
+	if err != nil {
+		return nil
+	}
+	ref := spi.ModelRef{
+		EntityName:   entityName,
+		ModelVersion: fmt.Sprintf("%d", modelVersion),
+	}
+	desc, err := modelStore.Get(r.Context(), ref)
+	if err != nil || len(desc.Schema) == 0 {
+		return nil
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil
+	}
+	return node
+}
+
+// validateConditionTypes checks all simple clauses in cond against the model
+// schema for the given entity. Returns a non-nil AppError (HTTP 400) if any
+// clause has a type-mismatched value. Returns nil when the model is not found
+// or the condition has no type violations.
+func (h *Handler) validateConditionTypes(r *http.Request, entityName string, modelVersion int32, cond predicate.Condition) *common.AppError {
+	node := h.lookupModelSchema(r, entityName, modelVersion)
+	if node == nil {
+		return nil // model not found or unparseable — no constraints to apply
+	}
+	if err := ValidateConditionValueTypes(node, cond); err != nil {
+		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch,
+			err.Error())
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +119,10 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 	}
 	if err := ValidateCondition(cond); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+		return
+	}
+	if appErr := h.validateConditionTypes(r, entityName, modelVersion, cond); appErr != nil {
+		common.WriteError(w, r, appErr)
 		return
 	}
 
@@ -138,6 +194,10 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 	}
 	if err := ValidateCondition(cond); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+		return
+	}
+	if appErr := h.validateConditionTypes(r, entityName, modelVersion, cond); appErr != nil {
+		common.WriteError(w, r, appErr)
 		return
 	}
 

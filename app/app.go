@@ -390,7 +390,7 @@ func New(cfg Config) *App {
 	server.Entity = entityHandler
 	server.Model = modelHandler
 	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine)
-	server.Search = search.NewHandler(a.searchService)
+	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory)
 	server.Audit = audit.New(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	server.Account = account.New(a.authService, a.authzService)

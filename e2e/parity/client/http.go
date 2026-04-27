@@ -762,12 +762,162 @@ func (c *Client) DeleteMessages(t *testing.T, ids []string) ([]string, error) {
 	return results[0].EntityIDs, nil
 }
 
+// SubmitAsyncSearch issues POST /api/search/async/{name}/{version} with
+// the given condition JSON. Returns the jobId (bare JSON string) for
+// status/results polling.
+// Canonical: api/openapi.yaml /search/async/{entityName}/{modelVersion}.
+func (c *Client) SubmitAsyncSearch(t *testing.T, modelName string, modelVersion int, condition string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return "", err
+	}
+	var jobID string
+	if err := json.Unmarshal(raw, &jobID); err != nil {
+		return "", fmt.Errorf("decode SubmitAsyncSearch response: %w (body=%s)", err, string(raw))
+	}
+	if jobID == "" {
+		return "", fmt.Errorf("SubmitAsyncSearch returned empty jobId (body=%s)", string(raw))
+	}
+	return jobID, nil
+}
+
+// GetAsyncSearchStatus issues GET /api/search/async/{jobId}/status.
+// Returns the searchJobStatus field only: one of RUNNING, SUCCESSFUL,
+// FAILED, CANCELLED, NOT_FOUND.
+// Canonical: api/openapi.yaml /search/async/{jobId}/status.
+func (c *Client) GetAsyncSearchStatus(t *testing.T, jobID string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/status", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		SearchJobStatus string `json:"searchJobStatus"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode GetAsyncSearchStatus response: %w (body=%s)", err, string(raw))
+	}
+	return resp.SearchJobStatus, nil
+}
+
+// GetAsyncSearchResults issues GET /api/search/async/{jobId}. Returns
+// the Spring-style page envelope (PagedEntityResults) with entity
+// results in Content and pagination metadata under Page.
+// Canonical: api/openapi.yaml /search/async/{jobId}.
+func (c *Client) GetAsyncSearchResults(t *testing.T, jobID string) (PagedEntityResults, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return PagedEntityResults{}, err
+	}
+	var page PagedEntityResults
+	if err := json.Unmarshal(raw, &page); err != nil {
+		return PagedEntityResults{}, fmt.Errorf("decode GetAsyncSearchResults response: %w (body=%s)", err, string(raw))
+	}
+	return page, nil
+}
+
+// CancelAsyncSearch issues PUT /api/search/async/{jobId}/cancel.
+// Returns an error if the request fails (non-2xx). The response body
+// is not consumed — only the HTTP status matters.
+// Canonical: api/openapi.yaml /search/async/{jobId}/cancel (PUT method
+// per Phase 0.1 wire probe, not POST as the plan originally assumed).
+func (c *Client) CancelAsyncSearch(t *testing.T, jobID string) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/cancel", jobID)
+	_, err := c.doRaw(t, http.MethodPut, path, "")
+	return err
+}
+
+// AwaitAsyncSearchResults submits an async search and polls
+// GetAsyncSearchStatus until the job reaches a terminal state or
+// timeout elapses. On SUCCESSFUL, fetches and returns the results via
+// GetAsyncSearchResults. Terminal failure states (FAILED, CANCELLED,
+// NOT_FOUND) return an error. Unknown status values also return an
+// error. The polling interval is 100ms.
+func (c *Client) AwaitAsyncSearchResults(t *testing.T, modelName string, modelVersion int, condition string, timeout time.Duration) (PagedEntityResults, error) {
+	t.Helper()
+	jobID, err := c.SubmitAsyncSearch(t, modelName, modelVersion, condition)
+	if err != nil {
+		return PagedEntityResults{}, fmt.Errorf("submit: %w", err)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := c.GetAsyncSearchStatus(t, jobID)
+		if err != nil {
+			return PagedEntityResults{}, fmt.Errorf("status (jobId=%s): %w", jobID, err)
+		}
+		switch status {
+		case "SUCCESSFUL":
+			return c.GetAsyncSearchResults(t, jobID)
+		case "FAILED", "CANCELLED", "NOT_FOUND":
+			return PagedEntityResults{}, fmt.Errorf("async search reached terminal status %s (jobId=%s)", status, jobID)
+		case "RUNNING", "":
+			// continue polling
+		default:
+			return PagedEntityResults{}, fmt.Errorf("unexpected async search status %q (jobId=%s)", status, jobID)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return PagedEntityResults{}, fmt.Errorf("timeout (%s) waiting for async search jobId=%s", timeout, jobID)
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
 func (c *Client) GetEntityStatsRaw(t *testing.T) (int, error) {
 	t.Helper()
 	return c.doJSON(t, http.MethodGet, "/api/entity/stats", nil, nil)
+}
+
+// SyncSearchRaw issues POST /api/search/direct/{name}/{version} and
+// returns the raw HTTP status code and body without erroring on
+// non-2xx. Used for negative-path discover-and-compare.
+func (c *Client) SyncSearchRaw(t *testing.T, modelName string, modelVersion int, condition string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(condition))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// SubmitAsyncSearchRaw issues POST /api/search/async/{name}/{version}
+// and returns the raw HTTP status code and body without erroring on
+// non-2xx. Used for negative-path discover-and-compare.
+func (c *Client) SubmitAsyncSearchRaw(t *testing.T, modelName string, modelVersion int, condition string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(condition))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
 }
 
 // SyncSearch issues POST /api/search/direct/{name}/{version} with the
@@ -918,6 +1068,31 @@ func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body st
 		return 0, nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityBodyRaw issues GET /api/entity/{entityId} and returns the raw
+// HTTP status code and response body. Used by tests that need to decode the
+// entity JSON with non-default settings (e.g. UseNumber for big-number
+// round-trip precision tests).
+func (c *Client) GetEntityBodyRaw(t *testing.T, entityID uuid.UUID) (int, []byte, error) {
+	t.Helper()
+	path := "/api/entity/" + entityID.String()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
