@@ -390,3 +390,36 @@ func TestTrustedKeysHandler_DeleteNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestTrustedKeysHandler_DeleteNotFound_GenericMessage guards #34 item 6:
+// the 404 response detail must carry a generic "key not found" message rather
+// than the raw store error string. The previous handler called
+// http.Error(w, err.Error(), 404) which leaked the store's internal phrasing
+// ("trusted key not found: <kid>") into the response body. The instance
+// field still legitimately echoes the URL path (RFC 9457).
+func TestTrustedKeysHandler_DeleteNotFound_GenericMessage(t *testing.T) {
+	store := NewInMemoryTrustedKeyStore()
+	handler := NewTrustedKeysHandler(store)
+
+	req := adminReq(http.MethodDelete, "/oauth/keys/trusted/some-kid", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var pd struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(pd.Detail, "key not found") {
+		t.Errorf("detail = %q, want contains 'key not found'", pd.Detail)
+	}
+	// The detail must NOT contain the raw store error phrasing.
+	if strings.Contains(pd.Detail, "trusted key not found:") {
+		t.Errorf("detail leaked raw store error: %q", pd.Detail)
+	}
+}

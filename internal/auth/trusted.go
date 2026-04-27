@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/big"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // trustedKIDPattern matches the KID character/length whitelist enforced at the
@@ -166,14 +169,16 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request, path string) {
 	keyID := extractKeyID(path, "/oauth/keys/trusted/")
 	if keyID == "" {
 		http.Error(w, "missing key ID", http.StatusBadRequest)
 		return
 	}
 	if err := h.trustedKeyStore.Delete(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#34 item 6).
+		slog.Info("trusted-key delete: not found", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeBadRequest, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
