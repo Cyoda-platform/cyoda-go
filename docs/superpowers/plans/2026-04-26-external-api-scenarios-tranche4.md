@@ -69,7 +69,81 @@ Replace the `[Phase 0.1 outcome — record after probe]` block below with concre
 
 **[Phase 0.1 outcome — record after probe]**
 
-> *To be filled in after Step 1-3. The exact field names and types found here will pin the helper signatures and `AsyncSearchPage` struct in Phase 1.*
+> **0.1 result (recorded 2026-04-25 — do NOT re-run):**
+>
+> **Submit** (`POST /api/search/async/{name}/{version}`):
+> - HTTP status: `200 OK`
+> - Response body: a bare JSON string (UUID), **not** a wrapper object.
+>   Actual wire shape: `"550e8400-e29b-41d4-a716-446655440000"` (quoted string, Content-Type: application/json).
+> - The plan assumed `{"jobId": "..."}` — **DEVIATES**. The handler calls `common.WriteJSON(w, http.StatusOK, jobID)` where `jobID` is a plain `string`. Phase 1 Task 1.1 must unmarshal the body as a bare `string`, not as `{"jobId": "..."}`.
+>
+> **Status** (`GET /api/search/async/{jobId}/status`):
+> - HTTP status: `200 OK`
+> - Response body: richer envelope (NOT a naked string, NOT just `{"status": "..."}`).
+>   Actual wire shape (from `buildStatusResponse`):
+>   ```json
+>   {
+>     "searchJobStatus":       "RUNNING|SUCCESSFUL|FAILED|CANCELLED",
+>     "createTime":            "2026-04-25T12:00:00.000000000Z",
+>     "entitiesCount":         42,
+>     "calculationTimeMillis": 123,
+>     "expirationDate":        "2026-04-26T12:00:00.000000000Z",
+>     "finishTime":            "2026-04-25T12:05:00.000000000Z"   // omitted if still running
+>   }
+>   ```
+> - Full status enum emitted by cyoda-go: `RUNNING`, `SUCCESSFUL`, `FAILED`, `CANCELLED`, `NOT_FOUND`.
+>   Note: `NOT_FOUND` is a valid enum value returned in the status field (rare race condition). The plan assumed `PENDING` — **DEVIATES**. There is NO `PENDING` status; the job is `RUNNING` from the moment it is created.
+> - The plan assumed `{"status": "..."}` wrapper — **DEVIATES**. The key is `searchJobStatus`, not `status`.
+> - Phase 1 Task 1.2 must: (a) read field `searchJobStatus`, not `status`; (b) not include `PENDING` in the enum; (c) parse the full status envelope for the `AsyncSearchStatus` struct (fields: `SearchJobStatus string`, `CreateTime time.Time`, `EntitiesCount int64`, `CalculationTimeMillis int64`, `ExpirationDate time.Time`, `FinishTime *time.Time`).
+>
+> **Results** (`GET /api/search/async/{jobId}`):
+> - HTTP status: `200 OK`
+> - Response body: nested `page` object (NOT the flat shape the plan assumed).
+>   Actual wire shape (from handler):
+>   ```json
+>   {
+>     "content": [ { "type": "ENTITY", "data": {...}, "meta": {...} }, ... ],
+>     "page": {
+>       "number":        0,
+>       "size":          1000,
+>       "totalElements": 42,
+>       "totalPages":    1
+>     }
+>   }
+>   ```
+> - `content` items are entity envelopes with fields: `type` (always `"ENTITY"`), `data` (raw JSON), `meta` (`id`, `state`, `creationDate`, `lastUpdateTime`, optional `transactionId`, optional `transitionForLatestSave`).
+> - The plan assumed a flat `{"content": [...], "totalElements": N, "page": N, "size": N}` — **DEVIATES**. Pagination metadata is nested under `"page"` as a sub-object, matching a Spring-style `Page` with `{number, size, totalElements, totalPages}`. Phase 1 Task 1.3 must define `AsyncSearchPage` with a nested `Page PageMetadata` struct, not flat fields.
+> - Default page size is `1000` (not 10 as OpenAPI description says). Max page size enforced server-side.
+>
+> **Cancel** (`PUT /api/search/async/{jobId}/cancel`):
+> - HTTP method: **`PUT`** (not `POST` as the plan assumed) — **DEVIATES**. The generated interface comment and OpenAPI spec both confirm `PUT`.
+> - HTTP status on success: `200 OK`
+> - Response body on successful cancellation:
+>   ```json
+>   {
+>     "isCancelled":            true,
+>     "cancelled":              true,
+>     "currentSearchJobStatus": "CANCELLED"
+>   }
+>   ```
+> - Response body on failure (job already finished, returns `400 Bad Request`):
+>   ```json
+>   {
+>     "detail":     "snapshot by id=<jobId> is not running. current status=SUCCESSFUL",
+>     "properties": { "currentStatus": "SUCCESSFUL", "snapshotId": "<jobId>" },
+>     "status":     400,
+>     "title":      "Bad Request",
+>     "type":       "about:blank"
+>   }
+>   ```
+> - The plan assumed `POST` method and body shape unspecified — **DEVIATES on method** (must be PUT). Phase 1 Task 1.4 must use `PUT` not `POST`.
+>
+> **Summary of Phase 1 adjustments required:**
+> - Task 1.1 (SubmitAsyncSearch): unmarshal response as bare `string`, not `{"jobId": "..."}`.
+> - Task 1.2 (GetAsyncSearchStatus): field name is `searchJobStatus` (not `status`); parse full status envelope; enum is {RUNNING, SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND} — no PENDING.
+> - Task 1.3 (GetAsyncSearchResults): `AsyncSearchPage` must have nested `Page` sub-struct with `{Number, Size, TotalElements, TotalPages}`; content items are entity envelopes with `type/data/meta`.
+> - Task 1.4 (CancelAsyncSearch): use HTTP `PUT` (not `POST`); success shape is `{isCancelled, cancelled, currentSearchJobStatus}`.
+> - The `AwaitAsyncSearch` polling helper (Task 1.5) should poll on `searchJobStatus` field and treat {SUCCESSFUL, FAILED, CANCELLED, NOT_FOUND} as terminal states (no PENDING).
 
 - [ ] **Step 5: Sanity check — does the probe match the spec's assumed shapes?**
 
