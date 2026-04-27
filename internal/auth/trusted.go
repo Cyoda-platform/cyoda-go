@@ -8,9 +8,16 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// trustedKIDPattern matches the KID character/length whitelist enforced at the
+// trusted-key registration handler boundary (#34 item 3). The set
+// (alphanumeric plus '.', '_', '-') covers RFC-style key identifiers without
+// permitting path-traversal segments, control characters, or unbounded length.
+var trustedKIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,256}$`)
 
 // registerTrustedKeyRequest is the JSON body for POST /oauth/keys/trusted.
 // Matches Cyoda Cloud's RegisterTrustedKeyRequest schema.
@@ -104,8 +111,8 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if req.KeyID == "" {
-		http.Error(w, `{"error":"keyId is required"}`, http.StatusBadRequest)
+	if !trustedKIDPattern.MatchString(req.KeyID) {
+		http.Error(w, `{"error":"invalid keyId: must match ^[a-zA-Z0-9._-]{1,256}$"}`, http.StatusBadRequest)
 		return
 	}
 

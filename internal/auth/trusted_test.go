@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -226,6 +227,73 @@ func TestTrustedKeysHandler_Delete(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Errorf("expected empty list after delete, got %d", len(list))
+	}
+}
+
+// TestTrustedKeysHandler_RegisterRejectsInvalidKID verifies the handler
+// rejects KIDs that fail the KID character/length whitelist (#34 item 3).
+// Registering a KID containing path-traversal segments, control characters,
+// or exceeding the 256-char ceiling must return 400 BAD_REQUEST without
+// reaching the store.
+func TestTrustedKeysHandler_RegisterRejectsInvalidKID(t *testing.T) {
+	store := NewInMemoryTrustedKeyStore()
+	handler := NewTrustedKeysHandler(store)
+
+	jwk := generateTestJWK(t)
+	cases := []struct {
+		name string
+		kid  string
+	}{
+		{"path-traversal", "../etc/passwd"},
+		{"null-byte", "key\x00id"},
+		{"too-long", strings.Repeat("a", 1000)},
+		{"empty", ""},
+		{"slash", "ns/key"},
+		{"space", "ns key"},
+	}
+	for _, tc := range cases {
+		body := registerTrustedKeyRequest{
+			KeyID:     tc.kid,
+			JWK:       jwk,
+			Audience:  "svc",
+			ValidFrom: strPtr("2026-01-01T00:00:00Z"),
+		}
+		bodyBytes, _ := json.Marshal(body)
+		req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d (body=%q)", tc.name, rec.Code, rec.Body.String())
+		}
+		// Defence-in-depth: confirm nothing reached the store.
+		if got := store.List(); len(got) != 0 {
+			t.Errorf("%s: store leaked %d entries; expected 0", tc.name, len(got))
+		}
+	}
+}
+
+// TestTrustedKeysHandler_RegisterAcceptsValidKIDChars confirms the whitelist
+// accepts the characters Cyoda Cloud's KID convention requires (alphanumeric
+// plus '.', '_', '-') so the regex tightening in #34/3 doesn't block legit
+// input.
+func TestTrustedKeysHandler_RegisterAcceptsValidKIDChars(t *testing.T) {
+	store := NewInMemoryTrustedKeyStore()
+	handler := NewTrustedKeysHandler(store)
+
+	body := registerTrustedKeyRequest{
+		KeyID:     "issuer.example.com_key-1",
+		JWK:       generateTestJWK(t),
+		Audience:  "svc",
+		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
