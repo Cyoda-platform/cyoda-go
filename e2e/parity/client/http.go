@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -414,14 +415,67 @@ func (c *Client) GetEntityAt(t *testing.T, entityID uuid.UUID, pointInTime time.
 	return ent, nil
 }
 
-// GetEntityAtRaw issues GET /api/entity/{entityId}?pointInTime=<t>.
-// Returns (statusCode, error) without decoding the body -- for testing
-// 404 responses where there is no entity to decode.
-func (c *Client) GetEntityAtRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, error) {
+// GetEntityAtRaw issues GET /api/entity/{entityId}?pointInTime=<t> and
+// returns the HTTP status + raw body bytes without raising on non-2xx,
+// mirroring the *Raw pattern of LockModelRaw / GetEntityChangesRaw.
+// Used by negative-path tests (e.g. external-api 12/04) that need to
+// inspect the error envelope on 404.
+func (c *Client) GetEntityAtRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, []byte, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID.String(), pointInTime.Format(time.RFC3339Nano))
-	status, err := c.doJSON(t, http.MethodGet, path, nil, nil)
-	return status, err
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityByTransactionID issues GET /api/entity/{entityId}?transactionId=<tx>
+// and decodes the EntityResult envelope. Returned for the
+// transactionId-scoped GET surface used by external-api 07/02.
+// Canonical: docs/cyoda/openapi.yml:1055 (getOneEntity with transactionId query param).
+func (c *Client) GetEntityByTransactionID(t *testing.T, entityID uuid.UUID, txID string) (EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?transactionId=%s", entityID.String(), url.QueryEscape(txID))
+	var ent EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &ent); err != nil {
+		return EntityResult{}, err
+	}
+	return ent, nil
+}
+
+// GetEntityByTransactionIDRaw issues GET /api/entity/{entityId}?transactionId=<tx>
+// and returns the HTTP status + raw body bytes without raising on non-2xx,
+// mirroring the *Raw pattern. Used by external-api 12/05 to assert the
+// 404 body for a bogus transactionId.
+func (c *Client) GetEntityByTransactionIDRaw(t *testing.T, entityID uuid.UUID, txID string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?transactionId=%s", entityID.String(), url.QueryEscape(txID))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
 }
 
 // GetEntityAtBodyRaw issues GET /api/entity/{entityId}?pointInTime=<t> and

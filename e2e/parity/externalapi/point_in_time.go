@@ -74,11 +74,62 @@ func RunExternalAPI_07_01_GetEntityAtPointInTime(t *testing.T, fixture parity.Ba
 }
 
 // RunExternalAPI_07_02_GetEntityByTransactionID — dictionary 07/02.
-// GET /entity/{id}?transactionId=<tx>. Skipped pending parity-client
-// surface addition; tracked alongside tranche-2 follow-up.
+// Dictionary expects GET /entity/{id}?transactionId=<tx> to return the
+// entity envelope as it stood at that transaction.
+//
+// Status: parity-client surface (GetEntityByTransactionID) is in place
+// per #132. The underlying GetOneEntity handler currently ignores the
+// transactionId query parameter (server-side gap tracked by #150) and
+// returns the latest entity instead of the at-tx snapshot. The body
+// below probes for that gap and skips with a #150 reference until the
+// server-side wiring lands.
 func RunExternalAPI_07_02_GetEntityByTransactionID(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #132: parity client does not yet expose transactionId-scoped GET")
+	d := driver.NewInProcess(t, fixture)
+	if err := d.CreateModelFromSample("pit2", 1, `{"k":1}`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := d.LockModel("pit2", 1); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	id, err := d.CreateEntity("pit2", 1, `{"k":1}`)
+	if err != nil {
+		t.Fatalf("create entity: %v", err)
+	}
+	// Capture the current entity's transactionId, then update the entity
+	// twice. A transactionId-scoped GET should return the captured-tx
+	// snapshot regardless of subsequent updates.
+	current, err := d.GetEntity(id)
+	if err != nil {
+		t.Fatalf("GetEntity: %v", err)
+	}
+	createTxID := current.Meta.TransactionID
+	if createTxID == "" {
+		t.Fatalf("create entity meta missing transactionId; cannot exercise tx-scoped GET")
+	}
+	if err := d.UpdateEntityData(id, `{"k":2}`); err != nil {
+		t.Fatalf("update@tx2: %v", err)
+	}
+	if err := d.UpdateEntityData(id, `{"k":3}`); err != nil {
+		t.Fatalf("update@tx3: %v", err)
+	}
+
+	got, err := d.GetEntityByTransactionID(id, createTxID)
+	if err != nil {
+		t.Fatalf("GetEntityByTransactionID: %v", err)
+	}
+	// worse: cyoda-go's GetOneEntity handler does not yet honor the
+	// transactionId query param (it parses pointInTime only). The server
+	// returns the latest entity instead of the at-transaction snapshot.
+	// Until the handler routes transactionId, this assertion documents
+	// the divergence: the dictionary expects k=1 (the createTxID
+	// snapshot), but cyoda-go currently returns the latest k=3.
+	if v, _ := got.Data["k"].(float64); v != float64(1) {
+		t.Skipf("pending #150 (worse): GET ?transactionId=<createTxID> returned k=%v want 1; transactionId silently dropped by GetOneEntity handler. Parity-client surface delivered via #132; close this skip when #150 lands.", got.Data["k"])
+	}
+	if got.Meta.TransactionID != createTxID {
+		t.Errorf("meta.transactionId: got %q want %q", got.Meta.TransactionID, createTxID)
+	}
 }
 
 // RunExternalAPI_07_03_ChangeHistoryFull — dictionary 07/03.

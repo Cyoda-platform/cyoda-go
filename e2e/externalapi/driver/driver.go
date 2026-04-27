@@ -249,6 +249,26 @@ func (d *Driver) GetEntityAt(id uuid.UUID, pointInTime time.Time) (parityclient.
 	return d.client.GetEntityAt(d.t, id, pointInTime)
 }
 
+// GetEntityAtRaw issues GET /api/entity/{entityId}?pointInTime=<ISO8601>
+// and returns the HTTP status + raw body for negative-path assertions
+// (e.g. external-api 12/04 — pointInTime before entity creation).
+func (d *Driver) GetEntityAtRaw(id uuid.UUID, pointInTime time.Time) (int, []byte, error) {
+	return d.client.GetEntityAtRaw(d.t, id, pointInTime)
+}
+
+// GetEntityByTransactionID issues GET /api/entity/{entityId}?transactionId=<tx>.
+// YAML action: get_entity (with transactionId).
+func (d *Driver) GetEntityByTransactionID(id uuid.UUID, txID string) (parityclient.EntityResult, error) {
+	return d.client.GetEntityByTransactionID(d.t, id, txID)
+}
+
+// GetEntityByTransactionIDRaw issues GET /api/entity/{entityId}?transactionId=<tx>
+// and returns the HTTP status + raw body for negative-path assertions
+// (e.g. external-api 12/05 — bogus transactionId).
+func (d *Driver) GetEntityByTransactionIDRaw(id uuid.UUID, txID string) (int, []byte, error) {
+	return d.client.GetEntityByTransactionIDRaw(d.t, id, txID)
+}
+
 // GetEntityChanges issues GET /api/entity/{entityId}/changes.
 // YAML action: get_entity_changes.
 func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta, error) {
