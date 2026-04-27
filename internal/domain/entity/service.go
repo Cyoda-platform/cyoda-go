@@ -227,7 +227,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -488,7 +488,7 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -608,7 +608,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -788,7 +788,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -928,7 +928,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -1064,7 +1064,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}

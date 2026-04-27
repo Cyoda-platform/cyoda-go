@@ -293,3 +293,89 @@ func TestErrCodeSearchResultLimit(t *testing.T) {
 		t.Errorf("got %q", common.ErrCodeSearchResultLimit)
 	}
 }
+
+// TestConflict_NotRetryableByDefault pins the behavior change for #126:
+// a plain Conflict represents a permanent business-logic conflict (e.g.
+// "model already locked", ETag mismatch on If-Match). The parity HTTP
+// client retries on properties.retryable=true; if Conflict were retryable
+// every permanent conflict would burn 5 attempts × 30+ms backoff before
+// surfacing to the caller.
+func TestConflict_NotRetryableByDefault(t *testing.T) {
+	err := common.Conflict("model already locked")
+	if err.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", err.Status)
+	}
+	if err.Retryable {
+		t.Error("Conflict() must default to retryable=false (permanent business conflict)")
+	}
+	if err.Level != common.LevelOperational {
+		t.Errorf("level = %v, want Operational", err.Level)
+	}
+}
+
+// TestRetryableConflict_RetryableTrue pins the new constructor's contract:
+// transient transaction-abort style conflicts must opt in via this helper
+// so the parity client retry loop can engage.
+func TestRetryableConflict_RetryableTrue(t *testing.T) {
+	err := common.RetryableConflict("transaction conflict — retry")
+	if err.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", err.Status)
+	}
+	if !err.Retryable {
+		t.Error("RetryableConflict() must set retryable=true")
+	}
+	if err.Code != common.ErrCodeConflict {
+		t.Errorf("code = %q, want %q", err.Code, common.ErrCodeConflict)
+	}
+}
+
+// TestWriteError_PermanentConflict_NoRetryableProperty verifies the wire
+// shape the parity client sees: when retryable=false the response body
+// must NOT advertise properties.retryable=true. Without that, the
+// client would amplify load 5x on every business-logic 409.
+func TestWriteError_PermanentConflict_NoRetryableProperty(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/test", nil)
+
+	common.WriteError(w, r, common.Conflict("model already locked"))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+	var pd map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&pd); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	props, _ := pd["properties"].(map[string]any)
+	if props == nil {
+		t.Fatal("expected properties map in problem detail")
+	}
+	if v, ok := props["retryable"]; ok {
+		t.Errorf("permanent conflict must omit properties.retryable, got %v", v)
+	}
+}
+
+// TestWriteError_RetryableConflict_AdvertisesRetryable verifies the
+// retry-eligible path still advertises properties.retryable=true so the
+// parity client can engage its backoff loop.
+func TestWriteError_RetryableConflict_AdvertisesRetryable(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/test", nil)
+
+	common.WriteError(w, r, common.RetryableConflict("transaction conflict — retry"))
+
+	var pd map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&pd); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	props, _ := pd["properties"].(map[string]any)
+	if props == nil {
+		t.Fatal("expected properties map in problem detail")
+	}
+	got, ok := props["retryable"].(bool)
+	if !ok || !got {
+		t.Errorf("retryable conflict must advertise properties.retryable=true, got %v", props["retryable"])
+	}
+}
