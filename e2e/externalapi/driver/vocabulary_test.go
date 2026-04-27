@@ -515,6 +515,56 @@ func TestDriver_DeleteMessages_DELETE(t *testing.T) {
 	}
 }
 
+func TestDriver_SyncSearchRaw_POST_ReturnsStatusAndBody(t *testing.T) {
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"about:blank","status":400,"properties":{"errorCode":"INVALID_CONDITION"}}`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	status, body, err := d.SyncSearchRaw("orders", 2, `{"type":"group","conditions":[]}`)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/search/direct/orders/2" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400", status)
+	}
+	if len(body) == 0 {
+		t.Error("expected non-empty body")
+	}
+}
+
+func TestDriver_SubmitAsyncSearchRaw_POST_ReturnsStatusAndBody(t *testing.T) {
+	cap := &capturedReq{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"about:blank","status":400,"properties":{"errorCode":"INVALID_CONDITION"}}`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	status, body, err := d.SubmitAsyncSearchRaw("orders", 2, `{"type":"group","conditions":[]}`)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/search/async/orders/2" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400", status)
+	}
+	if len(body) == 0 {
+		t.Error("expected non-empty body")
+	}
+}
+
 func TestDriver_ExportWorkflow_GET(t *testing.T) {
 	cap := &capturedReq{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

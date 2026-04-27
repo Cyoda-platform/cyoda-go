@@ -147,3 +147,69 @@ func TestImportWorkflowRaw(t *testing.T) {
 		t.Errorf("status: got %d", status)
 	}
 }
+
+func TestSyncSearchRaw(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"about:blank","status":400,"properties":{"errorCode":"INVALID_CONDITION"}}`))
+	}))
+	defer srv.Close()
+	c := client.NewClient(srv.URL, "tok")
+	status, body, err := c.SyncSearchRaw(t, "orders", 2, `{"type":"group","conditions":[]}`)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: got %q want POST", gotMethod)
+	}
+	if gotPath != "/api/search/direct/orders/2" {
+		t.Errorf("path: got %q want /api/search/direct/orders/2", gotPath)
+	}
+	if gotBody != `{"type":"group","conditions":[]}` {
+		t.Errorf("body: got %q", gotBody)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400", status)
+	}
+	if len(body) == 0 {
+		t.Error("expected non-empty body")
+	}
+}
+
+func TestSubmitAsyncSearchRaw(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"about:blank","status":400,"properties":{"errorCode":"INVALID_CONDITION"}}`))
+	}))
+	defer srv.Close()
+	c := client.NewClient(srv.URL, "tok")
+	status, body, err := c.SubmitAsyncSearchRaw(t, "orders", 2, `{"type":"group","conditions":[]}`)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: got %q want POST", gotMethod)
+	}
+	if gotPath != "/api/search/async/orders/2" {
+		t.Errorf("path: got %q want /api/search/async/orders/2", gotPath)
+	}
+	if gotBody != `{"type":"group","conditions":[]}` {
+		t.Errorf("body: got %q", gotBody)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400", status)
+	}
+	if len(body) == 0 {
+		t.Error("expected non-empty body")
+	}
+}

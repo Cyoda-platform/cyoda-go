@@ -332,6 +332,20 @@ func (d *Driver) SyncSearch(name string, version int, condition string) ([]parit
 	return d.client.SyncSearch(d.t, name, version, condition)
 }
 
+// SyncSearchRaw issues POST /api/search/direct/{name}/{version} and
+// returns the raw HTTP status code and body without erroring on non-2xx.
+// Used for negative-path discover-and-compare (e.g. 14/06).
+func (d *Driver) SyncSearchRaw(name string, version int, condition string) (int, []byte, error) {
+	return d.client.SyncSearchRaw(d.t, name, version, condition)
+}
+
+// SubmitAsyncSearchRaw issues POST /api/search/async/{name}/{version}
+// and returns the raw HTTP status code and body without erroring on non-2xx.
+// Used for negative-path discover-and-compare (e.g. 14/06).
+func (d *Driver) SubmitAsyncSearchRaw(name string, version int, condition string) (int, []byte, error) {
+	return d.client.SubmitAsyncSearchRaw(d.t, name, version, condition)
+}
+
 // GetEntityBodyRaw issues GET /api/entity/{entityId} and returns the raw
 // response status and body bytes. Used by tests that need to decode the
 // entity JSON with non-default decoder settings (e.g. UseNumber for
