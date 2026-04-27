@@ -17,12 +17,13 @@ package externalapi
 //     REST half).
 //  5. Wrong-type rejection on monomorphic DOUBLE (poly/06 negative path).
 //
-// Discovered divergences (controller decision required, per rule):
+// Discovered divergences and resolutions:
 //
-//   14/01: cyoda-go enforces strict structural type from first-seen element.
-//   POST with element where some-object=string returns 400 BAD_REQUEST
-//   "expected object, got string". Cloud stores both branches. worse-class.
-//   t.Skip pending controller decision.
+//   14/01: FIXED in tranche 4. The entity validator now accepts polymorphic
+//   array elements — a string element in an array whose model was trained on
+//   objects is correctly accepted once both types are recorded in the TypeSet.
+//   Also fixed: SQLite path validator now allows hyphens in field names;
+//   ConditionToFilter now falls back to in-memory for JSONPath wildcard paths.
 //
 //   14/03 (SIMPLE_VIEW UUID check): cyoda-go does not distinguish UUID
 //   values from STRING. Observed SIMPLE_VIEW descriptor: "[DOUBLE, STRING,
@@ -36,11 +37,11 @@ package externalapi
 //   detection. Round-trip works (string in → string out). worse-class.
 //   t.Skip the SIMPLE_VIEW temporal-type assertions; round-trip passes.
 //
-//   14/06: cyoda-go does not validate condition value type against field
-//   DataType at search time. POST /api/search/direct with value:"abc" on
-//   DOUBLE field returns HTTP 200 (empty results) instead of HTTP 400.
-//   Direct: 200 body="". Async submit: 200 body=<jobId>. worse-class.
-//   t.Skip pending controller decision.
+//   14/06: FIXED in tranche 4. cyoda-go now validates condition value types
+//   against field DataType at search entry. POST /api/search/direct with
+//   value:"abc" on DOUBLE field returns HTTP 400 CONDITION_TYPE_MISMATCH.
+//   Classification: equiv_or_better (same HTTP 400; different error code
+//   naming convention vs Cloud's InvalidTypesInClientConditionException).
 
 import (
 	"encoding/json"
@@ -49,6 +50,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
+	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 )
 
@@ -249,21 +251,19 @@ func RunExternalAPI_14_05_TrinoSearchOnPolymorphicScalarRESTHalf(t *testing.T, f
 
 // RunExternalAPI_14_06_RejectWrongTypeCondition — dictionary 14/06.
 // $.price is DOUBLE; condition value "abc" must be rejected with HTTP 400.
-// Discover-and-compare on the errorCode (dictionary expects
-// InvalidTypesInClientConditionException).
+// Discover-and-compare on the errorCode:
 //
-// Discover-and-compare result (worse-class, pending controller decision):
-// cyoda-go does not validate condition value types against field DataType
-// at search time. Direct search returns HTTP 200 with empty body; async
-// submit returns HTTP 200 with a jobId. Cloud rejects both with HTTP 400.
+//   - Dictionary expects: InvalidTypesInClientConditionException
+//   - cyoda-go emits:     CONDITION_TYPE_MISMATCH (HTTP 400)
+//   - Classification:     equiv_or_better — same HTTP status, different naming convention
 func RunExternalAPI_14_06_RejectWrongTypeCondition(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending controller decision: cyoda-go does not validate condition value type against field DataType. POST /api/search/direct with value:\"abc\" on DOUBLE field returns HTTP 200 (empty results) instead of HTTP 400 (InvalidTypesInClientConditionException). worse-class divergence.")
 	d := driver.NewInProcess(t, fixture)
-	if err := d.CreateModelFromSample("ordersWrong", 1, `{"price": 100.0}`); err != nil {
+	// Use 100.5 (decimal) so the model field is classified as DOUBLE (not INTEGER).
+	if err := d.CreateModelFromSample("ordersWrong14_06", 1, `{"price": 100.5}`); err != nil {
 		t.Fatalf("create model: %v", err)
 	}
-	if err := d.LockModel("ordersWrong", 1); err != nil {
+	if err := d.LockModel("ordersWrong14_06", 1); err != nil {
 		t.Fatalf("lock: %v", err)
 	}
 	const badCondition = `{
@@ -273,22 +273,26 @@ func RunExternalAPI_14_06_RejectWrongTypeCondition(t *testing.T, fixture parity.
 		]
 	}`
 	// Direct search must reject (HTTP 400 per dictionary).
-	// Observed: HTTP 200 empty — cyoda-go silently returns no results.
-	status, body, err := d.SyncSearchRaw("ordersWrong", 1, badCondition)
+	// cyoda-go: HTTP 400, errorCode CONDITION_TYPE_MISMATCH.
+	// equiv_or_better: same HTTP status; different error code naming convention
+	// (Cloud: InvalidTypesInClientConditionException; cyoda-go: CONDITION_TYPE_MISMATCH).
+	status, body, err := d.SyncSearchRaw("ordersWrong14_06", 1, badCondition)
 	if err != nil {
 		t.Fatalf("SyncSearchRaw transport: %v", err)
 	}
-	// equiv_or_better target once server-side validation is added:
-	// errorcontract.ExpectedError{HTTPStatus: 400, ErrorCode: "<tbd>"}
-	_ = status
-	_ = body
+	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
+		HTTPStatus: 400,
+		ErrorCode:  "CONDITION_TYPE_MISMATCH",
+	})
 
 	// Async search submission must also reject (per dictionary).
-	// Observed: HTTP 200 with jobId — cyoda-go accepts the search job.
-	asyncStatus, asyncBody, err := d.SubmitAsyncSearchRaw("ordersWrong", 1, badCondition)
+	// cyoda-go: HTTP 400, errorCode CONDITION_TYPE_MISMATCH.
+	asyncStatus, asyncBody, err := d.SubmitAsyncSearchRaw("ordersWrong14_06", 1, badCondition)
 	if err != nil {
 		t.Fatalf("SubmitAsyncSearchRaw transport: %v", err)
 	}
-	_ = asyncStatus
-	_ = asyncBody
+	errorcontract.Match(t, asyncStatus, asyncBody, errorcontract.ExpectedError{
+		HTTPStatus: 400,
+		ErrorCode:  "CONDITION_TYPE_MISMATCH",
+	})
 }

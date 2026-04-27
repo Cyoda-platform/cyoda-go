@@ -45,6 +45,10 @@ const (
 	ErrCodeSearchJobAlreadyTerminal = "SEARCH_JOB_ALREADY_TERMINAL"
 	ErrCodeSearchShardTimeout       = "SEARCH_SHARD_TIMEOUT"
 	ErrCodeSearchResultLimit        = "SEARCH_RESULT_LIMIT"
+	// ErrCodeConditionTypeMismatch is returned when a simple condition's value
+	// type does not match the field's locked DataType (e.g. "abc" against a
+	// DOUBLE field). Equivalent to Cloud's InvalidTypesInClientConditionException.
+	ErrCodeConditionTypeMismatch = "CONDITION_TYPE_MISMATCH"
 )
 
 // Help subsystem

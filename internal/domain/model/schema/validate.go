@@ -148,10 +148,15 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 	}}
 }
 
-// inferDataType maps a Go value (typically from JSON decoding with
+// InferDataType maps a Go value (typically from JSON decoding with
 // UseNumber) to a DataType using the same classifier the walker uses.
 // This ensures validation sees the same classification as schema
 // inference.
+func InferDataType(v any) DataType {
+	return inferDataType(v)
+}
+
+// inferDataType is the internal implementation of InferDataType.
 func inferDataType(v any) DataType {
 	switch n := v.(type) {
 	case bool:
