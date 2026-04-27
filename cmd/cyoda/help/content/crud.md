@@ -7,6 +7,7 @@ see_also:
   - search
   - workflows
   - errors.ENTITY_NOT_FOUND
+  - errors.ENTITY_MODIFIED
   - errors.MODEL_NOT_FOUND
   - errors.MODEL_NOT_LOCKED
   - errors.VALIDATION_FAILED
@@ -361,17 +362,23 @@ All entity read operations return entities in the standard envelope:
 
 ## OPTIMISTIC CONCURRENCY
 
-The `If-Match` header on update endpoints accepts a transaction ID. If the entity's `meta.transactionId` does not match the value in `If-Match`, the server returns `412 Precondition Failed`. This provides optimistic concurrency without distributed locking.
+Entity writes are protected by two independent guards:
 
-To use: read the entity (`GET /entity/{id}`), note `meta.transactionId`, include it in `If-Match` on the subsequent update.
+1. **Transaction-level (always on):** every write runs in a SERIALIZABLE transaction with first-committer-wins (SI+FCW) read-set validation at commit time. A concurrent committer who changes an entity this transaction read will cause this transaction to abort at commit with `409 CONFLICT, retryable: true` (see `errors.CONFLICT`). PostgreSQL's own SQLSTATE 40001 detection covers write-write races equivalently. Callers do not opt in to this; it cannot be disabled.
+2. **Cross-request precondition (opt-in via `If-Match`):** the `If-Match` header carries the `meta.transactionId` from the caller's earlier read in a separate HTTP request. If the entity's current `meta.transactionId` does not match, the server returns `412 Precondition Failed` (see `errors.ENTITY_MODIFIED`). This catches the race window between the caller's GET and PUT — a window the transaction-level guard cannot see, because the GET and PUT happen in different transactions.
+
+To use the cross-request precondition: read the entity (`GET /entity/{id}`), note `meta.transactionId`, include it in `If-Match` on the subsequent update. Omitting `If-Match` does not turn off transaction-level conflict detection, but it does mean the PUT will reconcile against whatever state the entity has at PUT-time — including any concurrent commits that happened between the caller's GET and PUT.
+
+See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 
 ## ERRORS
 
 - `errors.ENTITY_NOT_FOUND` — `404` — entity UUID does not exist
+- `errors.ENTITY_MODIFIED` — `412` — `If-Match`-guarded update rejected; supplied transaction ID does not match the entity's current version
 - `errors.MODEL_NOT_FOUND` — `404` — model referenced during create does not exist
 - `errors.MODEL_NOT_LOCKED` — `409` — model exists but is not in `LOCKED` state; entities cannot be created until the model is locked
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
-- `errors.CONFLICT` — `409` — transaction conflict (retryable)
+- `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented (#91). Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
@@ -483,6 +490,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 - search
 - workflows
 - errors.ENTITY_NOT_FOUND
+- errors.ENTITY_MODIFIED
 - errors.MODEL_NOT_FOUND
 - errors.MODEL_NOT_LOCKED
 - errors.VALIDATION_FAILED

@@ -269,3 +269,105 @@ func TestExportModel_ClassifiesModelStoreErrors(t *testing.T) {
 
 	_ = ref // silence unused in case future expansion needs it
 }
+
+// TestImportModel_OnLockedModel_ReturnsModelAlreadyLocked verifies that a
+// re-import targeting a LOCKED model surfaces the dictionary-aligned
+// `MODEL_ALREADY_LOCKED` code rather than the generic `CONFLICT`. The state
+// precondition (expected UNLOCKED, actual LOCKED) is identical to the relock
+// branch, so it shares the code. See #128.
+func TestImportModel_OnLockedModel_ReturnsModelAlreadyLocked(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	locked := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
+	ms := &refreshingModelStore{
+		getDescriptor:     locked,
+		refreshDescriptor: locked,
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.ImportModel(context.Background(), model.ImportModelInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         []byte(`{"field":"value"}`),
+	})
+	if err == nil {
+		t.Fatal("ImportModel on locked model: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 409 {
+		t.Errorf("expected HTTP 409, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeModelAlreadyLocked {
+		t.Errorf("expected error code %q, got %q (message: %s)",
+			common.ErrCodeModelAlreadyLocked, appErr.Code, appErr.Message)
+	}
+}
+
+// TestUnlockModel_AlreadyUnlocked_ReturnsModelAlreadyUnlocked verifies the
+// symmetric counterpart to the relock fix: unlocking a model that is already
+// UNLOCKED rejects with a specific `MODEL_ALREADY_UNLOCKED` code rather than
+// the generic `CONFLICT`. Distinct from `MODEL_NOT_LOCKED`, which is reserved
+// for the entity-write-without-lock path on the entity service.
+func TestUnlockModel_AlreadyUnlocked_ReturnsModelAlreadyUnlocked(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	unlocked := &spi.ModelDescriptor{Ref: ref, State: spi.ModelUnlocked}
+	ms := &refreshingModelStore{
+		getDescriptor:     unlocked,
+		refreshDescriptor: unlocked,
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.UnlockModel(context.Background(), "Dataset", "1")
+	if err == nil {
+		t.Fatal("UnlockModel on unlocked model: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 409 {
+		t.Errorf("expected HTTP 409, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeModelAlreadyUnlocked {
+		t.Errorf("expected error code %q, got %q (message: %s)",
+			common.ErrCodeModelAlreadyUnlocked, appErr.Code, appErr.Message)
+	}
+}
+
+// TestLockModel_AlreadyLocked_ReturnsSpecificCode verifies that a relock
+// attempt returns the dictionary-aligned `MODEL_ALREADY_LOCKED` code rather
+// than the generic `CONFLICT`. cyoda-cloud's dictionary asserts the specific
+// failure mode (cf. EntityModelFacadeIT.kt's class-name regex), and the
+// generic code discards information the dictionary preserves. See #128.
+func TestLockModel_AlreadyLocked_ReturnsSpecificCode(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	locked := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
+	ms := &refreshingModelStore{
+		getDescriptor:     locked,
+		refreshDescriptor: locked,
+	}
+
+	h := model.New(&fakeStoreFactory{modelStore: ms})
+
+	_, err := h.LockModel(context.Background(), "Dataset", "1")
+	if err == nil {
+		t.Fatal("LockModel on locked model: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != 409 {
+		t.Errorf("expected HTTP 409, got %d: %s", appErr.Status, appErr.Message)
+	}
+	if appErr.Code != common.ErrCodeModelAlreadyLocked {
+		t.Errorf("expected error code %q, got %q (message: %s)",
+			common.ErrCodeModelAlreadyLocked, appErr.Code, appErr.Message)
+	}
+}

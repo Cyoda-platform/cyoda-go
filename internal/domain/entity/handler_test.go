@@ -16,6 +16,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/app"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -1642,7 +1643,7 @@ func TestWaitForConsistencyFalse(t *testing.T) {
 	resp.Body.Close()
 }
 
-// --- MVCC If-Match tests ---
+// --- If-Match optimistic-concurrency tests ---
 
 func getEntityTransactionID(t *testing.T, base, entityID string) string {
 	t.Helper()
@@ -1698,6 +1699,7 @@ func TestMVCCMismatchFails(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	expectStatus(t, resp, http.StatusPreconditionFailed)
+	commontest.ExpectErrorCode(t, resp, "ENTITY_MODIFIED")
 	resp.Body.Close()
 }
 

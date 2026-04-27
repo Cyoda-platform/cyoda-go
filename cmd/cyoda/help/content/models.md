@@ -7,8 +7,10 @@ see_also:
   - workflows
   - search
   - errors.MODEL_NOT_FOUND
+  - errors.MODEL_ALREADY_LOCKED
+  - errors.MODEL_ALREADY_UNLOCKED
+  - errors.MODEL_HAS_ENTITIES
   - errors.VALIDATION_FAILED
-  - errors.CONFLICT
   - openapi
 ---
 
@@ -266,7 +268,9 @@ The `changeLevel` field controls schema evolution on locked models. When set, en
 ## ERRORS
 
 - `errors.MODEL_NOT_FOUND` — `404` — model does not exist for the given name and version
-- `errors.CONFLICT` — `409` — import blocked (model is locked), lock failed (already locked), unlock failed (entities exist or model not locked), delete failed (entities exist)
+- `errors.MODEL_ALREADY_LOCKED` — `409` — re-import or relock attempted on a model already in `LOCKED` state
+- `errors.MODEL_ALREADY_UNLOCKED` — `409` — unlock attempted on a model already in `UNLOCKED` state
+- `errors.MODEL_HAS_ENTITIES` — `409` — unlock or delete blocked because entities of the model exist (`entityCount` in `properties`)
 - `errors.VALIDATION_FAILED` — `400` — workflow import validation failed (static analysis)
 - `errors.BAD_REQUEST` — `400` — unsupported converter, invalid changeLevel, malformed body
 
@@ -338,6 +342,8 @@ curl -s -X DELETE \
 - workflows
 - search
 - errors.MODEL_NOT_FOUND
+- errors.MODEL_ALREADY_LOCKED
+- errors.MODEL_ALREADY_UNLOCKED
+- errors.MODEL_HAS_ENTITIES
 - errors.VALIDATION_FAILED
-- errors.CONFLICT
 - openapi

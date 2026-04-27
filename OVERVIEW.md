@@ -118,7 +118,7 @@ Three-tier classification: **Operational** (4xx, full detail to client), **Inter
 - Soft delete with deletion markers (preserves history)
 - Point-in-time retrieval (`?pointInTime=<ISO8601>`)
 - Entity statistics (count, state distribution per model)
-- MVCC via `If-Match` header (transaction ID based)
+- Optimistic concurrency via `If-Match` header (transaction ID based) — layered on top of always-on SERIALIZABLE + first-committer-wins at the transaction layer
 
 ### Entity Models
 - Schema discovery from sample JSON/XML data

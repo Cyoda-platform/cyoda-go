@@ -12,6 +12,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -564,9 +565,10 @@ func TestUnlockBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	// Attempt unlock — should be blocked with 409.
+	// Attempt unlock — should be blocked with 409 + MODEL_HAS_ENTITIES code.
 	resp = doUnlock(t, srv.URL, "UnlockGuard", 1)
 	expectStatus(t, resp, http.StatusConflict)
+	commontest.ExpectErrorCode(t, resp, "MODEL_HAS_ENTITIES")
 	resp.Body.Close()
 }
 
@@ -597,9 +599,10 @@ func TestDeleteBlockedByEntities(t *testing.T) {
 		t.Fatalf("failed to save entity: %v", err)
 	}
 
-	// Attempt delete — should be blocked with 409.
+	// Attempt delete — should be blocked with 409 + MODEL_HAS_ENTITIES code.
 	resp = doDelete(t, srv.URL, "DeleteGuard", 1)
 	expectStatus(t, resp, http.StatusConflict)
+	commontest.ExpectErrorCode(t, resp, "MODEL_HAS_ENTITIES")
 	resp.Body.Close()
 }
 

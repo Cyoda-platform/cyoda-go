@@ -109,8 +109,12 @@ func RunExternalAPI_10_02_ReadbackReachesAllReplicas(t *testing.T, fixture Multi
 
 // RunExternalAPI_10_03_ParallelUpdatesSameEntity — dictionary 10/03.
 // Concurrent updates from N nodes to the same entity must serialise
-// without data loss. After all updates settle, the final state must
-// reflect one of the writes (last-writer-wins) and not be corrupt.
+// without data loss. The system uses SI+FCW (first-committer-wins) at
+// the transaction layer, so under contention some writers commit
+// cleanly and the rest abort with 409 CONFLICT, retryable: true. This
+// test does not retry on 409; it just asserts that the final state
+// reflects exactly one of the racing writers' payloads (i.e. the
+// surviving committer's value), with no torn or corrupt state.
 func RunExternalAPI_10_03_ParallelUpdatesSameEntity(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	urls := fixture.BaseURLs()
@@ -140,7 +144,7 @@ func RunExternalAPI_10_03_ParallelUpdatesSameEntity(t *testing.T, fixture MultiN
 			di := driver.NewRemote(t, u, tenant.Token)
 			body := fmt.Sprintf(`{"counter":%d}`, idx+1)
 			if err := di.UpdateEntityData(id, body); err != nil {
-				t.Logf("10/03 goroutine %d: UpdateEntityData returned %v (last-writer-wins; final GET asserts the contract)", idx, err)
+				t.Logf("10/03 goroutine %d: UpdateEntityData returned %v (FCW: loser aborts on commit; final GET asserts a surviving writer's payload is visible)", idx, err)
 			}
 		}(i, url)
 	}
@@ -149,7 +153,9 @@ func RunExternalAPI_10_03_ParallelUpdatesSameEntity(t *testing.T, fixture MultiN
 	// Wait briefly for cluster gossip to converge.
 	time.Sleep(200 * time.Millisecond)
 
-	// Final state must reflect one of the writes — between 1 and N.
+	// Final state must reflect a surviving committer's payload — one of
+	// the racing values 1..N. Under SI+FCW the value is whichever writer
+	// committed without an FCW abort; this test does not constrain which.
 	got, err := d0.GetEntity(id)
 	if err != nil {
 		t.Fatalf("final read: %v", err)

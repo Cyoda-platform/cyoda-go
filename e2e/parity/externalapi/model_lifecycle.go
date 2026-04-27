@@ -182,7 +182,6 @@ func RunExternalAPI_01_06_UnlockModel(t *testing.T, fixture parity.BackendFixtur
 // RunExternalAPI_01_07_LockTwiceRejected — dictionary 01/07 (negative).
 func RunExternalAPI_01_07_LockTwiceRejected(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #128 — cyoda-go emits CONFLICT; dictionary requires MODEL_ALREADY_LOCKED. Discover-and-compare worse case.")
 	d := driver.NewInProcess(t, fixture)
 	if err := d.CreateModelFromSample("locktwice", 1, `{"k": 1}`); err != nil {
 		t.Fatalf("CreateModelFromSample: %v", err)
@@ -190,7 +189,8 @@ func RunExternalAPI_01_07_LockTwiceRejected(t *testing.T, fixture parity.Backend
 	if err := d.LockModel("locktwice", 1); err != nil {
 		t.Fatalf("first LockModel: %v", err)
 	}
-	// Second lock attempt: must be rejected with 409 + a recognisable error code.
+	// Second lock attempt: must be rejected with 409 + the dictionary's
+	// specific MODEL_ALREADY_LOCKED code (cf. EntityModelFacadeIT.kt).
 	status, body, err := d.LockModelRaw("locktwice", 1)
 	if err != nil {
 		t.Fatalf("LockModelRaw on second attempt: %v", err)
@@ -198,15 +198,9 @@ func RunExternalAPI_01_07_LockTwiceRejected(t *testing.T, fixture parity.Backend
 	if status == http.StatusOK {
 		t.Fatal("second LockModel should have failed but returned 200")
 	}
-	// "CONFLICT" is what cyoda-go emits today — `common.Conflict()` →
-	// `ErrCodeConflict` in `internal/common/error_codes.go`. cyoda-cloud
-	// likely uses a more specific code (e.g. MODEL_ALREADY_LOCKED) on this
-	// branch; the assertion will need to be widened or split when running
-	// the suite against live cloud. See #126 for the related cyoda-go-side
-	// observation that `Conflict()` unconditionally sets Retryable=true.
 	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
 		HTTPStatus: http.StatusConflict,
-		ErrorCode:  "CONFLICT",
+		ErrorCode:  "MODEL_ALREADY_LOCKED",
 	})
 }
 
