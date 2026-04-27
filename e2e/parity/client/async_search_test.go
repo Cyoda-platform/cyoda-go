@@ -7,6 +7,33 @@ import (
 	"testing"
 )
 
+func TestClient_GetAsyncSearchStatus_GET(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"searchJobStatus":"SUCCESSFUL","createTime":"2026-04-25T12:00:00.000Z","entitiesCount":2,"calculationTimeMillis":50,"expirationDate":"2026-04-26T12:00:00.000Z"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	status, err := c.GetAsyncSearchStatus(t, "job-abc-123")
+	if err != nil {
+		t.Fatalf("GetAsyncSearchStatus: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Errorf("method: got %q want GET", gotMethod)
+	}
+	if gotPath != "/api/search/async/job-abc-123/status" {
+		t.Errorf("path: got %q", gotPath)
+	}
+	if status != "SUCCESSFUL" {
+		t.Errorf("status: got %q want SUCCESSFUL", status)
+	}
+}
+
 func TestClient_SubmitAsyncSearch_POST(t *testing.T) {
 	var gotMethod, gotPath, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -783,6 +783,26 @@ func (c *Client) SubmitAsyncSearch(t *testing.T, modelName string, modelVersion 
 	return jobID, nil
 }
 
+// GetAsyncSearchStatus issues GET /api/search/async/{jobId}/status.
+// Returns the searchJobStatus field only: one of RUNNING, SUCCESSFUL,
+// FAILED, CANCELLED, NOT_FOUND.
+// Canonical: api/openapi.yaml /search/async/{jobId}/status.
+func (c *Client) GetAsyncSearchStatus(t *testing.T, jobID string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/status", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		SearchJobStatus string `json:"searchJobStatus"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode GetAsyncSearchStatus response: %w (body=%s)", err, string(raw))
+	}
+	return resp.SearchJobStatus, nil
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
