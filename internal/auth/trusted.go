@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -157,7 +158,16 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := h.trustedKeyStore.Register(tk); err != nil {
-		http.Error(w, fmt.Sprintf("failed to register key: %s", err.Error()), http.StatusInternalServerError)
+		// Forward classified AppErrors verbatim (e.g. 409 duplicate KID, 409
+		// registry-full from #34/2 and #34/7). Anything else is a 5xx —
+		// route through common.Internal so the body is the generic ticket
+		// shape and the raw error stays in the slog record (#68 item 14).
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		common.WriteError(w, r, common.Internal("register trusted key", err))
 		return
 	}
 
@@ -184,7 +194,7 @@ func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/invalidate
 	trimmed := strings.TrimSuffix(path, "/invalidate")
 	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
@@ -193,13 +203,15 @@ func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, _ *http.Req
 		return
 	}
 	if err := h.trustedKeyStore.Invalidate(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#68 item 14).
+		slog.Info("trusted-key invalidate: not found", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeBadRequest, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/reactivate
 	trimmed := strings.TrimSuffix(path, "/reactivate")
 	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
@@ -208,7 +220,9 @@ func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, _ *http.Req
 		return
 	}
 	if err := h.trustedKeyStore.Reactivate(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#68 item 14).
+		slog.Info("trusted-key reactivate: not found", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeBadRequest, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)

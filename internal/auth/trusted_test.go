@@ -6,11 +6,14 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func strPtr(s string) *string { return &s }
@@ -294,6 +297,142 @@ func TestTrustedKeysHandler_RegisterAcceptsValidKIDChars(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// errorReturningTrustedKeyStore wraps any TrustedKeyStore and forces specific
+// methods to return injected errors. Used by handler tests to verify error
+// translation without standing up a flaky storage backend.
+type errorReturningTrustedKeyStore struct {
+	inner          TrustedKeyStore
+	registerErr    error
+	deleteErr      error
+	invalidateErr  error
+	reactivateErr  error
+}
+
+func (s *errorReturningTrustedKeyStore) Register(tk *TrustedKey) error {
+	if s.registerErr != nil {
+		return s.registerErr
+	}
+	return s.inner.Register(tk)
+}
+func (s *errorReturningTrustedKeyStore) Get(kid string) (*TrustedKey, error) { return s.inner.Get(kid) }
+func (s *errorReturningTrustedKeyStore) List() []*TrustedKey                  { return s.inner.List() }
+func (s *errorReturningTrustedKeyStore) Delete(kid string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.inner.Delete(kid)
+}
+func (s *errorReturningTrustedKeyStore) Invalidate(kid string) error {
+	if s.invalidateErr != nil {
+		return s.invalidateErr
+	}
+	return s.inner.Invalidate(kid)
+}
+func (s *errorReturningTrustedKeyStore) Reactivate(kid string) error {
+	if s.reactivateErr != nil {
+		return s.reactivateErr
+	}
+	return s.inner.Reactivate(kid)
+}
+
+// TestTrustedKeysHandler_Register5xxDoesNotLeakRawError guards #68 item 14:
+// a backend persistence error must not echo into the HTTP response body. The
+// previous handler returned fmt.Sprintf("failed to register key: %s", err) at
+// status 500, leaking arbitrary internal error strings (potentially KV
+// connection details).
+func TestTrustedKeysHandler_Register5xxDoesNotLeakRawError(t *testing.T) {
+	store := &errorReturningTrustedKeyStore{
+		inner:       NewInMemoryTrustedKeyStore(),
+		registerErr: fmt.Errorf("postgres: connection to db.internal:5432 refused: secret-token-xyz"),
+	}
+	handler := NewTrustedKeysHandler(store)
+
+	body := registerTrustedKeyRequest{
+		KeyID:     "leak-test",
+		JWK:       generateTestJWK(t),
+		Audience:  "svc",
+		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body2 := rec.Body.String()
+	for _, leaked := range []string{"postgres", "db.internal", "5432", "secret-token-xyz", "connection"} {
+		if strings.Contains(body2, leaked) {
+			t.Errorf("response body leaked %q: %q", leaked, body2)
+		}
+	}
+}
+
+// TestTrustedKeysHandler_RegisterForwardsAppErrorStatus verifies that a 409
+// returned by the store (e.g. duplicate-KID after #34/7) reaches the client
+// as 409, not as 500.
+func TestTrustedKeysHandler_RegisterForwardsAppErrorStatus(t *testing.T) {
+	store := &errorReturningTrustedKeyStore{
+		inner:       NewInMemoryTrustedKeyStore(),
+		registerErr: common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted key with this KID already registered"),
+	}
+	handler := NewTrustedKeysHandler(store)
+
+	body := registerTrustedKeyRequest{
+		KeyID:     "dupe",
+		JWK:       generateTestJWK(t),
+		Audience:  "svc",
+		ValidFrom: strPtr("2026-01-01T00:00:00Z"),
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTrustedKeysHandler_Invalidate404DoesNotLeakRawError guards #68 item 14
+// for the invalidate 404 site.
+func TestTrustedKeysHandler_Invalidate404DoesNotLeakRawError(t *testing.T) {
+	store := &errorReturningTrustedKeyStore{
+		inner:         NewInMemoryTrustedKeyStore(),
+		invalidateErr: fmt.Errorf("storage backend leaks: secret-internal-detail"),
+	}
+	handler := NewTrustedKeysHandler(store)
+
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted/some-kid/invalidate", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "secret-internal-detail") {
+		t.Errorf("response leaked raw error: %q", rec.Body.String())
+	}
+}
+
+// TestTrustedKeysHandler_Reactivate404DoesNotLeakRawError guards #68 item 14
+// for the reactivate 404 site.
+func TestTrustedKeysHandler_Reactivate404DoesNotLeakRawError(t *testing.T) {
+	store := &errorReturningTrustedKeyStore{
+		inner:         NewInMemoryTrustedKeyStore(),
+		reactivateErr: fmt.Errorf("storage backend leaks: secret-internal-detail"),
+	}
+	handler := NewTrustedKeysHandler(store)
+
+	req := adminReq(http.MethodPost, "/oauth/keys/trusted/some-kid/reactivate", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "secret-internal-detail") {
+		t.Errorf("response leaked raw error: %q", rec.Body.String())
 	}
 }
 
