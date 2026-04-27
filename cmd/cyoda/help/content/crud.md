@@ -362,9 +362,14 @@ All entity read operations return entities in the standard envelope:
 
 ## OPTIMISTIC CONCURRENCY
 
-The `If-Match` header on update endpoints accepts a transaction ID. If the entity's `meta.transactionId` does not match the value in `If-Match`, the server returns `412 Precondition Failed`. This provides optimistic concurrency without distributed locking.
+Entity writes are protected by two independent guards:
 
-To use: read the entity (`GET /entity/{id}`), note `meta.transactionId`, include it in `If-Match` on the subsequent update.
+1. **Transaction-level (always on):** every write runs in a SERIALIZABLE transaction with first-committer-wins (SI+FCW) read-set validation at commit time. A concurrent committer who changes an entity this transaction read will cause this transaction to abort at commit with `409 CONFLICT, retryable: true` (see `errors.CONFLICT`). PostgreSQL's own SQLSTATE 40001 detection covers write-write races equivalently. Callers do not opt in to this; it cannot be disabled.
+2. **Cross-request precondition (opt-in via `If-Match`):** the `If-Match` header carries the `meta.transactionId` from the caller's earlier read in a separate HTTP request. If the entity's current `meta.transactionId` does not match, the server returns `412 Precondition Failed` (see `errors.ENTITY_MODIFIED`). This catches the race window between the caller's GET and PUT — a window the transaction-level guard cannot see, because the GET and PUT happen in different transactions.
+
+To use the cross-request precondition: read the entity (`GET /entity/{id}`), note `meta.transactionId`, include it in `If-Match` on the subsequent update. Omitting `If-Match` does not turn off transaction-level conflict detection, but it does mean the PUT will reconcile against whatever state the entity has at PUT-time — including any concurrent commits that happened between the caller's GET and PUT.
+
+See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 
 ## ERRORS
 
