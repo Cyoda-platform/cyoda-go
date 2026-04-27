@@ -249,6 +249,73 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	}
 }
 
+// TestKVTrustedKeyStore_RegisterRejectsDuplicateKID guards #34 item 7:
+// re-registering an existing KID must return 409 CONFLICT and leave the
+// original key intact. The previous code silently overwrote the existing
+// record, enabling key-replacement attacks if combined with #34 item 1
+// (unauthenticated admin endpoint, fixed in Bucket L).
+func TestKVTrustedKeyStore_RegisterRejectsDuplicateKID(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := systemCtx()
+	kvStore, err := factory.KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+
+	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
+	if err != nil {
+		t.Fatalf("NewKVTrustedKeyStore: %v", err)
+	}
+
+	originalKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	original := &auth.TrustedKey{
+		KID:       "dup-kid",
+		PublicKey: &originalKey.PublicKey,
+		Audience:  "original-aud",
+		Active:    true,
+		ValidFrom: time.Now().UTC(),
+	}
+	if err := store.Register(original); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+
+	// Attempt to overwrite with a different key — must be rejected.
+	imposterKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	imposter := &auth.TrustedKey{
+		KID:       "dup-kid",
+		PublicKey: &imposterKey.PublicKey,
+		Audience:  "imposter-aud",
+		Active:    true,
+		ValidFrom: time.Now().UTC(),
+	}
+	err = store.Register(imposter)
+	if err == nil {
+		t.Fatal("expected duplicate Register to be rejected, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeConflict {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeConflict)
+	}
+
+	// Original key must remain intact (not overwritten).
+	got, err := store.Get("dup-kid")
+	if err != nil {
+		t.Fatalf("Get after rejected duplicate: %v", err)
+	}
+	if got.Audience != "original-aud" {
+		t.Errorf("audience = %q, want %q (original was overwritten)", got.Audience, "original-aud")
+	}
+	if got.PublicKey.N.Cmp(originalKey.PublicKey.N) != 0 {
+		t.Error("modulus mismatch — original key was overwritten")
+	}
+}
+
 // TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys verifies that the store
 // rejects Register once the configured cap is reached — defence against
 // memory/storage exhaustion via runaway trusted-key registration (#34 item 2).

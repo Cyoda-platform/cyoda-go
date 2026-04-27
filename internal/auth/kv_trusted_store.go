@@ -131,10 +131,28 @@ func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
 }
 
 // Register adds a trusted key and persists it. Returns a 409 Conflict
-// AppError when the configured cap on registered trusted keys is reached.
+// AppError when the configured cap on registered trusted keys is reached, or
+// when a key with the same KID is already registered (#34 item 7) — the
+// previous silent-overwrite shape enabled key-replacement attacks combined
+// with the unauthenticated admin endpoint (#34 item 1). The existence check
+// also consults the KV backend so a duplicate registered on another node
+// (not yet visible in the in-memory cache) is detected.
 func (s *KVTrustedKeyStore) Register(tk *TrustedKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if _, exists := s.keys[tk.KID]; exists {
+		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted key with this KID already registered")
+	}
+	// Multi-node check: another node may have registered this KID since our
+	// last loadAll. Treat any non-error KV Get as "exists".
+	if data, err := s.kv.Get(s.ctx, trustedKeysNamespace, tk.KID); err == nil && len(data) > 0 {
+		// Hydrate the cache so subsequent reads on this node are consistent.
+		if existing, derr := deserializeTrustedKey(data); derr == nil {
+			s.keys[existing.KID] = existing
+		}
+		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted key with this KID already registered")
+	}
 
 	if s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
 		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full")
