@@ -13,14 +13,18 @@ import (
 // input validation errors from storage errors.
 var ErrInvalidFilterPath = errors.New("invalid filter path")
 
-// validateJSONPath enforces a strict dotted-identifier grammar on paths that
-// are interpolated into json_extract(..., '$.<path>') expressions.
+// validateJSONPath enforces an extended dotted-identifier grammar on paths
+// that are interpolated into json_extract(..., '$.<path>') expressions.
 //
-// Allowed: segments of ASCII letters, digits, and underscore, separated by
-// single '.' characters. At least one segment, no empty segments, no
-// leading/trailing dots. This rejects every character that could terminate
-// the surrounding single-quoted SQL literal or otherwise inject SQL —
-// notably ', ", \, ;, -, /, *, whitespace, and control bytes.
+// Allowed: segments of ASCII letters, digits, underscore, and hyphen ('-'),
+// separated by single '.' characters. At least one segment, no empty
+// segments, no leading/trailing dots. This rejects every character that
+// could terminate the surrounding single-quoted SQL literal or otherwise
+// inject SQL — notably ', ", \, ;, /, *, whitespace, and control bytes.
+//
+// Hyphens are safe inside single-quoted SQLite JSON-path literals: SQL
+// comments ('--') and other hyphen sequences only have special meaning
+// outside of string literals, so they cannot inject SQL through this path.
 //
 // The grammar is intentionally narrower than the full SQLite JSON path
 // grammar (which accepts bracketed indices and Unicode identifiers). If a
@@ -59,6 +63,12 @@ func isIdentByte(c byte) bool {
 	case c >= '0' && c <= '9':
 		return true
 	case c == '_':
+		return true
+	case c == '-':
+		// Hyphens are valid JSON key characters and safe inside single-quoted
+		// SQLite json_extract path literals — they cannot break out of the
+		// surrounding quote. SQL comments ('--') only have special meaning
+		// outside of string literals.
 		return true
 	}
 	return false

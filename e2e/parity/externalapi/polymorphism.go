@@ -73,7 +73,6 @@ func init() {
 // "expected object, got string". Cloud stores both branches.
 func RunExternalAPI_14_01_MixedObjectOrStringAtSamePath(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending controller decision: cyoda-go enforces strict structural type; POST with element where some-object=string returns 400 BAD_REQUEST. Cloud stores both object/string branches at the same path. worse-class divergence.")
 	d := driver.NewInProcess(t, fixture)
 	const sample = `{"label":"name","some-array":[{"some-label":"hello","some-object":{"some-key":"some-key","some-other-key":"some-other-key"}},{"some-label":"hello","some-object":"abc"}]}`
 	if err := d.CreateModelFromSample("polymorphic", 1, sample); err != nil {

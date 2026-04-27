@@ -71,6 +71,13 @@ func validateNode(model *ModelNode, data any, path string) []ValidationError {
 }
 
 func validateObject(model *ModelNode, data any, path string) []ValidationError {
+	// Polymorphic guard: when the node's TypeSet contains more than one type
+	// (i.e. the schema was built from merging structurally-different elements),
+	// accept data whose Go/JSON shape matches any participating type rather than
+	// requiring the dominant structural Kind.
+	if validatePolymorphicFallback(model, data) {
+		return nil
+	}
 	obj, ok := data.(map[string]any)
 	if !ok {
 		return []ValidationError{{Path: path, Message: fmt.Sprintf("expected object, got %T", data)}}
@@ -101,6 +108,10 @@ func validateObject(model *ModelNode, data any, path string) []ValidationError {
 }
 
 func validateArray(model *ModelNode, data any, path string) []ValidationError {
+	// Polymorphic guard: identical rationale as validateObject.
+	if validatePolymorphicFallback(model, data) {
+		return nil
+	}
 	arr, ok := data.([]any)
 	if !ok {
 		return []ValidationError{{Path: path, Message: fmt.Sprintf("expected array, got %T", data)}}
@@ -179,4 +190,41 @@ func joinPath(parent, child string) string {
 		return child
 	}
 	return parent + "." + child
+}
+
+// validatePolymorphicFallback returns true (accept) when a structural node
+// (KindObject or KindArray) has a non-empty TypeSet — evidence that a leaf
+// branch participated in a Merge — AND the data's Go/JSON shape matches one
+// of the leaf types in that TypeSet.
+//
+// Background: when an array element node is built by merging an object element
+// with a string element (e.g. some-array[0]={obj}, some-array[1]="abc"),
+// schema.Merge promotes Kind to KindObject and adds the String type from the
+// leaf into the merged node's TypeSet.  The TypeSet is therefore a record of
+// "which leaf types participated alongside the structural branches".  At
+// validation time, if a data value matches one of those leaf types it is a
+// valid polymorphic branch and must be accepted.
+func validatePolymorphicFallback(node *ModelNode, data any) bool {
+	types := node.Types().Types()
+	if len(types) == 0 {
+		// Pure structural node (no leaf participants) — normal dispatch applies.
+		return false
+	}
+	if data == nil {
+		return true // null is compatible with any type
+	}
+	// map/slice values belong to the structural branch — don't short-circuit;
+	// let the normal validateObject / validateArray path handle them.
+	switch data.(type) {
+	case map[string]any, []any:
+		return false
+	}
+	// Scalar values: accept if the inferred DataType matches any participating type.
+	dataType := inferDataType(data)
+	for _, mt := range types {
+		if IsAssignableTo(dataType, mt) {
+			return true
+		}
+	}
+	return false
 }
