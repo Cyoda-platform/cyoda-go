@@ -324,6 +324,22 @@ func (d *Driver) AwaitAsyncSearchResults(name string, version int, condition str
 	return d.client.AwaitAsyncSearchResults(d.t, name, version, condition, timeout)
 }
 
+// SyncSearch issues POST /api/search/direct/{name}/{version} with the
+// given condition JSON. Returns the matching entity results.
+// The sync search endpoint returns application/x-ndjson (one entity per line).
+// YAML action: sync_search.
+func (d *Driver) SyncSearch(name string, version int, condition string) ([]parityclient.EntityResult, error) {
+	return d.client.SyncSearch(d.t, name, version, condition)
+}
+
+// GetEntityBodyRaw issues GET /api/entity/{entityId} and returns the raw
+// response status and body bytes. Used by tests that need to decode the
+// entity JSON with non-default decoder settings (e.g. UseNumber for
+// big-number precision round-trips).
+func (d *Driver) GetEntityBodyRaw(id uuid.UUID) (int, []byte, error) {
+	return d.client.GetEntityBodyRaw(d.t, id)
+}
+
 // --- Type re-exports for test-side ergonomics ---
 
 // CollectionItem mirrors parityclient.CollectionItem so external callers

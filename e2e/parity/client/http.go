@@ -1034,6 +1034,30 @@ func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body st
 	return resp.StatusCode, raw, nil
 }
 
+// GetEntityBodyRaw issues GET /api/entity/{entityId} and returns the raw
+// HTTP status code and response body. Used by tests that need to decode the
+// entity JSON with non-default settings (e.g. UseNumber for big-number
+// round-trip precision tests).
+func (c *Client) GetEntityBodyRaw(t *testing.T, entityID uuid.UUID) (int, []byte, error) {
+	t.Helper()
+	path := "/api/entity/" + entityID.String()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // GetEntityChangesRaw issues GET /api/entity/{entityId}/changes and returns
 // status+body for negative-path assertions.
 func (c *Client) GetEntityChangesRaw(t *testing.T, id uuid.UUID) (int, []byte, error) {
