@@ -560,17 +560,41 @@ func (a *App) TokenSigner() *token.Signer                   { return a.tokenSign
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
 func (a *App) TxLifecycle() *lifecycle.Manager              { return a.txLifecycle }
 
+// gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
+// Matched to the HTTP server's drain deadline in cmd/cyoda/main.go so a
+// caller can predict total stop time as ~max(http, grpc) drain budgets.
+const gRPCGracefulStopBudget = 10 * time.Second
+
 // Close performs graceful shutdown of all backend resources.
+//
+// Order: storage first, then gRPC. The gRPC server can block waiting on
+// in-flight streams, so we want pools released before that blocks.
+//
+// gRPC is stopped via GracefulStop bounded by gRPCGracefulStopBudget; if
+// the budget elapses without graceful completion (a stuck stream, a
+// non-cooperative client) we fall back to a hard Stop and emit a slog.Warn
+// so operators can see the budget was hit (#68 item 19).
 func (a *App) Close() error {
 	slog.Info("shutting down")
-	// Close StoreFactory first so it can release connection pools before the
-	// gRPC stop, which can block waiting on in-flight streams.
 	var err error
 	if a.storeFactory != nil {
 		err = a.storeFactory.Close()
 	}
 	if a.grpcServer != nil {
-		a.grpcServer.GRPCServer().Stop() // hard stop — process is exiting, no need for graceful drain
+		done := make(chan struct{})
+		go func() {
+			a.grpcServer.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+			// Graceful drain completed within budget.
+		case <-time.After(gRPCGracefulStopBudget):
+			slog.Warn("gRPC graceful stop deadline exceeded; forcing",
+				"phase", "shutdown",
+				"budget", gRPCGracefulStopBudget.String())
+			a.grpcServer.GRPCServer().Stop()
+		}
 	}
 	return err
 }
