@@ -127,7 +127,11 @@ func New(cfg Config) *App {
 
 	factory, err := plugin.NewFactory(startupCtx, os.Getenv, factoryOpts...)
 	if err != nil {
-		panic(fmt.Sprintf("create storage factory for %s: %v", plugin.Name(), err))
+		slog.Error("startup failure",
+			"phase", "create-storage-factory",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
 	}
 
 	// Wire the schema.Apply replay function into the plugin factory so
@@ -168,14 +172,22 @@ func New(cfg Config) *App {
 	// postgres) don't implement Startable, so this is a no-op for them.
 	if s, ok := factory.(spi.Startable); ok {
 		if err := s.Start(startupCtx); err != nil {
-			panic(fmt.Sprintf("start storage factory for %s: %v", plugin.Name(), err))
+			slog.Error("startup failure",
+				"phase", "start-storage-factory",
+				"backend", plugin.Name(),
+				"error", err.Error())
+			os.Exit(1)
 		}
 		slog.Info("storage plugin started", "pkg", "app", "backend", plugin.Name())
 	}
 
 	txMgr, err := factory.TransactionManager(startupCtx)
 	if err != nil {
-		panic(fmt.Sprintf("get transaction manager from %s: %v", plugin.Name(), err))
+		slog.Error("startup failure",
+			"phase", "transaction-manager",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
 	}
 	a.transactionManager = txMgr
 
@@ -191,7 +203,10 @@ func New(cfg Config) *App {
 	var authSvc *auth.AuthService
 	if cfg.IAM.Mode == "jwt" {
 		if cfg.IAM.JWTSigningKey == "" {
-			panic("CYODA_JWT_SIGNING_KEY is required when IAM mode is jwt")
+			slog.Error("startup failure",
+				"phase", "jwt-signing-key",
+				"error", "CYODA_JWT_SIGNING_KEY is required when IAM mode is jwt")
+			os.Exit(1)
 		}
 		// Create a KV-backed trusted key store for persistence across restarts.
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
@@ -201,11 +216,17 @@ func New(cfg Config) *App {
 		})
 		kvStore, err := a.storeFactory.KeyValueStore(systemCtx)
 		if err != nil {
-			panic(fmt.Sprintf("failed to get KV store for trusted keys: %v", err))
+			slog.Error("startup failure",
+				"phase", "kv-store-trusted-keys",
+				"error", err.Error())
+			os.Exit(1)
 		}
 		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore)
 		if err != nil {
-			panic(fmt.Sprintf("failed to create KV trusted key store: %v", err))
+			slog.Error("startup failure",
+				"phase", "kv-trusted-store-bootstrap",
+				"error", err.Error())
+			os.Exit(1)
 		}
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
 			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
@@ -214,7 +235,10 @@ func New(cfg Config) *App {
 			TrustedKeyStore: trustedKeyStore,
 		})
 		if err != nil {
-			panic(fmt.Sprintf("failed to create auth service: %v", err))
+			slog.Error("startup failure",
+				"phase", "auth-service",
+				"error", err.Error())
+			os.Exit(1)
 		}
 		// The built-in IAM holds its signing keys in-process, so the validator
 		// reads public keys directly from the local key store. No loopback JWKS
@@ -240,7 +264,11 @@ func New(cfg Config) *App {
 				cfg.Bootstrap.ClientSecret,
 				roles,
 			); err != nil {
-				panic(fmt.Sprintf("failed to create bootstrap M2M client: %v", err))
+				slog.Error("startup failure",
+					"phase", "bootstrap-m2m-client",
+					"clientId", cfg.Bootstrap.ClientID,
+					"error", err.Error())
+				os.Exit(1)
 			}
 			slog.Info("bootstrap M2M client registered",
 				"pkg", "app",
@@ -267,7 +295,10 @@ func New(cfg Config) *App {
 	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, common.NewDefaultUUIDGenerator())
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
-		panic(fmt.Sprintf("failed to get async search store: %v", err))
+		slog.Error("startup failure",
+			"phase", "async-search-store",
+			"error", err.Error())
+		os.Exit(1)
 	}
 	a.searchService = search.NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore)
 
