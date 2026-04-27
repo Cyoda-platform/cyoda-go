@@ -435,16 +435,33 @@ func New(cfg Config) *App {
 	// Infrastructure routes (no auth, receives health flag)
 	internalapi.RegisterHealthRoutes(mux, healthFlag)
 
-	// Auth service routes: public endpoints (no auth needed)
+	// Auth service route registration is split into two strict groups so
+	// nothing administrative leaks into the public surface (#34 item 1):
+	//
+	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
+	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
+	//     and must be reachable by unauthenticated callers by protocol.
+	//
+	//   ADMIN (authMW + ROLE_ADMIN): /oauth/keys/*, /account/m2m, /account/m2m/*.
+	//     Two-layer enforcement: middleware.Auth populates UserContext (or
+	//     rejects with 401), then the handlers in internal/auth/ call the
+	//     requireAdmin guard which enforces ROLE_ADMIN (or rejects with 403).
+	//     Both layers are required — authMW alone would let any
+	//     authenticated caller manage signing keys.
+
+	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
 		mux.Handle("/.well-known/", authSvc.Handler())
 		mux.Handle("POST /oauth/token", authSvc.Handler())
 	}
 
-	// Admin routes (with auth)
+	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
-	// Auth admin routes: key management, M2M clients, trusted keys (requires auth)
+	// Admin auth endpoints: key management, M2M clients, trusted keys.
+	// The handler-side requireAdmin guard enforces ROLE_ADMIN; authMW here
+	// guarantees the UserContext is populated so the guard has something
+	// to check.
 	if authSvc != nil {
 		mux.Handle("/oauth/keys/", authMW(authSvc.AdminHandler()))
 		mux.Handle("/account/m2m/", authMW(authSvc.AdminHandler()))
