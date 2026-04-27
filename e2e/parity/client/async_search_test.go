@@ -7,6 +7,29 @@ import (
 	"testing"
 )
 
+func TestClient_CancelAsyncSearch_PUT(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"isCancelled":true,"cancelled":true,"currentSearchJobStatus":"CANCELLED"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "tok")
+	if err := c.CancelAsyncSearch(t, "job-abc-123"); err != nil {
+		t.Fatalf("CancelAsyncSearch: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("method: got %q want PUT", gotMethod)
+	}
+	if gotPath != "/api/search/async/job-abc-123/cancel" {
+		t.Errorf("path: got %q", gotPath)
+	}
+}
+
 func TestClient_GetAsyncSearchResults_GET(t *testing.T) {
 	var gotMethod, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -821,6 +821,18 @@ func (c *Client) GetAsyncSearchResults(t *testing.T, jobID string) (PagedEntityR
 	return page, nil
 }
 
+// CancelAsyncSearch issues PUT /api/search/async/{jobId}/cancel.
+// Returns an error if the request fails (non-2xx). The response body
+// is not consumed — only the HTTP status matters.
+// Canonical: api/openapi.yaml /search/async/{jobId}/cancel (PUT method
+// per Phase 0.1 wire probe, not POST as the plan originally assumed).
+func (c *Client) CancelAsyncSearch(t *testing.T, jobID string) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/cancel", jobID)
+	_, err := c.doRaw(t, http.MethodPut, path, "")
+	return err
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
