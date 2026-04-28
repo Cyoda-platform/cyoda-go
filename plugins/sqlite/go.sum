@@ -5,8 +5,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
-github.com/gofrs/flock v0.12.1 h1:MTLVXXHf8ekldpJk3AKicLij9MdwOWkZ+a/jHHZby9E=
-github.com/gofrs/flock v0.12.1/go.mod h1:9zxTsyu5xtJ9DK+1tFZyibEV7y3uwDxPPfbxeeHCoD0=
+github.com/gofrs/flock v0.13.0 h1:95JolYOvGMqeH31+FC7D2+uULf6mG61mEZ/A8dRYMzw=
+github.com/gofrs/flock v0.13.0/go.mod h1:jxeyy9R1auM5S6JYDBhDt+E2TCo7DkratH4Pgi8P+Z0=
 github.com/golang-migrate/migrate/v4 v4.19.1 h1:OCyb44lFuQfYXYLx1SCxPZQGU7mcaZ7gH9yH4jSFbBA=
 github.com/golang-migrate/migrate/v4 v4.19.1/go.mod h1:CTcgfjxhaUtsLipnLoQRWCrjYXycRz/g5+RWDuYgPrE=
 github.com/google/go-cmp v0.5.3/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
@@ -29,10 +29,10 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-sqlite3 v1.14.22 h1:2gZY6PC6kBnID23Tichd1K+Z0oS6nE/XwU+Vz/5o4kU=
 github.com/mattn/go-sqlite3 v1.14.22/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
-github.com/ncruces/go-sqlite3 v0.33.3 h1:6jCR3KuGvJSEwhaQrkHDGeIe2qCQ6nOUDNsPz7ZIotw=
-github.com/ncruces/go-sqlite3 v0.33.3/go.mod h1:t2Osfw0wcKzJTgv2EvrkTtVLqlbKTA5Yvwb2ypAlBcY=
-github.com/ncruces/go-sqlite3-wasm v1.1.1-0.20260409221933-87e4b35a38d0 h1:ymE9H30x1AyW5VfMNkJC9teuI2W1jjMsQS7kc6zl6Tg=
-github.com/ncruces/go-sqlite3-wasm v1.1.1-0.20260409221933-87e4b35a38d0/go.mod h1:/H3+JykPsfSlvKbOxNSx9kKwm3ecqQGzyCs1e9KkNsU=
+github.com/ncruces/go-sqlite3 v0.34.0 h1:q2I6wHTLWIoz6ehYkKdG5dGQc66eJv7ZGnekhvuMfK8=
+github.com/ncruces/go-sqlite3 v0.34.0/go.mod h1:qpBxsSdGPnO9K5OExuv5GEsrGQ7Rk6JsJFH6wn2DwwU=
+github.com/ncruces/go-sqlite3-wasm/v2 v2.1.35300 h1:cRdxCt3BDfMu0vfSdoqaAPD+dzIXPkGREjqyZMLN2Ak=
+github.com/ncruces/go-sqlite3-wasm/v2 v2.1.35300/go.mod h1:R2kJLPoSA/GBX/b8x7zwOq/KLAw6rLMY1l3Hi76SQIo=
 github.com/ncruces/julianday v1.0.0 h1:fH0OKwa7NWvniGQtxdJRxAgkBMolni2BjDHaWTxqt7M=
 github.com/ncruces/julianday v1.0.0/go.mod h1:Dusn2KvZrrovOMJuOt0TNXL6tB7U2E8kvza5fFc9G7g=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
