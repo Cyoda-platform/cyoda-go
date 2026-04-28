@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -185,8 +186,13 @@ func TestDelegatingAuthenticator_NoToken(t *testing.T) {
 		t.Fatal("expected error for missing Authorization header")
 	}
 
-	if !strings.Contains(err.Error(), "missing Authorization header") {
+	// Per #68 item 12 the caller-facing message is uniform; the specific
+	// reason ("missing-header") goes to the server log only.
+	if err.Error() != "authentication failed" {
 		t.Errorf("unexpected error message: %s", err.Error())
+	}
+	if !errors.Is(err, ErrAuthenticationFailed) {
+		t.Errorf("errors.Is(err, ErrAuthenticationFailed) = false; err = %v", err)
 	}
 }
 
@@ -220,8 +226,12 @@ func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
 		t.Fatal("expected error for invalid token")
 	}
 
-	if !strings.Contains(err.Error(), "token validation failed") {
+	// Per #68 item 12 the caller-facing message is uniform.
+	if err.Error() != "authentication failed" {
 		t.Errorf("unexpected error message: %s", err.Error())
+	}
+	if !errors.Is(err, ErrAuthenticationFailed) {
+		t.Errorf("errors.Is(err, ErrAuthenticationFailed) = false; err = %v", err)
 	}
 }
 
@@ -237,7 +247,11 @@ func TestDelegatingAuthenticator_NonBearerScheme(t *testing.T) {
 		t.Fatal("expected error for non-Bearer scheme")
 	}
 
-	if !strings.Contains(err.Error(), "expected Bearer scheme") {
+	// Per #68 item 12 the caller-facing message is uniform.
+	if err.Error() != "authentication failed" {
 		t.Errorf("unexpected error message: %s", err.Error())
+	}
+	if !errors.Is(err, ErrAuthenticationFailed) {
+		t.Errorf("errors.Is(err, ErrAuthenticationFailed) = false; err = %v", err)
 	}
 }
