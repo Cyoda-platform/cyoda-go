@@ -9,14 +9,15 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
-// Regression test for issue #99.
+// Regression tests for issues #99 and #68 (item 11).
 //
-// CountByState's IN-clause is built by string concatenation of `?`
-// placeholder markers (values themselves are bound — no injection risk
-// today). To keep it that way and to prevent attackers from ever pushing
-// past SQLite's bound-variable limit (SQLITE_MAX_VARIABLE_NUMBER, default
-// 999 on some builds), the plugin caps the list length and rejects
-// anything larger via ErrStateFilterTooLarge.
+// CountByState's IN-clause is built from `?` placeholder markers only;
+// state values are bound as SQL parameters (no interpolation). To stay
+// safely under SQLite's bound-variable limit (SQLITE_MAX_VARIABLE_NUMBER,
+// default 999 on builds that haven't been recompiled), the plugin caps
+// the list length at sqliteMaxVariableNumber − countByStateBaseParams
+// and rejects oversized lists via ErrStateFilterTooLarge — see the
+// derivation tests in count_by_state_in_clause_test.go.
 
 // TestCountByState_RejectsTooManyStates asserts the plugin rejects state
 // lists above the cap with ErrStateFilterTooLarge. Without the cap, the
