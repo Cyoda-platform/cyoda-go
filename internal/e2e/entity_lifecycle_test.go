@@ -302,6 +302,77 @@ func TestEntityLifecycle_TemporalAsAt(t *testing.T) {
 	}
 }
 
+// --- Test 8.8b: Temporal GET by transactionId (issue #150) ---
+
+// TestEntityLifecycle_TemporalByTransactionID exercises GET /entity/{id}
+// ?transactionId=<tx> through the full HTTP stack. Issue #150 fixed the
+// silent-drop of the query param; this test pins the behavior end-to-end:
+//   - the create-time txID returns the create snapshot (status=v1) even after
+//     two updates,
+//   - a bogus txID returns 404 ENTITY_NOT_FOUND (dictionary 12/neg/05).
+func TestEntityLifecycle_TemporalByTransactionID(t *testing.T) {
+	const model = "e2e-lifecycle-8b"
+
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1", "name": "lc8b-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
+				"CREATED": {}
+			}
+		}]
+	}`
+	setupModelWithWorkflow(t, model, wf)
+
+	entityID, createTxID := createEntityE2EWithTxID(t, model, 1, `{"name":"Henry","amount":50,"status":"v1"}`)
+
+	// Update twice — v1 → v2 → v3.
+	updEntityE2E := func(payload string) {
+		t.Helper()
+		path := fmt.Sprintf("/api/entity/JSON/%s", entityID)
+		resp := doAuth(t, http.MethodPut, path, payload)
+		readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("update: got %d", resp.StatusCode)
+		}
+	}
+	updEntityE2E(`{"name":"Henry","amount":75,"status":"v2"}`)
+	updEntityE2E(`{"name":"Henry","amount":100,"status":"v3"}`)
+
+	// Sanity: latest is v3.
+	if data := getEntityData(t, entityID, ""); data["status"] != "v3" {
+		t.Fatalf("sanity: latest status=%v, want v3", data["status"])
+	}
+
+	// At create-tx: v1.
+	status, body := getEntityAtTransactionID(t, entityID, createTxID)
+	if status != http.StatusOK {
+		t.Fatalf("GET ?transactionId=%s: got %d, want 200; body: %s", createTxID, status, body)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		t.Fatalf("decode at-tx envelope: %v", err)
+	}
+	atTxData, _ := envelope["data"].(map[string]any)
+	if atTxData["status"] != "v1" {
+		t.Errorf("at createTxID: status=%v, want v1", atTxData["status"])
+	}
+	atTxMeta, _ := envelope["meta"].(map[string]any)
+	if got, _ := atTxMeta["transactionId"].(string); got != createTxID {
+		t.Errorf("at-tx envelope meta.transactionId: got %q, want %q", got, createTxID)
+	}
+
+	// Bogus txID: 404 ENTITY_NOT_FOUND.
+	status, body = getEntityAtTransactionID(t, entityID, "00000000-0000-0000-0000-000000000000")
+	if status != http.StatusNotFound {
+		t.Fatalf("bogus tx: got %d, want 404; body: %s", status, body)
+	}
+	if !strings.Contains(body, "ENTITY_NOT_FOUND") {
+		t.Errorf("bogus tx: body missing ENTITY_NOT_FOUND code; got: %s", body)
+	}
+}
+
 // --- Test 8.9: Batch entity creation ---
 
 func TestEntityLifecycle_BatchCreate(t *testing.T) {

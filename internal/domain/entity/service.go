@@ -49,9 +49,16 @@ type EntityTransactionResult struct {
 }
 
 // GetOneEntityInput holds parameters for getting an entity.
+//
+// At most one of PointInTime and TransactionID may be set; the handler
+// rejects requests carrying both with HTTP 400 BAD_REQUEST. When
+// TransactionID is non-empty, GetEntity scans the entity's version
+// history and returns the version whose meta.TransactionID matches; if
+// no version matches, ENTITY_NOT_FOUND (404) is returned. Issue #150.
 type GetOneEntityInput struct {
-	EntityID    string
-	PointInTime *time.Time
+	EntityID      string
+	PointInTime   *time.Time
+	TransactionID string
 }
 
 // EntityEnvelope holds a single entity in its response envelope format.
@@ -239,7 +246,34 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}, nil
 }
 
-// GetEntity retrieves a single entity, optionally at a point in time.
+// getEntityByTransactionID returns the entity version whose meta.TransactionID
+// matches txID. It scans the version history (which carries the full Entity
+// payload per version) and returns the matching snapshot. spi.ErrNotFound is
+// returned both when the entity itself is unknown to the store and when no
+// version matches the supplied transactionId — the caller maps both to
+// ENTITY_NOT_FOUND (404), which mirrors Cyoda Cloud's contract for issue #150
+// (and matches dictionary scenario 12/neg/05). The caller treats other errors
+// as infrastructure failures (5xx).
+func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entityID, txID string) (*spi.Entity, error) {
+	versions, err := store.GetVersionHistory(ctx, entityID)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range versions {
+		if v.Entity == nil {
+			continue
+		}
+		if v.Entity.Meta.TransactionID == txID {
+			return v.Entity, nil
+		}
+	}
+	return nil, spi.ErrNotFound
+}
+
+// GetEntity retrieves a single entity, optionally at a point in time or
+// scoped to a specific transaction. Exactly one of input.PointInTime and
+// input.TransactionID may be set; the handler enforces mutual exclusion at
+// the request boundary.
 func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*EntityEnvelope, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
@@ -247,9 +281,12 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 	}
 
 	var ent *spi.Entity
-	if input.PointInTime != nil {
+	switch {
+	case input.TransactionID != "":
+		ent, err = getEntityByTransactionID(ctx, entityStore, input.EntityID, input.TransactionID)
+	case input.PointInTime != nil:
 		ent, err = entityStore.GetAsAt(ctx, input.EntityID, *input.PointInTime)
-	} else {
+	default:
 		ent, err = entityStore.Get(ctx, input.EntityID)
 	}
 	if err != nil {

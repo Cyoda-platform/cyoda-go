@@ -52,3 +52,14 @@ func getEntityData(t *testing.T, entityID, pointInTime string) map[string]any {
 		return nil
 	}
 }
+
+// getEntityAtTransactionID issues GET /api/entity/{id}?transactionId=<tx>
+// and returns the (status, body) pair. Used by tests that need to assert
+// both positive (200 + at-tx snapshot) and negative (404 + ENTITY_NOT_FOUND)
+// outcomes for the transactionId-scoped GET path. Issue #150.
+func getEntityAtTransactionID(t *testing.T, entityID, txID string) (int, string) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?transactionId=%s", entityID, txID)
+	resp := doAuth(t, http.MethodGet, path, "")
+	return resp.StatusCode, readBody(t, resp)
+}

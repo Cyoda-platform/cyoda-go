@@ -86,6 +86,16 @@ func doGetEntityWithPointInTime(t *testing.T, base, entityID string, pit time.Ti
 	return resp
 }
 
+func doGetEntityWithTransactionID(t *testing.T, base, entityID, txID string) *http.Response {
+	t.Helper()
+	url := fmt.Sprintf("%s/entity/%s?transactionId=%s", base, entityID, txID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get entity with transactionId request failed: %v", err)
+	}
+	return resp
+}
+
 func readBody(t *testing.T, resp *http.Response) []byte {
 	t.Helper()
 	defer resp.Body.Close()
@@ -1939,6 +1949,107 @@ func TestGetEntityPointInTimeBothParamsRejected(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	expectStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
+}
+
+// TestGetEntityByTransactionID verifies that GET /entity/{id}?transactionId=<tx>
+// returns the entity envelope as it stood at that transaction — not the
+// latest version. Issue #150: the handler previously parsed
+// params.TransactionId but never propagated it, so the query parameter was
+// silently dropped and the latest version was returned regardless.
+func TestGetEntityByTransactionID(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "TxGet", 1, `{"k":1}`)
+
+	// Create — capture the create transactionId.
+	entityID := createEntityAndGetID(t, srv.URL, "TxGet", 1, `{"k":1}`)
+	resp := doGetEntity(t, srv.URL, entityID)
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode current envelope: %v", err)
+	}
+	meta := envelope["meta"].(map[string]any)
+	createTxID, _ := meta["transactionId"].(string)
+	if createTxID == "" {
+		t.Fatalf("expected non-empty transactionId on freshly created entity")
+	}
+
+	// Update twice — k=1 → 2 → 3.
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Sanity check: latest is k=3.
+	resp = doGetEntity(t, srv.URL, entityID)
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var latestEnv map[string]any
+	json.Unmarshal(body, &latestEnv)
+	latestData := latestEnv["data"].(map[string]any)
+	if v, _ := latestData["k"].(float64); v != 3 {
+		t.Fatalf("sanity: latest k=%v, want 3", latestData["k"])
+	}
+
+	// GET with createTxID — must return the create-time snapshot k=1.
+	resp = doGetEntityWithTransactionID(t, srv.URL, entityID, createTxID)
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var atTxEnv map[string]any
+	if err := json.Unmarshal(body, &atTxEnv); err != nil {
+		t.Fatalf("decode at-tx envelope: %v", err)
+	}
+	atTxData := atTxEnv["data"].(map[string]any)
+	if v, _ := atTxData["k"].(float64); v != 1 {
+		t.Errorf("GET ?transactionId=%s: k=%v, want 1 (create-time snapshot)", createTxID, atTxData["k"])
+	}
+	atTxMeta := atTxEnv["meta"].(map[string]any)
+	if got, _ := atTxMeta["transactionId"].(string); got != createTxID {
+		t.Errorf("at-tx envelope meta.transactionId: got %q, want %q", got, createTxID)
+	}
+}
+
+// TestGetEntityByTransactionID_BogusReturns404 verifies that a transactionId
+// that doesn't appear in the entity's version history yields 404
+// ENTITY_NOT_FOUND. Issue #150 (dictionary 12/neg/05): cyoda-go previously
+// returned HTTP 200 with the latest entity because the query parameter was
+// dropped silently.
+func TestGetEntityByTransactionID_BogusReturns404(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "TxGetBogus", 1, `{"k":1}`)
+	entityID := createEntityAndGetID(t, srv.URL, "TxGetBogus", 1, `{"k":1}`)
+
+	resp := doGetEntityWithTransactionID(t, srv.URL, entityID, "00000000-0000-0000-0000-000000000000")
+	expectStatus(t, resp, http.StatusNotFound)
+	body := readBody(t, resp)
+	var apiErr struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &apiErr); err != nil {
+		t.Fatalf("decode error response: %v\nbody: %s", err, body)
+	}
+	if apiErr.Properties.ErrorCode != common.ErrCodeEntityNotFound {
+		t.Errorf("expected errorCode %q, got %q (body: %s)",
+			common.ErrCodeEntityNotFound, apiErr.Properties.ErrorCode, body)
+	}
+}
+
+// TestGetEntityByTransactionID_NonExistentEntityReturns404 verifies that a
+// transactionId-scoped GET on a non-existent entity yields 404
+// ENTITY_NOT_FOUND (mirrors the latest-GET path).
+func TestGetEntityByTransactionID_NonExistentEntityReturns404(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "TxGetMissing", 1, `{"k":1}`)
+	bogusEntityID := uuid.NewString()
+
+	resp := doGetEntityWithTransactionID(t, srv.URL, bogusEntityID, "00000000-0000-0000-0000-000000000001")
+	expectStatus(t, resp, http.StatusNotFound)
 	resp.Body.Close()
 }
 
