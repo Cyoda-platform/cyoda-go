@@ -254,7 +254,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 }
 
 func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetOneEntityParams) {
-	// Reject if both pointInTime and transactionId are set
+	// Reject if both pointInTime and transactionId are set — the two
+	// scopes are mutually exclusive on the dictionary contract.
 	if params.PointInTime != nil && params.TransactionId != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "cannot specify both pointInTime and transactionId"))
 		return
@@ -263,6 +264,13 @@ func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId 
 	input := GetOneEntityInput{
 		EntityID:    entityId.String(),
 		PointInTime: params.PointInTime,
+	}
+	// Propagate transactionId scope. Issue #150: previously this query
+	// param was parsed by the generated server interface but never plumbed
+	// into the service input, so the handler silently returned the latest
+	// entity regardless of transactionId.
+	if params.TransactionId != nil {
+		input.TransactionID = params.TransactionId.String()
 	}
 
 	envelope, err := h.GetEntity(r.Context(), input)
