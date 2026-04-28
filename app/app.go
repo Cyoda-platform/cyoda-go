@@ -567,6 +567,8 @@ const gRPCGracefulStopBudget = 10 * time.Second
 
 // Close performs graceful shutdown of all backend resources.
 //
+// Close is the single teardown path for storeFactory and the gRPC server;
+// Shutdown only releases background goroutines and cluster registration.
 // Order: storage first, then gRPC. The gRPC server can block waiting on
 // in-flight streams, so we want pools released before that blocks.
 //
@@ -599,7 +601,11 @@ func (a *App) Close() error {
 	return err
 }
 
-// Shutdown performs graceful cleanup of background goroutines and cluster resources.
+// Shutdown performs graceful cleanup of background goroutines and cluster
+// resources. The storeFactory is intentionally NOT closed here — Close()
+// is the single teardown path for that, so callers invoking Shutdown()
+// followed by Close() (the runServers sequence) close the factory
+// exactly once.
 func (a *App) Shutdown() {
 	if a.stopSearchReaper != nil {
 		close(a.stopSearchReaper)
@@ -610,11 +616,6 @@ func (a *App) Shutdown() {
 	if a.nodeRegistry != nil && a.config.Cluster.Enabled {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {
 			slog.Warn("failed to deregister from cluster", "pkg", "cluster", "err", err)
-		}
-	}
-	if a.storeFactory != nil {
-		if err := a.storeFactory.Close(); err != nil {
-			slog.Warn("failed to close store factory", "pkg", "app", "err", err)
 		}
 	}
 }
