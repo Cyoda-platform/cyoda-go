@@ -431,7 +431,62 @@ func TestChangeLevelInvalidValue(t *testing.T) {
 
 	resp = doChangeLevel(t, srv.URL, "CLInvalid", 1, "INVALID_LEVEL")
 	expectStatus(t, resp, http.StatusBadRequest)
+	commontest.ExpectErrorCode(t, resp, "INVALID_CHANGE_LEVEL")
 	resp.Body.Close()
+}
+
+// TestChangeLevelInvalidValue_PropsCarryStructuredDetail verifies that the
+// invalid-enum response carries entityName, entityVersion, suppliedValue, and
+// validValues in the problem-detail properties, so callers can branch on the
+// precondition without scraping the message string.
+func TestChangeLevelInvalidValue_PropsCarryStructuredDetail(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doImport(t, srv.URL, "CLProps", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	resp = doChangeLevel(t, srv.URL, "CLProps", 1, "wrong")
+	defer resp.Body.Close()
+	expectStatus(t, resp, http.StatusBadRequest)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, string(body))
+	}
+	if got, _ := pd.Properties["errorCode"].(string); got != "INVALID_CHANGE_LEVEL" {
+		t.Errorf("errorCode: want INVALID_CHANGE_LEVEL, got %q", got)
+	}
+	if got, _ := pd.Properties["entityName"].(string); got != "CLProps" {
+		t.Errorf("entityName: want CLProps, got %q", got)
+	}
+	// JSON numbers decode as float64.
+	if got, _ := pd.Properties["entityVersion"].(float64); got != 1 {
+		t.Errorf("entityVersion: want 1, got %v", got)
+	}
+	if got, _ := pd.Properties["suppliedValue"].(string); got != "wrong" {
+		t.Errorf("suppliedValue: want %q, got %q", "wrong", got)
+	}
+	validValuesRaw, ok := pd.Properties["validValues"].([]any)
+	if !ok {
+		t.Fatalf("validValues: want []any, got %T (body: %s)", pd.Properties["validValues"], string(body))
+	}
+	got := make(map[string]bool, len(validValuesRaw))
+	for _, v := range validValuesRaw {
+		s, _ := v.(string)
+		got[s] = true
+	}
+	for _, want := range []string{"ARRAY_LENGTH", "ARRAY_ELEMENTS", "TYPE", "STRUCTURAL"} {
+		if !got[want] {
+			t.Errorf("validValues missing %q; got %v", want, validValuesRaw)
+		}
+	}
 }
 
 func TestGetAvailableEntityModels(t *testing.T) {

@@ -90,11 +90,12 @@ func RunExternalAPI_12_02_CreateEntityWithIncompatibleType(t *testing.T, fixture
 
 // RunExternalAPI_12_03_SetChangeLevelInvalidEnum — dictionary 12/neg/03.
 // Dictionary expects HTTP 400, message contains "Invalid enum value".
-// worse: cyoda-go emits generic BAD_REQUEST despite the detail containing
-// the right message. Tracked by #130.
+// cyoda-go emits HTTP 400 INVALID_CHANGE_LEVEL since #130 — the detail
+// string lists the accepted values, and the problem-detail body carries
+// `entityName`, `entityVersion`, `suppliedValue`, `validValues` properties
+// for programmatic branching.
 func RunExternalAPI_12_03_SetChangeLevelInvalidEnum(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #130 — cyoda-go emits generic BAD_REQUEST for invalid change-level enum; dictionary expects an enum-validation-specific code. Discover-and-compare worse case.")
 	d := driver.NewInProcess(t, fixture)
 	if err := d.CreateModelFromSample("neg3", 1, `{"k":1}`); err != nil {
 		t.Fatalf("create: %v", err)
@@ -103,8 +104,6 @@ func RunExternalAPI_12_03_SetChangeLevelInvalidEnum(t *testing.T, fixture parity
 	if err != nil {
 		t.Fatalf("SetChangeLevelRaw: %v", err)
 	}
-	// Tighten to INVALID_CHANGE_LEVEL (or similar) once #130 lands.
-	// Detail string already contains valid-values list; only errorCode is generic.
 	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
 		HTTPStatus: http.StatusBadRequest,
 		ErrorCode:  "INVALID_CHANGE_LEVEL",

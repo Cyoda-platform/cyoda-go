@@ -430,6 +430,18 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 	}
 }
 
+// validChangeLevelValues returns the canonical set of accepted ChangeLevel
+// strings, used for the structured `validValues` property on
+// INVALID_CHANGE_LEVEL responses. Kept in sync with spi.ValidateChangeLevel.
+func validChangeLevelValues() []string {
+	return []string{
+		string(spi.ChangeLevelArrayLength),
+		string(spi.ChangeLevelArrayElements),
+		string(spi.ChangeLevelType),
+		string(spi.ChangeLevelStructural),
+	}
+}
+
 // SetChangeLevel sets the change level on a model.
 func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, changeLevel string) error {
 	store, err := h.factory.ModelStore(ctx)
@@ -452,7 +464,19 @@ func (h *Handler) SetChangeLevel(ctx context.Context, entityName, modelVersion, 
 
 	cl, err := spi.ValidateChangeLevel(changeLevel)
 	if err != nil {
-		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
+		// spi.ValidateChangeLevel returns a fmt.Errorf-wrapped message that
+		// happens to start with "BAD_REQUEST: " — strip it so the
+		// AppError.Operational prefix doesn't double up. The detail string
+		// is informative ("invalid change level %q; valid values: ...").
+		msg := strings.TrimPrefix(err.Error(), "BAD_REQUEST: ")
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeInvalidChangeLevel, msg)
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+			"suppliedValue": changeLevel,
+			"validValues":   validChangeLevelValues(),
+		}
+		return appErr
 	}
 
 	if err := store.SetChangeLevel(ctx, ref, cl); err != nil {
