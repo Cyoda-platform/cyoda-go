@@ -1,0 +1,820 @@
+openapi: 3.1.0
+info:
+  title: Cyoda Entity Search API
+  version: 1.0.0
+  description: |
+    API for searching and retrieving entities using both synchronous and asynchronous approaches.
+
+    This API provides endpoints for:
+    - Creating persistent async search jobs for large datasets
+    - Retrieving paginated results from search jobs
+    - Monitoring search job status
+    - Cancelling running search job operations
+    - Performing synchronous in-memory searches
+
+    For detailed documentation, examples, and usage guides, visit: https://docs.cyoda.net/guides/query-api/
+  contact:
+    name: Cyoda Support
+    url: https://cyoda.com/support
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Search
+    description: |
+      Provides endpoints for searching and retrieving entities using both synchronous and asynchronous approaches.
+
+      Key Features:
+      - Async search jobs for large datasets
+      - Real-time synchronous searches for immediate results
+      - Point-in-time querying capabilities
+      - Pagination support for large result sets
+
+      Search Methods:
+      1. Async Search (/search/async/*):
+         - Submits a persistent async search job
+         - The query is distributed across the cluster of Cyoda processing nodes
+         - Horizontally scalable - query time decreases linearly with cluster size
+         - Supports asynchronous processing of large datasets
+         - Allows status monitoring and cancellation
+         - Results can be retrieved in pages
+
+      2. Direct Search (/search/direct/{entityName}/{modelVersion}):
+         - Synchronous, in-memory search
+         - Designed for small to medium datasets
+         - Limited by maximum result set size (default: 1000, max: 10000)
+         - Non-distributed (executes on single node)
+         - Configurable timeout and result limits
+         - Returns immediate streaming results
+
+      All endpoints support:
+      - Point-in-time queries using ISO 8601 datetime format
+      - Complex search conditions using GroupCondition
+      - Model-specific searches by entity name and version
+
+      For detailed documentation and examples, visit: https://docs.cyoda.net/guides/query-api/
+
+paths:
+  /search/async/{entityName}/{modelVersion}:
+    post:
+      summary: Submit async search job
+      operationId: submitAsyncSearchJob
+      tags:
+        - Search
+      description: |
+        Submits an asynchronous search job for creating a persistent search result set for large datasets.
+
+        This endpoint initiates an asynchronous search operation that:
+        1. Validates the search criteria against the specified entity model
+        2. Creates a persistent search result set of matching entities
+        3. Returns a UUID that can be used to:
+           - Monitor the search job progress (/search/async/{jobId}/status)
+           - Retrieve paginated results (/search/async/{jobId})
+           - Cancel the search job if needed (/search/async/{jobId}/cancel)
+
+        Search jobs are temporary and have a limited lifetime:
+        - Each search job has an automatic expiration date
+        - Expired search jobs are automatically deleted by the system
+        - The expiration date can be retrieved using GET /search/async/{jobId}/status
+        - Plan to retrieve your data before the search job expires
+
+        The search job runs in the background, allowing handling of large datasets
+        without timeout concerns.
+
+        If no request body is provided or an empty request body is sent, all entities of the specified model and version will be included in the search results.
+
+        Query Structure:
+        The search condition is a tree of predicates that can include:
+        1. Simple conditions - search within entity data using JSONPath
+        2. Lifecycle conditions - search based on entity lifecycle (state, creationDate, previousTransition)
+        3. Group conditions - combine multiple conditions with AND/OR operators
+
+        Operator Types (Predicates)
+        Available Operations:
+
+        1. Basic Comparison
+        - EQUALS: Exact match
+        - NOT_EQUAL: Non-matching values
+        - IS_NULL, NOT_NULL: Null checks
+        - GREATER_THAN, LESS_THAN: Numeric/date comparisons
+        - GREATER_OR_EQUAL, LESS_OR_EQUAL: Inclusive comparisons
+        - BETWEEN, BETWEEN_INCLUSIVE: Range checks
+
+        2. String Operations (Case-Sensitive)
+        - CONTAINS: Substring match
+        - NOT_CONTAINS: Negative substring match
+        - STARTS_WITH, NOT_STARTS_WITH: Prefix matching
+        - ENDS_WITH, NOT_ENDS_WITH: Suffix matching
+        - MATCHES_PATTERN: Regular expression match
+        - LIKE: SQL-style pattern matching
+
+        3. Case-Insensitive String Operations
+        - IEQUALS, INOT_EQUAL: Case-insensitive equality
+        - ICONTAINS, INOT_CONTAINS: Case-insensitive substring
+        - ISTARTS_WITH, INOT_STARTS_WITH: Case-insensitive prefix
+        - IENDS_WITH, INOT_ENDS_WITH: Case-insensitive suffix
+
+        4. State Tracking
+        - IS_UNCHANGED: Field hasn't changed
+        - IS_CHANGED: Field has changed
+      parameters:
+        - name: entityName
+          in: path
+          required: true
+          description: Name of the entity model to search
+          schema:
+            type: string
+            example: nobel_prize
+        - name: modelVersion
+          in: path
+          required: true
+          description: Version of the entity model
+          schema:
+            type: integer
+            example: 1
+        - name: pointInTime
+          in: query
+          required: false
+          description: |
+            The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z').
+            Defaults to the current consistency time of the system if not provided.
+          schema:
+            type: string
+            format: date-time
+            example: "2035-01-01T12:00:00Z"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+            examples:
+              PhysicsNobelPrizeSearch:
+                summary: Find VALIDATED physics Nobel prizes with neural networks research (see https://docs.cyoda.net/guides/query-api/ for more examples)
+                value:
+                  type: group
+                  operator: AND
+                  conditions:
+                    - type: lifecycle
+                      field: state
+                      operatorType: EQUALS
+                      value: VALIDATED
+                    - type: simple
+                      jsonPath: "$.category"
+                      operatorType: EQUALS
+                      value: physics
+                    - type: simple
+                      jsonPath: "$.laureates[*].motivation"
+                      operatorType: CONTAINS
+                      value: neural networks
+              FamilyMemberSearch:
+                summary: Find married family members born after 1998 (see https://docs.cyoda.net/guides/query-api/ for more examples)
+                value:
+                  type: group
+                  operator: AND
+                  conditions:
+                    - type: simple
+                      jsonPath: "$.married"
+                      operatorType: EQUALS
+                      value: true
+                    - type: simple
+                      jsonPath: "$.birthdate"
+                      operatorType: GREATER_OR_EQUAL
+                      value: "1999-01-01"
+      responses:
+        '200':
+          description: Async search job submitted successfully. Note that the search job will expire after a certain period.
+          content:
+            application/json:
+              schema:
+                type: string
+                format: uuid
+              examples:
+                SearchJobUUID:
+                  summary: UUID of the submitted search job
+                  value: "3fa94f40-0cc0-11f0-ac28-ae468cd3ed16"
+        '404':
+          description: Entity model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                ModelNotFound:
+                  value:
+                    type: "about:blank"
+                    title: "Not Found"
+                    status: 404
+                    detail: "cannot find model entityName=nobel-prize, version=2"
+                    instance: "/api/search/async/nobel-prize/2"
+                    properties:
+                      entityName: "nobel-prize"
+                      entityVersion: 2
+
+  /search/async/{jobId}:
+    get:
+      summary: Retrieve paginated results from an async search job
+      operationId: getAsyncSearchResults
+      tags:
+        - Search
+      description: |
+        Retrieves a page of results from a previously submitted async search job.
+        To find out how many entities were found, call the search job status endpoint.
+
+        The results are sorted in descending order by entity id.
+
+        The results are returned in a paginated format, with:
+        - Configurable page size (default: 10)
+        - Zero-based page numbering
+        - Optional point-in-time specification for the data being retrieved
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          description: UUID of the search job to retrieve results from
+          schema:
+            type: string
+            format: uuid
+        - name: pageSize
+          in: query
+          required: false
+          description: Number of results per page
+          schema:
+            type: integer
+            default: 10
+        - name: pageNumber
+          in: query
+          required: false
+          description: Zero-based page number
+          schema:
+            type: integer
+            default: 0
+        - name: pointInTime
+          in: query
+          required: false
+          description: |
+            The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z').
+            Defaults to the point-in-time of the report if not provided.
+          schema:
+            type: string
+            format: date-time
+            example: "2035-01-01T12:00:00Z"
+      responses:
+        '200':
+          description: Successfully retrieved page of results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedEntityResults'
+              examples:
+                AsyncSearchResultPage:
+                  value:
+                    content:
+                      - type: ENTITY
+                        data:
+                          category: physics
+                          year: "2024"
+                          laureates:
+                            - firstname: John
+                              surname: Hopfield
+                              id: "1037"
+                              motivation: "\"for foundational discoveries and inventions that enable machine learning with artificial neural networks\""
+                              share: "2"
+                            - firstname: Geoffrey
+                              surname: Hinton
+                              id: "1038"
+                              motivation: "\"for foundational discoveries and inventions that enable machine learning with artificial neural networks\""
+                              share: "2"
+                        meta:
+                          id: "a9d92c64-3f49-11b2-ad21-125557264b03"
+                          state: VALIDATED
+                          creationDate: "2025-08-12T20:32:29.559Z"
+                          transitionForLatestSave: VALIDATE
+                    page:
+                      size: 2
+                      totalElements: 2
+                      totalPages: 1
+                      number: 0
+        '404':
+          description: Search job not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                SearchJobNotFound:
+                  value:
+                    type: "about:blank"
+                    title: "Not Found"
+                    status: 404
+                    detail: "cannot find search job by id=8824c480-c166-11ee-8f75-ae468cd3ed16"
+                    instance: "/api/search/async/8824c480-c166-11ee-8f75-ae468cd3ed16"
+                    properties:
+                      jobId: "8824c480-c166-11ee-8f75-ae468cd3ed16"
+        '400':
+          description: Invalid parameters (malformed point-in-time or invalid page parameters)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                InvalidDateTimeFormat:
+                  summary: Invalid DateTime Format
+                  value:
+                    type: "about:blank"
+                    title: "Bad Request"
+                    status: 400
+                    detail: "Invalid value '1234' for parameter 'pointInTime'"
+                    instance: "/api/search/async/8824c480-c166-11ee-8f75-ae468cd3ed16"
+                    properties:
+                      parameter: "pointInTime"
+                      invalidValue: "1234"
+
+  /search/async/{jobId}/status:
+    get:
+      summary: Get async search job status
+      operationId: getAsyncSearchStatus
+      tags:
+        - Search
+      description: |
+        Retrieves the current status of an async search job. The response includes:
+        - Current status (one of: RUNNING, FAILED, CANCELLED, SUCCESSFUL, NOT_FOUND)
+        - Number of entities collected
+        - Calculation time
+        - Creation timestamp
+        - Finish timestamp (if completed)
+        - Expiration date
+
+        Note: The NOT_FOUND status occurs in rare race conditions where the search job exists when the endpoint is called but is deleted during data retrieval.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          description: UUID of the search job to check status for
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Successfully retrieved search job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncSearchStatus'
+              examples:
+                RunningStatus:
+                  summary: Running Status
+                  value:
+                    searchJobStatus: RUNNING
+                    expirationDate: "2025-08-13T13:32:29.475018-07:00"
+                    entitiesCount: 0
+                    calculationTimeMillis: 300
+                    createTime: "2025-08-12T13:32:29.175018-07:00"
+                SuccessfulStatus:
+                  summary: Successful Status
+                  value:
+                    searchJobStatus: SUCCESSFUL
+                    expirationDate: "2025-08-13T13:32:29.475018-07:00"
+                    entitiesCount: 2500
+                    calculationTimeMillis: 2000
+                    createTime: "2025-08-12T13:32:27.475018-07:00"
+                    finishTime: "2025-08-12T13:32:29.475018-07:00"
+        '404':
+          description: Search job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                SearchJobStatusNotFound:
+                  value:
+                    type: "about:blank"
+                    title: "Not Found"
+                    status: 404
+                    detail: "cannot find search job by id=8824c480-c166-11ee-8f75-ae468cd3ed16"
+                    instance: "/api/search/async/8824c480-c166-11ee-8f75-ae468cd3ed16/status"
+                    properties:
+                      jobId: "8824c480-c166-11ee-8f75-ae468cd3ed16"
+
+  /search/async/{jobId}/cancel:
+    put:
+      summary: Cancel a running async search job
+      operationId: cancelAsyncSearch
+      tags:
+        - Search
+      description: |
+        Attempts to cancel a running async search job. The operation:
+        - Only succeeds if the search job is in RUNNING state
+        - Returns the cancellation result and final status
+        - Invalidates the search job entry if cancellation succeeds
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          description: UUID of the search job to cancel
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Cancellation request processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelAsyncSearch'
+              examples:
+                SuccessfulCancellation:
+                  summary: Successful Cancellation
+                  value:
+                    isCancelled: true
+                    currentSearchJobStatus: CANCELLED
+                FailedCancellation:
+                  summary: Failed Cancellation
+                  value:
+                    isCancelled: false
+                    currentSearchJobStatus: NOT_FOUND
+        '404':
+          description: Search job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                SearchJobCancelNotFound:
+                  value:
+                    type: "about:blank"
+                    title: "Not Found"
+                    status: 404
+                    detail: "cannot find search job by id=8824c480-c166-11ee-8f75-ae468cd3ed16"
+                    instance: "/api/search/async/8824c480-c166-11ee-8f75-ae468cd3ed16/cancel"
+                    properties:
+                      jobId: "8824c480-c166-11ee-8f75-ae468cd3ed16"
+        '400':
+          description: Search job is not in RUNNING state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                SearchJobNotRunning:
+                  value:
+                    type: "about:blank"
+                    title: "Bad Request"
+                    status: 400
+                    detail: "search job by id=8824c480-c166-11ee-8f75-ae468cd3ed16 is not running. current status=SUCCESSFUL"
+                    instance: "/api/search/async/8824c480-c166-11ee-8f75-ae468cd3ed16/cancel"
+                    properties:
+                      jobId: "8824c480-c166-11ee-8f75-ae468cd3ed16"
+                      currentStatus: SUCCESSFUL
+
+  /search/direct/{entityName}/{modelVersion}:
+    post:
+      summary: Perform synchronous entity search
+      operationId: searchEntities
+      tags:
+        - Search
+      description: |
+        Executes a direct, in-memory search for entities without creating a persistent search job. This endpoint:
+        - Returns results immediately as a streaming response
+        - Is optimized for smaller result sets
+        - Has configurable timeout and result limits
+        - Supports point-in-time querying
+
+        The results are sorted in descending order by entity id.
+
+        If no request body is provided or an empty request body is sent, all entities of the specified model and version
+        will be returned (subject to the limit parameter).
+
+        Best suited for:
+        - Interactive searches requiring immediate results
+        - Queries expected to return limited number of entities
+        - UI components with real-time search functionality
+
+        Limitations:
+        - Maximum result limit: 10000 entities (this will silently limit the result to 10000)
+        - Default result limit: 1000 entities
+        - Default timeout: 60000 milliseconds
+      parameters:
+        - name: entityName
+          in: path
+          required: true
+          description: Name of the entity model to search
+          schema:
+            type: string
+            example: nobel_prize
+        - name: modelVersion
+          in: path
+          required: true
+          description: Version of the entity model
+          schema:
+            type: integer
+            example: 1
+        - name: pointInTime
+          in: query
+          required: false
+          description: |
+            The point-in-time for searching the entities, in ISO 8601 format.
+            Defaults to the consistency time of the system if not provided.
+          schema:
+            type: string
+            format: date-time
+            example: "2035-01-01T12:00:00Z"
+        - name: limit
+          in: query
+          required: false
+          description: |
+            The maximum number of rows to return. You can specify a limit of up to 10000
+            and defaults to 1000 if not provided.
+          schema:
+            type: integer
+            default: 1000
+            maximum: 10000
+            example: 25
+        - name: timeoutMillis
+          in: query
+          required: false
+          description: |
+            The maximum time to wait for the query to complete, in milliseconds, and defaults to
+            60000 if not provided.
+          schema:
+            type: integer
+            default: 60000
+            example: 1000
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+            examples:
+              PhysicsNobelPrizeSearch:
+                summary: Find VALIDATED physics Nobel prizes with neural networks research (see https://docs.cyoda.net/guides/query-api/ for more examples)
+                value:
+                  type: group
+                  operator: AND
+                  conditions:
+                    - type: lifecycle
+                      field: state
+                      operatorType: EQUALS
+                      value: VALIDATED
+                    - type: simple
+                      jsonPath: "$.category"
+                      operatorType: EQUALS
+                      value: physics
+                    - type: simple
+                      jsonPath: "$.laureates[*].motivation"
+                      operatorType: CONTAINS
+                      value: neural networks
+              FamilyMemberSearch:
+                summary: Find married family members born after 1998 (see https://docs.cyoda.net/guides/query-api/ for more examples)
+                value:
+                  type: group
+                  operator: AND
+                  conditions:
+                    - type: simple
+                      jsonPath: "$.married"
+                      operatorType: EQUALS
+                      value: true
+                    - type: simple
+                      jsonPath: "$.birthdate"
+                      operatorType: GREATER_OR_EQUAL
+                      value: "1999-01-01"
+      responses:
+        '200':
+          description: Search executed successfully
+          content:
+            application/x-ndjson:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EntityResult'
+              examples:
+                SearchResults:
+                  value:
+                    - type: ENTITY
+                      data:
+                        category: physics
+                        year: "2024"
+                        laureates:
+                          - firstname: John
+                            surname: Hopfield
+                            id: "1037"
+                            motivation: "\"for foundational discoveries and inventions that enable machine learning with artificial neural networks\""
+                            share: "2"
+                          - firstname: Geoffrey
+                            surname: Hinton
+                            id: "1038"
+                            motivation: "\"for foundational discoveries and inventions that enable machine learning with artificial neural networks\""
+                            share: "2"
+                      meta:
+                        id: "a9d92c64-3f49-11b2-ad21-125557264b03"
+                        state: VALIDATED
+                        creationDate: "2025-08-12T20:32:29.559Z"
+                        transitionForLatestSave: VALIDATE
+        '400':
+          description: Invalid search parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                InvalidSearchParameters:
+                  value:
+                    type: "about:blank"
+                    title: "Bad Request"
+                    status: 400
+                    detail: "Limit 9999999 exceeds maximum allowed value of 10000"
+                    instance: "/api/search/direct/nobel-prize/2"
+        '404':
+          description: Entity model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                ModelNotFound:
+                  value:
+                    type: "about:blank"
+                    title: "Not Found"
+                    status: 404
+                    detail: "cannot find model entityName=nobel-prize, version=2"
+                    instance: "/api/search/direct/nobel-prize/2"
+                    properties:
+                      entityName: "nobel-prize"
+                      entityVersion: 2
+        '408':
+          description: Search timeout exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+              examples:
+                SearchTimedOut:
+                  value:
+                    type: "about:blank"
+                    title: "Request Timeout"
+                    status: 408
+                    detail: "your report description failed with: Report timed out after 5m.Query timed out. Cause may be high load or too much data to process. For large data sets, it is recommended to use async search jobs."
+                    instance: "/api/search/direct/nobel-prize/2"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from the authentication endpoint
+
+  schemas:
+    SearchRequest:
+      description: Request body for entity searches
+      $ref: './openapi-common.yml#/components/schemas/QueryCondition'
+
+    AsyncSearchState:
+      type: string
+      description: Status of an async search job
+      enum:
+        - RUNNING
+        - FAILED
+        - CANCELLED
+        - SUCCESSFUL
+        - NOT_FOUND
+
+    AsyncSearchStatus:
+      type: object
+      description: Status information for an async search job
+      required:
+        - searchJobStatus
+        - expirationDate
+        - entitiesCount
+        - calculationTimeMillis
+        - createTime
+      properties:
+        searchJobStatus:
+          $ref: '#/components/schemas/AsyncSearchState'
+        expirationDate:
+          type: string
+          format: date-time
+          description: When the search job will expire and be automatically deleted
+        entitiesCount:
+          type: integer
+          format: int64
+          description: Number of entities found by the search
+        calculationTimeMillis:
+          type: integer
+          format: int64
+          description: Time taken to calculate the search job in milliseconds
+        createTime:
+          type: string
+          format: date-time
+          description: When the search job was initiated
+        finishTime:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the search job completed (null if still running)
+
+    CancelAsyncSearch:
+      type: object
+      description: Result of an async search cancellation request
+      required:
+        - isCancelled
+        - currentSearchJobStatus
+      properties:
+        isCancelled:
+          type: boolean
+          description: Whether the cancellation was successful
+        currentSearchJobStatus:
+          $ref: '#/components/schemas/AsyncSearchState'
+
+    PagedEntityResults:
+      type: object
+      description: Paginated results from an async search job
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityResult'
+          description: List of entity results for the current page
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+
+    PageMetadata:
+      type: object
+      description: Pagination metadata
+      properties:
+        size:
+          type: integer
+          description: Number of elements in the current page
+        totalElements:
+          type: integer
+          format: int64
+          description: Total number of elements across all pages
+        totalPages:
+          type: integer
+          description: Total number of pages
+        number:
+          type: integer
+          description: Current page number (zero-based)
+
+    EntityResult:
+      type: object
+      description: A single entity result from a search
+      properties:
+        type:
+          type: string
+          description: Type of the result (typically "ENTITY")
+          example: ENTITY
+        data:
+          type: object
+          additionalProperties: true
+          description: The entity data as a JSON object
+        meta:
+          $ref: '#/components/schemas/EntityMetadata'
+
+    EntityMetadata:
+      type: object
+      description: Metadata about an entity
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier of the entity
+        state:
+          type: string
+          description: Current state of the entity in its workflow
+        creationDate:
+          type: string
+          format: date-time
+          description: When the entity was created
+        transitionForLatestSave:
+          type: string
+          description: The transition that triggered the latest save
+
+    ProblemDetail:
+      type: object
+      description: RFC 7807 Problem Details for HTTP APIs
+      properties:
+        type:
+          type: string
+          description: A URI reference that identifies the problem type
+          example: "about:blank"
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type
+          example: "Not Found"
+        status:
+          type: integer
+          description: The HTTP status code
+          example: 404
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence of the problem
+        instance:
+          type: string
+          description: A URI reference that identifies the specific occurrence of the problem
+        properties:
+          type: object
+          additionalProperties: true
+          description: Additional properties specific to the problem type

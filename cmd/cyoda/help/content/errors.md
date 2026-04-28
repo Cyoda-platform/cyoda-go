@@ -88,6 +88,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable — cluster node that owns the open transaction is unreachable
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node
 - `errors.TRANSITION_NOT_FOUND` — `404` — not retryable — requested workflow transition is not defined for the entity's current state
+- `errors.TRUSTED_KEY_NOT_FOUND` — `404` — not retryable — referenced trusted-key KID is not present in the registry (delete / invalidate / reactivate target missing)
 - `errors.TX_CONFLICT` — `409` — retryable — transaction aborted due to storage-level serialization conflict
 - `errors.TX_COORDINATOR_NOT_CONFIGURED` — `503` — not retryable — distributed transaction coordinator is disabled or misconfigured on this node
 - `errors.TX_NO_STATE` — `404` — not retryable — coordinator has no state record for the given transaction ID

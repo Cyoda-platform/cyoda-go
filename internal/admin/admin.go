@@ -12,6 +12,7 @@
 package admin
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -39,7 +40,11 @@ func NewHandler(opts Options) http.Handler {
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if err := opts.Readiness(); err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			// Generic client message; full detail logged server-side (#68 item 14).
+			// Readiness probe errors may surface connection details, secrets, or
+			// stack traces from the underlying probe — never reflect them.
+			slog.Warn("readiness probe failed", "err", err.Error())
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)

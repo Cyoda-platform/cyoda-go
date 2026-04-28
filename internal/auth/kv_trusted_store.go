@@ -7,13 +7,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net/http"
 	"sync"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 const trustedKeysNamespace = "trusted-keys"
+
+// defaultMaxTrustedKeys caps the number of trusted keys a store will accept by
+// default. Trusted keys are an admin-managed registry — a 100-key default
+// covers expected operational use (rotations, multi-issuer federation) and
+// defends against runaway registration if the admin endpoint is ever
+// misconfigured. Override via WithMaxTrustedKeys.
+const defaultMaxTrustedKeys = 100
+
+// KVTrustedKeyStoreOption configures a KVTrustedKeyStore at construction time.
+type KVTrustedKeyStoreOption func(*kvTrustedKeyStoreConfig)
+
+type kvTrustedKeyStoreConfig struct {
+	maxTrustedKeys int
+}
+
+// WithMaxTrustedKeys overrides the default cap on registered trusted keys.
+// Values <= 0 disable the cap (registration becomes unbounded — only use this
+// in tests that exercise the unbounded path; production deployments must keep
+// the default).
+func WithMaxTrustedKeys(n int) KVTrustedKeyStoreOption {
+	return func(c *kvTrustedKeyStoreConfig) {
+		c.maxTrustedKeys = n
+	}
+}
 
 // trustedKeyRecord is the JSON-serializable form of a TrustedKey.
 type trustedKeyRecord struct {
@@ -38,14 +64,26 @@ type KVTrustedKeyStore struct {
 	// because the TrustedKeyStore interface does not accept context parameters.
 	// This context must never carry cancellation or deadlines.
 	ctx context.Context
+	// maxTrustedKeys is the cap enforced by Register; <=0 means unbounded.
+	maxTrustedKeys int
 }
 
-// NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys from the KV backend.
-func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore) (*KVTrustedKeyStore, error) {
+// NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
+// from the KV backend. Pass WithMaxTrustedKeys to override the default cap.
+func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVTrustedKeyStoreOption) (*KVTrustedKeyStore, error) {
+	cfg := kvTrustedKeyStoreConfig{maxTrustedKeys: defaultMaxTrustedKeys}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	s := &KVTrustedKeyStore{
 		keys: make(map[string]*TrustedKey),
 		kv:   kv,
-		ctx:  ctx,
+		// context.WithoutCancel ensures the long-lived store ctx never propagates
+		// a cancellation or deadline from the caller (#34 item 5). Defence in
+		// depth: a future caller passing a request-scoped ctx would otherwise
+		// silently abort KV operations on request completion.
+		ctx:            context.WithoutCancel(ctx),
+		maxTrustedKeys: cfg.maxTrustedKeys,
 	}
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
@@ -92,10 +130,28 @@ func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
 	return s.kv.Put(s.ctx, trustedKeysNamespace, tk.KID, data)
 }
 
-// Register adds a trusted key and persists it.
+// Register adds or replaces a trusted key and persists it. Per the cyoda
+// cloud trusted-key contract this is an upsert keyed on KID — re-registering
+// an existing KID atomically replaces the JWK material under the same record,
+// which makes the endpoint idempotent / retry-safe during key rotation.
+//
+// 409 Conflict is reserved for the registry-full guard (#34 item 2). The
+// full cloud contract also returns 409 on cross-tenant KID collision; the
+// cyoda-go store does not yet thread tenant through the registry, so that
+// branch is tracked for v0.7.0 (full replace/rotation per cloud contract).
+//
+// The cap check only fires on insert (new KID), not on upsert — replacing
+// an existing record does not grow the registry, and rotating against a
+// cap-saturated registry would otherwise erroneously fail with
+// "registry full".
 func (s *KVTrustedKeyStore) Register(tk *TrustedKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	_, exists := s.keys[tk.KID]
+	if !exists && s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
+		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full")
+	}
 
 	copied := copyTrustedKey(tk)
 	if err := s.persist(copied); err != nil {
@@ -221,9 +277,13 @@ func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
 		return nil, fmt.Errorf("invalid e value: %w", err)
 	}
 
+	eVal, err := validateRSAPublicExponent(new(big.Int).SetBytes(eBytes))
+	if err != nil {
+		return nil, fmt.Errorf("invalid e value: %w", err)
+	}
 	pubKey := &rsa.PublicKey{
 		N: new(big.Int).SetBytes(nBytes),
-		E: int(new(big.Int).SetBytes(eBytes).Int64()),
+		E: eVal,
 	}
 
 	validFrom, err := time.Parse(time.RFC3339Nano, rec.ValidFrom)

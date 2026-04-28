@@ -5,12 +5,24 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
+
+// trustedKIDPattern matches the KID character/length whitelist enforced at the
+// trusted-key registration handler boundary (#34 item 3). The set
+// (alphanumeric plus '.', '_', '-') covers RFC-style key identifiers without
+// permitting path-traversal segments, control characters, or unbounded length.
+var trustedKIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,256}$`)
 
 // registerTrustedKeyRequest is the JSON body for POST /oauth/keys/trusted.
 // Matches Cyoda Cloud's RegisterTrustedKeyRequest schema.
@@ -104,8 +116,8 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if req.KeyID == "" {
-		http.Error(w, `{"error":"keyId is required"}`, http.StatusBadRequest)
+	if !trustedKIDPattern.MatchString(req.KeyID) {
+		http.Error(w, `{"error":"invalid keyId: must match ^[a-zA-Z0-9._-]{1,256}$"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -146,7 +158,16 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := h.trustedKeyStore.Register(tk); err != nil {
-		http.Error(w, fmt.Sprintf("failed to register key: %s", err.Error()), http.StatusInternalServerError)
+		// Forward classified AppErrors verbatim (e.g. 409 registry-full
+		// from #34/2). Anything else is a 5xx — route through
+		// common.Internal so the body is the generic ticket shape and the
+		// raw error stays in the slog record (#68 item 14).
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		common.WriteError(w, r, common.Internal("register trusted key", err))
 		return
 	}
 
@@ -158,20 +179,24 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request, path string) {
 	keyID := extractKeyID(path, "/oauth/keys/trusted/")
 	if keyID == "" {
 		http.Error(w, "missing key ID", http.StatusBadRequest)
 		return
 	}
 	if err := h.trustedKeyStore.Delete(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#34 item 6).
+		// errorCode TRUSTED_KEY_NOT_FOUND so the 404 is programmatically
+		// distinguishable from BAD_REQUEST 400s (#34/6 follow-up).
+		slog.Info("trusted-key delete: not found", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/invalidate
 	trimmed := strings.TrimSuffix(path, "/invalidate")
 	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
@@ -180,13 +205,17 @@ func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, _ *http.Req
 		return
 	}
 	if err := h.trustedKeyStore.Invalidate(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#68 item 14).
+		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
+		// (#34/6 follow-up).
+		slog.Info("trusted-key invalidate: not found", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/reactivate
 	trimmed := strings.TrimSuffix(path, "/reactivate")
 	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
@@ -195,7 +224,11 @@ func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, _ *http.Req
 		return
 	}
 	if err := h.trustedKeyStore.Reactivate(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#68 item 14).
+		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
+		// (#34/6 follow-up).
+		slog.Info("trusted-key reactivate: not found", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -260,9 +293,35 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	}
 
 	n := new(big.Int).SetBytes(nBytes)
-	e := int(new(big.Int).SetBytes(eBytes).Int64())
+	eBig := new(big.Int).SetBytes(eBytes)
+	e, err := validateRSAPublicExponent(eBig)
+	if err != nil {
+		return nil, err
+	}
 
 	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+// validateRSAPublicExponent enforces the integrity invariants on an RSA
+// public-key exponent (#34 item 4): positive, fits in int, and odd. RFC 3447
+// allows e in [3, 2^256-1] and the practical universe of public exponents
+// (3, 17, 65537) all fit comfortably; rejecting anything that overflows int
+// avoids the silent-truncation hazard at int(big.Int.Int64()) call sites.
+func validateRSAPublicExponent(e *big.Int) (int, error) {
+	if e.Sign() <= 0 {
+		return 0, fmt.Errorf("rsa exponent must be positive")
+	}
+	if !e.IsInt64() {
+		return 0, fmt.Errorf("rsa exponent does not fit in int64")
+	}
+	v := e.Int64()
+	if v > int64(math.MaxInt) {
+		return 0, fmt.Errorf("rsa exponent does not fit in int")
+	}
+	if v&1 == 0 {
+		return 0, fmt.Errorf("rsa exponent must be odd")
+	}
+	return int(v), nil
 }
 
 // toTrustedKeyInfoResponse converts a TrustedKey to its JSON response representation.
