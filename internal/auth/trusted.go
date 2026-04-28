@@ -125,7 +125,7 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	}
 
 	if !trustedKIDPattern.MatchString(req.KeyID) {
-		slog.Info("trusted key register: invalid keyId format", "kid", req.KeyID)
+		slog.Info("trusted key register: invalid keyId format", "pkg", "auth", "kid", req.KeyID)
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return
@@ -188,7 +188,7 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Debug("failed to encode response", "error", err)
+		slog.Debug("failed to encode response", "pkg", "auth", "error", err)
 	}
 }
 
@@ -201,7 +201,7 @@ func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request
 		// Generic client message; full detail logged server-side (#34 item 6).
 		// errorCode TRUSTED_KEY_NOT_FOUND so the 404 is programmatically
 		// distinguishable from BAD_REQUEST 400s (#34/6 follow-up).
-		slog.Info("trusted-key delete: not found", "kid", keyID, "err", err.Error())
+		slog.Info("trusted-key delete: not found", "pkg", "auth", "kid", keyID, "err", err.Error())
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
@@ -219,7 +219,7 @@ func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, r *http.Req
 		// Generic client message; full detail logged server-side (#68 item 14).
 		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
 		// (#34/6 follow-up).
-		slog.Info("trusted-key invalidate: not found", "kid", keyID, "err", err.Error())
+		slog.Info("trusted-key invalidate: not found", "pkg", "auth", "kid", keyID, "err", err.Error())
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
@@ -237,7 +237,7 @@ func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Req
 		// Generic client message; full detail logged server-side (#68 item 14).
 		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
 		// (#34/6 follow-up).
-		slog.Info("trusted-key reactivate: not found", "kid", keyID, "err", err.Error())
+		slog.Info("trusted-key reactivate: not found", "pkg", "auth", "kid", keyID, "err", err.Error())
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
@@ -251,7 +251,7 @@ func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Req
 func validateLifecycleKID(w http.ResponseWriter, r *http.Request, path, prefix string) (string, bool) {
 	keyID := extractKeyID(path, prefix)
 	if !trustedKIDPattern.MatchString(keyID) {
-		slog.Info("trusted key lifecycle: invalid keyId format", "kid", keyID, "path", r.URL.Path)
+		slog.Info("trusted key lifecycle: invalid keyId format", "pkg", "auth", "kid", keyID, "path", r.URL.Path)
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return "", false

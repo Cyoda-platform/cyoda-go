@@ -5,10 +5,13 @@ import (
 	"crypto/rsa"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // --- Types ---
@@ -189,20 +192,41 @@ func (s *InMemoryKeyStore) Reactivate(kid string) error {
 
 // InMemoryTrustedKeyStore stores trusted external public keys in memory.
 type InMemoryTrustedKeyStore struct {
-	mu   sync.RWMutex
-	keys map[string]*TrustedKey
+	mu             sync.RWMutex
+	keys           map[string]*TrustedKey
+	maxTrustedKeys int
 }
 
-// NewInMemoryTrustedKeyStore creates a new InMemoryTrustedKeyStore.
-func NewInMemoryTrustedKeyStore() *InMemoryTrustedKeyStore {
-	return &InMemoryTrustedKeyStore{
-		keys: make(map[string]*TrustedKey),
+// InMemoryTrustedKeyStoreOption configures an InMemoryTrustedKeyStore at
+// construction time. Mirrors the KV-backed store's option pattern so tests
+// and callers see a single contract for capping the trusted-key registry.
+type InMemoryTrustedKeyStoreOption func(*InMemoryTrustedKeyStore)
+
+// WithInMemoryMaxTrustedKeys overrides the default cap on registered trusted
+// keys for the in-memory store. Values <= 0 disable the cap.
+func WithInMemoryMaxTrustedKeys(n int) InMemoryTrustedKeyStoreOption {
+	return func(s *InMemoryTrustedKeyStore) {
+		s.maxTrustedKeys = n
 	}
+}
+
+// NewInMemoryTrustedKeyStore creates a new InMemoryTrustedKeyStore. The
+// default cap matches KVTrustedKeyStore's defaultMaxTrustedKeys; pass
+// WithInMemoryMaxTrustedKeys to override (e.g. in tests exercising the cap).
+func NewInMemoryTrustedKeyStore(opts ...InMemoryTrustedKeyStoreOption) *InMemoryTrustedKeyStore {
+	s := &InMemoryTrustedKeyStore{
+		keys:           make(map[string]*TrustedKey),
+		maxTrustedKeys: defaultMaxTrustedKeys,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Register adds a trusted key. Re-registering an existing KID is an
 // idempotent upsert and never trips the registry cap; only a brand-new KID
-// at full capacity is rejected with ErrTrustedKeyRegistryFull. The capacity
+// at full capacity is rejected with a 409 Conflict AppError. The capacity
 // check and the insert are performed under a single Lock so concurrent
 // registrations cannot collectively exceed the cap. This mirrors
 // KVTrustedKeyStore.Register so that tests using the in-memory variant
@@ -210,8 +234,8 @@ func NewInMemoryTrustedKeyStore() *InMemoryTrustedKeyStore {
 func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.keys[tk.KID]; !exists && len(s.keys) >= MaxTrustedKeys {
-		return ErrTrustedKeyRegistryFull
+	if _, exists := s.keys[tk.KID]; !exists && s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
+		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full")
 	}
 	s.keys[tk.KID] = copyTrustedKey(tk)
 	return nil

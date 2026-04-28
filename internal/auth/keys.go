@@ -145,7 +145,7 @@ func (h *KeysHandler) deleteKeyPair(w http.ResponseWriter, r *http.Request, keyI
 	if err := h.keyStore.Delete(keyID); err != nil {
 		// Do not echo attacker-controllable keyID in the response body —
 		// log it server-side at INFO instead so operators can correlate.
-		slog.Info("key pair delete: not found", "kid", keyID)
+		slog.Info("key pair delete: not found", "pkg", "auth", "kid", keyID)
 		common.WriteError(w, r, common.Operational(
 			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))
 		return
@@ -155,7 +155,7 @@ func (h *KeysHandler) deleteKeyPair(w http.ResponseWriter, r *http.Request, keyI
 
 func (h *KeysHandler) invalidateKeyPair(w http.ResponseWriter, r *http.Request, keyID string) {
 	if err := h.keyStore.Invalidate(keyID); err != nil {
-		slog.Info("key pair invalidate: not found", "kid", keyID)
+		slog.Info("key pair invalidate: not found", "pkg", "auth", "kid", keyID)
 		common.WriteError(w, r, common.Operational(
 			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))
 		return
@@ -165,7 +165,7 @@ func (h *KeysHandler) invalidateKeyPair(w http.ResponseWriter, r *http.Request, 
 
 func (h *KeysHandler) reactivateKeyPair(w http.ResponseWriter, r *http.Request, keyID string) {
 	if err := h.keyStore.Reactivate(keyID); err != nil {
-		slog.Info("key pair reactivate: not found", "kid", keyID)
+		slog.Info("key pair reactivate: not found", "pkg", "auth", "kid", keyID)
 		common.WriteError(w, r, common.Operational(
 			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))
 		return
