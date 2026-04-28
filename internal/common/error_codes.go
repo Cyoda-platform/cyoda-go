@@ -24,6 +24,7 @@ const (
 	// for a condition's literal-vs-field mismatch.
 	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
 	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
 	ErrCodePolymorphicSlot      = "POLYMORPHIC_SLOT"
 	ErrCodeUnauthorized         = "UNAUTHORIZED"
 	ErrCodeForbidden            = "FORBIDDEN"

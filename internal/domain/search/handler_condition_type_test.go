@@ -150,14 +150,18 @@ func TestSearch_ConditionType_IntegerFieldWithStringValue_Rejects(t *testing.T) 
 	}
 }
 
-// TestSearch_ConditionType_UnknownField_Accepted verifies that a search
-// condition referencing an unknown field path is not rejected by the
-// type-checking pass (unknown paths have no type constraint).
-func TestSearch_ConditionType_UnknownField_Accepted(t *testing.T) {
+// TestSearch_ConditionType_UnknownField_Rejected verifies that a search
+// condition referencing a field absent from the model schema is
+// rejected with HTTP 400 and errorCode INVALID_FIELD_PATH once
+// pre-execution path validation is in effect (issue #77). Type-checking
+// still has no opinion on unknown paths, so the rejection comes from the
+// field-path validator and the response body explicitly names the
+// offending path so clients can correct their request without a
+// support round-trip.
+func TestSearch_ConditionType_UnknownField_Rejected(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "simpleModel", 1, `{"name": "Alice"}`)
 
-	// Unknown field "$.unknown" — no type constraint, should not reject.
 	const condition = `{
 		"type":"simple","jsonPath":"$.unknown","operatorType":"EQUALS","value":"whatever"
 	}`
@@ -165,8 +169,23 @@ func TestSearch_ConditionType_UnknownField_Accepted(t *testing.T) {
 	defer resp.Body.Close()
 	body := readBody(t, resp)
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unknown field path: expected 200, got %d; body: %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field path: expected 400, got %d; body: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "$.unknown") {
+		t.Errorf("expected response body to name the unknown path; got: %s", body)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("parse response body: %v; raw: %s", err, body)
+	}
+	props, _ := obj["properties"].(map[string]any)
+	if props == nil {
+		t.Fatalf("expected properties in error response; body: %s", body)
+	}
+	errorCode, _ := props["errorCode"].(string)
+	if errorCode != "INVALID_FIELD_PATH" {
+		t.Errorf("errorCode = %q, want INVALID_FIELD_PATH; body: %s", errorCode, body)
 	}
 }
 

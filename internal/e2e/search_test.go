@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
 // --- Search helpers ---
@@ -110,4 +112,60 @@ func TestSearch_ORGroup(t *testing.T) {
 		}
 		t.Errorf("expected 2 results (Alice + Bob), got %d: %v", len(results), strings.Join(names, ", "))
 	}
+}
+
+// TestSearch_UnknownFieldPath_Returns400_InvalidFieldPath verifies the
+// pre-execution field-path validator surfaces a dedicated INVALID_FIELD_PATH
+// errorCode (not the generic BAD_REQUEST) when a search condition references
+// a JSONPath that is absent from the model's locked schema. Programmatic
+// clients branch on this code to distinguish unknown-field errors from
+// other 400s (malformed JSON, type mismatch). See PR #162 / issue #77.
+func TestSearch_UnknownFieldPath_Returns400_InvalidFieldPath(t *testing.T) {
+	const model = "e2e-search-invalid-field-path"
+	setupSearchModel(t, model)
+
+	// Seed at least one entity so the model schema is populated with the
+	// known fields (name, amount, status). The seeded entity is irrelevant
+	// to the assertion — the validator runs before any matching.
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+
+	// Reference an unknown JSONPath. The validator must reject before
+	// touching the storage layer.
+	const badCondition = `{"type":"simple","jsonPath":"$.unknownField","operatorType":"EQUALS","value":"whatever"}`
+	path := fmt.Sprintf("/api/search/direct/%s/1", model)
+	resp := doAuth(t, http.MethodPost, path, badCondition)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body := readBody(t, resp)
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_FIELD_PATH")
+
+	// Body must name the offending path so clients can correct without
+	// a support round-trip.
+	body := readBody(t, resp)
+	if !strings.Contains(body, "$.unknownField") {
+		t.Errorf("expected response detail to name the unknown path; body: %s", body)
+	}
+}
+
+// TestSearch_AsyncSubmit_UnknownFieldPath_Returns400_InvalidFieldPath
+// verifies the async submission path applies the same field-path
+// validator and surfaces the same dedicated INVALID_FIELD_PATH code.
+func TestSearch_AsyncSubmit_UnknownFieldPath_Returns400_InvalidFieldPath(t *testing.T) {
+	const model = "e2e-search-invalid-field-path-async"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Bob","amount":42,"status":"active"}`)
+
+	const badCondition = `{"type":"simple","jsonPath":"$.absentField","operatorType":"EQUALS","value":"x"}`
+	path := fmt.Sprintf("/api/search/async/%s/1", model)
+	resp := doAuth(t, http.MethodPost, path, badCondition)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body := readBody(t, resp)
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_FIELD_PATH")
 }

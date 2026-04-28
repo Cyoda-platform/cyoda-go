@@ -150,6 +150,14 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 
 	results, err := h.searchSvc.Search(r.Context(), modelRef, cond, opts)
 	if err != nil {
+		// Pre-execution validation (issue #77) returns a classified
+		// *common.AppError directly; forward it so the 4xx surfaces
+		// instead of being shrouded as a 5xx ticket.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, common.Internal("search failed", err))
 		return
 	}
@@ -208,6 +216,14 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 
 	jobID, err := h.searchSvc.SubmitAsync(r.Context(), modelRef, cond, opts)
 	if err != nil {
+		// Pre-execution validation (issue #77) returns a classified
+		// *common.AppError directly; forward it so the 4xx surfaces
+		// instead of being shrouded as a 5xx ticket.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, common.Internal("failed to submit async search", err))
 		return
 	}

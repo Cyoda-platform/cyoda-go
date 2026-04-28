@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -77,14 +80,20 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 // transaction, Search delegates to the plugin for SQL predicate pushdown.
 // Otherwise it falls back to GetAll + in-memory filtering.
 //
-// TODO(model-schema-extensions-F3): when field-path validation against the
-// model schema is added here (pre-execution, rejecting unknown paths early),
-// wrap it via entity.Handler.ValidateWithRefresh so a stale cached schema
-// triggers one bounded RefreshAndGet before the rejection surfaces. Today
-// the service has no such pre-execution validation step; unknown paths are
-// caught downstream by match.Evaluate / plugin Searcher. Integration point
-// belongs here when the validation hook is introduced.
+// Pre-execution path validation: every condition path is checked against
+// the cached model schema's FieldsMap. When a path is unknown, the
+// schema cache is refreshed exactly once via RefreshAndGet (mirroring
+// entity.Handler.ValidateWithRefresh's bounded-retry contract) so a
+// search referencing a peer's freshly-extended path succeeds after one
+// authoritative read. Truly-unknown paths surface as 4xx BAD_REQUEST.
+// Models that have never been registered are admitted unchanged —
+// pre-execution validation is best-effort and only applies once the
+// model exists. See issue #77.
 func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) ([]*spi.Entity, error) {
+	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
+		return nil, vErr
+	}
+
 	store, err := s.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
@@ -153,10 +162,19 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 }
 
 // SubmitAsync starts an asynchronous search job and returns the job ID.
+//
+// Pre-execution path validation runs synchronously before the job is
+// recorded (issue #77) — a request that names paths the model does not
+// know about returns a 4xx without ever creating a job, sparing the
+// client a round-trip through the polling endpoint.
 func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
+	}
+
+	if vErr := s.validateConditionPaths(ctx, modelRef, cond); vErr != nil {
+		return "", vErr
 	}
 
 	if opts.PointInTime == nil {
@@ -404,4 +422,106 @@ func (s *SearchService) GetAsyncSearchResults(ctx context.Context, snapshotID st
 func (s *SearchService) CancelAsyncSearch(ctx context.Context, snapshotID string) error {
 	_, err := s.CancelAsync(ctx, snapshotID)
 	return err
+}
+
+// validateConditionPaths runs the pre-execution field-path validation
+// step for Search. The cached schema is consulted first; if any path
+// referenced by the condition is absent, exactly one RefreshAndGet is
+// issued (when the store implements it) and the recheck decides the
+// outcome. This mirrors the semantics of
+// entity.Handler.ValidateWithRefresh — a stale-schema search referencing
+// a peer's freshly-extended path succeeds after one bounded refresh,
+// and a truly-unknown path surfaces as 4xx without a refresh loop.
+//
+// Returns nil when validation passes, when no data-field paths are
+// addressed (lifecycle-only conditions), or when the model has not been
+// registered (the memory plugin admits entity writes without a prior
+// model, and search must preserve that behaviour). Validator failures
+// surface as a 4xx common.AppError with the missing paths listed.
+func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition) error {
+	paths := extractFieldPaths(cond)
+	if len(paths) == 0 {
+		return nil
+	}
+
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		// A factory that cannot produce a ModelStore cannot validate;
+		// log and proceed so the search itself can still surface a
+		// useful error from the matcher.
+		slog.Debug("model store unavailable; skipping pre-execution path validation",
+			"pkg", "search", "error", err)
+		return nil
+	}
+
+	fields, err := loadFieldsMap(ctx, modelStore, modelRef)
+	if err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			// Unregistered model — nothing to validate against.
+			return nil
+		}
+		// Decoding-the-schema failures are upstream: log and continue so
+		// search can still proceed via the matcher's own error path.
+		slog.Debug("failed to load schema for pre-execution validation",
+			"pkg", "search",
+			"entityName", modelRef.EntityName,
+			"modelVersion", modelRef.ModelVersion,
+			"error", err)
+		return nil
+	}
+	if fields == nil {
+		// Descriptor returned nil (no schema bound) — treat as
+		// unregistered and admit the search.
+		return nil
+	}
+
+	missing := findUnknownPaths(paths, fields)
+	if len(missing) == 0 {
+		return nil
+	}
+
+	// Some paths are unknown to the cached schema. Refresh exactly once
+	// before declaring the request invalid — the bound is required by
+	// issue #77 to avoid amplifying a misconfigured client into a
+	// refresh storm.
+	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
+	if !refreshed {
+		// Store has no cache layer — the cached miss is authoritative.
+		return invalidPathError(missing)
+	}
+	if refreshErr != nil {
+		if errors.Is(refreshErr, spi.ErrNotFound) {
+			// Model was deleted between Get and RefreshAndGet — fall
+			// back to the cached fields outcome (paths are unknown
+			// because there is no model).
+			return invalidPathError(missing)
+		}
+		slog.Debug("schema refresh failed during pre-execution validation",
+			"pkg", "search",
+			"entityName", modelRef.EntityName,
+			"modelVersion", modelRef.ModelVersion,
+			"error", refreshErr)
+		return invalidPathError(missing)
+	}
+	if freshFields == nil {
+		return invalidPathError(missing)
+	}
+
+	stillMissing := findUnknownPaths(missing, freshFields)
+	if len(stillMissing) == 0 {
+		return nil
+	}
+	return invalidPathError(stillMissing)
+}
+
+// invalidPathError builds the 4xx response surfaced when one or more
+// condition paths cannot be resolved against the (refreshed) model
+// schema. The message lists each offending path so clients can correct
+// their request without round-tripping to the support team.
+func invalidPathError(paths []string) error {
+	return common.Operational(
+		http.StatusBadRequest,
+		common.ErrCodeInvalidFieldPath,
+		fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(paths, ", ")),
+	)
 }
