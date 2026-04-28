@@ -59,6 +59,29 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
 
+	// Verify the target model exists before applying the workflow. Without this
+	// guard, importing a workflow on a non-existent model silently succeeded
+	// (issue #131); cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND.
+	modelStore, err := h.factory.ModelStore(r.Context())
+	if err != nil {
+		common.WriteError(w, r, common.Internal("failed to get model store", err))
+		return
+	}
+	if _, err := modelStore.Get(r.Context(), ref); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			appErr := common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+				fmt.Sprintf("cannot find model entityName=%s, version=%d", entityName, modelVersion))
+			appErr.Props = map[string]any{
+				"entityName":    entityName,
+				"entityVersion": modelVersion,
+			}
+			common.WriteError(w, r, appErr)
+			return
+		}
+		common.WriteError(w, r, common.Internal("failed to load model", err))
+		return
+	}
+
 	wfStore, err := h.factory.WorkflowStore(r.Context())
 	if err != nil {
 		common.WriteError(w, r, common.Internal("failed to get workflow store", err))

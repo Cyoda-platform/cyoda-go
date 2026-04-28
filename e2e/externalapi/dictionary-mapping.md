@@ -182,7 +182,7 @@ The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd
 | neg/07-condition-delete-at-pit-too-many-matches | gap_on_our_side (#124) | tranche 2 — t.Skip pending #124. Whole delete-by-condition surface is a v0.7.0 server-side gap (handler ignores condition body and pointInTime). |
 | neg/08-update-with-unknown-transition | new:RunExternalAPI_12_08_UpdateUnknownTransition | tranche 2 — `equiv_or_better` after wiring `TRANSITION_NOT_FOUND` into the engine-failure code path (review C1 fix). cyoda-go emits `TRANSITION_NOT_FOUND` @400 — matches dictionary's `(IllegalTransition\|TransitionNotFound)` semantically. |
 | neg/09-get-model-after-delete | new:RunExternalAPI_12_09_GetModelAfterDelete | tranche 2 — `different_naming_same_level`: cyoda-go has no per-model GET endpoint; test verifies via `ListModels` and confirms absence. Semantically equivalent to per-model 404; reconcile in tranche-5 cloud smoke if cyoda-go ever adds a per-model GET. |
-| neg/10-import-workflow-on-unknown-model | gap_on_our_side (#131) | tranche 2 negative path classified `worse`: cyoda-go returns HTTP 200 `{"success":true}` instead of 404 for workflow imports on non-existent models. Real bug — dictionary requires HTTP 404 with `(ModelNotFound\|EntityModelNotFound)`. Test body in place; flipping `t.Skip` is the close-the-issue checklist item. |
+| neg/10-import-workflow-on-unknown-model | new:RunExternalAPI_12_10_ImportWorkflowOnUnknownModel | tranche 2 negative path; resolved by #131. cyoda-go now returns HTTP 404 with `MODEL_NOT_FOUND` for workflow imports on non-existent models, matching dictionary's `(ModelNotFound\|EntityModelNotFound)` regex. `equiv_or_better`. |
 
 ---
 

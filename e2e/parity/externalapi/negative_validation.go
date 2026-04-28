@@ -208,18 +208,16 @@ func RunExternalAPI_12_09_GetModelAfterDelete(t *testing.T, fixture parity.Backe
 
 // RunExternalAPI_12_10_ImportWorkflowOnUnknownModel — dictionary 12/neg/10.
 // Dictionary expects HTTP 404 + (ModelNotFound|EntityModelNotFound).
-// worse: cyoda-go returns HTTP 200 {"success":true} for workflow import on an
-// unregistered model. Tracked by #131.
+// equiv_or_better: cyoda-go now returns HTTP 404 + MODEL_NOT_FOUND for workflow
+// import on an unregistered model (resolved by #131).
 func RunExternalAPI_12_10_ImportWorkflowOnUnknownModel(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #131 — cyoda-go returns HTTP 200 {success:true} for workflow import on unknown model; dictionary requires HTTP 404 (ModelNotFound/EntityModelNotFound). Discover-and-compare worse case.")
 	d := driver.NewInProcess(t, fixture)
 	body := `{"workflows":[{"version":"1.0","name":"w","initialState":"s","states":{"s":{"transitions":[]}}}]}`
 	status, respBody, err := d.ImportWorkflowRaw("unknownModel", 1, body)
 	if err != nil {
 		t.Fatalf("ImportWorkflowRaw: %v", err)
 	}
-	// Tighten to MODEL_NOT_FOUND once #131 lands.
 	errorcontract.Match(t, status, respBody, errorcontract.ExpectedError{
 		HTTPStatus: http.StatusNotFound,
 		ErrorCode:  "MODEL_NOT_FOUND",
