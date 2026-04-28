@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
@@ -436,6 +437,17 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	}
 	if params.PageNumber != nil {
 		pageNumber = *params.PageNumber
+	}
+
+	// Reject negative / over-cap / overflow-prone values BEFORE the
+	// storage lookup. Without this guard, an attacker-supplied
+	// pageNumber=MaxInt32 panics in ListEntities (slice bounds out of
+	// range) and surfaces as 500 — see PR #149 follow-up. ValidateOffset
+	// returns *common.AppError as error; classifyError routes it to the
+	// 400 BAD_REQUEST response.
+	if err := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
 	}
 
 	envelopes, err := h.ListEntities(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), PaginationParams{
