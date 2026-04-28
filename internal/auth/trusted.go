@@ -158,10 +158,10 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := h.trustedKeyStore.Register(tk); err != nil {
-		// Forward classified AppErrors verbatim (e.g. 409 duplicate KID, 409
-		// registry-full from #34/2 and #34/7). Anything else is a 5xx —
-		// route through common.Internal so the body is the generic ticket
-		// shape and the raw error stays in the slog record (#68 item 14).
+		// Forward classified AppErrors verbatim (e.g. 409 registry-full
+		// from #34/2). Anything else is a 5xx — route through
+		// common.Internal so the body is the generic ticket shape and the
+		// raw error stays in the slog record (#68 item 14).
 		var appErr *common.AppError
 		if errors.As(err, &appErr) {
 			common.WriteError(w, r, appErr)

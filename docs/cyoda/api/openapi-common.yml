@@ -1,0 +1,246 @@
+openapi: 3.1.0
+info:
+  title: Cyoda Cloud Common API Schemas
+  version: 1.0.0
+  description: |
+    Common shared schemas used across multiple Cyoda Cloud APIs.
+    This file contains reusable data types for conditions, externalized functions, and other shared components.
+  contact:
+    name: Cyoda Support
+    url: https://cyoda.com/support
+
+# No paths - this file only contains shared schemas
+paths: {}
+
+components:
+  schemas:
+    OperatorType:
+      type: string
+      description: |
+        Comparison operator for conditions.
+
+        Basic Comparison: EQUALS, NOT_EQUAL, IS_NULL, NOT_NULL, GREATER_THAN, LESS_THAN, GREATER_OR_EQUAL, LESS_OR_EQUAL, BETWEEN, BETWEEN_INCLUSIVE
+
+        String Operations (Case-Sensitive): CONTAINS, NOT_CONTAINS, STARTS_WITH, NOT_STARTS_WITH, ENDS_WITH, NOT_ENDS_WITH, MATCHES_PATTERN, LIKE
+
+        Case-Insensitive String Operations: IEQUALS, INOT_EQUAL, ICONTAINS, INOT_CONTAINS, ISTARTS_WITH, INOT_STARTS_WITH, IENDS_WITH, INOT_ENDS_WITH
+
+        State Tracking: IS_UNCHANGED, IS_CHANGED
+      enum:
+        - EQUALS
+        - NOT_EQUAL
+        - IEQUALS
+        - INOT_EQUAL
+        - IS_NULL
+        - NOT_NULL
+        - GREATER_THAN
+        - GREATER_OR_EQUAL
+        - LESS_THAN
+        - LESS_OR_EQUAL
+        - CONTAINS
+        - NOT_CONTAINS
+        - STARTS_WITH
+        - NOT_STARTS_WITH
+        - ENDS_WITH
+        - NOT_ENDS_WITH
+        - ICONTAINS
+        - ISTARTS_WITH
+        - IENDS_WITH
+        - INOT_CONTAINS
+        - INOT_STARTS_WITH
+        - INOT_ENDS_WITH
+        - MATCHES_PATTERN
+        - LIKE
+        - BETWEEN
+        - BETWEEN_INCLUSIVE
+        - IS_UNCHANGED
+        - IS_CHANGED
+
+    GroupOperator:
+      type: string
+      description: Logical operator for combining conditions in a group
+      enum:
+        - AND
+        - OR
+        - NOT
+
+    QueryConditionType:
+      type: string
+      description: Type of query condition for polymorphic discriminator
+      enum:
+        - group
+        - simple
+        - lifecycle
+        - array
+        - function
+
+    QueryCondition:
+      type: object
+      description: Base type for search conditions using polymorphic discrimination
+      discriminator:
+        propertyName: type
+        mapping:
+          simple: '#/components/schemas/SimpleCondition'
+          group: '#/components/schemas/GroupCondition'
+          function: '#/components/schemas/FunctionCondition'
+          array: '#/components/schemas/ArrayCondition'
+          lifecycle: '#/components/schemas/LifecycleCondition'
+      properties:
+        type:
+          type: string
+          description: Discriminator field for condition type, see inherited types (e.g. 'group' or 'simple')
+          $ref: '#/components/schemas/QueryConditionType'
+      required:
+        - type
+
+    SimpleCondition:
+      allOf:
+        - $ref: '#/components/schemas/QueryCondition'
+        - type: object
+          description: Simple condition for searching within entity data using JSONPath
+          properties:
+            jsonPath:
+              type: string
+              description: JSONPath expression to the field to search
+              example: "$.category"
+            operation:
+              $ref: '#/components/schemas/OperatorType'
+              x-field-extra-annotation: |
+                @com.fasterxml.jackson.annotation.JsonAlias("operation", "operatorType")
+            value:
+              type: any
+              description: Value to compare against (type depends on field type)
+          required:
+            - jsonPath
+            - operation
+
+    GroupCondition:
+      allOf:
+        - $ref: '#/components/schemas/QueryCondition'
+        - type: object
+          description: Groups multiple conditions according to the operator
+          properties:
+            operator:
+              $ref: '#/components/schemas/GroupOperator'
+            conditions:
+              type: array
+              items:
+                $ref: '#/components/schemas/QueryCondition'
+              description: List of conditions to combine
+          required:
+            - operator
+            - conditions
+
+    FunctionCondition:
+      allOf:
+        - $ref: '#/components/schemas/QueryCondition'
+        - type: object
+          description: Condition with a type 'function' for externalized logic
+          properties:
+            function:
+              $ref: '#/components/schemas/ExternalizedFunction'
+          required:
+            - function
+
+    ArrayCondition:
+      allOf:
+        - $ref: '#/components/schemas/QueryCondition'
+        - type: object
+          description: Condition for searching with array values
+          required:
+            - type
+            - jsonPath
+            - operation
+            - value
+          properties:
+            jsonPath:
+              type: string
+              description: JSONPath expression to the field to search
+            operation:
+              $ref: '#/components/schemas/OperatorType'
+              x-field-extra-annotation: |
+                @com.fasterxml.jackson.annotation.JsonAlias("operation", "operatorType")
+            value:
+              type: array
+              items:
+                type: string
+              description: Array of values to match against
+
+    ExternalizedFunction:
+      type: object
+      description: Function configuration for externalized condition evaluation
+      properties:
+        name:
+          type: string
+          description: Name of the function that returns boolean
+          minLength: 1
+        config:
+          $ref: '#/components/schemas/ExternalizedFunctionConfig'
+        criterion:
+          $ref: '#/components/schemas/QueryCondition'
+          description: Optional criterion to check before calling an expensive function, used when the result can be confidently determined from entity data
+      required:
+        - name
+
+    LifecycleCondition:
+      allOf:
+        - $ref: '#/components/schemas/QueryCondition'
+        - type: object
+          description: Condition for searching based on entity lifecycle properties
+          properties:
+            field:
+              type: string
+              description: Lifecycle field to search (state, creationDate, previousTransition)
+              example: state
+            operation:
+              $ref: '#/components/schemas/OperatorType'
+              x-field-extra-annotation: |
+                @com.fasterxml.jackson.annotation.JsonAlias("operation", "operatorType")
+            value:
+              type: any
+              description: Value to compare against
+          required:
+            - field
+            - operation
+            - value
+
+    ExternalizedFunctionConfig:
+      type: object
+      description: Common configuration parameters for externalized functions and processors
+      properties:
+        attachEntity:
+          type: boolean
+          description: Whether to attach entity data to the function call
+        calculationNodesTags:
+          type: string
+          description: Comma-separated list of calculation node tags
+        responseTimeoutMs:
+          type: integer
+          format: int64
+          description: Response timeout in milliseconds
+        retryPolicy:
+          type: string
+          description: Retry policy for the function
+        context:
+          type: string
+          description: Additional context for the function
+
+    ScheduledTransitionConfig:
+      type: object
+      description: Configuration parameters for scheduled transition
+      properties:
+        delayMs:
+          type: integer
+          format: int64
+          description: Delay in milliseconds before executing the transition
+        timeoutMs:
+          type: integer
+          format: int64
+          description: Timeout in milliseconds for executing the transition task, after which it will be expired
+        transition:
+          type: string
+          description: The transition to execute after waiting delayMs
+      required:
+        - delayMs
+        - transition
+

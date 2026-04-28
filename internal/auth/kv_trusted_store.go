@@ -130,31 +130,26 @@ func (s *KVTrustedKeyStore) persist(tk *TrustedKey) error {
 	return s.kv.Put(s.ctx, trustedKeysNamespace, tk.KID, data)
 }
 
-// Register adds a trusted key and persists it. Returns a 409 Conflict
-// AppError when the configured cap on registered trusted keys is reached, or
-// when a key with the same KID is already registered (#34 item 7) — the
-// previous silent-overwrite shape enabled key-replacement attacks combined
-// with the unauthenticated admin endpoint (#34 item 1). The existence check
-// also consults the KV backend so a duplicate registered on another node
-// (not yet visible in the in-memory cache) is detected.
+// Register adds or replaces a trusted key and persists it. Per the cyoda
+// cloud trusted-key contract this is an upsert keyed on KID — re-registering
+// an existing KID atomically replaces the JWK material under the same record,
+// which makes the endpoint idempotent / retry-safe during key rotation.
+//
+// 409 Conflict is reserved for the registry-full guard (#34 item 2). The
+// full cloud contract also returns 409 on cross-tenant KID collision; the
+// cyoda-go store does not yet thread tenant through the registry, so that
+// branch is tracked for v0.7.0 (full replace/rotation per cloud contract).
+//
+// The cap check only fires on insert (new KID), not on upsert — replacing
+// an existing record does not grow the registry, and rotating against a
+// cap-saturated registry would otherwise erroneously fail with
+// "registry full".
 func (s *KVTrustedKeyStore) Register(tk *TrustedKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.keys[tk.KID]; exists {
-		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted key with this KID already registered")
-	}
-	// Multi-node check: another node may have registered this KID since our
-	// last loadAll. Treat any non-error KV Get as "exists".
-	if data, err := s.kv.Get(s.ctx, trustedKeysNamespace, tk.KID); err == nil && len(data) > 0 {
-		// Hydrate the cache so subsequent reads on this node are consistent.
-		if existing, derr := deserializeTrustedKey(data); derr == nil {
-			s.keys[existing.KID] = existing
-		}
-		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted key with this KID already registered")
-	}
-
-	if s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
+	_, exists := s.keys[tk.KID]
+	if !exists && s.maxTrustedKeys > 0 && len(s.keys) >= s.maxTrustedKeys {
 		return common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full")
 	}
 

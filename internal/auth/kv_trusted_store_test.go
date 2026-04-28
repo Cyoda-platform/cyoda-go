@@ -249,73 +249,6 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	}
 }
 
-// TestKVTrustedKeyStore_RegisterRejectsDuplicateKID guards #34 item 7:
-// re-registering an existing KID must return 409 CONFLICT and leave the
-// original key intact. The previous code silently overwrote the existing
-// record, enabling key-replacement attacks if combined with #34 item 1
-// (unauthenticated admin endpoint, fixed in Bucket L).
-func TestKVTrustedKeyStore_RegisterRejectsDuplicateKID(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
-	}
-
-	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-
-	originalKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	original := &auth.TrustedKey{
-		KID:       "dup-kid",
-		PublicKey: &originalKey.PublicKey,
-		Audience:  "original-aud",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-	if err := store.Register(original); err != nil {
-		t.Fatalf("first Register: %v", err)
-	}
-
-	// Attempt to overwrite with a different key — must be rejected.
-	imposterKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	imposter := &auth.TrustedKey{
-		KID:       "dup-kid",
-		PublicKey: &imposterKey.PublicKey,
-		Audience:  "imposter-aud",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-	err = store.Register(imposter)
-	if err == nil {
-		t.Fatal("expected duplicate Register to be rejected, got nil")
-	}
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusConflict {
-		t.Errorf("status = %d, want 409", appErr.Status)
-	}
-	if appErr.Code != common.ErrCodeConflict {
-		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeConflict)
-	}
-
-	// Original key must remain intact (not overwritten).
-	got, err := store.Get("dup-kid")
-	if err != nil {
-		t.Fatalf("Get after rejected duplicate: %v", err)
-	}
-	if got.Audience != "original-aud" {
-		t.Errorf("audience = %q, want %q (original was overwritten)", got.Audience, "original-aud")
-	}
-	if got.PublicKey.N.Cmp(originalKey.PublicKey.N) != 0 {
-		t.Error("modulus mismatch — original key was overwritten")
-	}
-}
-
 // TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys verifies that the store
 // rejects Register once the configured cap is reached — defence against
 // memory/storage exhaustion via runaway trusted-key registration (#34 item 2).
@@ -368,6 +301,149 @@ func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
 	}
 	if appErr.Code != common.ErrCodeConflict {
 		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeConflict)
+	}
+}
+
+// TestKVTrustedKeyStore_RegisterUpsertsSameKID pins the cyoda-cloud trusted-key
+// upsert contract (#34/7 reversal). Same-tenant + same KID is the
+// in-place replace path: the new JWK material atomically replaces the old
+// record under the same KID. The endpoint is idempotent on KID — retrying
+// a partially-failed registration must succeed, not 409.
+//
+// Cross-tenant collision (same KID, different tenant) is the only branch
+// that returns 409 per the cloud spec, but the cyoda-go trusted-key store
+// does not yet thread tenant through the registry — that work is tracked
+// for v0.7.0. In the current single-tenant store, all upsert calls are
+// "same tenant" by construction.
+func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := systemCtx()
+	kvStore, err := factory.KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+
+	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
+	if err != nil {
+		t.Fatalf("NewKVTrustedKeyStore: %v", err)
+	}
+
+	originalKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	original := &auth.TrustedKey{
+		KID:       "rotate-kid",
+		PublicKey: &originalKey.PublicKey,
+		Audience:  "original-aud",
+		Active:    true,
+		ValidFrom: time.Now().UTC(),
+	}
+	if err := store.Register(original); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+
+	// Re-register with new JWK material under the same KID. Per the cloud
+	// upsert contract this must succeed (not 409) and replace the record.
+	rotatedKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rotated := &auth.TrustedKey{
+		KID:       "rotate-kid",
+		PublicKey: &rotatedKey.PublicKey,
+		Audience:  "rotated-aud",
+		Active:    true,
+		ValidFrom: time.Now().UTC(),
+	}
+	if err := store.Register(rotated); err != nil {
+		t.Fatalf("re-Register (upsert): expected nil, got %v", err)
+	}
+
+	got, err := store.Get("rotate-kid")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Audience != "rotated-aud" {
+		t.Errorf("audience = %q, want %q (upsert did not replace)", got.Audience, "rotated-aud")
+	}
+	if got.PublicKey.N.Cmp(rotatedKey.PublicKey.N) != 0 {
+		t.Error("modulus mismatch — upsert did not replace the JWK material")
+	}
+
+	// Persistence: a fresh store loaded from the same KV must see the
+	// rotated key, not the original.
+	store2, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
+	if err != nil {
+		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
+	}
+	got2, err := store2.Get("rotate-kid")
+	if err != nil {
+		t.Fatalf("Get on instance 2: %v", err)
+	}
+	if got2.Audience != "rotated-aud" {
+		t.Errorf("persisted audience = %q, want %q", got2.Audience, "rotated-aud")
+	}
+}
+
+// TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot guards an
+// adjacent invariant: an upsert (re-Register on an existing KID) must not
+// be blocked by a full registry cap, because the result does not grow the
+// registry. Without this, key rotation against a cap-saturated registry
+// would erroneously 409 with "registry full".
+func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	ctx := systemCtx()
+	kvStore, err := factory.KeyValueStore(ctx)
+	if err != nil {
+		t.Fatalf("KeyValueStore: %v", err)
+	}
+
+	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore, auth.WithMaxTrustedKeys(2))
+	if err != nil {
+		t.Fatalf("NewKVTrustedKeyStore: %v", err)
+	}
+
+	for i, kid := range []string{"cap-a", "cap-b"} {
+		key, _ := rsa.GenerateKey(rand.Reader, 2048)
+		tk := &auth.TrustedKey{
+			KID:       kid,
+			PublicKey: &key.PublicKey,
+			Audience:  "svc",
+			Active:    true,
+			ValidFrom: time.Now().UTC(),
+		}
+		if err := store.Register(tk); err != nil {
+			t.Fatalf("Register %d (%s): %v", i, kid, err)
+		}
+	}
+
+	// Registry now at cap (2/2). An upsert on cap-a must succeed.
+	rotatedKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rotated := &auth.TrustedKey{
+		KID:       "cap-a",
+		PublicKey: &rotatedKey.PublicKey,
+		Audience:  "rotated",
+		Active:    true,
+		ValidFrom: time.Now().UTC(),
+	}
+	if err := store.Register(rotated); err != nil {
+		t.Fatalf("upsert on cap-saturated registry: expected nil, got %v", err)
+	}
+
+	// Inserting a *new* KID (cap-c) must still be rejected — registry full.
+	newKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	novel := &auth.TrustedKey{
+		KID:       "cap-c",
+		PublicKey: &newKey.PublicKey,
+		Audience:  "svc",
+		Active:    true,
+		ValidFrom: time.Now().UTC(),
+	}
+	err = store.Register(novel)
+	if err == nil {
+		t.Fatal("expected Register of new KID at cap to be rejected, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", appErr.Status)
 	}
 }
 

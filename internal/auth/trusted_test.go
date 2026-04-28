@@ -374,12 +374,13 @@ func TestTrustedKeysHandler_Register5xxDoesNotLeakRawError(t *testing.T) {
 }
 
 // TestTrustedKeysHandler_RegisterForwardsAppErrorStatus verifies that a 409
-// returned by the store (e.g. duplicate-KID after #34/7) reaches the client
-// as 409, not as 500.
+// returned by the store (e.g. registry-full from #34/2, or future
+// cross-tenant KID collision per the cloud contract) reaches the client as
+// 409, not as 500.
 func TestTrustedKeysHandler_RegisterForwardsAppErrorStatus(t *testing.T) {
 	store := &errorReturningTrustedKeyStore{
 		inner:       NewInMemoryTrustedKeyStore(),
-		registerErr: common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted key with this KID already registered"),
+		registerErr: common.Operational(http.StatusConflict, common.ErrCodeConflict, "trusted-key registry full"),
 	}
 	handler := NewTrustedKeysHandler(store)
 
