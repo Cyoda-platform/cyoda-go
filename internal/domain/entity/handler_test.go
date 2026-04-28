@@ -1391,6 +1391,218 @@ func TestGetEntityChangesMetadata(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestGetEntityChangesMetadata_PointInTime asserts that the pointInTime
+// query parameter constrains the returned change history to entries whose
+// timeOfChange is at or before the supplied timestamp. Regression test
+// for issue #152: handler previously dropped the parameter silently.
+func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
+
+	// Create entity (k=1).
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
+
+	// Update (k=2).
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Capture cutoff between updates.
+	time.Sleep(50 * time.Millisecond)
+	cutoff := time.Now().UTC()
+	time.Sleep(50 * time.Millisecond)
+
+	// Update (k=3) — after cutoff.
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Without pointInTime — full history (3 entries).
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes (full): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var full []map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		t.Fatalf("parse full: %v", err)
+	}
+	if len(full) != 3 {
+		t.Fatalf("full history: expected 3 entries, got %d", len(full))
+	}
+
+	// With pointInTime=cutoff — truncated history (2 entries: CREATED + first UPDATED).
+	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, cutoff.Format(time.RFC3339Nano))
+	resp, err = http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var truncated []map[string]any
+	if err := json.Unmarshal(body, &truncated); err != nil {
+		t.Fatalf("parse truncated: %v", err)
+	}
+	if len(truncated) != 2 {
+		t.Fatalf("truncated history: expected 2 entries (CREATED + UPDATED), got %d: %v", len(truncated), truncated)
+	}
+	// Newest-first order: [UPDATED, CREATED].
+	if ct, _ := truncated[0]["changeType"].(string); ct != "UPDATED" {
+		t.Errorf("truncated[0].changeType: got %v, want UPDATED", truncated[0]["changeType"])
+	}
+	if ct, _ := truncated[1]["changeType"].(string); ct != "CREATED" {
+		t.Errorf("truncated[1].changeType: got %v, want CREATED", truncated[1]["changeType"])
+	}
+
+	// All returned entries must have timeOfChange <= cutoff.
+	for i, entry := range truncated {
+		ts, _ := entry["timeOfChange"].(string)
+		got, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			t.Fatalf("entry %d: bad timeOfChange %q: %v", i, ts, err)
+		}
+		if got.After(cutoff) {
+			t.Errorf("entry %d: timeOfChange %s is after cutoff %s", i, got, cutoff)
+		}
+	}
+}
+
+// TestGetEntityChangesMetadata_PointInTimeFuture asserts that a pointInTime
+// strictly after the latest change returns the full history — equivalent to
+// omitting the parameter. Boundary case for issue #152.
+func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
+
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// pointInTime strictly after the latest change.
+	future := time.Now().UTC().Add(1 * time.Hour)
+	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, future.Format(time.RFC3339Nano))
+	resp, err := http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (future pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var futureResult []map[string]any
+	if err := json.Unmarshal(body, &futureResult); err != nil {
+		t.Fatalf("parse future result: %v", err)
+	}
+	if len(futureResult) != 3 {
+		t.Fatalf("future pointInTime: expected full history (3 entries), got %d", len(futureResult))
+	}
+
+	// Cross-check: omitting the parameter yields the same result set.
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err = http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes (no pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var fullResult []map[string]any
+	if err := json.Unmarshal(body, &fullResult); err != nil {
+		t.Fatalf("parse full result: %v", err)
+	}
+	if len(fullResult) != len(futureResult) {
+		t.Fatalf("future pointInTime length %d != full history length %d", len(futureResult), len(fullResult))
+	}
+	for i := range fullResult {
+		if fullResult[i]["timeOfChange"] != futureResult[i]["timeOfChange"] {
+			t.Errorf("entry %d: full timeOfChange=%v, future timeOfChange=%v",
+				i, fullResult[i]["timeOfChange"], futureResult[i]["timeOfChange"])
+		}
+		if fullResult[i]["changeType"] != futureResult[i]["changeType"] {
+			t.Errorf("entry %d: full changeType=%v, future changeType=%v",
+				i, fullResult[i]["changeType"], futureResult[i]["changeType"])
+		}
+	}
+}
+
+// TestGetEntityChangesMetadata_PointInTimeExactBoundary asserts that a
+// pointInTime exactly equal to a change's timestamp INCLUDES that change —
+// the filter is at-or-before (<=), not strictly-before. Boundary case for
+// issue #152.
+func TestGetEntityChangesMetadata_PointInTimeExactBoundary(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaPITExact", 1, `{"k":1}`)
+
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaPITExact", 1, `{"k":1}`)
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Read the full history to discover an actual change timestamp.
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes (full): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var full []map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		t.Fatalf("parse full: %v", err)
+	}
+	if len(full) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(full))
+	}
+
+	// History is newest-first: pick the middle change (first UPDATED).
+	// Using its exact timestamp as pointInTime must include that change
+	// (the boundary is inclusive) and exclude the later one.
+	boundaryStr, _ := full[1]["timeOfChange"].(string)
+	boundary, err := time.Parse(time.RFC3339Nano, boundaryStr)
+	if err != nil {
+		t.Fatalf("parse boundary timestamp %q: %v", boundaryStr, err)
+	}
+
+	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, boundary.Format(time.RFC3339Nano))
+	resp, err = http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (exact pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var atBoundary []map[string]any
+	if err := json.Unmarshal(body, &atBoundary); err != nil {
+		t.Fatalf("parse boundary result: %v", err)
+	}
+
+	// Inclusive semantics: the boundary entry (full[1]) AND the older
+	// CREATED entry (full[2]) must be present; the newer entry (full[0])
+	// must be absent.
+	if len(atBoundary) != 2 {
+		t.Fatalf("exact-boundary pointInTime: expected 2 entries (boundary + older), got %d: %v",
+			len(atBoundary), atBoundary)
+	}
+	// Newest-first: [boundary UPDATED, CREATED].
+	if got := atBoundary[0]["timeOfChange"]; got != boundaryStr {
+		t.Errorf("atBoundary[0].timeOfChange: got %v, want %s (boundary entry must be included)", got, boundaryStr)
+	}
+	if ct, _ := atBoundary[0]["changeType"].(string); ct != "UPDATED" {
+		t.Errorf("atBoundary[0].changeType: got %v, want UPDATED", atBoundary[0]["changeType"])
+	}
+	if ct, _ := atBoundary[1]["changeType"].(string); ct != "CREATED" {
+		t.Errorf("atBoundary[1].changeType: got %v, want CREATED", atBoundary[1]["changeType"])
+	}
+}
+
 // --- Workflow integration tests ---
 
 // importWorkflow posts a workflow definition for the given model.

@@ -255,6 +255,13 @@ func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta
 	return d.client.GetEntityChanges(d.t, id)
 }
 
+// GetEntityChangesAt issues GET /api/entity/{entityId}/changes?pointInTime=<ISO8601>.
+// Returns the change history truncated to entries at or before the supplied
+// timestamp. YAML action: get_entity_changes (with pointInTime).
+func (d *Driver) GetEntityChangesAt(id uuid.UUID, pointInTime time.Time) ([]parityclient.EntityChangeMeta, error) {
+	return d.client.GetEntityChangesAt(d.t, id, pointInTime)
+}
+
 // --- Edge-message helpers ---
 
 // CreateMessage issues POST /api/message/new/{subject} with a JSON

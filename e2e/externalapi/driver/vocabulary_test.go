@@ -287,6 +287,32 @@ func TestDriver_GetEntityChanges_GET(t *testing.T) {
 	}
 }
 
+func TestDriver_GetEntityChangesAt_GET_PointInTimeQuery(t *testing.T) {
+	cap := &capturedReq{}
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	d := driver.NewRemote(t, srv.URL, "tok")
+	pit := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	id := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	if _, err := d.GetEntityChangesAt(id, pit); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cap.method != http.MethodGet || !strings.HasSuffix(cap.path, "/changes") {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if !strings.Contains(gotQuery, "pointInTime=") {
+		t.Errorf("query missing pointInTime: %q", gotQuery)
+	}
+}
+
 func TestDriver_SetChangeLevelRaw(t *testing.T) {
 	cap := &capturedReq{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

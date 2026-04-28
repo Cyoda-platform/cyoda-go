@@ -511,7 +511,12 @@ type deleteEntityResult struct {
 }
 
 // GetChangesMetadata retrieves version history metadata for an entity.
-func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string) ([]EntityChangeEntry, error) {
+//
+// If pointInTime is non-nil, the result is truncated to versions whose
+// Timestamp is at or before pointInTime — the caller sees the change
+// history exactly as it would have appeared at that moment. A nil
+// pointInTime returns the full history.
+func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, pointInTime *time.Time) ([]EntityChangeEntry, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
@@ -527,6 +532,18 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string) ([]En
 			return nil, appErr
 		}
 		return nil, common.Internal("failed to get version history", err)
+	}
+
+	// Truncate to versions at-or-before pointInTime when set.
+	if pointInTime != nil && !pointInTime.IsZero() {
+		cutoff := *pointInTime
+		filtered := versions[:0]
+		for _, v := range versions {
+			if !v.Timestamp.After(cutoff) {
+				filtered = append(filtered, v)
+			}
+		}
+		versions = filtered
 	}
 
 	// Sort newest first (descending by timestamp)
