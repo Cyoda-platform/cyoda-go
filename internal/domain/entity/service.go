@@ -18,6 +18,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
@@ -622,7 +623,16 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 }
 
 // ListEntities retrieves all entities for a model with pagination.
-func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, pagination PaginationParams) ([]EntityEnvelope, error) {
+func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams) ([]EntityEnvelope, error) {
+	// Defense-in-depth: HTTP and gRPC handlers SHOULD validate before
+	// reaching the service, but enforce the same caps here so the
+	// `start := int(PageNumber * PageSize)` multiplication below cannot
+	// be reached with attacker-supplied values that overflow on 32-bit
+	// platforms or yield negative slice indices.
+	if appErr := pagination.ValidateOffset(int64(page.PageNumber), int64(page.PageSize)); appErr != nil {
+		return nil, appErr
+	}
+
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
@@ -643,20 +653,21 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		return entities[i].Meta.ID < entities[j].Meta.ID
 	})
 
-	// Apply pagination
-	start := int(pagination.PageNumber * pagination.PageSize)
+	// Apply pagination — caps above guarantee start/end are non-negative
+	// and within int range.
+	start := int(page.PageNumber) * int(page.PageSize)
 	if start > len(entities) {
 		start = len(entities)
 	}
-	end := start + int(pagination.PageSize)
+	end := start + int(page.PageSize)
 	if end > len(entities) {
 		end = len(entities)
 	}
-	page := entities[start:end]
+	pageSlice := entities[start:end]
 
 	// Build envelopes without modelKey in meta
-	result := make([]EntityEnvelope, 0, len(page))
-	for _, ent := range page {
+	result := make([]EntityEnvelope, 0, len(pageSlice))
+	for _, ent := range pageSlice {
 		var data any
 		if err := decodeJSONPreservingNumbers(ent.Data, &data); err != nil {
 			return nil, common.Internal("failed to parse entity data", err)
