@@ -521,7 +521,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 func invalidPathError(paths []string) error {
 	return common.Operational(
 		http.StatusBadRequest,
-		common.ErrCodeBadRequest,
+		common.ErrCodeInvalidFieldPath,
 		fmt.Sprintf("condition references unknown field path(s): %s", strings.Join(paths, ", ")),
 	)
 }

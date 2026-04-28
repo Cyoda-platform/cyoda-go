@@ -192,6 +192,9 @@ func TestSearch_TrulyMissingPath_FourxxAfterOneRefresh(t *testing.T) {
 	if appErr.Status < 400 || appErr.Status >= 500 {
 		t.Errorf("expected 4xx status, got %d", appErr.Status)
 	}
+	if appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("expected errorCode %q, got %q", common.ErrCodeInvalidFieldPath, appErr.Code)
+	}
 	if got := ms.RefreshCount(); got != 1 {
 		t.Errorf("expected exactly 1 RefreshAndGet call (bounded), got %d", got)
 	}

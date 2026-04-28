@@ -152,10 +152,12 @@ func TestSearch_ConditionType_IntegerFieldWithStringValue_Rejects(t *testing.T) 
 
 // TestSearch_ConditionType_UnknownField_Rejected verifies that a search
 // condition referencing a field absent from the model schema is
-// rejected with HTTP 400 once pre-execution path validation is in
-// effect (issue #77). Type-checking still has no opinion on unknown
-// paths, so the rejection comes from the field-path validator and the
-// response body explicitly names the offending path.
+// rejected with HTTP 400 and errorCode INVALID_FIELD_PATH once
+// pre-execution path validation is in effect (issue #77). Type-checking
+// still has no opinion on unknown paths, so the rejection comes from the
+// field-path validator and the response body explicitly names the
+// offending path so clients can correct their request without a
+// support round-trip.
 func TestSearch_ConditionType_UnknownField_Rejected(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "simpleModel", 1, `{"name": "Alice"}`)
@@ -172,6 +174,18 @@ func TestSearch_ConditionType_UnknownField_Rejected(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "$.unknown") {
 		t.Errorf("expected response body to name the unknown path; got: %s", body)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("parse response body: %v; raw: %s", err, body)
+	}
+	props, _ := obj["properties"].(map[string]any)
+	if props == nil {
+		t.Fatalf("expected properties in error response; body: %s", body)
+	}
+	errorCode, _ := props["errorCode"].(string)
+	if errorCode != "INVALID_FIELD_PATH" {
+		t.Errorf("errorCode = %q, want INVALID_FIELD_PATH; body: %s", errorCode, body)
 	}
 }
 

@@ -10,6 +10,8 @@ see_also:
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
   - errors.SEARCH_SHARD_TIMEOUT
+  - errors.INVALID_FIELD_PATH
+  - errors.CONDITION_TYPE_MISMATCH
   - openapi
 ---
 
@@ -304,6 +306,8 @@ Synchronous search does not paginate; use the `limit` parameter (max 10000) to b
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; error code in response is `BAD_REQUEST`
 - `errors.SEARCH_RESULT_LIMIT` — result set exceeds configured limit
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
+- `errors.INVALID_FIELD_PATH` — `400` — condition references one or more JSONPath field paths absent from the model's locked schema; the response detail names each offending path
+- `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType
 - `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
 
 ## EXAMPLES

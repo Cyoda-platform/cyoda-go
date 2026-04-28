@@ -16,6 +16,7 @@ const (
 	ErrCodeEpochMismatch        = "EPOCH_MISMATCH"
 	ErrCodeBadRequest           = "BAD_REQUEST"
 	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
 	ErrCodePolymorphicSlot      = "POLYMORPHIC_SLOT"
 	ErrCodeUnauthorized         = "UNAUTHORIZED"
 	ErrCodeForbidden            = "FORBIDDEN"
