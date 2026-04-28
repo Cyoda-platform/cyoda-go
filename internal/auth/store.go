@@ -200,10 +200,19 @@ func NewInMemoryTrustedKeyStore() *InMemoryTrustedKeyStore {
 	}
 }
 
-// Register adds a trusted key.
+// Register adds a trusted key. Re-registering an existing KID is an
+// idempotent upsert and never trips the registry cap; only a brand-new KID
+// at full capacity is rejected with ErrTrustedKeyRegistryFull. The capacity
+// check and the insert are performed under a single Lock so concurrent
+// registrations cannot collectively exceed the cap. This mirrors
+// KVTrustedKeyStore.Register so that tests using the in-memory variant
+// observe the same bound as production code paths.
 func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.keys[tk.KID]; !exists && len(s.keys) >= MaxTrustedKeys {
+		return ErrTrustedKeyRegistryFull
+	}
 	s.keys[tk.KID] = copyTrustedKey(tk)
 	return nil
 }
