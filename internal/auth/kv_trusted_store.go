@@ -22,6 +22,10 @@ const trustedKeysNamespace = "trusted-keys"
 // covers expected operational use (rotations, multi-issuer federation) and
 // defends against runaway registration if the admin endpoint is ever
 // misconfigured. Override via WithMaxTrustedKeys.
+//
+// TODO(#163): when the trusted-key registry becomes tenant-scoped, move this
+// cap to per-tenant; otherwise a hostile admin in one tenant can lock out
+// every other tenant from registering keys.
 const defaultMaxTrustedKeys = 100
 
 // KVTrustedKeyStoreOption configures a KVTrustedKeyStore at construction time.
