@@ -69,3 +69,51 @@ func TestLocalKeySource_ErrorIsUnwrappable(t *testing.T) {
 		t.Log("note: error does not wrap inner error; acceptable but less helpful for callers")
 	}
 }
+
+// TestLocalKeySource_RejectsInvalidatedKey covers HIGH-1: an invalidated
+// signing key (Active=false) must NOT be returned by the key source. Until
+// the fix, GetKey echoes the public key regardless of Active, which means
+// the JWT validator would still accept tokens signed by the just-invalidated
+// kid — defeating the entire point of Invalidate.
+func TestLocalKeySource_RejectsInvalidatedKey(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate test key: %v", err)
+	}
+
+	ks := auth.NewInMemoryKeyStore()
+	const kid = "rotation-victim"
+	if err := ks.Save(&auth.KeyPair{
+		KID:        kid,
+		PublicKey:  &priv.PublicKey,
+		PrivateKey: priv,
+		Active:     true,
+		CreatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("failed to save keypair: %v", err)
+	}
+
+	src := auth.NewLocalKeySource(ks)
+
+	// Pre-condition: while Active, the key is returned successfully.
+	if _, err := src.GetKey(kid); err != nil {
+		t.Fatalf("GetKey while active: unexpected error: %v", err)
+	}
+
+	// Invalidate the key.
+	if err := ks.Invalidate(kid); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+
+	// Post-condition: GetKey must reject with ErrKeyNotFound semantics.
+	got, err := src.GetKey(kid)
+	if err == nil {
+		t.Fatal("GetKey after Invalidate: expected error, got nil")
+	}
+	if got != nil {
+		t.Fatalf("GetKey after Invalidate: expected nil key, got %v", got)
+	}
+	if !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("GetKey after Invalidate: expected errors.Is(err, ErrKeyNotFound), got %v", err)
+	}
+}
