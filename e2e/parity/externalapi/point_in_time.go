@@ -117,10 +117,56 @@ func RunExternalAPI_07_03_ChangeHistoryFull(t *testing.T, fixture parity.Backend
 }
 
 // RunExternalAPI_07_04_ChangeHistoryAtPointInTime — dictionary 07/04.
-// Skipped: parity client's GetEntityChanges has no pointInTime variant.
+// Asserts that GET /entity/{id}/changes?pointInTime=<t> truncates the
+// returned change history to entries at or before the supplied timestamp.
+//
+// Sequence: CREATE @ k=1 → UPDATE @ k=2 → cutoff → UPDATE @ k=3.
+// Full history is 3 entries; truncated history is 2 (CREATE + first UPDATE).
 func RunExternalAPI_07_04_ChangeHistoryAtPointInTime(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #132: parity client does not yet expose pointInTime-scoped change history")
+	d := driver.NewInProcess(t, fixture)
+	if err := d.CreateModelFromSample("pit4", 1, `{"k":1}`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := d.LockModel("pit4", 1); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	id, err := d.CreateEntity("pit4", 1, `{"k":1}`)
+	if err != nil {
+		t.Fatalf("create entity: %v", err)
+	}
+	if err := d.UpdateEntityData(id, `{"k":2}`); err != nil {
+		t.Fatalf("update@k=2: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	cutoff := time.Now().UTC()
+	time.Sleep(50 * time.Millisecond)
+	if err := d.UpdateEntityData(id, `{"k":3}`); err != nil {
+		t.Fatalf("update@k=3: %v", err)
+	}
+
+	// Full history — 3 entries.
+	full, err := d.GetEntityChanges(id)
+	if err != nil {
+		t.Fatalf("GetEntityChanges (full): %v", err)
+	}
+	if len(full) != 3 {
+		t.Errorf("full history: got %d entries, want 3", len(full))
+	}
+
+	// Truncated history at cutoff — 2 entries (CREATE + first UPDATE).
+	truncated, err := d.GetEntityChangesAt(id, cutoff)
+	if err != nil {
+		t.Fatalf("GetEntityChangesAt: %v", err)
+	}
+	if len(truncated) != 2 {
+		t.Fatalf("truncated history at cutoff: got %d entries, want 2", len(truncated))
+	}
+	for i, entry := range truncated {
+		if entry.TimeOfChange.After(cutoff) {
+			t.Errorf("entry %d: timeOfChange %s is after cutoff %s", i, entry.TimeOfChange, cutoff)
+		}
+	}
 }
 
 // RunExternalAPI_07_05_ChangeHistoryNonExistent — dictionary 07/05 (NEGATIVE).

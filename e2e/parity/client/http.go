@@ -373,6 +373,20 @@ func (c *Client) GetEntityChanges(t *testing.T, entityID uuid.UUID) ([]EntityCha
 	return changes, nil
 }
 
+// GetEntityChangesAt issues GET /api/entity/{entityId}/changes?pointInTime=<t>.
+// Returns the change history truncated to entries at or before the supplied
+// timestamp.
+// Canonical: docs/cyoda/openapi.yml (getEntityChangesMetadata with pointInTime query param).
+func (c *Client) GetEntityChangesAt(t *testing.T, entityID uuid.UUID, pointInTime time.Time) ([]EntityChangeMeta, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/changes?pointInTime=%s", entityID.String(), pointInTime.Format(time.RFC3339Nano))
+	var changes []EntityChangeMeta
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &changes); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
 // ListEntitiesByModel issues GET /api/entity/{name}/{version}.
 // Returns the entity list (each as EntityResult without modelKey per A2).
 // Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).

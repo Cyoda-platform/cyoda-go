@@ -110,7 +110,7 @@ Status vocabulary:
 | pit/01-get-single-entity-at-point-in-time | new:RunExternalAPI_07_01_GetEntityAtPointInTime | tranche 2 — three timestamps, three states |
 | pit/02-get-single-entity-by-transaction-id | new:RunExternalAPI_07_02_GetEntityByTransactionID (skipped) | tranche 2 — t.Skip pending parity-client surface addition (no transactionId-scoped GET helper today). Same gap as 12/05. |
 | pit/03-entity-change-history-full | new:RunExternalAPI_07_03_ChangeHistoryFull | tranche 2 — note: cyoda-go uses `"CREATED"` / `"UPDATED"` enum values where the YAML spec uses `"CREATE"` / `"UPDATE"`. `different_naming_same_level`. Test asserts on cyoda-go's emission. |
-| pit/04-entity-change-history-point-in-time | new:RunExternalAPI_07_04_ChangeHistoryAtPointInTime (skipped) | tranche 2 — t.Skip pending parity-client surface addition (no pointInTime-scoped change history helper today) |
+| pit/04-entity-change-history-point-in-time | new:RunExternalAPI_07_04_ChangeHistoryAtPointInTime | tranche 2 — `equiv_or_better`. Surfaced and fixed cyoda-go bug #152: `GetEntityChangesMetadata` handler was silently dropping the `pointInTime` query param. Service-level filter now truncates the history to entries with `timeOfChange <= pointInTime`. Parity-client `GetEntityChangesAt` helper added alongside the fix. |
 | pit/05-change-history-non-existent-entity | new:RunExternalAPI_07_05_ChangeHistoryNonExistent | tranche 2 — string-based 404 detection (stopgap until GetEntityChangesRaw, added in Phase 5 of tranche 2, is wired in). NB: also surfaced and fixed a real parity bug in postgres plugin's `GetVersionHistory` (was returning empty slice instead of `spi.ErrNotFound` for unknown entities). |
 
 ---

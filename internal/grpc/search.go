@@ -495,7 +495,7 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	entries, err := s.entityHandler.GetChangesMetadata(ctx, req.EntityID)
+	entries, err := s.entityHandler.GetChangesMetadata(ctx, req.EntityID, req.PointInTime)
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityChangesMetadataGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityChangesMetadataError(ctx, ce.Id, err)

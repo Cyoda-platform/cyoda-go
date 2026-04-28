@@ -385,7 +385,7 @@ func (h *Handler) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, ent
 }
 
 func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetEntityChangesMetadataParams) {
-	entries, err := h.GetChangesMetadata(r.Context(), entityId.String())
+	entries, err := h.GetChangesMetadata(r.Context(), entityId.String(), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return

@@ -1391,6 +1391,85 @@ func TestGetEntityChangesMetadata(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestGetEntityChangesMetadata_PointInTime asserts that the pointInTime
+// query parameter constrains the returned change history to entries whose
+// timeOfChange is at or before the supplied timestamp. Regression test
+// for issue #152: handler previously dropped the parameter silently.
+func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
+
+	// Create entity (k=1).
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
+
+	// Update (k=2).
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Capture cutoff between updates.
+	time.Sleep(50 * time.Millisecond)
+	cutoff := time.Now().UTC()
+	time.Sleep(50 * time.Millisecond)
+
+	// Update (k=3) — after cutoff.
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Without pointInTime — full history (3 entries).
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes (full): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var full []map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		t.Fatalf("parse full: %v", err)
+	}
+	if len(full) != 3 {
+		t.Fatalf("full history: expected 3 entries, got %d", len(full))
+	}
+
+	// With pointInTime=cutoff — truncated history (2 entries: CREATED + first UPDATED).
+	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, cutoff.Format(time.RFC3339Nano))
+	resp, err = http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var truncated []map[string]any
+	if err := json.Unmarshal(body, &truncated); err != nil {
+		t.Fatalf("parse truncated: %v", err)
+	}
+	if len(truncated) != 2 {
+		t.Fatalf("truncated history: expected 2 entries (CREATED + UPDATED), got %d: %v", len(truncated), truncated)
+	}
+	// Newest-first order: [UPDATED, CREATED].
+	if ct, _ := truncated[0]["changeType"].(string); ct != "UPDATED" {
+		t.Errorf("truncated[0].changeType: got %v, want UPDATED", truncated[0]["changeType"])
+	}
+	if ct, _ := truncated[1]["changeType"].(string); ct != "CREATED" {
+		t.Errorf("truncated[1].changeType: got %v, want CREATED", truncated[1]["changeType"])
+	}
+
+	// All returned entries must have timeOfChange <= cutoff.
+	for i, entry := range truncated {
+		ts, _ := entry["timeOfChange"].(string)
+		got, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			t.Fatalf("entry %d: bad timeOfChange %q: %v", i, ts, err)
+		}
+		if got.After(cutoff) {
+			t.Errorf("entry %d: timeOfChange %s is after cutoff %s", i, got, cutoff)
+		}
+	}
+}
+
 // --- Workflow integration tests ---
 
 // importWorkflow posts a workflow definition for the given model.
