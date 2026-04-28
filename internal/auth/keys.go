@@ -5,10 +5,12 @@ import (
 	"crypto/rsa"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // KeysHandler handles HTTP requests for key pair management.
@@ -82,16 +84,16 @@ func (h *KeysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *KeysHandler) issueKeyPair(w http.ResponseWriter, _ *http.Request) {
+func (h *KeysHandler) issueKeyPair(w http.ResponseWriter, r *http.Request) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		common.WriteError(w, r, common.Internal("failed to generate RSA key", err))
 		return
 	}
 
 	kidBytes := make([]byte, 16)
 	if _, err := rand.Read(kidBytes); err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		common.WriteError(w, r, common.Internal("failed to read random bytes for KID", err))
 		return
 	}
 	kid := hex.EncodeToString(kidBytes)
@@ -106,7 +108,7 @@ func (h *KeysHandler) issueKeyPair(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	if err := h.keyStore.Save(kp); err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		common.WriteError(w, r, common.Internal("failed to save key pair", err))
 		return
 	}
 
@@ -121,10 +123,11 @@ func (h *KeysHandler) issueKeyPair(w http.ResponseWriter, _ *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (h *KeysHandler) getCurrent(w http.ResponseWriter, _ *http.Request) {
+func (h *KeysHandler) getCurrent(w http.ResponseWriter, r *http.Request) {
 	kp, err := h.keyStore.GetActive()
 	if err != nil {
-		http.Error(w, "no active key pair found", http.StatusNotFound)
+		common.WriteError(w, r, common.Operational(
+			http.StatusNotFound, common.ErrCodeNotFound, "no active key pair"))
 		return
 	}
 
@@ -138,25 +141,33 @@ func (h *KeysHandler) getCurrent(w http.ResponseWriter, _ *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (h *KeysHandler) deleteKeyPair(w http.ResponseWriter, _ *http.Request, keyID string) {
+func (h *KeysHandler) deleteKeyPair(w http.ResponseWriter, r *http.Request, keyID string) {
 	if err := h.keyStore.Delete(keyID); err != nil {
-		http.Error(w, fmt.Sprintf("key pair not found: %s", keyID), http.StatusNotFound)
+		// Do not echo attacker-controllable keyID in the response body —
+		// log it server-side at INFO instead so operators can correlate.
+		slog.Info("key pair delete: not found", "pkg", "auth", "kid", keyID)
+		common.WriteError(w, r, common.Operational(
+			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *KeysHandler) invalidateKeyPair(w http.ResponseWriter, _ *http.Request, keyID string) {
+func (h *KeysHandler) invalidateKeyPair(w http.ResponseWriter, r *http.Request, keyID string) {
 	if err := h.keyStore.Invalidate(keyID); err != nil {
-		http.Error(w, fmt.Sprintf("key pair not found: %s", keyID), http.StatusNotFound)
+		slog.Info("key pair invalidate: not found", "pkg", "auth", "kid", keyID)
+		common.WriteError(w, r, common.Operational(
+			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *KeysHandler) reactivateKeyPair(w http.ResponseWriter, _ *http.Request, keyID string) {
+func (h *KeysHandler) reactivateKeyPair(w http.ResponseWriter, r *http.Request, keyID string) {
 	if err := h.keyStore.Reactivate(keyID); err != nil {
-		http.Error(w, fmt.Sprintf("key pair not found: %s", keyID), http.StatusNotFound)
+		slog.Info("key pair reactivate: not found", "pkg", "auth", "kid", keyID)
+		common.WriteError(w, r, common.Operational(
+			http.StatusNotFound, common.ErrCodeNotFound, "key pair not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)

@@ -31,6 +31,7 @@ const (
 	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
 	ErrCodeServerError          = "SERVER_ERROR"
 	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
+	ErrCodeNotFound             = "NOT_FOUND"
 )
 
 const (

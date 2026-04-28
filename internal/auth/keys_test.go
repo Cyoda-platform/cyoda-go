@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 type keyInfoResponse struct {
@@ -208,5 +211,83 @@ func TestKeysHandler_GetCurrent_NoActiveKey(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+}
+
+// TestKeysHandler_NotFoundResponses_DoNotEchoKID covers the lifecycle
+// (delete/invalidate/reactivate) endpoints. The handler previously echoed
+// the attacker-controllable {keyId} path segment back into the response
+// body via fmt.Sprintf, breaking the RFC 9457 contract and giving an
+// observability-style oracle to a malformed-input prober. Bodies must be
+// problem+json with errorCode=NOT_FOUND, and the submitted KID must not
+// appear in the response detail.
+func TestKeysHandler_NotFoundResponses_DoNotEchoKID(t *testing.T) {
+	// Choose a marker that survives the simple path-splitting router (no '/').
+	const malicious = "ATTACKER_REFLECTED_KID_BEACON"
+	cases := []struct {
+		name string
+		req  *http.Request
+	}{
+		{"delete", adminReq(http.MethodDelete, "/oauth/keys/keypair/"+malicious, nil)},
+		{"invalidate", adminReq(http.MethodPost, "/oauth/keys/keypair/"+malicious+"/invalidate", nil)},
+		{"reactivate", adminReq(http.MethodPost, "/oauth/keys/keypair/"+malicious+"/reactivate", nil)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewInMemoryKeyStore()
+			handler := NewKeysHandler(store)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, tc.req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d (body=%q)", rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+				t.Fatalf("expected Content-Type=application/problem+json, got %q", ct)
+			}
+			var pd common.ProblemDetail
+			if err := json.NewDecoder(rec.Body).Decode(&pd); err != nil {
+				t.Fatalf("failed to decode problem-detail: %v", err)
+			}
+			// The detail field is the part the handler emits — it must not
+			// echo the attacker-controllable KID. The instance field is
+			// legitimately the request URI per RFC 9457 and is not in scope.
+			if strings.Contains(pd.Detail, malicious) {
+				t.Fatalf("problem detail must not echo submitted KID, got %q", pd.Detail)
+			}
+			code, _ := pd.Props["errorCode"].(string)
+			if code != common.ErrCodeNotFound {
+				t.Errorf("expected errorCode=%s, got %s", common.ErrCodeNotFound, code)
+			}
+		})
+	}
+}
+
+// TestKeysHandler_GetCurrent_NoActiveKey_RFC9457 ensures the existing
+// "no active key pair" 404 likewise emits problem+json with the standard
+// NOT_FOUND code (it previously used http.Error with a plain string body).
+func TestKeysHandler_GetCurrent_NoActiveKey_RFC9457(t *testing.T) {
+	store := NewInMemoryKeyStore()
+	handler := NewKeysHandler(store)
+
+	req := adminReq(http.MethodGet, "/oauth/keys/keypair/current", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("expected Content-Type=application/problem+json, got %q", ct)
+	}
+	var pd common.ProblemDetail
+	if err := json.NewDecoder(rec.Body).Decode(&pd); err != nil {
+		t.Fatalf("failed to decode problem-detail: %v", err)
+	}
+	code, _ := pd.Props["errorCode"].(string)
+	if code != common.ErrCodeNotFound {
+		t.Errorf("expected errorCode=%s, got %s", common.ErrCodeNotFound, code)
 	}
 }

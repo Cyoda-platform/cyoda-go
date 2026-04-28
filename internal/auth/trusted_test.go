@@ -518,6 +518,36 @@ func TestTrustedKeysHandler_RegisterInvalidJWK(t *testing.T) {
 	}
 }
 
+// TestTrustedKeysHandler_UnmatchedRoute_ReturnsRFC9457NotFound covers the
+// last surviving http.Error site in ServeHTTP: a request that authenticates
+// but matches no method/path branch must come back as a problem-detail 404
+// with errorCode=NOT_FOUND, not a plain text/plain body. Otherwise admin
+// clients see a different content negotiation here than they do for every
+// other 4xx in the handler.
+func TestTrustedKeysHandler_UnmatchedRoute_ReturnsRFC9457NotFound(t *testing.T) {
+	handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
+
+	// PUT is not handled by any branch in ServeHTTP.
+	req := adminReq(http.MethodPut, "/oauth/keys/trusted", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("expected Content-Type=application/problem+json, got %q", ct)
+	}
+	var pd common.ProblemDetail
+	if err := json.NewDecoder(rec.Body).Decode(&pd); err != nil {
+		t.Fatalf("failed to decode problem-detail: %v", err)
+	}
+	code, _ := pd.Props["errorCode"].(string)
+	if code != common.ErrCodeNotFound {
+		t.Errorf("expected errorCode=%s, got %s", common.ErrCodeNotFound, code)
+	}
+}
+
 func TestTrustedKeysHandler_DeleteNotFound(t *testing.T) {
 	store := NewInMemoryTrustedKeyStore()
 	handler := NewTrustedKeysHandler(store)
@@ -570,5 +600,69 @@ func TestTrustedKeysHandler_DeleteNotFound_GenericMessage(t *testing.T) {
 	}
 	if got, _ := pd.Properties["errorCode"].(string); got != common.ErrCodeTrustedKeyNotFound {
 		t.Errorf("errorCode = %q, want %q", got, common.ErrCodeTrustedKeyNotFound)
+	}
+}
+
+// TestTrustedKeysHandler_LifecycleEnforcesKIDWhitelist covers MED-4: every
+// lifecycle endpoint (Register, Delete, Invalidate, Reactivate) must apply
+// the same {keyId} character whitelist. Previously only Register validated
+// the input, leaving DELETE/Invalidate/Reactivate accepting arbitrary
+// strings — including ones that could produce noisy logs or downstream
+// store errors with attacker-controlled fragments.
+//
+// Whitelist: alnum + '-' + '_' + '.', length 1..128.
+func TestTrustedKeysHandler_LifecycleEnforcesKIDWhitelist(t *testing.T) {
+	// Path-safe but disallowed: a tilde is not in the whitelist set.
+	const malformed = "kid~with~tilde"
+
+	type tcase struct {
+		name string
+		req  func() *http.Request
+	}
+	jwk := generateTestJWK(t)
+	body := registerTrustedKeyRequest{
+		KeyID:    malformed,
+		JWK:      jwk,
+		Audience: "svc",
+	}
+	bodyBytes, _ := json.Marshal(body)
+	cases := []tcase{
+		{"register", func() *http.Request {
+			req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+			req.Header.Set("Content-Type", "application/json")
+			return req
+		}},
+		{"delete", func() *http.Request {
+			return adminReq(http.MethodDelete, "/oauth/keys/trusted/"+malformed, nil)
+		}},
+		{"invalidate", func() *http.Request {
+			return adminReq(http.MethodPost, "/oauth/keys/trusted/"+malformed+"/invalidate", nil)
+		}},
+		{"reactivate", func() *http.Request {
+			return adminReq(http.MethodPost, "/oauth/keys/trusted/"+malformed+"/reactivate", nil)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, tc.req())
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for malformed keyId, got %d (body=%q)", rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+				t.Fatalf("expected Content-Type=application/problem+json, got %q", ct)
+			}
+			var pd common.ProblemDetail
+			if err := json.NewDecoder(rec.Body).Decode(&pd); err != nil {
+				t.Fatalf("failed to decode problem-detail: %v", err)
+			}
+			code, _ := pd.Props["errorCode"].(string)
+			if code != common.ErrCodeBadRequest {
+				t.Errorf("expected errorCode=%s, got %s", common.ErrCodeBadRequest, code)
+			}
+		})
 	}
 }
