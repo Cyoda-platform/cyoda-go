@@ -92,7 +92,8 @@ func (h *TrustedKeysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Error(w, "not found", http.StatusNotFound)
+	common.WriteError(w, r, common.Operational(
+		http.StatusNotFound, common.ErrCodeNotFound, "not found"))
 }
 
 func (h *TrustedKeysHandler) handleList(w http.ResponseWriter, _ *http.Request) {
@@ -103,7 +104,12 @@ func (h *TrustedKeysHandler) handleList(w http.ResponseWriter, _ *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		// Headers/body have already been flushed; emitting a second
+		// http.Error here would only append garbage. Log and let the
+		// client observe the truncated stream — same convention as
+		// the rest of the codebase (see internal/common/errors.go,
+		// internal/api/admin.go).
+		slog.Debug("failed to encode response", "pkg", "auth", "error", err)
 	}
 }
 

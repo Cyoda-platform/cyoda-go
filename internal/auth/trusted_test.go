@@ -518,6 +518,36 @@ func TestTrustedKeysHandler_RegisterInvalidJWK(t *testing.T) {
 	}
 }
 
+// TestTrustedKeysHandler_UnmatchedRoute_ReturnsRFC9457NotFound covers the
+// last surviving http.Error site in ServeHTTP: a request that authenticates
+// but matches no method/path branch must come back as a problem-detail 404
+// with errorCode=NOT_FOUND, not a plain text/plain body. Otherwise admin
+// clients see a different content negotiation here than they do for every
+// other 4xx in the handler.
+func TestTrustedKeysHandler_UnmatchedRoute_ReturnsRFC9457NotFound(t *testing.T) {
+	handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
+
+	// PUT is not handled by any branch in ServeHTTP.
+	req := adminReq(http.MethodPut, "/oauth/keys/trusted", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("expected Content-Type=application/problem+json, got %q", ct)
+	}
+	var pd common.ProblemDetail
+	if err := json.NewDecoder(rec.Body).Decode(&pd); err != nil {
+		t.Fatalf("failed to decode problem-detail: %v", err)
+	}
+	code, _ := pd.Props["errorCode"].(string)
+	if code != common.ErrCodeNotFound {
+		t.Errorf("expected errorCode=%s, got %s", common.ErrCodeNotFound, code)
+	}
+}
+
 func TestTrustedKeysHandler_DeleteNotFound(t *testing.T) {
 	store := NewInMemoryTrustedKeyStore()
 	handler := NewTrustedKeysHandler(store)
