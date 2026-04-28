@@ -3,6 +3,7 @@ package auth
 import (
 	"net/http"
 
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
@@ -12,16 +13,22 @@ import (
 // was bypassed or misconfigured — respond 401. A present UserContext lacking
 // ROLE_ADMIN is a genuine authorization failure — respond 403.
 //
+// Both branches respond as RFC 9457 problem-detail JSON via common.WriteError
+// so the wire shape (Content-Type, errorCode property) matches every other
+// 4xx in the system.
+//
 // Returns true when the caller may proceed; otherwise writes the response
 // and returns false.
 func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	uc := spi.GetUserContext(r.Context())
 	if uc == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		common.WriteError(w, r, common.Operational(
+			http.StatusUnauthorized, common.ErrCodeUnauthorized, "authentication failed"))
 		return false
 	}
 	if !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
-		http.Error(w, `{"error":"forbidden: requires ROLE_ADMIN"}`, http.StatusForbidden)
+		common.WriteError(w, r, common.Operational(
+			http.StatusForbidden, common.ErrCodeForbidden, "forbidden"))
 		return false
 	}
 	return true
