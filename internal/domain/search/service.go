@@ -63,6 +63,11 @@ type SearchService struct {
 	factory     spi.StoreFactory
 	uuids       spi.UUIDGenerator
 	searchStore spi.AsyncSearchStore
+
+	// pathCache is an optional negative cache for unknown field-path
+	// validation. nil-safe: when unset, validation falls back to the
+	// inner-store Get + bounded RefreshAndGet pair on every request.
+	pathCache *PathValidationCache
 }
 
 // NewSearchService creates a SearchService backed by the given store factory.
@@ -72,6 +77,17 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 		uuids:       uuids,
 		searchStore: searchStore,
 	}
+}
+
+// WithPathValidationCache wires a negative cache for field-path
+// validation. Returns the receiver so the call can chain after
+// NewSearchService. The cache is optional; without it every
+// validation attempt routes through the inner ModelStore. With it,
+// confirmed-absent paths short-circuit until a schema-change event
+// invalidates the (tenant, modelRef) bucket.
+func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchService {
+	s.pathCache = c
+	return s
 }
 
 // Search performs a synchronous entity search, returning matching entities.
@@ -444,6 +460,16 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 		return nil
 	}
 
+	// Negative cache fast-path: if any path is recorded as confirmed
+	// absent for this (tenant, modelRef) at the current generation,
+	// short-circuit without touching the inner store. This collapses
+	// a serial flood of bad requests into one inner-store round-trip
+	// per (tenant, modelRef, path) tuple between schema events.
+	tenant := tenantFromContext(ctx)
+	if cachedMissing := s.cachedAbsentPaths(tenant, modelRef, paths); len(cachedMissing) > 0 {
+		return invalidPathError(cachedMissing)
+	}
+
 	modelStore, err := s.factory.ModelStore(ctx)
 	if err != nil {
 		// A factory that cannot produce a ModelStore cannot validate;
@@ -477,6 +503,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 
 	missing := findUnknownPaths(paths, fields)
 	if len(missing) == 0 {
+		s.markPathsPresent(tenant, modelRef, paths)
 		return nil
 	}
 
@@ -487,13 +514,15 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
 	if !refreshed {
 		// Store has no cache layer — the cached miss is authoritative.
+		s.markPathsAbsent(tenant, modelRef, missing)
 		return invalidPathError(missing)
 	}
 	if refreshErr != nil {
 		if errors.Is(refreshErr, spi.ErrNotFound) {
 			// Model was deleted between Get and RefreshAndGet — fall
 			// back to the cached fields outcome (paths are unknown
-			// because there is no model).
+			// because there is no model). Do NOT populate the negative
+			// cache: there is no schema authority to invalidate against.
 			return invalidPathError(missing)
 		}
 		slog.Debug("schema refresh failed during pre-execution validation",
@@ -509,9 +538,63 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelRef spi
 
 	stillMissing := findUnknownPaths(missing, freshFields)
 	if len(stillMissing) == 0 {
+		s.markPathsPresent(tenant, modelRef, paths)
 		return nil
 	}
+	s.markPathsAbsent(tenant, modelRef, stillMissing)
 	return invalidPathError(stillMissing)
+}
+
+// cachedAbsentPaths returns the subset of paths recorded as confirmed
+// absent in the negative cache for (tenant, modelRef) at the current
+// generation. Returns nil when the cache is unset or no path matches.
+func (s *SearchService) cachedAbsentPaths(tenant string, ref spi.ModelRef, paths []string) []string {
+	if s.pathCache == nil {
+		return nil
+	}
+	var out []string
+	for _, p := range paths {
+		if s.pathCache.IsAbsent(tenant, ref, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// markPathsAbsent records each path as confirmed absent for (tenant,
+// modelRef). No-op when the cache is unset.
+func (s *SearchService) markPathsAbsent(tenant string, ref spi.ModelRef, paths []string) {
+	if s.pathCache == nil {
+		return
+	}
+	for _, p := range paths {
+		s.pathCache.MarkAbsent(tenant, ref, p)
+	}
+}
+
+// markPathsPresent removes each path from the negative cache for
+// (tenant, modelRef). Defensive: ensures a path that previously
+// resolved as absent and now resolves as present is reflected without
+// waiting for an invalidation event. No-op when the cache is unset.
+func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, paths []string) {
+	if s.pathCache == nil {
+		return
+	}
+	for _, p := range paths {
+		s.pathCache.MarkPresent(tenant, ref, p)
+	}
+}
+
+// tenantFromContext mirrors the modelcache cache's tenant extractor.
+// Empty string when no UserContext is bound — that bucket is shared
+// among unauthenticated requests, which is acceptable for negative
+// caching: invalidation events name the tenant explicitly.
+func tenantFromContext(ctx context.Context) string {
+	uc := spi.GetUserContext(ctx)
+	if uc == nil {
+		return ""
+	}
+	return string(uc.Tenant.ID)
 }
 
 // invalidPathError builds the 4xx response surfaced when one or more
