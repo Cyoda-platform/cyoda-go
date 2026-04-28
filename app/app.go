@@ -302,7 +302,14 @@ func New(cfg Config) *App {
 			"error", err.Error())
 		os.Exit(1)
 	}
-	a.searchService = search.NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore)
+	// Negative cache for pre-execution field-path validation. Shares
+	// the model.invalidate gossip topic with the descriptor cache so a
+	// single schema-change event drops both layers in lock step. The
+	// cache is bounded; otter's S3-FIFO eviction handles overflow.
+	pathValidationCache := search.NewPathValidationCache(cacheBroadcaster)
+	a.searchService = search.
+		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
+		WithPathValidationCache(pathValidationCache)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
 	a.stopSearchReaper = make(chan struct{})
