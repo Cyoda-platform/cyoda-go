@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -61,6 +62,7 @@ type App struct {
 	txLifecycle        *lifecycle.Manager
 	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
+	grpcStopOnce       sync.Once
 }
 
 func New(cfg Config) *App {
@@ -582,7 +584,21 @@ func (a *App) Close() error {
 	if a.storeFactory != nil {
 		err = a.storeFactory.Close()
 	}
-	if a.grpcServer != nil {
+	a.StopGRPC()
+	return err
+}
+
+// StopGRPC drains the gRPC server with a deadline-bounded graceful-stop
+// (gRPCGracefulStopBudget). The drain runs at most once across the
+// lifetime of the App via sync.Once — runServers' watcher invokes this
+// when rootCtx cancels, and Close() calls it again as a belt-and-braces
+// teardown. Without the once, a stuck stream could burn up to 2× the
+// budget across the runServers + Close layers.
+func (a *App) StopGRPC() {
+	a.grpcStopOnce.Do(func() {
+		if a.grpcServer == nil {
+			return
+		}
 		done := make(chan struct{})
 		go func() {
 			a.grpcServer.GracefulStop()
@@ -597,8 +613,7 @@ func (a *App) Close() error {
 				"budget", gRPCGracefulStopBudget.String())
 			a.grpcServer.GRPCServer().Stop()
 		}
-	}
-	return err
+	})
 }
 
 // Shutdown performs graceful cleanup of background goroutines and cluster

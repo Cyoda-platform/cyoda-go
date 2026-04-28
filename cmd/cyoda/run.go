@@ -64,29 +64,17 @@ func runServers(
 	g.Go(func() error {
 		<-ctx.Done()
 		// Drain gRPC with the same deadline budget as HTTP/admin so total
-		// shutdown is predictable. GracefulStop returns once all in-flight
-		// RPCs complete or the watcher fires the hard Stop fallback.
+		// shutdown is predictable. The drain is gated by a sync.Once on
+		// App so the second invocation in a.Close() is a no-op rather
+		// than re-entering the deadline branch (#68 follow-up).
 		// Concrete sequence on signal:
 		//   1. ctx.Done fires (signal.NotifyContext)
 		//   2. http.Shutdown / admin.Shutdown drain in their own goroutines
 		//   3. this watcher graceful-stops gRPC so Serve returns
 		//   4. errgroup.Wait returns
 		//   5. caller invokes a.Shutdown() then a.Close()
-		//   6. a.Close()'s gRPC drain is a no-op since the server is
-		//      already stopped (GracefulStop is idempotent).
-		done := make(chan struct{})
-		go func() {
-			a.GRPCServer().GracefulStop()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(shutdownDrainBudget):
-			slog.Warn("gRPC graceful stop deadline exceeded; forcing",
-				"phase", "shutdown",
-				"budget", shutdownDrainBudget.String())
-			a.GRPCServer().GRPCServer().Stop()
-		}
+		//   6. a.Close()'s StopGRPC short-circuits via the once.
+		a.StopGRPC()
 		return nil
 	})
 
