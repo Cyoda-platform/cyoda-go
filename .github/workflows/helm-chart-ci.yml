@@ -13,6 +13,11 @@ on:
       - '.github/workflows/helm-chart-ci.yml'
       - '.github/ct.yaml'
 
+# Default to read-only token for all jobs. Individual jobs may opt-in to
+# additional scopes if they need them; none currently do.
+permissions:
+  contents: read
+
 jobs:
   helm-lint-and-validate:
     name: Lint, template, kubeconform
