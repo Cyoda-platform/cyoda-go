@@ -73,7 +73,7 @@ jobs:
           owner: cyoda-platform
           repositories: homebrew-cyoda-go
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           # Pin to latest v2.x.y. Accepts patches and minor features; blocks
           # v3 breaking changes from silently breaking the release pipeline.
