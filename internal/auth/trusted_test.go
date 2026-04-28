@@ -536,6 +536,11 @@ func TestTrustedKeysHandler_DeleteNotFound(t *testing.T) {
 // http.Error(w, err.Error(), 404) which leaked the store's internal phrasing
 // ("trusted key not found: <kid>") into the response body. The instance
 // field still legitimately echoes the URL path (RFC 9457).
+//
+// Also pins the errorCode to TRUSTED_KEY_NOT_FOUND (#34/6 follow-up): the
+// original landing of #34/6 emitted BAD_REQUEST as the errorCode on a 404
+// status, which was incoherent. The dedicated TRUSTED_KEY_NOT_FOUND code
+// makes the response programmatically distinguishable from BAD_REQUEST 400s.
 func TestTrustedKeysHandler_DeleteNotFound_GenericMessage(t *testing.T) {
 	store := NewInMemoryTrustedKeyStore()
 	handler := NewTrustedKeysHandler(store)
@@ -549,7 +554,8 @@ func TestTrustedKeysHandler_DeleteNotFound_GenericMessage(t *testing.T) {
 	}
 
 	var pd struct {
-		Detail string `json:"detail"`
+		Detail     string         `json:"detail"`
+		Properties map[string]any `json:"properties"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -560,5 +566,8 @@ func TestTrustedKeysHandler_DeleteNotFound_GenericMessage(t *testing.T) {
 	// The detail must NOT contain the raw store error phrasing.
 	if strings.Contains(pd.Detail, "trusted key not found:") {
 		t.Errorf("detail leaked raw store error: %q", pd.Detail)
+	}
+	if got, _ := pd.Properties["errorCode"].(string); got != common.ErrCodeTrustedKeyNotFound {
+		t.Errorf("errorCode = %q, want %q", got, common.ErrCodeTrustedKeyNotFound)
 	}
 }

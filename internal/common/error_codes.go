@@ -18,6 +18,7 @@ const (
 	ErrCodePolymorphicSlot      = "POLYMORPHIC_SLOT"
 	ErrCodeUnauthorized         = "UNAUTHORIZED"
 	ErrCodeForbidden            = "FORBIDDEN"
+	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
 	ErrCodeServerError          = "SERVER_ERROR"
 	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
 )

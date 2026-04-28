@@ -187,8 +187,10 @@ func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request
 	}
 	if err := h.trustedKeyStore.Delete(keyID); err != nil {
 		// Generic client message; full detail logged server-side (#34 item 6).
+		// errorCode TRUSTED_KEY_NOT_FOUND so the 404 is programmatically
+		// distinguishable from BAD_REQUEST 400s (#34/6 follow-up).
 		slog.Info("trusted-key delete: not found", "kid", keyID, "err", err.Error())
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeBadRequest, "key not found"))
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -204,8 +206,10 @@ func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, r *http.Req
 	}
 	if err := h.trustedKeyStore.Invalidate(keyID); err != nil {
 		// Generic client message; full detail logged server-side (#68 item 14).
+		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
+		// (#34/6 follow-up).
 		slog.Info("trusted-key invalidate: not found", "kid", keyID, "err", err.Error())
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeBadRequest, "key not found"))
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -221,8 +225,10 @@ func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Req
 	}
 	if err := h.trustedKeyStore.Reactivate(keyID); err != nil {
 		// Generic client message; full detail logged server-side (#68 item 14).
+		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
+		// (#34/6 follow-up).
 		slog.Info("trusted-key reactivate: not found", "kid", keyID, "err", err.Error())
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeBadRequest, "key not found"))
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
