@@ -2,9 +2,7 @@ package auth
 
 import (
 	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -244,23 +242,6 @@ func extractKeyID(path, prefix string) string {
 		return ""
 	}
 	return kid
-}
-
-// parseRSAPublicKeyFromPEM parses a PEM-encoded RSA public key.
-func parseRSAPublicKeyFromPEM(pemData []byte) (*rsa.PublicKey, error) {
-	block, _ := pem.Decode(pemData)
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block found")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse public key: %w", err)
-	}
-	rsaPub, ok := pub.(*rsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("not an RSA public key")
-	}
-	return rsaPub, nil
 }
 
 // parseRSAPublicKeyFromJWK parses an RSA public key from a JWK JSON object.
