@@ -410,6 +410,79 @@ func (c *Client) GetEntityAtRaw(t *testing.T, entityID uuid.UUID, pointInTime ti
 	return status, err
 }
 
+// GetEntityAtBodyRaw issues GET /api/entity/{entityId}?pointInTime=<t> and
+// returns the raw status code and response body. Used by tests that need
+// to compare error-response bodies byte-for-byte (tenant-isolation
+// existence-oracle pinning).
+func (c *Client) GetEntityAtBodyRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID.String(), pointInTime.UTC().Format(time.RFC3339Nano))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityByTransactionIDBodyRaw issues GET /api/entity/{entityId}?transactionId=<tx>
+// and returns the raw status code and response body. Used by tenant-isolation
+// tests that need to compare error-response bodies byte-for-byte to assert
+// no existence oracle leaks across tenants via the transactionId temporal
+// query param.
+func (c *Client) GetEntityByTransactionIDBodyRaw(t *testing.T, entityID uuid.UUID, txID string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?transactionId=%s", entityID.String(), txID)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityChangesAtBodyRaw issues GET /api/entity/{entityId}/changes?pointInTime=<t>
+// and returns the raw status code and response body. Used by tenant-isolation
+// tests that need to compare error-response bodies byte-for-byte across the
+// change-history temporal query path.
+func (c *Client) GetEntityChangesAtBodyRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/changes?pointInTime=%s", entityID.String(), pointInTime.UTC().Format(time.RFC3339Nano))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // UpdateEntityData issues PUT /api/entity/JSON/{entityId} to update
 // entity data without firing a workflow transition.
 // Canonical: docs/cyoda/openapi.yml (collection updateOne).

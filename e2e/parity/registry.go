@@ -56,6 +56,12 @@ var allTests = []NamedTest{
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
 	{"TenantIsolationModels", RunTenantIsolationModels},
+	// v0.6.3 — temporal-query tenant isolation (existence-oracle pinning;
+	// companions to PR #161/#164/#165). Structurally guaranteed today;
+	// pinned here so a future refactor cannot silently regress.
+	{"TenantIsolationTransactionIDInvisible", RunTenantIsolationTransactionIDInvisible},
+	{"TenantIsolationPointInTimeInvisible", RunTenantIsolationPointInTimeInvisible},
+	{"TenantIsolationChangesAtPITInvisible", RunTenantIsolationChangesAtPITInvisible},
 
 	// Phase 4a — messaging (Task 4a.6)
 	{"MessageCreateAndGet", RunMessageCreateAndGet},
