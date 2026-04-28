@@ -6,6 +6,13 @@ import (
 	"math/big"
 )
 
+// MaxValidationDepth caps recursion in Validate to defend against stack
+// exhaustion from deeply nested user-supplied documents. At roughly 8 bytes
+// per nesting level a 10MB body could otherwise encode hundreds of thousands
+// of levels and crash the goroutine. 256 is well above any realistic JSON
+// nesting and well below the stack-blow threshold.
+const MaxValidationDepth = 256
+
 // ErrorKind classifies a ValidationError so handlers can branch on
 // specific failure modes without matching error message text.
 type ErrorKind int
@@ -54,15 +61,22 @@ func HasUnknownSchemaElement(errs []ValidationError) bool {
 // Validate checks whether data conforms to the given model schema.
 // It returns a slice of validation errors; an empty slice means the data is valid.
 func Validate(model *ModelNode, data any) []ValidationError {
-	return validateNode(model, data, "")
+	return validateNode(model, data, "", 0)
 }
 
-func validateNode(model *ModelNode, data any, path string) []ValidationError {
+func validateNode(model *ModelNode, data any, path string, depth int) []ValidationError {
+	if depth >= MaxValidationDepth {
+		return []ValidationError{{
+			Path:    path,
+			Message: fmt.Sprintf("validation depth exceeded (max %d)", MaxValidationDepth),
+			Kind:    ErrKindGeneric,
+		}}
+	}
 	switch model.Kind() {
 	case KindObject:
-		return validateObject(model, data, path)
+		return validateObject(model, data, path, depth)
 	case KindArray:
-		return validateArray(model, data, path)
+		return validateArray(model, data, path, depth)
 	case KindLeaf:
 		return validateLeaf(model, data, path)
 	default:
@@ -70,7 +84,7 @@ func validateNode(model *ModelNode, data any, path string) []ValidationError {
 	}
 }
 
-func validateObject(model *ModelNode, data any, path string) []ValidationError {
+func validateObject(model *ModelNode, data any, path string, depth int) []ValidationError {
 	// Polymorphic guard: when the node's TypeSet contains more than one type
 	// (i.e. the schema was built from merging structurally-different elements),
 	// accept data whose Go/JSON shape matches any participating type rather than
@@ -92,7 +106,7 @@ func validateObject(model *ModelNode, data any, path string) []ValidationError {
 			// Missing fields are accepted — model describes known structure, not required fields.
 			continue
 		}
-		errs = append(errs, validateNode(childModel, val, childPath)...)
+		errs = append(errs, validateNode(childModel, val, childPath, depth+1)...)
 	}
 	// Extra fields in data that are not in the model are rejected.
 	for name := range obj {
@@ -107,7 +121,7 @@ func validateObject(model *ModelNode, data any, path string) []ValidationError {
 	return errs
 }
 
-func validateArray(model *ModelNode, data any, path string) []ValidationError {
+func validateArray(model *ModelNode, data any, path string, depth int) []ValidationError {
 	// Polymorphic guard: identical rationale as validateObject.
 	if validatePolymorphicFallback(model, data) {
 		return nil
@@ -125,7 +139,7 @@ func validateArray(model *ModelNode, data any, path string) []ValidationError {
 	var errs []ValidationError
 	for i, item := range arr {
 		elemPath := fmt.Sprintf("%s[%d]", path, i)
-		errs = append(errs, validateNode(elem, item, elemPath)...)
+		errs = append(errs, validateNode(elem, item, elemPath, depth+1)...)
 	}
 	return errs
 }

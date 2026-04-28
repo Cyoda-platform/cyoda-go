@@ -34,19 +34,22 @@ func ValidateConditionValueTypes(model *schema.ModelNode, cond predicate.Conditi
 		return nil
 	}
 	fm := model.FieldsMap()
-	return walkConditionTypes(fm, cond)
+	return walkConditionTypes(fm, cond, 0)
 }
 
-func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Condition) error {
+func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Condition, depth int) error {
 	if cond == nil {
 		return nil
+	}
+	if depth >= MaxConditionDepth {
+		return fmt.Errorf("condition depth exceeded (max %d)", MaxConditionDepth)
 	}
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
 		return validateSimpleConditionType(fm, c)
 	case *predicate.GroupCondition:
 		for _, child := range c.Conditions {
-			if err := walkConditionTypes(fm, child); err != nil {
+			if err := walkConditionTypes(fm, child, depth+1); err != nil {
 				return err
 			}
 		}
