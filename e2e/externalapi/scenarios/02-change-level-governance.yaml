@@ -1,0 +1,219 @@
+# Change-level governance controls which shape mutations a locked model
+# tolerates during subsequent entity saves. Levels form an ordering:
+#   ARRAY_LENGTH  < ARRAY_ELEMENTS < TYPE < STRUCTURAL
+# A higher level permits everything the lower levels permit.
+# Default for a locked model is "no changes allowed" unless set explicitly.
+
+scenarios:
+  - id: change-level/01-set-structural
+    name: Set change level to STRUCTURAL on an existing model
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#test change available model change level
+    description: |
+      STRUCTURAL is the most permissive level; all shape changes are tolerated
+      at ingestion time. The change is idempotent and visible via export.
+    data:
+      model: { name: simple, version: 1 }
+      sample_json: |
+        {"k1": 1}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple/1 }
+        body_ref: data.sample_json
+      - action: set_change_level
+        endpoint: { rest: POST /model/simple/1/changeLevel/STRUCTURAL }
+    assertions:
+      - type: http_status
+        value: 200
+
+  - id: change-level/02-structural-null-field-does-not-grow-changelog
+    name: Saving entities with null for an array field does not grow the change log
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#test saving entity concurrently with null fields the changelog does not grow
+    description: |
+      Regression: saving many entities concurrently with a null in a field
+      typed as an array previously added a change-log entry per save. With
+      STRUCTURAL change level, null values must not be treated as schema
+      changes; the model's change log stays at zero after N concurrent saves.
+    data:
+      model: { name: "model with nulls", version: 1, change_level: STRUCTURAL }
+      sample_json: |
+        {
+          "key0": [],
+          "key1": "abc",
+          "key2": 123,
+          "key3": [123, 567]
+        }
+      payload_json: |
+        {
+          "key0": null,
+          "key1": null,
+          "key2": 123,
+          "key3": [123, 567]
+        }
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/model%20with%20nulls/1 }
+        body_ref: data.sample_json
+      - action: set_change_level
+        endpoint: { rest: POST /model/model%20with%20nulls/1/changeLevel/STRUCTURAL }
+      - action: lock_model
+        endpoint: { rest: PUT /model/model%20with%20nulls/1/lock }
+      - action: create_entity
+        repeat: 20
+        concurrent: true
+        endpoint:
+          rest: POST /entity/JSON/model%20with%20nulls/1
+          grpc: EntityService.entityManage (EntityCreateRequest)
+        body_ref: data.payload_json
+    assertions:
+      - type: model_change_log_size
+        model: { name: "model with nulls", version: 1 }
+        value: 0
+
+  - id: change-level/03-type-widening-int-to-float-incompatible
+    name: Saving float into int-typed field is rejected
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#try save data with incompatible types
+    description: |
+      Locked model registered with integer `price`. Saving an entity whose
+      `price` is a float must be rejected as an incompatible type change.
+      No entity must end up persisted.
+    data:
+      model: { name: simple4, version: 1 }
+      sample_json: |
+        {"price": 13}
+      payload_json: |
+        {"price": 13.111}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple4/1 }
+        body_ref: data.sample_json
+      - action: lock_model
+        endpoint: { rest: PUT /model/simple4/1/lock }
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/simple4/1 }
+        body_ref: data.payload_json
+    negative: true
+    expected_error:
+      http_status: 400
+      class_or_message_pattern: "FoundIncompatibleTypeWitEntityModelException|Incompatible.*type"
+    assertions:
+      - type: entity_count_for_model
+        model: { name: simple4, version: 1 }
+        value: 0
+
+  - id: change-level/04-type-narrowing-float-to-int-compatible
+    name: Saving int into float-typed field is accepted
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#try to save data with compatible types
+    description: |
+      Locked model registered with float `price` (13.111). Saving `{"price": 13}`
+      is accepted because integer is a compatible subtype of float.
+    data:
+      model: { name: simple3, version: 1 }
+      sample_json: |
+        {"price": 13.111}
+      payload_json: |
+        {"price": 13}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple3/1 }
+        body_ref: data.sample_json
+      - action: lock_model
+        endpoint: { rest: PUT /model/simple3/1/lock }
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/simple3/1 }
+        body_ref: data.payload_json
+    assertions:
+      - type: entity_count_for_model
+        model: { name: simple3, version: 1 }
+        value: 1
+
+  - id: change-level/05-updated-schema-on-unlocked-then-lock-and-save
+    name: Updating schema before lock, then ingesting against the updated schema
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#try to load data with updated schema
+    description: |
+      Registering v1 with integer `key1`, then re-importing with string
+      `key1` while unlocked, then locking and creating an entity with the
+      string value succeeds.
+    data:
+      model: { name: simple3, version: 1 }
+      sample_json: |
+        {"key1": 123}
+      alt_sample_json: |
+        {"key1": "abc"}
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple3/1 }
+        body_ref: data.sample_json
+      - action: update_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple3/1 }
+        body_ref: data.alt_sample_json
+      - action: lock_model
+        endpoint: { rest: PUT /model/simple3/1/lock }
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/simple3/1 }
+        body_ref: data.alt_sample_json
+    assertions:
+      - type: entity_count_for_model
+        model: { name: simple3, version: 1 }
+        value: 1
+
+  - id: change-level/06-multinode-type-level-with-all-fields-model
+    name: Apply TYPE change level over a multi-node cluster and ingest 100 all-fields entities
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/MultiNodeDataIngestionIT.kt#test
+    description: |
+      End-to-end multi-node smoke test performed via HTTP only. Register the
+      "all fields" model, set change level to TYPE, lock, ingest 100 random
+      entities through a round-robin load balancer, then clean up. The test
+      relies entirely on the external REST surface.
+    data:
+      model: { name: simple1, version: 1, change_level: TYPE }
+      sample_json_ref: "generator:RandomAllFieldsGenerator"
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple1/1 }
+        body_ref: data.sample_json_ref
+      - action: set_change_level
+        endpoint: { rest: POST /model/simple1/1/changeLevel/TYPE }
+      - action: lock_model
+        endpoint: { rest: PUT /model/simple1/1/lock }
+      - action: create_entity
+        repeat: 100
+        endpoint: { rest: POST /entity/JSON/simple1/1 }
+        body_ref: data.sample_json_ref
+      - action: delete_entities_by_model
+        endpoint: { rest: DELETE /entity/simple1/1 }
+      - action: delete_model
+        endpoint: { rest: DELETE /model/simple1/1 }
+      - action: export_model
+        endpoint: { rest: GET /model/export/SIMPLE_VIEW/simple1/1 }
+    assertions:
+      - type: http_status_at_step
+        step: 7
+        in: [404, 400]
+
+  - id: change-level/07-structural-concurrent-extend-30-versions
+    name: Concurrent save + schema extension across 30 model versions
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#test concurrent saving entities and extending model 30 times
+    description: |
+      Stress the STRUCTURAL change-level path: for each of 30 versions of
+      a model, concurrently save entities whose schema extends the model.
+      All saves must succeed; the run must complete under an ops budget.
+    data:
+      models: { name: test, version: "1..29", change_level: STRUCTURAL }
+    steps:
+      - action: repeat_per_version
+        versions: "1..29"
+        inner:
+          - action: create_model_from_sample
+            endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/test/{version} }
+          - action: set_change_level
+            endpoint: { rest: POST /model/test/{version}/changeLevel/STRUCTURAL }
+          - action: lock_model
+            endpoint: { rest: PUT /model/test/{version}/lock }
+          - action: create_entity
+            concurrent: true
+            repeat: "N (test picks ~10-50)"
+            endpoint: { rest: POST /entity/JSON/test/{version} }
+    assertions:
+      - type: all_saves_succeed
+      - type: wall_clock
+        max_seconds: 30

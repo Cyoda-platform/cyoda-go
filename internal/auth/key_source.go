@@ -39,5 +39,11 @@ func (s *localKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
 		// (semantic) and the underlying KeyStore error (diagnostic).
 		return nil, fmt.Errorf("%w (kid=%q): %w", ErrKeyNotFound, kid, err)
 	}
+	// An invalidated key pair must not validate signatures. Returning the
+	// public key for an inactive kid lets tokens signed under that kid keep
+	// passing validation after rotation — defeating the point of Invalidate.
+	if !kp.Active {
+		return nil, fmt.Errorf("%w (kid=%q): key invalidated", ErrKeyNotFound, kid)
+	}
 	return kp.PublicKey, nil
 }

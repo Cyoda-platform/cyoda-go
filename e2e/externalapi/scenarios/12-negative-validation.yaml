@@ -1,0 +1,158 @@
+# Negative and validation scenarios.
+#
+# Each scenario documents a request that the external API must reject, the
+# expected HTTP status (best guess based on the controller translation of
+# the exception class; the exact mapping is observable from the error
+# body's `@class` or `type` field), and the Kotlin exception class that
+# the integration tests assert.
+
+scenarios:
+  - id: neg/01-create-entity-on-unlocked-model
+    name: Create entity before the model is locked is rejected
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#try to load data without lock metadata
+    data:
+      model: { name: simple2, version: 1 }
+      sample_json: '{"key1": 123}'
+    steps:
+      - action: create_model_from_sample
+        endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple2/1 }
+        body_ref: data.sample_json
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/simple2/1 }
+        body_ref: data.sample_json
+        capture: resp
+    negative: true
+    expected_error:
+      http_status: 409
+      class_or_message_pattern: "EntityModelWrongStateException"
+
+  - id: neg/02-create-entity-with-incompatible-type
+    name: Narrowing field type violates change level → rejected
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#try save data with incompatible types
+    description: |
+      Model locked with `{"price": 13}` (INT). Submitting `{"price":13.111}`
+      must be rejected; the entity count for the model must remain zero.
+    data:
+      model: { name: simple4, version: 1 }
+      model_sample_json: '{"price": 13}'
+      bad_entity_json: '{"price": 13.111}'
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/simple4/1 }, body_ref: data.model_sample_json }
+      - { action: lock_model, endpoint: { rest: PUT /model/simple4/1/lock } }
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/simple4/1 }
+        body_ref: data.bad_entity_json
+        capture: resp
+    negative: true
+    expected_error:
+      http_status: 400
+      class_or_message_pattern: "FoundIncompatibleTypeWitEntityModelException"
+    assertions:
+      - type: entity_count_for_model
+        model: { name: simple4, version: 1 }
+        value: 0
+
+  - id: neg/03-set-change-level-invalid-enum
+    name: POST /model/.../changeLevel/{wrong} rejects unknown enum value
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityModelFacadeIT.kt#test change available model change level
+    description: |
+      Only `ARRAY_LENGTH | ARRAY_ELEMENTS | TYPE | STRUCTURAL` are valid.
+      Any other value must be rejected; the error body must carry a list
+      of accepted values.
+    data:
+      model: { name: testModel, version: 1 }
+    steps:
+      - { action: set_change_level, endpoint: { rest: POST /model/testModel/1/changeLevel/wrong } }
+    negative: true
+    expected_error:
+      http_status: 400
+      class_or_message_pattern: "Invalid enum value \"wrong\". Available values are [.*]"
+
+  - id: neg/04-get-single-entity-at-time-before-creation
+    name: Read entity with pointInTime earlier than creation → 404
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getSingleEntity with pointInTime returns entity at specific point in time
+    steps:
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{entityId}?pointInTime={before_creation}" }
+        capture: resp
+    negative: true
+    expected_error:
+      http_status: 404
+      class_or_message_pattern: "EntityNotFoundException"
+
+  - id: neg/05-get-single-entity-with-bogus-transaction-id
+    name: Read entity with non-existent transactionId → 404
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getSingleEntity with transactionId returns entity version at that transaction
+    steps:
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{entityId}?transactionId=<random-uuid>" }
+    negative: true
+    expected_error:
+      http_status: 404
+      class_or_message_pattern: "EntityNotFoundException"
+
+  - id: neg/06-get-changes-for-missing-entity
+    name: GET /entity/{id}/changes for unknown entity → 404
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getEntityChangesMetadata for non-existent entity throws EntityNotFoundException
+    steps:
+      - action: get_entity_changes
+        endpoint: { rest: "GET /entity/<random-uuid>/changes" }
+    negative: true
+    expected_error:
+      http_status: 404
+      class_or_message_pattern: "EntityNotFoundException"
+
+  - id: neg/07-condition-delete-at-pit-too-many-matches
+    name: DELETE by condition at pointInTime with entitySearchLimit too low → 400
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteByCondition
+    steps:
+      - action: delete_entities_by_condition
+        endpoint: { rest: "DELETE /entity/family/1?pointInTime={now}&entitySearchLimit=1" }
+        body: "<<group condition matching more than 1 entity>>"
+    negative: true
+    expected_error:
+      http_status: 400
+      class_or_message_pattern: "TooManyEntitiesToDeleteWithConditionAndPointInTime"
+
+  - id: neg/08-update-with-unknown-transition
+    name: PUT /entity/{id}/{unknownTransition} is rejected
+    description: |
+      The controller resolves the transition name against the active
+      workflow. A name that does not exist in the FSM must produce an
+      error without mutating the entity.
+    steps:
+      - action: update_entity_transition
+        endpoint: { rest: PUT /entity/JSON/{entityId}/NoSuchTransition }
+        body: "<<valid payload>>"
+    negative: true
+    expected_error:
+      http_status: 400
+      class_or_message_pattern: "(IllegalTransition|TransitionNotFound).*"
+
+  - id: neg/09-get-model-after-delete
+    name: GET /model/{name}/{v} after DELETE returns 404
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/MultiNodeDataIngestionIT.kt#test
+    steps:
+      - action: get_model
+        endpoint: { rest: GET /model/simple1/1 }
+    preconditions:
+      - "Model simple1/1 was deleted via DELETE /model/simple1/1."
+    negative: true
+    expected_error:
+      http_status: 404
+      class_or_message_pattern: ".*(NotFound|DoesNotExist).*"
+
+  - id: neg/10-import-workflow-on-unknown-model
+    name: POST workflow import for a (name, version) that is not registered → 404
+    description: |
+      Attempting to import a workflow for a model that was never created
+      must not succeed silently.
+    steps:
+      - action: import_workflow
+        endpoint: { rest: POST /model/unknownModel/1/workflow/import }
+        body: |
+          {"workflows":[{"version":"1.0","name":"w","initialState":"s","states":{"s":{"transitions":[]}}}]}
+    negative: true
+    expected_error:
+      http_status: 404
+      class_or_message_pattern: ".*(ModelNotFound|EntityModelNotFound).*"

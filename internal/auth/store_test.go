@@ -3,10 +3,14 @@ package auth_test
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // --- KeyStore Tests ---
@@ -221,6 +225,97 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	// Reactivate not found
 	if err := store.Reactivate("tk-999"); err == nil {
 		t.Fatal("expected error reactivating non-existent trusted key, got nil")
+	}
+}
+
+// TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys mirrors the KV-backed
+// store's cap test: an admin must not be able to grow the in-memory map
+// without bound. The two stores implement the same role and must agree on
+// the bound; otherwise tests using the in-memory variant would silently
+// permit what production rejects.
+func TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys(t *testing.T) {
+	const cap = 3
+	store := auth.NewInMemoryTrustedKeyStore(auth.WithInMemoryMaxTrustedKeys(cap))
+
+	mkKey := func(i int) *auth.TrustedKey {
+		k, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		return &auth.TrustedKey{
+			KID:       fmt.Sprintf("cap-key-%d", i),
+			PublicKey: &k.PublicKey,
+			Audience:  "svc",
+			Active:    true,
+			ValidFrom: time.Now().UTC(),
+		}
+	}
+
+	for i := 0; i < cap; i++ {
+		if err := store.Register(mkKey(i)); err != nil {
+			t.Fatalf("Register #%d (under cap): %v", i, err)
+		}
+	}
+
+	// (N+1)th must be rejected with a 409 Conflict AppError, matching the
+	// KV-backed variant's behaviour.
+	overflow := mkKey(cap)
+	err := store.Register(overflow)
+	if err == nil {
+		t.Fatalf("Register beyond cap: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeConflict {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeConflict)
+	}
+
+	// Existing keys are unaffected — overflow rejection must not corrupt state.
+	if got := len(store.List()); got != cap {
+		t.Errorf("expected list size %d after overflow rejection, got %d", cap, got)
+	}
+}
+
+// TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot
+// mirrors the KV-store edge case: re-registering an existing KID at full
+// capacity must remain permitted (rotation), only brand-new KIDs trip the cap.
+func TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot(t *testing.T) {
+	store := auth.NewInMemoryTrustedKeyStore(auth.WithInMemoryMaxTrustedKeys(2))
+
+	mk := func(kid string) *auth.TrustedKey {
+		k, _ := rsa.GenerateKey(rand.Reader, 2048)
+		return &auth.TrustedKey{
+			KID: kid, PublicKey: &k.PublicKey, Audience: "svc",
+			Active: true, ValidFrom: time.Now().UTC(),
+		}
+	}
+
+	if err := store.Register(mk("k1")); err != nil {
+		t.Fatalf("Register k1: %v", err)
+	}
+	if err := store.Register(mk("k2")); err != nil {
+		t.Fatalf("Register k2: %v", err)
+	}
+	// Re-register existing kid — should succeed even at cap.
+	if err := store.Register(mk("k1")); err != nil {
+		t.Fatalf("re-Register k1 (upsert at cap): %v", err)
+	}
+	// New kid still rejected with 409.
+	err := store.Register(mk("k3"))
+	if err == nil {
+		t.Fatalf("Register k3 beyond cap: expected error, got nil")
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusConflict {
+		t.Errorf("status = %d, want 409", appErr.Status)
 	}
 }
 

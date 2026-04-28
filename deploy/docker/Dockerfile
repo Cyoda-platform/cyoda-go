@@ -14,7 +14,12 @@
 FROM busybox:1.37 AS stage
 RUN mkdir -p /data && chown 65532:65532 /data
 
-FROM gcr.io/distroless/static
+# distroless/static pinned by digest for supply-chain integrity. The digest
+# resolves to a multi-arch OCI image index (linux/amd64 + linux/arm64), so
+# the COPY $TARGETPLATFORM/cyoda below still resolves under buildx.
+# Refresh monthly via scripts/refresh-distroless-digest.sh.
+FROM gcr.io/distroless/static@sha256:47b2d72ff90843eb8a768b5c2f89b40741843b639d065b9b937b07cd59b479c6
+# was :latest, pinned 2026-04-27
 ARG TARGETPLATFORM
 
 # Binary path /cyoda is referenced by:

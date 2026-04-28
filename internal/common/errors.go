@@ -57,8 +57,34 @@ func Operational(status int, code string, message string) *AppError {
 	}
 }
 
-// Conflict creates a 409 Conflict error with retryable=true.
+// Conflict creates a 409 Conflict error for a permanent, non-retryable
+// business-logic conflict (e.g. "model already locked", ETag mismatch on
+// If-Match, "cannot delete: entities exist"). Retrying the same request
+// without a state change will never succeed, so retryable defaults to false.
+//
+// For transient conflicts that ARE expected to succeed on retry (e.g.
+// SERIALIZABLE 40001/40P01 transaction aborts) use RetryableConflict.
 func Conflict(message string) *AppError {
+	return &AppError{
+		Level:     LevelOperational,
+		Status:    http.StatusConflict,
+		Code:      ErrCodeConflict,
+		Message:   fmt.Sprintf("%s: %s", ErrCodeConflict, message),
+		Retryable: false,
+	}
+}
+
+// RetryableConflict creates a 409 Conflict error that the parity HTTP client
+// (e2e/parity/client/http.go isRetryableConflict) is allowed to retry. Use it
+// only for transient conflicts that depend on concurrent state and may
+// succeed on a fresh attempt — typically SERIALIZABLE transaction aborts and
+// optimistic-lock failures triggered by concurrent writers.
+//
+// Permanent business conflicts (locked-state mismatches, ETag mismatches,
+// cardinality precondition failures) MUST use Conflict — calling those
+// retryable causes pointless backoff and 5x request amplification on the
+// client side.
+func RetryableConflict(message string) *AppError {
 	return &AppError{
 		Level:     LevelOperational,
 		Status:    http.StatusConflict,
@@ -71,12 +97,12 @@ func Conflict(message string) *AppError {
 // Internal creates a 500 error with internal detail from the wrapped error.
 //
 // If the wrapped error is (or wraps) spi.ErrConflict, the result is routed to
-// Conflict() instead — a serialization abort (40001/40P01) that fully rolled
-// back is retryable, not a server error. This keeps every call site honest
-// without forcing each to reason about pgx error codes.
+// RetryableConflict instead — a serialization abort (40001/40P01) that fully
+// rolled back is retryable, not a server error. This keeps every call site
+// honest without forcing each to reason about pgx error codes.
 func Internal(message string, err error) *AppError {
 	if err != nil && errors.Is(err, spi.ErrConflict) {
-		return Conflict("transaction conflict — retry")
+		return RetryableConflict("transaction conflict — retry")
 	}
 	detail := ""
 	if err != nil {

@@ -26,7 +26,9 @@ func TestSearcher_RejectsMaliciousFilterPath(t *testing.T) {
 		"state') UNION SELECT 1 --",
 		"a'b",
 		"a;DROP TABLE entities",
-		"a--b",
+		// NOTE: "a--b" (hyphen) is NOT an injection vector — hyphens are
+		// inert inside single-quoted SQLite string literals. It is accepted
+		// as a valid JSON key character (see TestValidateJSONPath_AcceptsHyphenatedSegments).
 	}
 
 	for _, payload := range payloads {

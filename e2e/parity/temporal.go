@@ -124,10 +124,11 @@ func RunTemporalPointInTimeRetrieval(t *testing.T, fixture BackendFixture) {
 	}
 
 	// GetEntityAt(beforeCreate) should return 404 -- entity didn't exist yet.
-	status, err := c.GetEntityAtRaw(t, entityID, beforeCreate)
-	if err == nil {
-		t.Errorf("as-at beforeCreate: expected error (404), got status %d with no error", status)
-	} else if status != 404 {
+	status, _, err := c.GetEntityAtRaw(t, entityID, beforeCreate)
+	if err != nil {
+		t.Errorf("as-at beforeCreate: transport error: %v", err)
+	}
+	if status != 404 {
 		t.Errorf("as-at beforeCreate: expected status 404, got %d", status)
 	}
 

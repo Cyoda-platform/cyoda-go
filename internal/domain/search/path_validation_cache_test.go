@@ -1,0 +1,246 @@
+package search_test
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
+)
+
+// countingModelStore extends refreshingModelStore semantics but tracks
+// concurrent counters for both Get and RefreshAndGet so the negative-
+// cache test can assert the inner-store call shape under serial and
+// concurrent flooding.
+type countingModelStore struct {
+	mu           sync.Mutex
+	descriptor   *spi.ModelDescriptor
+	getCount     atomic.Int64
+	refreshCount atomic.Int64
+}
+
+func (s *countingModelStore) Get(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+	s.getCount.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.descriptor, nil
+}
+
+func (s *countingModelStore) RefreshAndGet(_ context.Context, _ spi.ModelRef) (*spi.ModelDescriptor, error) {
+	s.refreshCount.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.descriptor, nil
+}
+
+func (s *countingModelStore) Save(context.Context, *spi.ModelDescriptor) error     { return nil }
+func (s *countingModelStore) GetAll(context.Context) ([]spi.ModelRef, error)       { return nil, nil }
+func (s *countingModelStore) Delete(context.Context, spi.ModelRef) error           { return nil }
+func (s *countingModelStore) Lock(context.Context, spi.ModelRef) error             { return nil }
+func (s *countingModelStore) Unlock(context.Context, spi.ModelRef) error           { return nil }
+func (s *countingModelStore) IsLocked(context.Context, spi.ModelRef) (bool, error) { return true, nil }
+func (s *countingModelStore) SetChangeLevel(context.Context, spi.ModelRef, spi.ChangeLevel) error {
+	return nil
+}
+func (s *countingModelStore) ExtendSchema(context.Context, spi.ModelRef, spi.SchemaDelta) error {
+	return nil
+}
+
+var _ spi.ModelStore = (*countingModelStore)(nil)
+
+// TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath asserts that
+// a serial flood of validation requests for the same unknown field path
+// hits the inner ModelStore at most once for the initial Get and once for
+// the bounded RefreshAndGet. Without the negative cache every request
+// would fire its own Get + RefreshAndGet pair, amplifying client error
+// into a denial-of-service vector against the schema cache.
+func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	desc := buildSearchDescriptor(t, ref, "a")
+	ms := &countingModelStore{descriptor: desc}
+
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+
+	cache := search.NewPathValidationCache(nil)
+	svc := search.NewSearchService(factory, uuids, searchStore).
+		WithPathValidationCache(cache)
+
+	ctx := tenantCtx("tenant-1")
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.unknown",
+		OperatorType: "EQUALS",
+		Value:        "x",
+	}
+
+	const reqCount = 100
+	for i := 0; i < reqCount; i++ {
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+		if err == nil {
+			t.Fatalf("iter %d: expected error for unknown path, got nil", i)
+		}
+	}
+
+	if got := ms.getCount.Load(); got > 2 {
+		t.Errorf("inner Get count: want <=2 (cached negative), got %d", got)
+	}
+	if got := ms.refreshCount.Load(); got > 1 {
+		t.Errorf("inner RefreshAndGet count: want <=1 (bounded), got %d", got)
+	}
+}
+
+// TestSearch_NegativeCache_InvalidatedOnSchemaChangeBroadcast asserts that
+// after a schema-change invalidation event for the (tenant, ref) is
+// broadcast, the previously-cached negative entry is dropped: the next
+// validation re-consults the inner store. Required to preserve the issue
+// #77 "fresh-after-extend" contract — a peer extending the model must not
+// be hidden behind a stale negative cache.
+func TestSearch_NegativeCache_InvalidatedOnSchemaChangeBroadcast(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	desc := buildSearchDescriptor(t, ref, "a")
+	ms := &countingModelStore{descriptor: desc}
+
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+
+	bc := newFakePathBroadcaster()
+	cache := search.NewPathValidationCache(bc)
+	svc := search.NewSearchService(factory, uuids, searchStore).
+		WithPathValidationCache(cache)
+
+	ctx := tenantCtx("tenant-1")
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.unknown",
+		OperatorType: "EQUALS",
+		Value:        "x",
+	}
+
+	// First request: warms the negative cache.
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
+		t.Fatalf("expected error on first call")
+	}
+	getsBefore := ms.getCount.Load()
+	refreshesBefore := ms.refreshCount.Load()
+
+	// Second request hits the negative cache (no inner store calls).
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
+		t.Fatalf("expected error on second call")
+	}
+	if ms.getCount.Load() != getsBefore || ms.refreshCount.Load() != refreshesBefore {
+		t.Fatalf("expected no inner store calls between warmup and invalidation, got Δgets=%d Δrefreshes=%d",
+			ms.getCount.Load()-getsBefore, ms.refreshCount.Load()-refreshesBefore)
+	}
+
+	// Broadcast schema-change invalidation — peer's ExtendSchema would
+	// look like this from this node's view. The negative cache must
+	// drop the entry so the next request goes back to the inner store.
+	payload, err := modelcache.EncodeInvalidation("tenant-1", ref)
+	if err != nil {
+		t.Fatalf("EncodeInvalidation: %v", err)
+	}
+	bc.Broadcast("model.invalidate", payload)
+
+	// Third request: cache invalidated, inner Get must fire again.
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
+		t.Fatalf("expected error on third call")
+	}
+	if ms.getCount.Load() <= getsBefore {
+		t.Errorf("expected inner Get to be re-issued after invalidation; getCount stayed at %d", ms.getCount.Load())
+	}
+}
+
+// TestSearch_NegativeCache_ConcurrentMissAndInvalidation drives 100
+// concurrent validation requests interleaved with a single broadcast
+// invalidation. The contract: no panics, no races, all requests return
+// the expected 4xx error. Run with -race once before PR.
+func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	desc := buildSearchDescriptor(t, ref, "a")
+	ms := &countingModelStore{descriptor: desc}
+
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	factory := &modelStoreFactory{StoreFactory: base, modelStore: ms}
+
+	uuids := common.NewTestUUIDGenerator()
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+
+	bc := newFakePathBroadcaster()
+	cache := search.NewPathValidationCache(bc)
+	svc := search.NewSearchService(factory, uuids, searchStore).
+		WithPathValidationCache(cache)
+
+	ctx := tenantCtx("tenant-1")
+	cond := &predicate.SimpleCondition{
+		JsonPath:     "$.unknown",
+		OperatorType: "EQUALS",
+		Value:        "x",
+	}
+
+	var wg sync.WaitGroup
+	const concurrency = 100
+	wg.Add(concurrency)
+	errs := make(chan error, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(i int) {
+			defer wg.Done()
+			if i == concurrency/2 {
+				payload, _ := modelcache.EncodeInvalidation("tenant-1", ref)
+				bc.Broadcast("model.invalidate", payload)
+			}
+			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err == nil {
+			t.Errorf("expected error for unknown path, got nil")
+		}
+	}
+}
+
+// fakePathBroadcaster mirrors fakeBroadcaster but lives in the search
+// package's test scope. Synchronous delivery to every subscriber so
+// invalidation events take effect before the next request.
+type fakePathBroadcaster struct {
+	mu       sync.Mutex
+	handlers map[string][]func([]byte)
+}
+
+func newFakePathBroadcaster() *fakePathBroadcaster {
+	return &fakePathBroadcaster{handlers: make(map[string][]func([]byte))}
+}
+
+func (b *fakePathBroadcaster) Broadcast(topic string, payload []byte) {
+	b.mu.Lock()
+	hs := append([]func([]byte){}, b.handlers[topic]...)
+	b.mu.Unlock()
+	for _, h := range hs {
+		h(payload)
+	}
+}
+
+func (b *fakePathBroadcaster) Subscribe(topic string, h func([]byte)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.handlers[topic] = append(b.handlers[topic], h)
+}
+
+var _ spi.ClusterBroadcaster = (*fakePathBroadcaster)(nil)

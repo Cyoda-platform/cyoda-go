@@ -1,0 +1,128 @@
+# Edge message save and delete.
+#
+# An EdgeMessage is an envelope that carries a header, metadata and a
+# blob payload reference. It is saved through a dedicated REST endpoint
+# (POST /edge-message) and, unlike a regular entity, may store its
+# payload in a separate blob-store referenced by `payloadId`.
+
+scenarios:
+  - id: edge-msg/01-save-single
+    name: Save a single edge message and read it back
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/message/service/EdgeMessageInteractorIT.kt#testSaveMessage
+    description: |
+      Craft an EdgeMessage with a header (subject, messageId,
+      correlationId, userId, replyTo, recipient), one indexed metadata
+      key and a JSON payload. POST it, then GET the message back by id.
+      The returned header fields and metadata must equal the submitted
+      values; the payload blob must equal the submitted payload verbatim.
+    data:
+      header:
+        subject: Publication
+        correlationId: "<<uuid>>"
+        userId: Larry
+        replyTo: Jimmy
+        recipient: Bobby
+      metaData: { happy: golucky }
+      payload_json_ref: "test-data/edge-message-interactor/nobelprizedata_1.json"
+    steps:
+      - action: save_edge_message
+        endpoint: { rest: POST /edge-message }
+        body: |
+          {
+            "header": { ...data.header },
+            "metaData": { ...data.metaData },
+            "body": { ...data.payload_json_ref }
+          }
+        capture: saveResp
+      - action: get_edge_message
+        endpoint: { rest: GET /edge-message/{saveResp.id} }
+        capture: msg
+    assertions:
+      - type: field_equals
+        target: msg.header.correlationId
+        expected_ref: data.header.correlationId
+      - type: field_equals
+        target: msg.header.subject
+        expected_ref: data.header.subject
+      - type: field_equals
+        target: msg.header.userId
+        expected_ref: data.header.userId
+      - type: field_equals
+        target: msg.header.replyTo
+        expected_ref: data.header.replyTo
+      - type: field_equals
+        target: msg.header.recipient
+        expected_ref: data.header.recipient
+      - type: field_equals
+        target: msg.metaData.indexedValues.strings.\".happy\"
+        expected: golucky
+      - type: blob_equals
+        target: msg.payloadId
+        expected_ref: data.payload_json_ref
+
+  - id: edge-msg/02-delete-single
+    name: Delete a single edge message also drops its payload blob
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/message/service/EdgeMessageInteractorIT.kt#testDeleteSingleMessage
+    description: |
+      Save a message, note its id and payloadId, issue DELETE
+      /edge-message/{id}, then verify that GET returns 404 and that a
+      blob read of `payloadId` also returns null.
+    steps:
+      - action: save_edge_message
+        endpoint: { rest: POST /edge-message }
+        body: "<<same as edge-msg/01>>"
+        capture: saveResp
+      - action: delete_edge_message
+        endpoint: { rest: DELETE /edge-message/{saveResp.id} }
+        capture: delResp
+      - action: get_edge_message
+        endpoint: { rest: GET /edge-message/{saveResp.id} }
+        capture: getAfterDelete
+    assertions:
+      - type: field_equals
+        target: delResp.entityIds[0]
+        expected_ref: saveResp.id
+      - type: http_status
+        target: getAfterDelete
+        expected: 404
+      - type: blob_absent
+        target: saveResp.payloadId
+
+  - id: edge-msg/03-delete-collection
+    name: Delete a list of edge messages in one request
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/message/service/EdgeMessageInteractorIT.kt#testDeleteMultipleMessages
+    description: |
+      Save two independent edge messages, then DELETE /edge-message with
+      a JSON body listing both ids. Each id must appear in the response's
+      `entityIds`; subsequent GETs must return 404 and both payload blobs
+      must be gone.
+    steps:
+      - action: save_edge_message
+        endpoint: { rest: POST /edge-message }
+        body: "<<message 1>>"
+        capture: m1
+      - action: save_edge_message
+        endpoint: { rest: POST /edge-message }
+        body: "<<message 2>>"
+        capture: m2
+      - action: delete_edge_messages
+        endpoint: { rest: DELETE /edge-message }
+        body: "[ \"{m1.id}\", \"{m2.id}\" ]"
+        capture: delResp
+    assertions:
+      - type: length
+        target: delResp.entityIds
+        expected: 2
+      - type: contains_all
+        target: delResp.entityIds
+        expected: [ "{m1.id}", "{m2.id}" ]
+      - type: http_status
+        via: GET /edge-message/{m1.id}
+        expected: 404
+      - type: http_status
+        via: GET /edge-message/{m2.id}
+        expected: 404
+      - type: blob_absent
+        target: m1.payloadId
+      - type: blob_absent
+        target: m2.payloadId

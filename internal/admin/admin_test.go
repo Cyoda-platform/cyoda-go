@@ -32,6 +32,30 @@ func TestHandler_Readyz_Unready(t *testing.T) {
 	}
 }
 
+// TestHandler_Readyz_Unready_DoesNotLeakInternalDetails guards #68 item 14
+// for the admin /readyz path. A readiness probe returning an error must not
+// reflect that error's text into the HTTP body — readiness checks may surface
+// connection details, secrets, or stack traces from the underlying probe.
+func TestHandler_Readyz_Unready_DoesNotLeakInternalDetails(t *testing.T) {
+	h := NewHandler(Options{
+		Readiness: func() error {
+			return errors.New("postgres dial tcp 10.0.0.5:5432: i/o timeout (secret-token-abc)")
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz: got %d, want 503", w.Code)
+	}
+	body := w.Body.String()
+	for _, leaked := range []string{"postgres", "10.0.0.5", "5432", "secret-token-abc"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("response body leaked %q: %q", leaked, body)
+		}
+	}
+}
+
 func TestHandler_Readyz_Ready(t *testing.T) {
 	h := NewHandler(Options{Readiness: func() error { return nil }})
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)

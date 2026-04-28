@@ -2,15 +2,28 @@ package auth
 
 import (
 	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
+	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
+
+// trustedKIDPattern is the character whitelist enforced on trusted-key
+// identifiers across every lifecycle endpoint (register, delete, invalidate,
+// reactivate). Allowed: ASCII alphanumerics plus '-', '_', '.', length 1..128.
+// Anything else (control characters, slashes, query syntax, JSON-breaking
+// punctuation, unicode confusables) is rejected at the boundary so neither
+// the persistence layer nor downstream logs ever see attacker-controlled
+// fragments outside this safe set.
+var trustedKIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // registerTrustedKeyRequest is the JSON body for POST /oauth/keys/trusted.
 // Matches Cyoda Cloud's RegisterTrustedKeyRequest schema.
@@ -79,7 +92,8 @@ func (h *TrustedKeysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Error(w, "not found", http.StatusNotFound)
+	common.WriteError(w, r, common.Operational(
+		http.StatusNotFound, common.ErrCodeNotFound, "not found"))
 }
 
 func (h *TrustedKeysHandler) handleList(w http.ResponseWriter, _ *http.Request) {
@@ -90,7 +104,12 @@ func (h *TrustedKeysHandler) handleList(w http.ResponseWriter, _ *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		// Headers/body have already been flushed; emitting a second
+		// http.Error here would only append garbage. Log and let the
+		// client observe the truncated stream — same convention as
+		// the rest of the codebase (see internal/common/errors.go,
+		// internal/api/admin.go).
+		slog.Debug("failed to encode response", "pkg", "auth", "error", err)
 	}
 }
 
@@ -100,18 +119,22 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 
 	var req registerTrustedKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
 
-	if req.KeyID == "" {
-		http.Error(w, `{"error":"keyId is required"}`, http.StatusBadRequest)
+	if !trustedKIDPattern.MatchString(req.KeyID) {
+		slog.Info("trusted key register: invalid keyId format", "pkg", "auth", "kid", req.KeyID)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return
 	}
 
 	pubKey, err := parseRSAPublicKeyFromJWK(req.JWK)
 	if err != nil {
-		http.Error(w, `{"error":"invalid jwk"}`, http.StatusBadRequest)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid jwk"))
 		return
 	}
 
@@ -119,7 +142,8 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	if req.ValidFrom != nil {
 		parsed, err := time.Parse(time.RFC3339, *req.ValidFrom)
 		if err != nil {
-			http.Error(w, `{"error":"invalid validFrom: expected RFC3339 format"}`, http.StatusBadRequest)
+			common.WriteError(w, r, common.Operational(
+				http.StatusBadRequest, common.ErrCodeBadRequest, "invalid validFrom: expected RFC3339 format"))
 			return
 		}
 		validFrom = parsed
@@ -129,7 +153,8 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	if req.ValidTo != nil {
 		t, err := time.Parse(time.RFC3339, *req.ValidTo)
 		if err != nil {
-			http.Error(w, `{"error":"invalid validTo: expected RFC3339 format"}`, http.StatusBadRequest)
+			common.WriteError(w, r, common.Operational(
+				http.StatusBadRequest, common.ErrCodeBadRequest, "invalid validTo: expected RFC3339 format"))
 			return
 		}
 		validTo = &t
@@ -146,7 +171,16 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := h.trustedKeyStore.Register(tk); err != nil {
-		http.Error(w, fmt.Sprintf("failed to register key: %s", err.Error()), http.StatusInternalServerError)
+		// Forward classified AppErrors verbatim (e.g. 409 registry-full
+		// from #34/2). Anything else is a 5xx — route through
+		// common.Internal so the body is the generic ticket shape and the
+		// raw error stays in the slog record (#68 item 14).
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		common.WriteError(w, r, common.Internal("register trusted key", err))
 		return
 	}
 
@@ -154,51 +188,75 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		slog.Debug("failed to encode response", "pkg", "auth", "error", err)
 	}
 }
 
-func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, _ *http.Request, path string) {
-	keyID := extractKeyID(path, "/oauth/keys/trusted/")
-	if keyID == "" {
-		http.Error(w, "missing key ID", http.StatusBadRequest)
+func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request, path string) {
+	keyID, ok := validateLifecycleKID(w, r, path, "/oauth/keys/trusted/")
+	if !ok {
 		return
 	}
 	if err := h.trustedKeyStore.Delete(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#34 item 6).
+		// errorCode TRUSTED_KEY_NOT_FOUND so the 404 is programmatically
+		// distinguishable from BAD_REQUEST 400s (#34/6 follow-up).
+		slog.Info("trusted-key delete: not found", "pkg", "auth", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/invalidate
 	trimmed := strings.TrimSuffix(path, "/invalidate")
-	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
-	if keyID == "" {
-		http.Error(w, "missing key ID", http.StatusBadRequest)
+	keyID, ok := validateLifecycleKID(w, r, trimmed, "/oauth/keys/trusted/")
+	if !ok {
 		return
 	}
 	if err := h.trustedKeyStore.Invalidate(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#68 item 14).
+		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
+		// (#34/6 follow-up).
+		slog.Info("trusted-key invalidate: not found", "pkg", "auth", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, _ *http.Request, path string) {
+func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/reactivate
 	trimmed := strings.TrimSuffix(path, "/reactivate")
-	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
-	if keyID == "" {
-		http.Error(w, "missing key ID", http.StatusBadRequest)
+	keyID, ok := validateLifecycleKID(w, r, trimmed, "/oauth/keys/trusted/")
+	if !ok {
 		return
 	}
 	if err := h.trustedKeyStore.Reactivate(keyID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Generic client message; full detail logged server-side (#68 item 14).
+		// errorCode TRUSTED_KEY_NOT_FOUND for coherence with HTTP 404 status
+		// (#34/6 follow-up).
+		slog.Info("trusted-key reactivate: not found", "pkg", "auth", "kid", keyID, "err", err.Error())
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "key not found"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// validateLifecycleKID extracts the {keyId} path segment and rejects
+// anything that fails the trustedKIDPattern whitelist with a 400 problem
+// detail. Returns (keyID, true) on success or ("", false) when the
+// response has already been written.
+func validateLifecycleKID(w http.ResponseWriter, r *http.Request, path, prefix string) (string, bool) {
+	keyID := extractKeyID(path, prefix)
+	if !trustedKIDPattern.MatchString(keyID) {
+		slog.Info("trusted key lifecycle: invalid keyId format", "pkg", "auth", "kid", keyID, "path", r.URL.Path)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
+		return "", false
+	}
+	return keyID, true
 }
 
 // extractKeyID returns the key ID from a path like /oauth/keys/trusted/{keyId}.
@@ -211,23 +269,6 @@ func extractKeyID(path, prefix string) string {
 		return ""
 	}
 	return kid
-}
-
-// parseRSAPublicKeyFromPEM parses a PEM-encoded RSA public key.
-func parseRSAPublicKeyFromPEM(pemData []byte) (*rsa.PublicKey, error) {
-	block, _ := pem.Decode(pemData)
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block found")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse public key: %w", err)
-	}
-	rsaPub, ok := pub.(*rsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("not an RSA public key")
-	}
-	return rsaPub, nil
 }
 
 // parseRSAPublicKeyFromJWK parses an RSA public key from a JWK JSON object.
@@ -260,9 +301,35 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	}
 
 	n := new(big.Int).SetBytes(nBytes)
-	e := int(new(big.Int).SetBytes(eBytes).Int64())
+	eBig := new(big.Int).SetBytes(eBytes)
+	e, err := validateRSAPublicExponent(eBig)
+	if err != nil {
+		return nil, err
+	}
 
 	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+// validateRSAPublicExponent enforces the integrity invariants on an RSA
+// public-key exponent (#34 item 4): positive, fits in int, and odd. RFC 3447
+// allows e in [3, 2^256-1] and the practical universe of public exponents
+// (3, 17, 65537) all fit comfortably; rejecting anything that overflows int
+// avoids the silent-truncation hazard at int(big.Int.Int64()) call sites.
+func validateRSAPublicExponent(e *big.Int) (int, error) {
+	if e.Sign() <= 0 {
+		return 0, fmt.Errorf("rsa exponent must be positive")
+	}
+	if !e.IsInt64() {
+		return 0, fmt.Errorf("rsa exponent does not fit in int64")
+	}
+	v := e.Int64()
+	if v > int64(math.MaxInt) {
+		return 0, fmt.Errorf("rsa exponent does not fit in int")
+	}
+	if v&1 == 0 {
+		return 0, fmt.Errorf("rsa exponent must be odd")
+	}
+	return int(v), nil
 }
 
 // toTrustedKeyInfoResponse converts a TrustedKey to its JSON response representation.

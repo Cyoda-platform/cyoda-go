@@ -1,21 +1,37 @@
 package common
 
 const (
-	ErrCodeModelNotFound      = "MODEL_NOT_FOUND"
-	ErrCodeModelNotLocked     = "MODEL_NOT_LOCKED"
-	ErrCodeEntityNotFound     = "ENTITY_NOT_FOUND"
-	ErrCodeValidationFailed   = "VALIDATION_FAILED"
-	ErrCodeTransitionNotFound = "TRANSITION_NOT_FOUND"
-	ErrCodeWorkflowNotFound   = "WORKFLOW_NOT_FOUND"
-	ErrCodeWorkflowFailed     = "WORKFLOW_FAILED"
-	ErrCodeConflict           = "CONFLICT"
-	ErrCodeEpochMismatch      = "EPOCH_MISMATCH"
-	ErrCodeBadRequest         = "BAD_REQUEST"
-	ErrCodePolymorphicSlot    = "POLYMORPHIC_SLOT"
-	ErrCodeUnauthorized       = "UNAUTHORIZED"
-	ErrCodeForbidden          = "FORBIDDEN"
-	ErrCodeServerError        = "SERVER_ERROR"
-	ErrCodeNotImplemented     = "NOT_IMPLEMENTED"
+	ErrCodeModelNotFound        = "MODEL_NOT_FOUND"
+	ErrCodeModelNotLocked       = "MODEL_NOT_LOCKED"
+	ErrCodeModelAlreadyLocked   = "MODEL_ALREADY_LOCKED"
+	ErrCodeModelAlreadyUnlocked = "MODEL_ALREADY_UNLOCKED"
+	ErrCodeModelHasEntities     = "MODEL_HAS_ENTITIES"
+	ErrCodeEntityModified       = "ENTITY_MODIFIED"
+	ErrCodeEntityNotFound       = "ENTITY_NOT_FOUND"
+	ErrCodeValidationFailed     = "VALIDATION_FAILED"
+	ErrCodeTransitionNotFound   = "TRANSITION_NOT_FOUND"
+	ErrCodeWorkflowNotFound     = "WORKFLOW_NOT_FOUND"
+	ErrCodeWorkflowFailed       = "WORKFLOW_FAILED"
+	ErrCodeConflict             = "CONFLICT"
+	ErrCodeEpochMismatch        = "EPOCH_MISMATCH"
+	ErrCodeBadRequest           = "BAD_REQUEST"
+	// ErrCodeIncompatibleType is returned when an entity payload's leaf
+	// value type is not assignable to the schema's declared DataType for
+	// that field (e.g. submitting "abc" or 13.111 against an INTEGER
+	// field). Equivalent to Cloud's
+	// FoundIncompatibleTypeWithEntityModelException. Distinct from
+	// ErrCodeConditionTypeMismatch which is the search-side equivalent
+	// for a condition's literal-vs-field mismatch.
+	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
+	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
+	ErrCodePolymorphicSlot      = "POLYMORPHIC_SLOT"
+	ErrCodeUnauthorized         = "UNAUTHORIZED"
+	ErrCodeForbidden            = "FORBIDDEN"
+	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
+	ErrCodeServerError          = "SERVER_ERROR"
+	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
+	ErrCodeNotFound             = "NOT_FOUND"
 )
 
 const (
@@ -45,6 +61,10 @@ const (
 	ErrCodeSearchJobAlreadyTerminal = "SEARCH_JOB_ALREADY_TERMINAL"
 	ErrCodeSearchShardTimeout       = "SEARCH_SHARD_TIMEOUT"
 	ErrCodeSearchResultLimit        = "SEARCH_RESULT_LIMIT"
+	// ErrCodeConditionTypeMismatch is returned when a simple condition's value
+	// type does not match the field's locked DataType (e.g. "abc" against a
+	// DOUBLE field). Equivalent to Cloud's InvalidTypesInClientConditionException.
+	ErrCodeConditionTypeMismatch = "CONDITION_TYPE_MISMATCH"
 )
 
 // Help subsystem

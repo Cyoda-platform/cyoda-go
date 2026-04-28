@@ -18,13 +18,13 @@ func ConditionToFilter(cond predicate.Condition) (spi.Filter, error) {
 
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
-		return simpleToFilter(c), nil
+		return simpleToFilter(c)
 	case *predicate.LifecycleCondition:
 		return lifecycleToFilter(c), nil
 	case *predicate.GroupCondition:
 		return groupToFilter(c)
 	case *predicate.ArrayCondition:
-		return arrayToFilter(c), nil
+		return arrayToFilter(c)
 	case *predicate.FunctionCondition:
 		return spi.Filter{}, fmt.Errorf("function conditions are not translatable to filters")
 	default:
@@ -33,13 +33,18 @@ func ConditionToFilter(cond predicate.Condition) (spi.Filter, error) {
 }
 
 // simpleToFilter translates a SimpleCondition to a Filter with SourceData.
-func simpleToFilter(c *predicate.SimpleCondition) spi.Filter {
+// Returns an error if the path cannot be represented as a pushdown filter.
+func simpleToFilter(c *predicate.SimpleCondition) (spi.Filter, error) {
+	stripped, err := stripDollarDot(c.JsonPath)
+	if err != nil {
+		return spi.Filter{}, err
+	}
 	return spi.Filter{
 		Op:     mapOperator(c.OperatorType),
-		Path:   stripDollarDot(c.JsonPath),
+		Path:   stripped,
 		Source: spi.SourceData,
 		Value:  c.Value,
-	}
+	}, nil
 }
 
 // lifecycleToFilter translates a LifecycleCondition to a Filter with SourceMeta.
@@ -74,8 +79,11 @@ func groupToFilter(c *predicate.GroupCondition) (spi.Filter, error) {
 // on the corresponding array index (e.g., "tags.0", "tags.2"). Nil entries
 // mean "skip this position". This makes individual checks pushable to SQL
 // via json_extract and correctly evaluable in post-filtering.
-func arrayToFilter(c *predicate.ArrayCondition) spi.Filter {
-	basePath := stripDollarDot(c.JsonPath)
+func arrayToFilter(c *predicate.ArrayCondition) (spi.Filter, error) {
+	basePath, err := stripDollarDot(c.JsonPath)
+	if err != nil {
+		return spi.Filter{}, err
+	}
 	var children []spi.Filter
 	for i, val := range c.Values {
 		if val == nil {
@@ -91,22 +99,39 @@ func arrayToFilter(c *predicate.ArrayCondition) spi.Filter {
 	if len(children) == 0 {
 		// All positions are nil (don't-care) — matches everything.
 		// Return a tautology: an empty AND is true.
-		return spi.Filter{Op: spi.FilterAnd}
+		return spi.Filter{Op: spi.FilterAnd}, nil
 	}
 	if len(children) == 1 {
-		return children[0]
+		return children[0], nil
 	}
-	return spi.Filter{Op: spi.FilterAnd, Children: children}
+	return spi.Filter{Op: spi.FilterAnd, Children: children}, nil
 }
 
-// stripDollarDot removes the leading "$." from a JSONPath expression.
-// Domain conditions use JSONPath notation ("$.name"), but SPI filters
-// use bare dot-notation ("name").
-func stripDollarDot(path string) string {
+// stripDollarDot removes the leading "$." from a JSONPath expression and
+// validates that the resulting path does not contain array-wildcard or
+// advanced JSONPath syntax that cannot be pushed down to storage backends.
+// Returns ("", error) when the path contains characters outside the safe
+// dotted-identifier subset (letters, digits, underscore, hyphen, and dots).
+// Callers fall back to in-memory filtering when this returns an error.
+func stripDollarDot(path string) (string, error) {
+	stripped := path
 	if len(path) > 2 && path[:2] == "$." {
-		return path[2:]
+		stripped = path[2:]
 	}
-	return path
+	// Reject paths containing JSONPath wildcard/array-subscript syntax
+	// (e.g. "[*]", "[0]"). Such paths require in-memory evaluation and
+	// cannot be translated to pushdown filters.
+	for _, c := range stripped {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '_', c == '-', c == '.':
+			// safe
+		default:
+			return "", fmt.Errorf("path %q contains non-pushdownable syntax (character %q)", path, c)
+		}
+	}
+	return stripped, nil
 }
 
 // mapOperator translates a domain operator string to a spi.FilterOp.

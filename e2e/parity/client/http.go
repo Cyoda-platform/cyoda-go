@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -150,34 +151,7 @@ func (c *Client) doJSON(t *testing.T, method, path string, body any, out any, op
 // bounded jitter and per-operation policies.
 func (c *Client) doRaw(t *testing.T, method, path, body string) ([]byte, error) {
 	t.Helper()
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("build request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("transport: %w", err)
-		}
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return raw, nil
-		}
-		if resp.StatusCode == http.StatusConflict && isRetryableConflict(raw) && attempt < maxAttempts-1 {
-			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
-			lastErr = fmt.Errorf("%s %s: status 409: %s", method, path, string(raw))
-			continue
-		}
-		return nil, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, string(raw))
-	}
-	return nil, lastErr
+	return c.doRawWithHeaders(t, method, path, body, nil)
 }
 
 // isRetryableConflict reports whether a 409 body advertises
@@ -400,6 +374,20 @@ func (c *Client) GetEntityChanges(t *testing.T, entityID uuid.UUID) ([]EntityCha
 	return changes, nil
 }
 
+// GetEntityChangesAt issues GET /api/entity/{entityId}/changes?pointInTime=<t>.
+// Returns the change history truncated to entries at or before the supplied
+// timestamp.
+// Canonical: docs/cyoda/openapi.yml (getEntityChangesMetadata with pointInTime query param).
+func (c *Client) GetEntityChangesAt(t *testing.T, entityID uuid.UUID, pointInTime time.Time) ([]EntityChangeMeta, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/changes?pointInTime=%s", entityID.String(), pointInTime.Format(time.RFC3339Nano))
+	var changes []EntityChangeMeta
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &changes); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
 // ListEntitiesByModel issues GET /api/entity/{name}/{version}.
 // Returns the entity list (each as EntityResult without modelKey per A2).
 // Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).
@@ -427,14 +415,140 @@ func (c *Client) GetEntityAt(t *testing.T, entityID uuid.UUID, pointInTime time.
 	return ent, nil
 }
 
-// GetEntityAtRaw issues GET /api/entity/{entityId}?pointInTime=<t>.
-// Returns (statusCode, error) without decoding the body -- for testing
-// 404 responses where there is no entity to decode.
-func (c *Client) GetEntityAtRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, error) {
+// GetEntityAtRaw issues GET /api/entity/{entityId}?pointInTime=<t> and
+// returns the HTTP status + raw body bytes without raising on non-2xx,
+// mirroring the *Raw pattern of LockModelRaw / GetEntityChangesRaw.
+// Used by negative-path tests (e.g. external-api 12/04) that need to
+// inspect the error envelope on 404.
+func (c *Client) GetEntityAtRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, []byte, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID.String(), pointInTime.Format(time.RFC3339Nano))
-	status, err := c.doJSON(t, http.MethodGet, path, nil, nil)
-	return status, err
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityByTransactionID issues GET /api/entity/{entityId}?transactionId=<tx>
+// and decodes the EntityResult envelope. Returned for the
+// transactionId-scoped GET surface used by external-api 07/02.
+// Canonical: docs/cyoda/openapi.yml:1055 (getOneEntity with transactionId query param).
+func (c *Client) GetEntityByTransactionID(t *testing.T, entityID uuid.UUID, txID string) (EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?transactionId=%s", entityID.String(), url.QueryEscape(txID))
+	var ent EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &ent); err != nil {
+		return EntityResult{}, err
+	}
+	return ent, nil
+}
+
+// GetEntityByTransactionIDRaw issues GET /api/entity/{entityId}?transactionId=<tx>
+// and returns the HTTP status + raw body bytes without raising on non-2xx,
+// mirroring the *Raw pattern. Used by external-api 12/05 to assert the
+// 404 body for a bogus transactionId.
+func (c *Client) GetEntityByTransactionIDRaw(t *testing.T, entityID uuid.UUID, txID string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?transactionId=%s", entityID.String(), url.QueryEscape(txID))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityAtBodyRaw issues GET /api/entity/{entityId}?pointInTime=<t> and
+// returns the raw status code and response body. Used by tests that need
+// to compare error-response bodies byte-for-byte (tenant-isolation
+// existence-oracle pinning).
+func (c *Client) GetEntityAtBodyRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID.String(), pointInTime.UTC().Format(time.RFC3339Nano))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityByTransactionIDBodyRaw issues GET /api/entity/{entityId}?transactionId=<tx>
+// and returns the raw status code and response body. Used by tenant-isolation
+// tests that need to compare error-response bodies byte-for-byte to assert
+// no existence oracle leaks across tenants via the transactionId temporal
+// query param.
+func (c *Client) GetEntityByTransactionIDBodyRaw(t *testing.T, entityID uuid.UUID, txID string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s?transactionId=%s", entityID.String(), txID)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityChangesAtBodyRaw issues GET /api/entity/{entityId}/changes?pointInTime=<t>
+// and returns the raw status code and response body. Used by tenant-isolation
+// tests that need to compare error-response bodies byte-for-byte across the
+// change-history temporal query path.
+func (c *Client) GetEntityChangesAtBodyRaw(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/changes?pointInTime=%s", entityID.String(), pointInTime.UTC().Format(time.RFC3339Nano))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
 }
 
 // UpdateEntityData issues PUT /api/entity/JSON/{entityId} to update
@@ -455,6 +569,62 @@ func (c *Client) UpdateEntity(t *testing.T, entityID uuid.UUID, transition, body
 	path := fmt.Sprintf("/api/entity/JSON/%s/%s", entityID.String(), transition)
 	_, err := c.doRaw(t, http.MethodPut, path, body)
 	return err
+}
+
+// CollectionItem is one entry in a POST /api/entity/{format} body for
+// heterogeneous collection creation. Payload is a JSON-encoded string
+// (not a nested object) per the wire contract — the handler in
+// internal/domain/entity.Handler.CreateCollection unmarshals it as such.
+type CollectionItem struct {
+	ModelName    string
+	ModelVersion int
+	Payload      string
+}
+
+// CreateEntitiesCollection issues POST /api/entity/JSON with a
+// heterogeneous batch. Returns the list of created entity IDs (parsed
+// from the response array's entityIds field).
+func (c *Client) CreateEntitiesCollection(t *testing.T, items []CollectionItem) ([]uuid.UUID, error) {
+	t.Helper()
+	type modelRef struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+	}
+	type rawItem struct {
+		Model   modelRef `json:"model"`
+		Payload string   `json:"payload"`
+	}
+	raw := make([]rawItem, 0, len(items))
+	for _, it := range items {
+		raw = append(raw, rawItem{
+			Model:   modelRef{Name: it.ModelName, Version: it.ModelVersion},
+			Payload: it.Payload,
+		})
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CreateEntitiesCollection items: %w", err)
+	}
+	resp, err := c.doRaw(t, http.MethodPost, "/api/entity/JSON", string(body))
+	if err != nil {
+		return nil, err
+	}
+	// Response shape: [{"transactionId":"...","entityIds":["<uuid>", ...]}]
+	var parsed []EntityTransactionInfo
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		return nil, fmt.Errorf("decode CreateEntitiesCollection response: %w (body=%s)", err, string(resp))
+	}
+	var out []uuid.UUID
+	for _, tx := range parsed {
+		for _, idStr := range tx.EntityIDs {
+			id, perr := uuid.Parse(idStr)
+			if perr != nil {
+				return nil, fmt.Errorf("parse entityId %q: %w", idStr, perr)
+			}
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // UpdateCollectionItem is one entry in a PUT /api/entity/{format} body.
@@ -531,6 +701,73 @@ func (c *Client) GetAuditEventsRaw(t *testing.T, entityID uuid.UUID) (int, error
 	return c.doJSON(t, http.MethodGet, path, nil, nil)
 }
 
+// MessageHeaderInput collects the optional message-header fields cyoda-go
+// reads from HTTP headers on POST /api/message/new/{subject}. Subject is
+// in the path, so it is not part of this struct.
+//
+// Content-Type is sent as the standard HTTP Content-Type header; if the
+// caller leaves it empty it defaults to "application/json". Content-Encoding
+// is sent as the standard Content-Encoding header. The X-* fields are sent
+// as the corresponding cyoda-specific request headers. Empty fields are
+// omitted from the request.
+//
+// Source of truth: api/generated.go NewMessageParams — all fields are
+// ParamLocationHeader (Content-Type and Content-Length are required;
+// Content-Encoding and X-* are optional).
+type MessageHeaderInput struct {
+	ContentType     string
+	ContentEncoding string
+	MessageID       string
+	UserID          string
+	Recipient       string
+	ReplyTo         string
+	CorrelationID   string
+}
+
+// doRawWithHeaders is like doRaw but accepts caller-supplied HTTP headers.
+// Headers in extraHeaders are applied first; the client's Authorization
+// header is always set last from c.token, so caller-supplied headers
+// CANNOT override Authorization. Content-Type defaults to
+// "application/json" when extraHeaders does not contain one.
+func (c *Client) doRawWithHeaders(t *testing.T, method, path, body string, extraHeaders http.Header) ([]byte, error) {
+	t.Helper()
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		// Apply caller-supplied headers first; Authorization is overwritten below.
+		for k, vs := range extraHeaders {
+			req.Header[k] = append([]string(nil), vs...) // defensive copy; replaces any existing
+		}
+		// Fall back to application/json if the caller didn't specify Content-Type.
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("transport: %w", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return raw, nil
+		}
+		if resp.StatusCode == http.StatusConflict && isRetryableConflict(raw) && attempt < maxAttempts-1 {
+			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+			lastErr = fmt.Errorf("%s %s: status 409: %s", method, path, string(raw))
+			continue
+		}
+		return nil, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, string(raw))
+	}
+	return nil, lastErr
+}
+
 // CreateMessage issues POST /api/message/new/{subject} with the given
 // payload wrapped in the edge-message envelope {payload, meta-data}.
 // Returns the message ID.
@@ -556,6 +793,61 @@ func (c *Client) CreateMessage(t *testing.T, subject, payload string) (string, e
 	return results[0].EntityIDs[0], nil
 }
 
+// CreateMessageWithHeaders is the header-rich variant of CreateMessage.
+// It sends the fields in MessageHeaderInput as HTTP request headers so
+// cyoda-go's generated handler reads them via NewMessageParams. The body
+// envelope is identical to CreateMessage: {"payload": <payload>,
+// "meta-data": {"source": "parity"}}.
+//
+// If header.ContentType is empty it defaults to "application/json".
+// Empty fields in header are omitted from the request.
+// Returns the new message ID.
+func (c *Client) CreateMessageWithHeaders(t *testing.T, subject, payload string, header MessageHeaderInput) (string, error) {
+	t.Helper()
+	path := "/api/message/new/" + subject
+	body := fmt.Sprintf(`{"payload": %s, "meta-data": {"source": "parity"}}`, payload)
+
+	h := make(http.Header)
+	ct := header.ContentType
+	if ct == "" {
+		ct = "application/json"
+	}
+	h.Set("Content-Type", ct)
+	if header.ContentEncoding != "" {
+		h.Set("Content-Encoding", header.ContentEncoding)
+	}
+	if header.MessageID != "" {
+		h.Set("X-Message-ID", header.MessageID)
+	}
+	if header.UserID != "" {
+		h.Set("X-User-ID", header.UserID)
+	}
+	if header.Recipient != "" {
+		h.Set("X-Recipient", header.Recipient)
+	}
+	if header.ReplyTo != "" {
+		h.Set("X-Reply-To", header.ReplyTo)
+	}
+	if header.CorrelationID != "" {
+		h.Set("X-Correlation-ID", header.CorrelationID)
+	}
+
+	raw, err := c.doRawWithHeaders(t, http.MethodPost, path, body, h)
+	if err != nil {
+		return "", err
+	}
+	var results []EntityTransactionInfo
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&results); err != nil {
+		return "", fmt.Errorf("decode CreateMessageWithHeaders response: %w", err)
+	}
+	if len(results) == 0 || len(results[0].EntityIDs) == 0 {
+		return "", fmt.Errorf("CreateMessageWithHeaders returned empty entity IDs")
+	}
+	return results[0].EntityIDs[0], nil
+}
+
 // GetMessage issues GET /api/message/{messageId} and returns the raw
 // response body as a map. The response shape is {header, metaData, content}.
 // Canonical: docs/cyoda/openapi.yml:2598.
@@ -577,12 +869,196 @@ func (c *Client) DeleteMessage(t *testing.T, messageID string) error {
 	return err
 }
 
+// DeleteMessages issues DELETE /api/message with a JSON-array body of
+// message IDs. Returns the list of actually-deleted IDs from the
+// response. Paging by transactionSize is supported by the server via
+// query param (default 1000); this helper does not expose it because
+// every parity test deletes well under 1000 IDs at a time.
+//
+// Canonical: api/openapi.yaml deleteMessages operation. Despite the
+// generated DeleteMessagesParams struct only carrying TransactionSize,
+// the server reads the ID list from the request body — the param
+// struct is just for the query knob.
+func (c *Client) DeleteMessages(t *testing.T, ids []string) ([]string, error) {
+	t.Helper()
+	body, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal DeleteMessages ids: %w", err)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, "/api/message", string(body))
+	if err != nil {
+		return nil, err
+	}
+	// Response is [{"entityIds":[...],"success":true}].
+	var results []struct {
+		EntityIDs []string `json:"entityIds"`
+		Success   bool     `json:"success"`
+	}
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return nil, fmt.Errorf("decode DeleteMessages response: %w (body=%s)", err, string(raw))
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("DeleteMessages returned empty results array")
+	}
+	return results[0].EntityIDs, nil
+}
+
+// SubmitAsyncSearch issues POST /api/search/async/{name}/{version} with
+// the given condition JSON. Returns the jobId (bare JSON string) for
+// status/results polling.
+// Canonical: api/openapi.yaml /search/async/{entityName}/{modelVersion}.
+func (c *Client) SubmitAsyncSearch(t *testing.T, modelName string, modelVersion int, condition string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return "", err
+	}
+	var jobID string
+	if err := json.Unmarshal(raw, &jobID); err != nil {
+		return "", fmt.Errorf("decode SubmitAsyncSearch response: %w (body=%s)", err, string(raw))
+	}
+	if jobID == "" {
+		return "", fmt.Errorf("SubmitAsyncSearch returned empty jobId (body=%s)", string(raw))
+	}
+	return jobID, nil
+}
+
+// GetAsyncSearchStatus issues GET /api/search/async/{jobId}/status.
+// Returns the searchJobStatus field only: one of RUNNING, SUCCESSFUL,
+// FAILED, CANCELLED, NOT_FOUND.
+// Canonical: api/openapi.yaml /search/async/{jobId}/status.
+func (c *Client) GetAsyncSearchStatus(t *testing.T, jobID string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/status", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		SearchJobStatus string `json:"searchJobStatus"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode GetAsyncSearchStatus response: %w (body=%s)", err, string(raw))
+	}
+	return resp.SearchJobStatus, nil
+}
+
+// GetAsyncSearchResults issues GET /api/search/async/{jobId}. Returns
+// the Spring-style page envelope (PagedEntityResults) with entity
+// results in Content and pagination metadata under Page.
+// Canonical: api/openapi.yaml /search/async/{jobId}.
+func (c *Client) GetAsyncSearchResults(t *testing.T, jobID string) (PagedEntityResults, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s", jobID)
+	raw, err := c.doRaw(t, http.MethodGet, path, "")
+	if err != nil {
+		return PagedEntityResults{}, err
+	}
+	var page PagedEntityResults
+	if err := json.Unmarshal(raw, &page); err != nil {
+		return PagedEntityResults{}, fmt.Errorf("decode GetAsyncSearchResults response: %w (body=%s)", err, string(raw))
+	}
+	return page, nil
+}
+
+// CancelAsyncSearch issues PUT /api/search/async/{jobId}/cancel.
+// Returns an error if the request fails (non-2xx). The response body
+// is not consumed — only the HTTP status matters.
+// Canonical: api/openapi.yaml /search/async/{jobId}/cancel (PUT method
+// per Phase 0.1 wire probe, not POST as the plan originally assumed).
+func (c *Client) CancelAsyncSearch(t *testing.T, jobID string) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/cancel", jobID)
+	_, err := c.doRaw(t, http.MethodPut, path, "")
+	return err
+}
+
+// AwaitAsyncSearchResults submits an async search and polls
+// GetAsyncSearchStatus until the job reaches a terminal state or
+// timeout elapses. On SUCCESSFUL, fetches and returns the results via
+// GetAsyncSearchResults. Terminal failure states (FAILED, CANCELLED,
+// NOT_FOUND) return an error. Unknown status values also return an
+// error. The polling interval is 100ms.
+func (c *Client) AwaitAsyncSearchResults(t *testing.T, modelName string, modelVersion int, condition string, timeout time.Duration) (PagedEntityResults, error) {
+	t.Helper()
+	jobID, err := c.SubmitAsyncSearch(t, modelName, modelVersion, condition)
+	if err != nil {
+		return PagedEntityResults{}, fmt.Errorf("submit: %w", err)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := c.GetAsyncSearchStatus(t, jobID)
+		if err != nil {
+			return PagedEntityResults{}, fmt.Errorf("status (jobId=%s): %w", jobID, err)
+		}
+		switch status {
+		case "SUCCESSFUL":
+			return c.GetAsyncSearchResults(t, jobID)
+		case "FAILED", "CANCELLED", "NOT_FOUND":
+			return PagedEntityResults{}, fmt.Errorf("async search reached terminal status %s (jobId=%s)", status, jobID)
+		case "RUNNING", "":
+			// continue polling
+		default:
+			return PagedEntityResults{}, fmt.Errorf("unexpected async search status %q (jobId=%s)", status, jobID)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return PagedEntityResults{}, fmt.Errorf("timeout (%s) waiting for async search jobId=%s", timeout, jobID)
+}
+
 // GetEntityStatsRaw issues GET /api/entity/stats and returns the raw
 // status code. The response shape is backend-specific; we only verify
 // it returns 200 (not 500).
 func (c *Client) GetEntityStatsRaw(t *testing.T) (int, error) {
 	t.Helper()
 	return c.doJSON(t, http.MethodGet, "/api/entity/stats", nil, nil)
+}
+
+// SyncSearchRaw issues POST /api/search/direct/{name}/{version} and
+// returns the raw HTTP status code and body without erroring on
+// non-2xx. Used for negative-path discover-and-compare.
+func (c *Client) SyncSearchRaw(t *testing.T, modelName string, modelVersion int, condition string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/direct/%s/%d", modelName, modelVersion)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(condition))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// SubmitAsyncSearchRaw issues POST /api/search/async/{name}/{version}
+// and returns the raw HTTP status code and body without erroring on
+// non-2xx. Used for negative-path discover-and-compare.
+func (c *Client) SubmitAsyncSearchRaw(t *testing.T, modelName string, modelVersion int, condition string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(condition))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
 }
 
 // SyncSearch issues POST /api/search/direct/{name}/{version} with the
@@ -628,4 +1104,189 @@ func (c *Client) GetAuditEvents(t *testing.T, entityID uuid.UUID) (EntityAuditEv
 		return EntityAuditEventsResponse{}, err
 	}
 	return resp, nil
+}
+
+// DeleteEntitiesByModel issues DELETE /api/entity/{name}/{version},
+// removing all entities in that (name, version) namespace for the
+// calling tenant. Returns nil on 2xx; the response body's delete-stats
+// shape is not returned because tests typically re-verify via
+// ListEntitiesByModel rather than parsing stats.
+func (c *Client) DeleteEntitiesByModel(t *testing.T, name string, version int) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d", name, version)
+	_, err := c.doRaw(t, http.MethodDelete, path, "")
+	return err
+}
+
+// DeleteEntitiesByModelAt issues DELETE /api/entity/{name}/{version}?pointInTime=<ISO8601>,
+// removing only entities whose creation time is at or before pointInTime
+// for the calling tenant. Wraps DeleteEntitiesByModel with a temporal
+// filter; everything else is identical.
+func (c *Client) DeleteEntitiesByModelAt(t *testing.T, name string, version int, pointInTime time.Time) error {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pointInTime=%s", name, version, pointInTime.UTC().Format(time.RFC3339Nano))
+	_, err := c.doRaw(t, http.MethodDelete, path, "")
+	return err
+}
+
+// LockModelRaw issues PUT /api/model/{name}/{version}/lock and returns
+// the HTTP status code + raw body without raising on non-2xx. Used by
+// negative-path tests that assert on the error body shape via
+// e2e/externalapi/errorcontract.Match. Mirrors the *Raw pattern of
+// CreateEntityRaw/GetEntityRaw/DeleteEntityRaw.
+func (c *Client) LockModelRaw(t *testing.T, name string, version int) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/lock", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// SetChangeLevelRaw issues POST /api/model/{name}/{version}/changeLevel/{level}
+// and returns status+body for negative-path assertions via errorcontract.Match.
+func (c *Client) SetChangeLevelRaw(t *testing.T, name string, version int, level string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/changeLevel/%s", name, version, level)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// ImportModelRaw issues POST /api/model/import/JSON/SAMPLE_DATA/{name}/{version}
+// with the given sample document as the body, and returns status+body for
+// negative-path assertions.
+func (c *Client) ImportModelRaw(t *testing.T, name string, version int, sample string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/%d", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(sample))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// UpdateEntityRaw issues PUT /api/entity/JSON/{entityId}/{transition} with the
+// given body and returns status+body for negative-path assertions.
+func (c *Client) UpdateEntityRaw(t *testing.T, id uuid.UUID, transition, body string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%s", id.String(), transition)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityBodyRaw issues GET /api/entity/{entityId} and returns the raw
+// HTTP status code and response body. Used by tests that need to decode the
+// entity JSON with non-default settings (e.g. UseNumber for big-number
+// round-trip precision tests).
+func (c *Client) GetEntityBodyRaw(t *testing.T, entityID uuid.UUID) (int, []byte, error) {
+	t.Helper()
+	path := "/api/entity/" + entityID.String()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// GetEntityChangesRaw issues GET /api/entity/{entityId}/changes and returns
+// status+body for negative-path assertions.
+func (c *Client) GetEntityChangesRaw(t *testing.T, id uuid.UUID) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/changes", id.String())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
+// ImportWorkflowRaw issues POST /api/model/{name}/{version}/workflow/import
+// with the given workflow JSON as the body and returns status+body for
+// negative-path assertions.
+func (c *Client) ImportWorkflowRaw(t *testing.T, name string, version int, body string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/model/%s/%d/workflow/import", name, version)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
 }

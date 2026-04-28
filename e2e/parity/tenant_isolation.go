@@ -1,8 +1,13 @@
 package parity
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -117,5 +122,238 @@ func RunTenantIsolationModels(t *testing.T, fixture BackendFixture) {
 	_, err = clientA.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
 	if err != nil {
 		t.Errorf("tenant A ExportModel after B's operations: %v", err)
+	}
+}
+
+// problemBodyHasErrorCode reports whether a 4xx Problem-Details body
+// carries the expected `properties.errorCode`. Tolerant decode to keep
+// the assertion focused on the contract bit (errorCode), not the full
+// envelope shape.
+func problemBodyHasErrorCode(t *testing.T, body []byte, want string) bool {
+	t.Helper()
+	type envelope struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	var pd envelope
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Errorf("decode Problem-Details body: %v (body=%s)", err, string(body))
+		return false
+	}
+	return pd.Properties.ErrorCode == want
+}
+
+// RunTenantIsolationTransactionIDInvisible pins the contract that the
+// `?transactionId=` temporal query parameter cannot be used as an
+// existence oracle across tenants. Tenant A creates an entity and
+// captures the transactionId from the create envelope. Tenant B then
+// asks for the entity by ID with that transactionId — and again with a
+// bogus transactionId — and the responses must be byte-equal 404s.
+//
+// Tenant isolation here is structurally guaranteed (the entity store
+// factory derives tenant from request context before any history scan).
+// This test pins the invariant so a future refactor that introduced an
+// existence oracle on the temporal path would fail loudly. Companion to
+// PR #165 (GetOneEntity honors transactionId).
+func RunTenantIsolationTransactionIDInvisible(t *testing.T, fixture BackendFixture) {
+	tenantA := fixture.NewTenant(t)
+	tenantB := fixture.NewTenant(t)
+	clientA := client.NewClient(fixture.BaseURL(), tenantA.Token)
+	clientB := client.NewClient(fixture.BaseURL(), tenantB.Token)
+
+	const modelName = "iso-txid-test"
+	const modelVersion = 1
+
+	// Tenant A: set up model + workflow + entity, capturing the txID from
+	// the create envelope.
+	setupSimpleWorkflow(t, clientA, modelName, modelVersion)
+	entityID, txIDA, err := clientA.CreateEntityWithTxID(t, modelName, modelVersion,
+		`{"name":"TenantA","amount":10,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityWithTxID (tenant A): %v", err)
+	}
+	if txIDA == "" {
+		t.Fatal("tenant A create returned empty transactionId — needed to drive cross-tenant lookup")
+	}
+
+	// (1) Tenant B asks for tenant A's entity using tenant A's real txID.
+	statusReal, bodyReal, err := clientB.GetEntityByTransactionIDBodyRaw(t, entityID, txIDA)
+	if err != nil {
+		t.Fatalf("tenant B GET ?transactionId=<txID_A>: transport error: %v", err)
+	}
+	if statusReal != http.StatusNotFound {
+		t.Errorf("tenant B GET ?transactionId=<txID_A>: status got %d, want 404 (body=%s)", statusReal, string(bodyReal))
+	}
+	if !problemBodyHasErrorCode(t, bodyReal, "ENTITY_NOT_FOUND") {
+		t.Errorf("tenant B GET ?transactionId=<txID_A>: errorCode != ENTITY_NOT_FOUND (body=%s)", string(bodyReal))
+	}
+
+	// (2) Tenant B asks for the same entity with a bogus txID that exists
+	// in no tenant. The handler reaches the same tenant-scoped lookup and
+	// must produce a byte-identical 404 — no existence oracle.
+	bogusTxID := uuid.New().String()
+	statusBogus, bodyBogus, err := clientB.GetEntityByTransactionIDBodyRaw(t, entityID, bogusTxID)
+	if err != nil {
+		t.Fatalf("tenant B GET ?transactionId=<bogus>: transport error: %v", err)
+	}
+	if statusBogus != http.StatusNotFound {
+		t.Errorf("tenant B GET ?transactionId=<bogus>: status got %d, want 404 (body=%s)", statusBogus, string(bodyBogus))
+	}
+	if !problemBodyHasErrorCode(t, bodyBogus, "ENTITY_NOT_FOUND") {
+		t.Errorf("tenant B GET ?transactionId=<bogus>: errorCode != ENTITY_NOT_FOUND (body=%s)", string(bodyBogus))
+	}
+
+	// Byte-equality: an existence oracle would surface as a difference
+	// between the two response bodies (e.g. distinct error code, distinct
+	// detail wording, or one body that hints the entity exists in another
+	// tenant). The contract is: the responses are indistinguishable.
+	if !bytes.Equal(bodyReal, bodyBogus) {
+		t.Errorf("existence oracle: response bodies differ between real and bogus transactionId\n  real:  %s\n  bogus: %s",
+			string(bodyReal), string(bodyBogus))
+	}
+}
+
+// RunTenantIsolationPointInTimeInvisible pins the contract that the
+// `?pointInTime=` temporal query parameter cannot be used as an
+// existence oracle across tenants. Tenant A creates an entity at time
+// t1; tenant B asks for it at t1+epsilon (when it exists in A's tenant)
+// and again at a clearly-bogus point in time before A created it. Both
+// responses must be byte-equal 404s.
+//
+// Companion to PR #161/#164 (parity helpers + propagated pointInTime in
+// GetEntityChangesMetadata).
+func RunTenantIsolationPointInTimeInvisible(t *testing.T, fixture BackendFixture) {
+	tenantA := fixture.NewTenant(t)
+	tenantB := fixture.NewTenant(t)
+	clientA := client.NewClient(fixture.BaseURL(), tenantA.Token)
+	clientB := client.NewClient(fixture.BaseURL(), tenantB.Token)
+
+	const modelName = "iso-pit-test"
+	const modelVersion = 1
+
+	// Record a "before any tenant created anything" timestamp for the
+	// bogus probe.
+	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
+
+	// Tenant A: set up model + workflow + entity. Sleep around create to
+	// give us a stable t1+epsilon window.
+	setupSimpleWorkflow(t, clientA, modelName, modelVersion)
+	time.Sleep(10 * time.Millisecond)
+	entityID, err := clientA.CreateEntity(t, modelName, modelVersion,
+		`{"name":"TenantA","amount":10,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (tenant A): %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	afterCreate := time.Now().UTC()
+
+	// (1) Tenant B asks for tenant A's entity at t1+epsilon (when it
+	// exists in A's tenant). Must be 404 ENTITY_NOT_FOUND.
+	statusReal, bodyReal, err := clientB.GetEntityAtBodyRaw(t, entityID, afterCreate)
+	if err != nil {
+		t.Fatalf("tenant B GET ?pointInTime=<afterCreate>: transport error: %v", err)
+	}
+	if statusReal != http.StatusNotFound {
+		t.Errorf("tenant B GET ?pointInTime=<afterCreate>: status got %d, want 404 (body=%s)", statusReal, string(bodyReal))
+	}
+	if !problemBodyHasErrorCode(t, bodyReal, "ENTITY_NOT_FOUND") {
+		t.Errorf("tenant B GET ?pointInTime=<afterCreate>: errorCode != ENTITY_NOT_FOUND (body=%s)", string(bodyReal))
+	}
+
+	// (2) Tenant B asks for the same entity at a clearly-bogus PIT before
+	// A even created it. The entity does not exist for any tenant at this
+	// time; the response must be byte-identical to (1) — no oracle.
+	statusBogus, bodyBogus, err := clientB.GetEntityAtBodyRaw(t, entityID, beforeCreate)
+	if err != nil {
+		t.Fatalf("tenant B GET ?pointInTime=<bogus>: transport error: %v", err)
+	}
+	if statusBogus != http.StatusNotFound {
+		t.Errorf("tenant B GET ?pointInTime=<bogus>: status got %d, want 404 (body=%s)", statusBogus, string(bodyBogus))
+	}
+	if !problemBodyHasErrorCode(t, bodyBogus, "ENTITY_NOT_FOUND") {
+		t.Errorf("tenant B GET ?pointInTime=<bogus>: errorCode != ENTITY_NOT_FOUND (body=%s)", string(bodyBogus))
+	}
+
+	if !bytes.Equal(bodyReal, bodyBogus) {
+		t.Errorf("existence oracle: response bodies differ between real and bogus pointInTime\n  real:  %s\n  bogus: %s",
+			string(bodyReal), string(bodyBogus))
+	}
+}
+
+// RunTenantIsolationChangesAtPITInvisible pins the contract that the
+// `?pointInTime=` query parameter on the change-history endpoint
+// (`/api/entity/{id}/changes`) cannot be used as an existence oracle
+// across tenants. Tenant A creates and updates an entity; tenant B
+// asks for its change history at a recent PIT and at a bogus PIT —
+// both must return byte-equal 404s.
+//
+// Companion to PR #164 (propagated pointInTime in GetEntityChangesMetadata).
+func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixture) {
+	tenantA := fixture.NewTenant(t)
+	tenantB := fixture.NewTenant(t)
+	clientA := client.NewClient(fixture.BaseURL(), tenantA.Token)
+	clientB := client.NewClient(fixture.BaseURL(), tenantB.Token)
+
+	const modelName = "iso-changes-pit-test"
+	const modelVersion = 1
+
+	// PIT in the far past, before any tenant created anything.
+	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
+
+	// Tenant A: set up the temporal workflow (NONE->CREATED auto,
+	// CREATED->CREATED manual UPDATE) so we can produce multiple changes.
+	if err := clientA.ImportModel(t, modelName, modelVersion, `{"name":"Temporal","amount":0,"status":"init"}`); err != nil {
+		t.Fatalf("ImportModel (tenant A): %v", err)
+	}
+	if err := clientA.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel (tenant A): %v", err)
+	}
+	if err := clientA.ImportWorkflow(t, modelName, modelVersion, temporalWorkflowJSON); err != nil {
+		t.Fatalf("ImportWorkflow (tenant A): %v", err)
+	}
+
+	entityID, err := clientA.CreateEntity(t, modelName, modelVersion,
+		`{"name":"TenantA","amount":1,"status":"v1"}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (tenant A): %v", err)
+	}
+	if err := clientA.UpdateEntity(t, entityID, "UPDATE",
+		`{"name":"TenantA","amount":2,"status":"v2"}`); err != nil {
+		t.Fatalf("UpdateEntity v2 (tenant A): %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	afterUpdates := time.Now().UTC()
+
+	// (1) Tenant B asks for the change history of tenant A's entity at a
+	// PIT after the updates landed. Must be 404 ENTITY_NOT_FOUND.
+	statusReal, bodyReal, err := clientB.GetEntityChangesAtBodyRaw(t, entityID, afterUpdates)
+	if err != nil {
+		t.Fatalf("tenant B GET /changes?pointInTime=<afterUpdates>: transport error: %v", err)
+	}
+	if statusReal != http.StatusNotFound {
+		t.Errorf("tenant B GET /changes?pointInTime=<afterUpdates>: status got %d, want 404 (body=%s)", statusReal, string(bodyReal))
+	}
+	if !problemBodyHasErrorCode(t, bodyReal, "ENTITY_NOT_FOUND") {
+		t.Errorf("tenant B GET /changes?pointInTime=<afterUpdates>: errorCode != ENTITY_NOT_FOUND (body=%s)", string(bodyReal))
+	}
+
+	// (2) Tenant B asks for the same entity's change history at a bogus
+	// PIT before any tenant created the entity. The response must be
+	// byte-identical to (1).
+	statusBogus, bodyBogus, err := clientB.GetEntityChangesAtBodyRaw(t, entityID, beforeCreate)
+	if err != nil {
+		t.Fatalf("tenant B GET /changes?pointInTime=<bogus>: transport error: %v", err)
+	}
+	if statusBogus != http.StatusNotFound {
+		t.Errorf("tenant B GET /changes?pointInTime=<bogus>: status got %d, want 404 (body=%s)", statusBogus, string(bodyBogus))
+	}
+	if !problemBodyHasErrorCode(t, bodyBogus, "ENTITY_NOT_FOUND") {
+		t.Errorf("tenant B GET /changes?pointInTime=<bogus>: errorCode != ENTITY_NOT_FOUND (body=%s)", string(bodyBogus))
+	}
+
+	if !bytes.Equal(bodyReal, bodyBogus) {
+		t.Errorf("existence oracle: response bodies differ between real and bogus pointInTime on /changes\n  real:  %s\n  bogus: %s",
+			string(bodyReal), string(bodyBogus))
 	}
 }

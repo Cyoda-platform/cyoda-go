@@ -1115,67 +1115,22 @@ type ProblemDetail struct {
 }
 ```
 
-Props always include `errorCode`. For conflict errors, `retryable: true` is set.
+Props always include `errorCode`. The optional `retryable` boolean is set to `true` only on transient conflicts that may succeed on a fresh attempt as-is — typically storage-level transaction serialization aborts (40001/40P01) and cluster-availability conditions. Permanent business-logic conflicts (locked-state mismatches, ETag/If-Match preconditions, cardinality precondition failures) are non-retryable: replaying the same request without an external state change cannot succeed.
 
 In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`), internal error details are included in responses. In `sanitized` mode (default), only the ticket UUID is exposed.
 
 ### 8.3 Error Code Taxonomy
 
-**Domain errors:**
+Codes are grouped by surface area:
 
-| Code | Meaning |
-|------|---------|
-| `MODEL_NOT_FOUND` | Requested model does not exist |
-| `MODEL_NOT_LOCKED` | Model must be locked before entity operations |
-| `ENTITY_NOT_FOUND` | Requested entity does not exist |
-| `VALIDATION_FAILED` | Entity data fails model schema validation |
-| `TRANSITION_NOT_FOUND` | Named transition not in workflow |
-| `WORKFLOW_NOT_FOUND` | No workflow matches the entity / model context |
-| `WORKFLOW_FAILED` | Workflow engine error |
-| `CONFLICT` | Optimistic concurrency conflict (retryable) |
-| `EPOCH_MISMATCH` | Operation targeted a stale model epoch (model has been re-locked since) |
-| `BAD_REQUEST` | Malformed request |
-| `UNAUTHORIZED` | Missing or invalid credentials |
-| `FORBIDDEN` | Insufficient permissions |
-| `NOT_IMPLEMENTED` | Feature is reachable but not yet implemented |
-| `SERVER_ERROR` | Internal server error (with ticket) |
+- **Domain** — model lifecycle, entity CRUD, workflow, validation, generic 4xx (`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `SERVER_ERROR`, `NOT_IMPLEMENTED`).
+- **Cluster / transaction** — distributed-transaction hand-off (`TX_*`, `TRANSACTION_*`), gossip membership, idempotency.
+- **Compute dispatch** — externalized processor / criteria invocation across cluster members.
+- **Search** — async search-job lifecycle and shard-scan limits.
 
-**Cluster errors:**
+The authoritative code list is `internal/common/error_codes.go`. Per-code semantics, HTTP status, retryable hint, structured `properties`, and remediation guidance live in the help subsystem at `cmd/cyoda/help/content/errors/<CODE>.md`, rendered via `cyoda help errors` (catalogue) and `cyoda help errors <CODE>` (per-code page). The `TestErrCode_Parity` gate in `cmd/cyoda/help` enforces that every constant in `error_codes.go` has a corresponding help topic.
 
-| Code | Meaning |
-|------|---------|
-| `TRANSACTION_NODE_UNAVAILABLE` | Transaction owner node is dead/unreachable |
-| `TRANSACTION_EXPIRED` | Transaction token TTL elapsed |
-| `TRANSACTION_NOT_FOUND` | Transaction ID unknown on this node |
-| `CLUSTER_NODE_NOT_REGISTERED` | Node not in gossip membership |
-| `IDEMPOTENCY_CONFLICT` | Duplicate idempotency key |
-
-**Dispatch errors:**
-
-| Code | Meaning |
-|------|---------|
-| `NO_COMPUTE_MEMBER_FOR_TAG` | No compute member matches required tags |
-| `DISPATCH_FORWARD_FAILED` | Cross-node dispatch HTTP failure |
-| `DISPATCH_TIMEOUT` | Dispatch response not received in time |
-| `COMPUTE_MEMBER_DISCONNECTED` | Compute member stream closed during dispatch |
-
-**Transaction errors:**
-
-| Code | Meaning |
-|------|---------|
-| `TX_REQUIRED` | Operation requires an active transaction but none was present on the context |
-| `TX_CONFLICT` | Commit-time serialization failure (first-committer-wins) |
-| `TX_COORDINATOR_NOT_CONFIGURED` | Cluster-mode coordinator features invoked on a binary without cluster enabled |
-| `TX_NO_STATE` | Transaction state missing on context (programmer error or lost coordinator hand-off) |
-
-**Search errors:**
-
-| Code | Meaning |
-|------|---------|
-| `SEARCH_JOB_NOT_FOUND` | Async search job ID unknown (or reaped) |
-| `SEARCH_JOB_ALREADY_TERMINAL` | Cancel/update attempted on a job in a terminal status |
-| `SEARCH_SHARD_TIMEOUT` | Per-shard scan exceeded its budget |
-| `SEARCH_RESULT_LIMIT` | Result set would exceed the configured result limit |
+Programmatic clients key on `errorCode`, not HTTP status: multiple codes may share the same status, and the code expresses the failure mode the dictionary preserves. New failure modes get a specific code rather than overloading a generic one (e.g. the model-lifecycle preconditions surface as `MODEL_ALREADY_LOCKED` / `MODEL_ALREADY_UNLOCKED` / `MODEL_HAS_ENTITIES`, not generic `CONFLICT`).
 
 ### 8.4 Warning/Error Accumulation
 

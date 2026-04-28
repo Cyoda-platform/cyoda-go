@@ -19,6 +19,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
@@ -245,14 +246,28 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	pageSize := int32(req.PageSize)
+	pageSize := req.PageSize
 	if pageSize <= 0 {
 		pageSize = 20
 	}
+	pageNumber := req.PageNumber
+
+	// Reject negative / over-cap / overflow-prone values BEFORE the
+	// storage lookup (PR #149 follow-up). Without this guard, an
+	// attacker-supplied PageNumber up to MaxInt would propagate to the
+	// service layer and panic with a slice-bounds error.
+	if vErr := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); vErr != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", vErr.Error())
+		errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
+		if ceErr != nil {
+			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+		}
+		return stream.Send(errCE)
+	}
 
 	envelopes, err := s.entityHandler.ListEntities(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), entity.PaginationParams{
-		PageSize:   pageSize,
-		PageNumber: int32(req.PageNumber),
+		PageSize:   int32(pageSize),
+		PageNumber: int32(pageNumber),
 	})
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", err.Error())
@@ -495,7 +510,7 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	entries, err := s.entityHandler.GetChangesMetadata(ctx, req.EntityID)
+	entries, err := s.entityHandler.GetChangesMetadata(ctx, req.EntityID, req.PointInTime)
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityChangesMetadataGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityChangesMetadataError(ctx, ce.Id, err)
@@ -585,6 +600,19 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	var req events.SnapshotGetRequestJson
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
+
+	// Reject negative / over-cap / overflow-prone values BEFORE the
+	// snapshot lookup (PR #149 follow-up). The HTTP async-results path
+	// already validates here; the gRPC entry point did not, leaving the
+	// same offset = pageNumber*pageSize multiplication exposed.
+	if vErr := pagination.ValidateOffset(int64(req.PageNumber), int64(req.PageSize)); vErr != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", SnapshotGetRequest, "ceId", ce.Id, "error", vErr.Error())
+		errCE, ceErr := entityResponseError(ctx, ce.Id, vErr)
+		if ceErr != nil {
+			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+		}
+		return stream.Send(errCE)
 	}
 
 	results, err := s.searchService.GetAsyncSearchResults(ctx, req.SnapshotID, req.PageNumber, req.PageSize)

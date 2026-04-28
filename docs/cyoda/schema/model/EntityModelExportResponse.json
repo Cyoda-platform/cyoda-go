@@ -23,8 +23,8 @@
     }
   },
   "required": [
+    "modelId",
     "model",
-    "modelVersion",
     "payload"
   ]
 }

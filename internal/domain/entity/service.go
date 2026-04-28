@@ -18,6 +18,8 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
+	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
 // decodeJSONPreservingNumbers is the precision-preserving counterpart to
@@ -47,9 +49,16 @@ type EntityTransactionResult struct {
 }
 
 // GetOneEntityInput holds parameters for getting an entity.
+//
+// At most one of PointInTime and TransactionID may be set; the handler
+// rejects requests carrying both with HTTP 400 BAD_REQUEST. When
+// TransactionID is non-empty, GetEntity scans the entity's version
+// history and returns the version whose meta.TransactionID matches; if
+// no version matches, ENTITY_NOT_FOUND (404) is returned. Issue #150.
 type GetOneEntityInput struct {
-	EntityID    string
-	PointInTime *time.Time
+	EntityID      string
+	PointInTime   *time.Time
+	TransactionID string
 }
 
 // EntityEnvelope holds a single entity in its response envelope format.
@@ -195,7 +204,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	if err != nil {
 		h.txMgr.Rollback(txCtx, txID)
 		slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID)
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+		return nil, classifyWorkflowError(err)
 	}
 
 	// If no workflow was found, engine returns forced success and entity state stays empty.
@@ -226,7 +235,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -237,7 +246,34 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}, nil
 }
 
-// GetEntity retrieves a single entity, optionally at a point in time.
+// getEntityByTransactionID returns the entity version whose meta.TransactionID
+// matches txID. It scans the version history (which carries the full Entity
+// payload per version) and returns the matching snapshot. spi.ErrNotFound is
+// returned both when the entity itself is unknown to the store and when no
+// version matches the supplied transactionId — the caller maps both to
+// ENTITY_NOT_FOUND (404), which mirrors Cyoda Cloud's contract for issue #150
+// (and matches dictionary scenario 12/neg/05). The caller treats other errors
+// as infrastructure failures (5xx).
+func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entityID, txID string) (*spi.Entity, error) {
+	versions, err := store.GetVersionHistory(ctx, entityID)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range versions {
+		if v.Entity == nil {
+			continue
+		}
+		if v.Entity.Meta.TransactionID == txID {
+			return v.Entity, nil
+		}
+	}
+	return nil, spi.ErrNotFound
+}
+
+// GetEntity retrieves a single entity, optionally at a point in time or
+// scoped to a specific transaction. Exactly one of input.PointInTime and
+// input.TransactionID may be set; the handler enforces mutual exclusion at
+// the request boundary.
 func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*EntityEnvelope, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
@@ -245,9 +281,12 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 	}
 
 	var ent *spi.Entity
-	if input.PointInTime != nil {
+	switch {
+	case input.TransactionID != "":
+		ent, err = getEntityByTransactionID(ctx, entityStore, input.EntityID, input.TransactionID)
+	case input.PointInTime != nil:
 		ent, err = entityStore.GetAsAt(ctx, input.EntityID, *input.PointInTime)
-	} else {
+	default:
 		ent, err = entityStore.Get(ctx, input.EntityID)
 	}
 	if err != nil {
@@ -487,7 +526,7 @@ func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEnt
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -509,7 +548,12 @@ type deleteEntityResult struct {
 }
 
 // GetChangesMetadata retrieves version history metadata for an entity.
-func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string) ([]EntityChangeEntry, error) {
+//
+// If pointInTime is non-nil, the result is truncated to versions whose
+// Timestamp is at or before pointInTime — the caller sees the change
+// history exactly as it would have appeared at that moment. A nil
+// pointInTime returns the full history.
+func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, pointInTime *time.Time) ([]EntityChangeEntry, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
@@ -525,6 +569,18 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string) ([]En
 			return nil, appErr
 		}
 		return nil, common.Internal("failed to get version history", err)
+	}
+
+	// Truncate to versions at-or-before pointInTime when set.
+	if pointInTime != nil && !pointInTime.IsZero() {
+		cutoff := *pointInTime
+		filtered := versions[:0]
+		for _, v := range versions {
+			if !v.Timestamp.After(cutoff) {
+				filtered = append(filtered, v)
+			}
+		}
+		versions = filtered
 	}
 
 	// Sort newest first (descending by timestamp)
@@ -607,7 +663,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -621,7 +677,16 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 }
 
 // ListEntities retrieves all entities for a model with pagination.
-func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, pagination PaginationParams) ([]EntityEnvelope, error) {
+func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVersion string, page PaginationParams) ([]EntityEnvelope, error) {
+	// Defense-in-depth: HTTP and gRPC handlers SHOULD validate before
+	// reaching the service, but enforce the same caps here so the
+	// `start := int(PageNumber * PageSize)` multiplication below cannot
+	// be reached with attacker-supplied values that overflow on 32-bit
+	// platforms or yield negative slice indices.
+	if appErr := pagination.ValidateOffset(int64(page.PageNumber), int64(page.PageSize)); appErr != nil {
+		return nil, appErr
+	}
+
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
@@ -642,20 +707,21 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		return entities[i].Meta.ID < entities[j].Meta.ID
 	})
 
-	// Apply pagination
-	start := int(pagination.PageNumber * pagination.PageSize)
+	// Apply pagination — caps above guarantee start/end are non-negative
+	// and within int range.
+	start := int(page.PageNumber) * int(page.PageSize)
 	if start > len(entities) {
 		start = len(entities)
 	}
-	end := start + int(pagination.PageSize)
+	end := start + int(page.PageSize)
 	if end > len(entities) {
 		end = len(entities)
 	}
-	page := entities[start:end]
+	pageSlice := entities[start:end]
 
 	// Build envelopes without modelKey in meta
-	result := make([]EntityEnvelope, 0, len(page))
-	for _, ent := range page {
+	result := make([]EntityEnvelope, 0, len(pageSlice))
+	for _, ent := range pageSlice {
 		var data any
 		if err := decodeJSONPreservingNumbers(ent.Data, &data); err != nil {
 			return nil, common.Internal("failed to parse entity data", err)
@@ -787,7 +853,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -890,7 +956,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		if _, err := h.engine.Loopback(txCtx, updated); err != nil {
 			h.txMgr.Rollback(txCtx, txID)
 			slog.Error("workflow loopback failed", "error", err.Error(), "entityId", updated.Meta.ID)
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+			return nil, classifyWorkflowError(err)
 		}
 		updated.Meta.TransitionForLatestSave = "loopback"
 	} else {
@@ -898,18 +964,25 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 		if _, err := h.engine.ManualTransition(txCtx, updated, input.Transition); err != nil {
 			h.txMgr.Rollback(txCtx, txID)
 			slog.Error("workflow manual transition failed", "error", err.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
+			return nil, classifyWorkflowError(err)
 		}
 		updated.Meta.TransitionForLatestSave = input.Transition
 	}
 
-	// Atomic MVCC save: if If-Match was provided, use CompareAndSave for atomicity.
+	// Optimistic-concurrency check on the cross-request precondition: if
+	// If-Match was provided, CompareAndSave fails fast at write-time when
+	// the supplied transactionId no longer matches the entity's current
+	// version. The transaction-level SI+FCW guard at Commit() protects
+	// against concurrent committers within this request's transaction
+	// window regardless of which branch we take.
 	if input.IfMatch != "" {
 		if _, err := entityStore.CompareAndSave(txCtx, updated, input.IfMatch); err != nil {
 			h.txMgr.Rollback(txCtx, txID)
 			if errors.Is(err, spi.ErrConflict) {
-				appErr := common.Conflict("entity has been modified since last read")
-				appErr.Status = http.StatusPreconditionFailed
+				appErr := common.Operational(
+					http.StatusPreconditionFailed,
+					common.ErrCodeEntityModified,
+					"entity has been modified since last read")
 				appErr.Props = map[string]any{
 					"entityId": input.EntityID,
 				}
@@ -927,7 +1000,7 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	// Commit transaction.
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -1042,16 +1115,14 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			if _, err := h.engine.Loopback(txCtx, updated); err != nil {
 				h.txMgr.Rollback(txCtx, txID)
 				slog.Error("workflow loopback failed", "error", err.Error(), "entityId", updated.Meta.ID)
-				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed,
-					fmt.Sprintf("item %d: %v", i, err))
+				return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
 			}
 			updated.Meta.TransitionForLatestSave = "loopback"
 		} else {
 			if _, err := h.engine.ManualTransition(txCtx, updated, item.transition); err != nil {
 				h.txMgr.Rollback(txCtx, txID)
 				slog.Error("workflow manual transition failed", "error", err.Error(), "entityId", updated.Meta.ID, "transition", item.transition)
-				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed,
-					fmt.Sprintf("item %d: %v", i, err))
+				return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
 			}
 			updated.Meta.TransitionForLatestSave = item.transition
 		}
@@ -1065,7 +1136,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 
 	if err := h.txMgr.Commit(txCtx, txID); err != nil {
 		if errors.Is(err, spi.ErrConflict) {
-			return nil, common.Conflict("transaction conflict — retry")
+			return nil, common.RetryableConflict("transaction conflict — retry")
 		}
 		return nil, common.Internal("failed to commit transaction", err)
 	}
@@ -1083,4 +1154,15 @@ func classifyError(err error) *common.AppError {
 		return appErr
 	}
 	return common.Internal("unexpected error", err)
+}
+
+// classifyWorkflowError maps a workflow-engine error to the appropriate HTTP
+// error code. The transition-not-found case (ErrTransitionNotFound sentinel)
+// receives the specific TRANSITION_NOT_FOUND code; all other engine errors
+// fall back to the generic WORKFLOW_FAILED code.
+func classifyWorkflowError(err error) *common.AppError {
+	if errors.Is(err, wfengine.ErrTransitionNotFound) {
+		return common.Operational(http.StatusBadRequest, common.ErrCodeTransitionNotFound, err.Error())
+	}
+	return common.Operational(http.StatusBadRequest, common.ErrCodeWorkflowFailed, err.Error())
 }

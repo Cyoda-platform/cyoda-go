@@ -169,6 +169,37 @@ func TestWorkflow_OverwriteWorkflow(t *testing.T) {
 	}
 }
 
+// TestWorkflow_ImportUnknownModel verifies that importing a workflow targeting
+// a model that does not exist returns 404 MODEL_NOT_FOUND. This covers issue
+// #131: previously the import silently succeeded with 200 {"success":true};
+// cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND. See the workflow
+// handler unit test TestImport_UnknownModel_Returns404 for the canonical
+// assertion.
+func TestWorkflow_ImportUnknownModel(t *testing.T) {
+	const entityName = "e2e-ghost-model"
+	const modelVersion = 1
+
+	// Deliberately do NOT import the model — it must not exist.
+	status, body := importWorkflowE2E(t, entityName, modelVersion, workflowV1)
+	if status != http.StatusNotFound {
+		t.Fatalf("workflow import on unknown model: expected 404, got %d: %s", status, body)
+	}
+
+	// Parse RFC 9457 problem-detail body and assert the error code is in the detail.
+	var problem map[string]any
+	if err := json.Unmarshal([]byte(body), &problem); err != nil {
+		t.Fatalf("workflow import 404: failed to parse problem-detail JSON: %v\nbody: %s", err, body)
+	}
+	detail, _ := problem["detail"].(string)
+	if detail == "" {
+		t.Fatal("workflow import 404: expected non-empty detail in response body")
+	}
+	const wantCode = "MODEL_NOT_FOUND"
+	if !strings.Contains(detail, wantCode) {
+		t.Errorf("workflow import 404: expected error code %s in detail, got: %s", wantCode, detail)
+	}
+}
+
 // TestWorkflow_ExportEmpty verifies that exporting a workflow for a model
 // that has no imported workflows returns 404 WORKFLOW_NOT_FOUND. A properly
 // structured GET on a non-existent resource should return NOT FOUND, not

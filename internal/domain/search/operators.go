@@ -8,6 +8,16 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
+// MaxConditionDepth caps recursion in the condition validators
+// (ValidateCondition, ValidateConditionValueTypes) to defend against stack
+// exhaustion from deeply nested predicate trees. The HTTP parser
+// (predicate.ParseCondition) already caps incoming requests at a smaller
+// depth, but in-process callers (workflow engine criteria, programmatic
+// constructions) bypass that cap and can otherwise pass an arbitrarily
+// nested tree directly to the walkers. 256 is well above any realistic
+// query nesting and well below the goroutine stack-blow threshold.
+const MaxConditionDepth = 256
+
 // canonicalOperators is the single source of truth for the valid
 // `operatorType` values accepted by Simple / Lifecycle / Array conditions.
 // The list is mirrored in cmd/cyoda/help/content/search.md and in the
@@ -53,8 +63,15 @@ var canonicalOperators = map[string]struct{}{
 // identifying any unknown operator. The returned error text lists the
 // canonical set so callers can self-correct.
 func ValidateCondition(cond predicate.Condition) error {
+	return validateConditionAtDepth(cond, 0)
+}
+
+func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 	if cond == nil {
 		return nil
+	}
+	if depth >= MaxConditionDepth {
+		return fmt.Errorf("condition depth exceeded (max %d)", MaxConditionDepth)
 	}
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
@@ -68,7 +85,7 @@ func ValidateCondition(cond predicate.Condition) error {
 		return nil
 	case *predicate.GroupCondition:
 		for _, child := range c.Conditions {
-			if err := ValidateCondition(child); err != nil {
+			if err := validateConditionAtDepth(child, depth+1); err != nil {
 				return err
 			}
 		}

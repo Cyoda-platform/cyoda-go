@@ -770,40 +770,16 @@ Error responses follow RFC 9457 (Problem Details). Error detail level controlled
 
 ### Error Code Taxonomy
 
-**Domain errors:**
+Every error response carries a structured `errorCode` in `properties` plus an optional `retryable` boolean (`true` only when the request is safe to replay as-is — typically transient cluster or storage-serialization conditions; absent or `false` otherwise). Programmatic clients key on `errorCode`, not HTTP status: multiple codes may share the same status, and the code expresses the failure mode the dictionary preserves.
 
-| Code | HTTP Status | Retryable | Description |
-|------|-------------|-----------|-------------|
-| `MODEL_NOT_FOUND` | 404 | No | Referenced model does not exist |
-| `MODEL_NOT_LOCKED` | 409 | No | Operation requires a locked model |
-| `ENTITY_NOT_FOUND` | 404 | No | Referenced entity does not exist |
-| `VALIDATION_FAILED` | 400 | No | Entity data does not conform to model schema |
-| `TRANSITION_NOT_FOUND` | 404 | No | Named transition does not exist on current state |
-| `WORKFLOW_FAILED` | 500 | No | Workflow engine encountered an unrecoverable error |
-| `CONFLICT` | 409 | Yes | Transaction serialization conflict |
-| `BAD_REQUEST` | 400 | No | Malformed input |
-| `UNAUTHORIZED` | 401 | No | Missing or invalid credentials |
-| `FORBIDDEN` | 403 | No | Insufficient permissions |
-| `SERVER_ERROR` | 500 | No | Internal server error |
+Codes are grouped by surface area:
 
-**Cluster/transaction errors:**
+- **Domain** — model lifecycle, entity CRUD, workflow, validation, generic 4xx (`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `SERVER_ERROR`, `NOT_IMPLEMENTED`).
+- **Cluster / transaction** — distributed-transaction hand-off, gossip membership, idempotency.
+- **Compute dispatch** — externalized processor / criteria invocation across cluster members.
+- **Search** — async search-job lifecycle and shard-scan limits.
 
-| Code | HTTP Status | Retryable | Description |
-|------|-------------|-----------|-------------|
-| `TRANSACTION_NODE_UNAVAILABLE` | 503 | Yes | Owning node is dead or unreachable |
-| `TRANSACTION_EXPIRED` | 410 | No | Transaction TTL elapsed |
-| `TRANSACTION_NOT_FOUND` | 404 | No | Transaction reference not found on owning node |
-| `IDEMPOTENCY_CONFLICT` | 409 | No | Duplicate idempotency key |
-| `CLUSTER_NODE_NOT_REGISTERED` | 503 | Yes | Target node not in membership list |
-
-**Compute dispatch errors:**
-
-| Code | HTTP Status | Retryable | Description |
-|------|-------------|-----------|-------------|
-| `NO_COMPUTE_MEMBER_FOR_TAG` | 503 | Yes | No connected member matches required tags |
-| `DISPATCH_FORWARD_FAILED` | 502 | Yes | Failed to forward dispatch to member's host node |
-| `DISPATCH_TIMEOUT` | 504 | Yes | Processor/criteria execution timed out |
-| `COMPUTE_MEMBER_DISCONNECTED` | 503 | Yes | Member disconnected during dispatch |
+Authoritative code list: `internal/common/error_codes.go`. Per-code semantics, HTTP status, retryable hint, and remediation guidance live in the help subsystem at `cmd/cyoda/help/content/errors/<CODE>.md`, surfaced via `cyoda help errors` and `cyoda help errors <CODE>`. The `TestErrCode_Parity` gate in `cmd/cyoda/help` enforces that every constant in `error_codes.go` has a corresponding help topic.
 
 ### OpenTelemetry
 

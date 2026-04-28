@@ -1,0 +1,229 @@
+# Polymorphism scenarios.
+#
+# Cyoda represents a field that observes more than one concrete DataType as
+# `Polymorphic(Set<DataType>)`. Polymorphism arises in three ways:
+#   1. Merging two sample JSONs whose same path carries different types
+#      (covered in 13-numeric-types.yaml#numeric/05).
+#   2. A single sample whose same JSONPath resolves to different shapes in
+#      different array elements (scalar vs object, or heterogeneous siblings).
+#   3. Client-side sealed hierarchies (PolymorphicValue, PolymorphicTimestamp)
+#      whose variants all end up in one array/field.
+#
+# These scenarios exercise ingest/readback, search-condition resolution
+# across polymorphic branches, Trino-side queryability and the shape of the
+# error payloads produced when a condition cannot be resolved against the
+# landed types.
+
+scenarios:
+  - id: poly/01-mixed-object-or-string-at-same-path
+    name: Condition reaches both the object-branch and the string-branch of a polymorphic field
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/search/EntitySearchFacadeIT.kt#try to search with condition in polymorphic mixture object and string
+    description: |
+      The model `polymorphic/1` is registered from a single JSON whose
+      `$.some-array[*].some-object` is an object in the first element and a
+      plain string in the second. Two distinct conditions on the same root
+      path must each return non-empty results.
+    data:
+      model: { name: polymorphic, version: 1 }
+      sample_json: |
+        { "label": "name",
+          "some-array": [
+            { "some-label": "hello",
+              "some-object": { "some-key": "some-key", "some-other-key": "some-other-key" } },
+            { "some-label": "hello", "some-object": "abc" } ] }
+      condition_object_branch: |
+        { "type": "group", "operator": "AND",
+          "conditions": [
+            { "type": "simple",
+              "jsonPath": "$.some-array[*].some-object.some-key",
+              "operatorType": "EQUALS", "value": "some-key" } ] }
+      condition_string_branch: |
+        { "type": "group", "operator": "AND",
+          "conditions": [
+            { "type": "simple",
+              "jsonPath": "$.some-array[*].some-object",
+              "operatorType": "EQUALS", "value": "abc" } ] }
+    steps:
+      - { action: create_model_from_sample, endpoint: { rest: POST /model/import/JSON/SAMPLE_DATA/polymorphic/1 }, body_ref: data.sample_json }
+      - { action: lock_model,               endpoint: { rest: PUT  /model/polymorphic/1/lock } }
+      - { action: create_entity,            endpoint: { rest: POST /entity/JSON/polymorphic/1 }, body_ref: data.sample_json }
+      - { action: submit_async_search,      endpoint: { rest: POST /search/async/polymorphic/1 },         body_ref: data.condition_object_branch, capture: job1 }
+      - { action: await_async_search,       endpoint: { rest: GET  /search/async/{job1}/status },         expected_status: SUCCESSFUL }
+      - { action: get_async_results,        endpoint: { rest: GET  /search/async/{job1} },                capture: page1 }
+      - { action: direct_search,            endpoint: { rest: POST /search/direct/polymorphic/1 },        body_ref: data.condition_object_branch, capture: direct1 }
+      - { action: submit_async_search,      endpoint: { rest: POST /search/async/polymorphic/1 },         body_ref: data.condition_string_branch, capture: job2 }
+      - { action: await_async_search,       endpoint: { rest: GET  /search/async/{job2}/status },         expected_status: SUCCESSFUL }
+      - { action: get_async_results,        endpoint: { rest: GET  /search/async/{job2} },                capture: page2 }
+      - { action: direct_search,            endpoint: { rest: POST /search/direct/polymorphic/1 },        body_ref: data.condition_string_branch, capture: direct2 }
+    assertions:
+      - { type: collection_non_empty, target: page1.content }
+      - { type: collection_non_empty, target: direct1 }
+      - { type: collection_non_empty, target: page2.content }
+      - { type: collection_non_empty, target: direct2 }
+
+  - id: poly/02-tree-node-mixed-children-round-trip
+    name: Heterogeneous siblings (string / integer / nested-object at same path) round-trip verbatim
+    source_test: tree-node/tree-node-integration-tests/src/test/kotlin/com/cyoda/tdb/TreeNodeEntitySaveIT.kt#testWithPolymorphicList
+    internal_only: true
+    description: |
+      A JSON whose `children[*].name` and `children[*].address` disagree on
+      type (string, integer, nested object) must be savable as a single
+      TreeNode entity and, when reconstructed, equal the input JSON bit-for-bit.
+      This is a shape-level guarantee at the TreeNode persistence layer.
+
+      NOT DIRECTLY EXTERNAL. The source test exercises the internal
+      TreeNode save/reconstruct API, not the REST surface. The externally
+      equivalent workflow is to register the sample as a model, lock it,
+      then post it back as an entity (covered in spirit by `poly/01` and
+      `poly/03`); the bit-for-bit verbatim guarantee of the internal layer
+      is not a documented external-API contract.
+    data:
+      model: { name: hello, version: 1 }
+      sample_json: |
+        { "label": "Hello",
+          "id": "<uuid>",
+          "children": [
+            { "name": "Fred", "address": "2345 West 4th Ave, V6R 3R1, Vancouver, Canada" },
+            { "name": "Fred", "address": 1234123421 },
+            { "name": 123456, "something": "else",
+              "address": { "street": "West 4th Ave", "number": 2345,
+                           "postalCode": "V6R 3R1", "city": "Vancouver", "country": "Canada" } } ] }
+    steps:
+      - action: tree_node_save_and_reconstruct
+        target: internal TreeNodeEntity save + reconstruct
+        body_ref: data.sample_json
+        capture: reloaded
+    assertions:
+      - { type: json_equals,   target: reloaded, expected_ref: data.sample_json }
+      - { type: sibling_count, target: reloaded.children, value: 3 }
+
+  - id: poly/03-polymorphic-value-array-in-all-fields-model
+    name: Array of PolymorphicValue variants (String, Double, Boolean, UUID) co-exist in one field
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/allfields/AllFieldsModel.kt
+    description: |
+      The `AllFieldsModel.polymorphicArray` accepts a sealed hierarchy with
+      variants StringValue, DoubleValue, BooleanValue, UUIDValue. An ingest
+      with one element of each variant must readback without coercion, and
+      the model's field for `$.polymorphicArray[*].value` must report all
+      four participating DataTypes.
+    data:
+      model: { name: AllFieldsModel, version: 1 }
+      entity_json: |
+        { "polymorphicArray": [
+            { "value": "abc" },
+            { "value": 3.14 },
+            { "value": true },
+            { "value": "550e8400-e29b-41d4-a716-446655440000" } ] }
+    steps:
+      - { action: create_entity, endpoint: { rest: POST /entity/JSON/AllFieldsModel/1 },                body_ref: data.entity_json, capture: entityId }
+      - { action: get_entity,    endpoint: { rest: GET  /entity/{entityId} },                           capture: reloaded }
+      - { action: export_model,  endpoint: { rest: GET  /model/export/SIMPLE_VIEW/AllFieldsModel/1 },   capture: exported }
+    assertions:
+      - { type: json_equals,       target: reloaded, expected_ref: data.entity_json }
+      - { type: field_polymorphic, target: 'exported.model["$.polymorphicArray[*]"][".value"]', expected: [STRING, DOUBLE, BOOLEAN, UUID] }
+
+  - id: poly/04-polymorphic-timestamp-array-in-all-fields-model
+    name: Array of PolymorphicTimestamp variants (LocalDate, YearMonth, ZonedDateTime) co-exist
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/allfields/AllFieldsModel.kt
+    description: |
+      The `PolymorphicTimestamp` sealed hierarchy carries LocalDate,
+      YearMonth and ZonedDateTime variants. They must land in a single
+      field without coercion and the exported model must report all three
+      participating temporal types.
+    data:
+      model: { name: AllFieldsModel, version: 1 }
+      entity_json: |
+        { "objectArray": [
+            { "timestamp": "2024-01-15" },
+            { "timestamp": "2024-03" },
+            { "timestamp": "2024-06-20T10:15:30+01:00[Europe/Paris]" } ] }
+    steps:
+      - { action: create_entity, endpoint: { rest: POST /entity/JSON/AllFieldsModel/1 },                body_ref: data.entity_json, capture: entityId }
+      - { action: get_entity,    endpoint: { rest: GET  /entity/{entityId} },                           capture: reloaded }
+      - { action: export_model,  endpoint: { rest: GET  /model/export/SIMPLE_VIEW/AllFieldsModel/1 },   capture: exported }
+    assertions:
+      - { type: json_equals,       target: reloaded, expected_ref: data.entity_json }
+      - { type: field_polymorphic, target: 'exported.model["$.objectArray[*]"][".timestamp"]', expected: [LOCAL_DATE, YEAR_MONTH, ZONED_DATE_TIME] }
+
+  - id: poly/05-trino-search-on-polymorphic-scalar
+    name: A polymorphic scalar (station_id) is queryable by each participating type
+    source_test: integration-tests/src/test/kotlin/net/cyoda/dataload/TreeNodeTrinoServiceIT.kt
+    description: |
+      The bike-stations dataset observes `station_id` values that land as
+      different DataTypes across records (numeric-string and UUID-string).
+      A query with one condition per participating type joined by OR must
+      return the union (2 records here).
+
+      Transport note: the Trino data-fetch surface is exposed as an
+      RSocket `@MessageMapping("treeNode.getData")` route taking a
+      `DataRequestDto`, NOT a gRPC RPC. Clients that only speak REST can
+      reach the equivalent behaviour through the standard direct-search
+      endpoint on the same model; that REST variant is captured below.
+    data:
+      model: { name: stations, version: 1 }
+      condition_json: |
+        { "type": "group", "operator": "OR",
+          "conditions": [
+            { "type": "simple", "jsonPath": "$.station_id",
+              "operatorType": "EQUALS", "value": "1436495119852630436" },
+            { "type": "simple", "jsonPath": "$.station_id",
+              "operatorType": "EQUALS", "value": "a3a48d5c-a135-11e9-9cda-0a87ae2ba916" } ] }
+    steps:
+      - action: trino_data_request
+        endpoint: { rsocket: "treeNode.getData (request: DataRequestDto)" }
+        body_ref: data.condition_json
+        capture: flowResults
+      - action: direct_search_rest_equivalent
+        endpoint: { rest: POST /search/direct/stations/1 }
+        body_ref: data.condition_json
+        capture: directResult
+    assertions:
+      - { type: collection_size, target: flowResults,  value: 2 }
+      - { type: collection_size, target: directResult, value: 2 }
+
+  - id: poly/06-reject-condition-with-wrong-scalar-type
+    name: Condition value of wrong type against a monomorphic DOUBLE field is rejected
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/search/EntitySearchFacadeIT.kt#try to search with wrong type in condition
+    description: |
+      The `orders/1` model has `$.price` landed as DOUBLE. A condition value
+      of `"abc"` (string) must be rejected at both async job submission
+      and direct search with `InvalidTypesInClientConditionException`.
+    data:
+      model: { name: orders, version: 1 }
+      condition_json: |
+        { "type": "group", "operator": "AND",
+          "conditions": [
+            { "type": "simple", "jsonPath": "$.price",
+              "operatorType": "GREATER_OR_EQUAL", "value": "abc" } ] }
+    steps:
+      - { action: submit_async_search, endpoint: { rest: POST /search/async/orders/1 },  body_ref: data.condition_json, expect_error: true }
+      - { action: direct_search,       endpoint: { rest: POST /search/direct/orders/1 }, body_ref: data.condition_json, expect_error: true }
+    expected_error:
+      error_class: InvalidTypesInClientConditionException
+      http_status: 400  # [Unverified] confirmed by ExceptionHandlingIT shape-assertion test
+      properties:
+        path: "$.price"
+        value: "abc"  # [Inference] the offending operand surfaces as `value` per the shape-only case in poly/07
+
+  - id: poly/07-error-body-shape-for-invalid-polymorphic-types
+    name: "Shape-only: error body for InvalidPolymorphicTypesInClientConditionException"
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/controller/ExceptionHandlingIT.kt#when InvalidPolymorphicTypesInClientConditionException is thrown then returns error with correct structure
+    description: |
+      NOTE: shape-only. The production-side path that organically provokes
+      this exception is not exercised by the integration test suite; the
+      assertion is driven through the test controller endpoint
+      `GET /test/throw-invalid-polymorphic-types`. External clients should
+      use this only to validate the error-body contract, not the provoking
+      request.
+    shape_only: true
+    steps:
+      - { action: provoke, endpoint: { rest: GET /test/throw-invalid-polymorphic-types }, expect_error: true }
+    expected_error:
+      http_status: 400
+      problem_detail:
+        detail_contains: ["invalid-date", "$.createdAt"]
+        properties:
+          value: invalid-date
+          path: "$.createdAt"
+          entityName: Order
+          entityVersion: 1

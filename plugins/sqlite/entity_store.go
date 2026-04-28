@@ -798,17 +798,34 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 	return count, nil
 }
 
+// sqliteMaxVariableNumber matches the conservative default for
+// SQLITE_MAX_VARIABLE_NUMBER. SQLite ≥3.32 raised the compiled-in default
+// to 32766, but builds that haven't been recompiled (and embedded
+// distributions older callers may load) still use 999. We pick the lower
+// bound so the cap holds across all reachable SQLite builds without
+// requiring runtime PRAGMA inspection.
+const sqliteMaxVariableNumber = 999
+
+// countByStateBaseParams is the number of bound parameters in the
+// CountByState query that are NOT state values: tenant_id, model_name,
+// model_version. Each consumed slot reduces what's left for the IN list.
+const countByStateBaseParams = 3
+
 // MaxStateFilterSize caps the number of state names accepted in a
-// CountByState filter. SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999
-// on some builds (32766 on others); the cap below sits well under the
-// conservative limit with room for the three other bound parameters
-// (tenant_id, model_name, model_version). Issue #99 added the cap — state
-// values are already bound as parameters, but a bounded-input contract
-// closes the door on a future caller accidentally passing a huge list.
-const MaxStateFilterSize = 500
+// CountByState filter. The cap is derived from SQLite's bound-variable
+// limit minus the count of other parameters bound in the same query, so
+// the IN-clause `?`-list combined with the base params can never exceed
+// SQLITE_MAX_VARIABLE_NUMBER. State values are already bound as
+// parameters (no interpolation), but the bounded-input contract closes
+// the door on a caller accidentally passing a huge list and triggering a
+// driver-level "too many SQL variables" error rather than a clean
+// helper-boundary rejection. See issue #68 (item 11) and #99.
+const MaxStateFilterSize = sqliteMaxVariableNumber - countByStateBaseParams
 
 // ErrStateFilterTooLarge is returned by CountByState when the caller
-// supplies more state names than MaxStateFilterSize allows.
+// supplies more state names than MaxStateFilterSize allows. Callers can
+// detect it via errors.Is — wrapped with the actual and max sizes to aid
+// diagnostics without leaking SQL driver internals.
 var ErrStateFilterTooLarge = errors.New("state filter exceeds maximum size")
 
 // inPlaceholders returns `?,?,?,...` with n markers. n must be > 0 —
@@ -871,7 +888,18 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	}
 
 	// Non-transaction: aggregate at the database.
-	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+	// The base parameters bound here MUST match countByStateBaseParams —
+	// MaxStateFilterSize is derived as sqliteMaxVariableNumber minus that
+	// constant, so any drift here would silently let the IN-list-plus-base
+	// total exceed the SQLite variable limit.
+	args := make([]any, 0, countByStateBaseParams+len(states))
+	args = append(args, string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion)
+	if len(args) != countByStateBaseParams {
+		// Defensive: if a future edit adds/removes a base bind, this trips
+		// before the query reaches the driver.
+		return nil, fmt.Errorf("count by state: base param count drift (got %d, want %d)",
+			len(args), countByStateBaseParams)
+	}
 	// Entities with no $._meta.state are bucketed under "" rather than dropped,
 	// preserving them for diagnostic visibility. This matches the in-tx Go path
 	// which reads e.Meta.State (also "" if unset).
@@ -883,7 +911,8 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 		// Build IN (?, ?, ...) placeholder list. The string is built from
 		// `?` markers only — no state value ever enters the query text.
 		// State values are bound as SQL parameters below. Size is bounded
-		// by MaxStateFilterSize above.
+		// by MaxStateFilterSize above (derived from sqliteMaxVariableNumber
+		// minus countByStateBaseParams).
 		q += ` AND json_extract(json(meta), '$.state') IN (` + inPlaceholders(len(states)) + `)`
 		for _, st := range states {
 			args = append(args, st)

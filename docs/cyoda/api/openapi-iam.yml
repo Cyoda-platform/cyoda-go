@@ -1,0 +1,1097 @@
+openapi: 3.1.0
+info:
+  title: Cyoda Cloud IAM API
+  version: 1.0.0
+  description: |
+    API for Cyoda Cloud Identity and Access Management providing endpoints for JWT key-pair management for OAuth 2.0 token signing.
+  contact:
+    name: Cyoda Support
+    url: https://cyoda.com/support
+
+security:
+  - bearerAuth: [ ]
+
+paths:
+  /oauth/keys/keypair:
+    post:
+      summary: Issue new JWT signing key-pair
+      description: |
+        Generates and stores a new asymmetric key-pair (public/private) for signing and validating OAuth 2.0 JWT
+        access tokens.
+      operationId: issueJwtKeyPair
+      tags:
+        - OAuth, Keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueJwtKeyPairRequest'
+            examples:
+              MinimalRequestToIssueKeyPair:
+                summary: Issue technical users key-pair
+                value: |
+                  {
+                    "audience": "client",
+                    "algorithm": "RS256"
+                  }
+              CustomValidity:
+                summary: Issue key-pair for humans with custom validity period
+                value: |
+                  {
+                    "audience": "human",
+                    "algorithm": "RS512",
+                    "validFrom": "2025-10-15T10:00:00.000Z",
+                    "validTo": "2026-10-15T10:00:00.000Z"
+                  }
+              RotateWithGracePeriod:
+                summary: Issue new key-pair and rotate existing with grace period
+                value: |
+                  {
+                    "audience": "client",
+                    "algorithm": "RS256",
+                    "invalidateCurrent": true,
+                    "invalidateGracePeriodSec": 604800
+                  }
+              ImmediateRotation:
+                summary: Immediate rotation (security incident)
+                value: |
+                  {
+                    "audience": "human",
+                    "algorithm": "RS256",
+                    "invalidateCurrent": true,
+                    "invalidateGracePeriodSec": 0
+                  }
+      responses:
+        '200':
+          description: JWT key-pair issued successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwtKeyPairResponse'
+              examples:
+                KeyPairIssued:
+                  summary: Key-pair issued successfully
+                  value: |
+                    {
+                      "keyId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                      "algorithm": "RS256",
+                      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCA......8fmTaKiufydbNF/iRF4dQ==",
+                      "validFrom": "2025-10-15T10:00:00.000Z",
+                      "validTo": "2026-10-15T10:00:00.000Z"
+                    }
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/keypair/current:
+    get:
+      summary: Get current active JWT signing key-pair
+      description: |
+        Retrieves information about the currently active JWT signing key-pair for the specified audience.
+      operationId: getCurrentJwtKeyPair
+      tags:
+        - OAuth, Keys
+      parameters:
+        - name: audience
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/KeyPairAudience'
+      responses:
+        '200':
+          description: Current key-pair information retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwtKeyPairResponse'
+              examples:
+                CurrentKeyPair:
+                  summary: Current active key-pair
+                  value: |
+                    {
+                      "keyId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                      "algorithm": "RS256",
+                      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCA......8fmTaKiufydbNF/iRF4dQ==",
+                      "validFrom": "2025-10-15T10:00:00.000Z",
+                      "validTo": "2026-10-15T10:00:00.000Z"
+                    }
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/keypair/{keyId}:
+    delete:
+      summary: Delete JWT signing key-pair
+      description: |
+        Deletes a JWT signing key-pair. The key will first be invalidated (if not already)
+        and then removed from storage.
+      operationId: deleteJwtKeyPair
+      tags:
+        - OAuth, Keys
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The unique identifier (kid) of the key-pair to delete
+      responses:
+        '200':
+          description: JWT key-pair deleted successfully
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/keypair/{keyId}/invalidate:
+    post:
+      summary: Invalidate JWT signing key-pair
+      description: |
+        Invalidates a specific JWT signing key-pair.
+        After invalidation, the key will no longer be used for signing new tokens,
+        and existing tokens signed with this key pair would not be accepted.
+      operationId: invalidateJwtKeyPair
+      tags:
+        - OAuth, Keys
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The unique identifier (kid) of the key-pair to invalidate
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvalidateKeyRequest'
+            examples:
+              ImmediateInvalidation:
+                summary: Immediate invalidation
+                value: |
+                  {}
+              WithGracePeriod:
+                summary: Invalidation with grace period
+                value: |
+                  {
+                    "gracePeriodSec": 3600
+                  }
+      responses:
+        '200':
+          description: JWT key-pair invalidated successfully
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/keypair/{keyId}/reactivate:
+    post:
+      summary: Reactivate JWT signing key-pair
+      description: |
+        Reactivates a previously invalidated JWT signing key-pair.
+        This allows the key to be used for signing and validating tokens again.
+        This operation is idempotent - if the key-pair is already active, it returns the current state.
+      operationId: reactivateJwtKeyPair
+      tags:
+        - OAuth, Keys
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The unique identifier (kid) of the key-pair to reactivate
+      responses:
+        '200':
+          description: JWT key-pair reactivated successfully or already active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwtKeyPairResponse'
+              examples:
+                ReactivatedKeyPair:
+                  summary: Reactivated key-pair
+                  value: |
+                    {
+                      "keyId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                      "algorithm": "RS256",
+                      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCA......8fmTaKiufydbNF/iRF4dQ==",
+                      "validFrom": "2025-10-15T10:00:00.000Z",
+                      "validTo": null
+                    }
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/trusted:
+    post:
+      summary: Register a trusted public key
+      description: |
+        Registers a pre-shared public key for JWT validation. This enables external applications
+        to sign user JWTs that Cyoda can verify without requiring a reachable OIDC discovery endpoint.
+        The key is bound to the caller's tenant (legalEntityId).
+
+        If a key with the same `keyId` already exists and belongs to the caller's tenant, it is
+        replaced atomically (upsert semantics). This makes the endpoint retry-safe during key
+        rotation — a retried request after a partial failure will succeed rather than conflict.
+        If the key belongs to a different tenant, the request is rejected with `409 Conflict`.
+
+        Use `invalidatePrevious` to retire all other active trusted keys for this tenant
+        in a single atomic operation, with an optional grace period (`invalidateGracePeriodSec`)
+        during which the old keys continue to be accepted.
+
+        Requires ADMIN or SUPER_USER role. Disabled by default — enable via
+        `cyoda.security.web.iam.trustedKeyRegistrationEnabled`.
+      operationId: registerTrustedKey
+      tags:
+        - OAuth, Keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterTrustedKeyRequest'
+            examples:
+              RSA256Key:
+                summary: Register an RSA-256 public key
+                value: |
+                  {
+                    "keyId": "my-app-key-1",
+                    "jwk": {
+                      "kty": "RSA",
+                      "kid": "my-app-key-1",
+                      "alg": "RS256",
+                      "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM...",
+                      "e": "AQAB"
+                    },
+                    "audience": "human",
+                    "issuers": ["https://my-app.local/"],
+                    "validTo": "2026-10-15T10:00:00.000Z"
+                  }
+      responses:
+        '200':
+          description: Trusted key registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustedKeyResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          description: Feature is disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Key with this keyId belongs to a different tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+    get:
+      summary: List registered trusted keys
+      description: |
+        Returns all trusted public keys registered for the caller's tenant.
+        Requires ADMIN or SUPER_USER role.
+      operationId: listTrustedKeys
+      tags:
+        - OAuth, Keys
+      responses:
+        '200':
+          description: List of trusted keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrustedKeyResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          description: Feature is disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/trusted/{keyId}:
+    delete:
+      summary: Delete a trusted public key
+      description: |
+        Deletes a registered trusted public key. The key must belong to the caller's tenant.
+        Requires ADMIN or SUPER_USER role.
+      operationId: deleteTrustedKey
+      tags:
+        - OAuth, Keys
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The key ID of the trusted key to delete
+      responses:
+        '200':
+          description: Trusted key deleted successfully
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/trusted/{keyId}/invalidate:
+    post:
+      summary: Invalidate a trusted public key
+      description: |
+        Invalidates a registered trusted public key. After invalidation, JWTs signed with the
+        corresponding private key will no longer be accepted for validation (after the grace period).
+        Requires ADMIN or SUPER_USER role.
+      operationId: invalidateTrustedKey
+      tags:
+        - OAuth, Keys
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The key ID of the trusted key to invalidate
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvalidateKeyRequest'
+      responses:
+        '200':
+          description: Trusted key invalidated successfully
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/keys/trusted/{keyId}/reactivate:
+    post:
+      summary: Reactivate a trusted public key
+      description: |
+        Reactivates a previously invalidated trusted public key, allowing JWTs signed with it to
+        be accepted again. This operation is idempotent.
+        Requires ADMIN or SUPER_USER role.
+
+        **Important**: Reactivation removes the key's expiration entirely (`validTo` is cleared to null),
+        regardless of the original `validTo` value the key was registered with. The key will remain valid
+        indefinitely until explicitly invalidated or deleted again.
+      operationId: reactivateTrustedKey
+      tags:
+        - OAuth, Keys
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The key ID of the trusted key to reactivate
+      responses:
+        '200':
+          description: Trusted key reactivated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustedKeyResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/oidc/providers:
+    post:
+      summary: Register a new trusted OIDC provider
+      description: |
+        Registers a new external OIDC provider for JWT validation. The provider's public keys will be
+        discovered from the well-known configuration endpoint and used to validate JWT tokens.
+      operationId: registerOidcProvider
+      tags:
+        - OAuth, OIDC Providers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterOidcProviderRequest'
+            examples:
+              SingleIssuer:
+                summary: Register OIDC provider with single possible issuer
+                value: |
+                  {
+                    "wellKnownConfigUri": "https://oidc-domain.local/.well-known/openid-configuration",
+                    "issuers": ["https://oidc-domain.local/"]
+                  }
+              MultipleIssuers:
+                summary: Register OIDC provider with multiple issuers
+                value: |
+                  {
+                    "wellKnownConfigUri": "https://auth.company.local/.well-known/openid-configuration",
+                    "issuers": [
+                      "https://auth1.company.local/tenant1",
+                      "https://auth1.company.local/tenant2",
+                      "https://auth2.company.local/tenant1"
+                    ]
+                  }
+              WithoutIssuers:
+                summary: Register OIDC provider without issuer validation
+                value: |
+                  {
+                    "wellKnownConfigUri": "https://oidc-domain.local/.well-known/openid-configuration"
+                  }
+      responses:
+        '200':
+          description: OIDC provider registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcProviderResponse'
+              examples:
+                RegisteredProvider:
+                  summary: Successfully registered OIDC provider
+                  value: |
+                    {
+                      "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                      "wellKnownConfigUri": "https://oidc-domain.local/.well-known/openid-configuration",
+                      "issuers": ["https://oidc-domain.local/"],
+                      "active": true,
+                      "createdAt": "2025-11-01T10:00:00.000Z"
+                    }
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
+          description: Provider with this well-known configuration URI already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+    get:
+      summary: List all registered OIDC providers
+      description: |
+        Retrieves a list of all registered OIDC providers, including both active and inactive providers.
+      operationId: listOidcProviders
+      tags:
+        - OAuth, OIDC Providers
+      parameters:
+        - name: activeOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: If true, returns only active providers
+      responses:
+        '200':
+          description: List of OIDC providers retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OidcProviderResponse'
+              examples:
+                MultipleProviders:
+                  summary: List of active and inactive providers
+                  value: |
+                    [
+                      {
+                        "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                        "wellKnownConfigUri": "https://oidc-domain.local/.well-known/openid-configuration",
+                        "issuers": ["https://oidc-domain.local/"],
+                        "active": true,
+                        "createdAt": "2025-11-01T10:00:00.000Z"
+                      },
+                      {
+                        "id": "a1b2c3d4-e5f6-4789-a012-3456789abcde",
+                        "wellKnownConfigUri": "https://auth.company.local/.well-known/openid-configuration",
+                        "issuers": [
+                          "https://auth.company.local/",
+                          "https://auth.company.local/tenant1"
+                        ],
+                        "active": false,
+                        "createdAt": "2025-10-15T08:30:00.000Z"
+                      }
+                    ]
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/oidc/providers/{id}:
+    patch:
+      summary: Update OIDC provider
+      description: |
+        Updates configuration for an OIDC provider.
+
+        Note: Updating the issuers list immediately deletes all cached keys for this provider.
+        This ensures that JWTs from issuers that are no longer trusted cannot be validated using
+        previously cached keys. The keys will be re-fetched from the remote JWKS endpoint with the
+        new issuer configuration when they are next needed for JWT validation.
+      operationId: updateOidcProvider
+      tags:
+        - OAuth, OIDC Providers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The ID of the OIDC provider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOidcProviderRequest'
+            examples:
+              ReplaceIssuers:
+                summary: Replace all issuers with new list
+                value: |
+                  {
+                    "issuers": ["https://new-oidc-domain.local/"]
+                  }
+      responses:
+        '200':
+          description: OIDC provider issuers updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcProviderResponse'
+              examples:
+                UpdatedProvider:
+                  summary: Provider with updated issuers
+                  value: |
+                    {
+                      "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                      "wellKnownConfigUri": "https://oidc-domain.local/.well-known/openid-configuration",
+                      "issuers": [
+                        "https://oidc-domain.local/",
+                        "https://oidc-domain.local/tenant1",
+                        "https://oidc-domain.local/tenant2"
+                      ],
+                      "active": true,
+                      "createdAt": "2025-11-01T10:00:00.000Z"
+                    }
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+    delete:
+      summary: Delete OIDC provider
+      description: |
+        Deletes an OIDC provider and all its associated JWK keys.
+        The provider will first be invalidated (if not already) and then removed from storage.
+      operationId: deleteOidcProvider
+      tags:
+        - OAuth, OIDC Providers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The ID of the OIDC provider to delete
+      responses:
+        '200':
+          description: OIDC provider deleted successfully
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/oidc/providers/{id}/invalidate:
+    post:
+      summary: Invalidate OIDC provider
+      description: |
+        Invalidates an OIDC provider, marking it as inactive and invalidating all loaded public keys
+        associated with this provider. The provider configuration is retained but will no longer be
+        used for JWT validation.
+      operationId: invalidateOidcProvider
+      tags:
+        - OAuth, OIDC Providers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The ID of the OIDC provider to invalidate
+      responses:
+        '200':
+          description: OIDC provider invalidated successfully
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/oidc/providers/{id}/reactivate:
+    post:
+      summary: Reactivate OIDC provider
+      description: |
+        Reactivates a previously invalidated OIDC provider. The provider will be marked as active
+        and can be used for JWT validation again.
+        This operation is idempotent - if the provider is already active, it returns the current state.
+      operationId: reactivateOidcProvider
+      tags:
+        - OAuth, OIDC Providers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The ID of the OIDC provider to reactivate
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReactivateOidcProviderRequest'
+            examples:
+              DefaultReactivation:
+                summary: Reactivate provider with keys
+                value: |
+                  {}
+              WithoutKeys:
+                summary: Reactivate provider without reactivating keys
+                value: |
+                  {
+                    "reactivateKeys": false
+                  }
+      responses:
+        '200':
+          description: OIDC provider reactivated successfully or already active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcProviderResponse'
+              examples:
+                ReactivatedProvider:
+                  summary: Reactivated OIDC provider
+                  value: |
+                    {
+                      "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                      "wellKnownConfigUri": "https://oidc-domain.local/.well-known/openid-configuration",
+                      "issuers": ["https://oidc-domain.local/"],
+                      "active": true,
+                      "createdAt": "2025-11-01T10:00:00.000Z"
+                    }
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /oauth/oidc/providers/reload:
+    post:
+      summary: Force to reload all OIDC providers and synchronize keys with remote JWKS
+      description: |
+        Reloads all active OIDC provider configurations from the database and synchronizes
+        cached keys with the remote JWKS endpoints.
+
+        Key synchronization: For each provider, this operation fetches the current keys from
+        the remote JWKS endpoint and invalidates any locally cached keys that no longer exist
+        in the remote JWKS. This is useful for security when OIDC providers have rotated or
+        revoked keys.
+
+        This operation is useful when you want to ensure all nodes have the latest OIDC provider
+        configurations and that any revoked keys are no longer trusted.
+      operationId: reloadOidcProviders
+      tags:
+        - OAuth, OIDC Providers
+      responses:
+        '200':
+          description: OIDC providers reloaded successfully
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ErrorResponse'
+
+components:
+  responses:
+    ErrorResponse:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from the authentication endpoint
+
+  schemas:
+    # ErrorResponse schema - same object as defined in the main openapi.yml
+    ErrorResponse:
+      $ref: './openapi.yml#/components/schemas/ErrorResponse'
+
+    KeyPairAudience:
+      type: string
+      description: The token audience type distinguishing between human users and client/service accounts
+      enum:
+        - human
+        - client
+      example: client
+
+    JwtAlgorithm:
+      type: string
+      description: JWT signing algorithm. Only asymmetric algorithms are supported.
+      enum:
+        - RS256
+        - RS384
+        - RS512
+        - ES256
+        - ES384
+        - ES512
+        - PS256
+        - PS384
+        - PS512
+        - EdDSA
+      example: RS256
+
+    IssueJwtKeyPairRequest:
+      type: object
+      required:
+        - audience
+        - algorithm
+      properties:
+        audience:
+          $ref: '#/components/schemas/KeyPairAudience'
+        algorithm:
+          $ref: '#/components/schemas/JwtAlgorithm'
+        validFrom:
+          type: string
+          format: date-time
+          description: When the key-pair becomes valid. Defaults to current date-time if not specified.
+          example: "2025-10-15T10:00:00.000Z"
+        validTo:
+          type: string
+          format: date-time
+          description: When the key-pair expires. Defaults to validFrom + <configured validity, default is 365 days> if not specified.
+          example: "2026-10-15T10:00:00.000Z"
+        invalidateCurrent:
+          type: boolean
+          description: If true, invalidates the currently active key-pair for this audience.
+          example: false
+        invalidateGracePeriodSec:
+          type: integer
+          format: int64
+          description: Number of seconds to keep the old key valid after invalidation. Only applicable when invalidateCurrent is true.
+          minimum: 0
+          example: 36000
+
+    JwtKeyPairResponse:
+      type: object
+      required:
+        - keyId
+        - algorithm
+        - publicKey
+        - validFrom
+      properties:
+        keyId:
+          type: string
+          description: Unique identifier for this key-pair (UUID). Included in JWT header as 'kid' claim.
+          example: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        algorithm:
+          $ref: '#/components/schemas/JwtAlgorithm'
+        publicKey:
+          type: string
+          description: Base64-encoded public key in X.509 SubjectPublicKeyInfo format.
+          example: "MIIBIjANBgkqhkiG9w0BAQEFAAOCA......8fmTaKiufydbNF/iRF4dQ=="
+        validFrom:
+          type: string
+          format: date-time
+          description: When this key-pair becomes valid
+          example: "2025-10-15T10:00:00.000Z"
+        validTo:
+          type: string
+          format: date-time
+          description: When this key-pair expires
+          nullable: true
+          example: "2026-10-15T10:00:00.000Z"
+
+    RegisterTrustedKeyRequest:
+      type: object
+      required:
+        - keyId
+        - jwk
+        - audience
+      properties:
+        keyId:
+          type: string
+          description: Unique key identifier. Will be matched against the `kid` header in JWTs.
+          example: "my-app-key-1"
+        jwk:
+          type: object
+          additionalProperties: true
+          maxProperties: 20
+          description: |
+            A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only.
+            Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`).
+            See RFC 7517, RFC 7518, and RFC 8037 for field definitions.
+          example:
+            kty: "RSA"
+            kid: "my-app-key-1"
+            alg: "RS256"
+            n: "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM..."
+            e: "AQAB"
+        audience:
+          $ref: '#/components/schemas/KeyPairAudience'
+        issuers:
+          type: array
+          description: |
+            List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim,
+            and its value must match one of the entries in this list.
+          items:
+            type: string
+          example: ["https://my-app.local/"]
+        validFrom:
+          type: string
+          format: date-time
+          description: |
+            When the key becomes valid. Defaults to current time if not specified.
+          example: "2025-10-15T10:00:00.000Z"
+        validTo:
+          type: string
+          format: date-time
+          description: |
+            When the key expires. Defaults to the system-configured maximum validity.
+          example: "2026-10-15T10:00:00.000Z"
+        invalidatePrevious:
+          type: boolean
+          description: |
+            If true, invalidates all other keys for the same audience belonging to the caller's
+            tenant. Enables atomic key rotation.
+          default: false
+          example: false
+        invalidateGracePeriodSec:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Grace period in seconds for invalidating previous keys (only used when invalidatePrevious is true).
+            Default is 0 (immediate invalidation).
+          example: 3600
+
+    TrustedKeyResponse:
+      type: object
+      required:
+        - keyId
+        - jwk
+        - audience
+        - validFrom
+        - legalEntityId
+      properties:
+        keyId:
+          type: string
+          description: Unique key identifier
+          example: "my-app-key-1"
+        jwk:
+          type: object
+          additionalProperties: true
+          maxProperties: 20
+          description: |
+            The registered public key in JWK format (RFC 7517). Contains only public key components.
+        audience:
+          $ref: '#/components/schemas/KeyPairAudience'
+        issuers:
+          type: array
+          items:
+            type: string
+          example: ["https://my-app.local/"]
+        validFrom:
+          type: string
+          format: date-time
+          description: When this key became valid
+          example: "2025-11-01T10:00:00.000Z"
+        validTo:
+          type: string
+          format: date-time
+          description: When this key expires
+          nullable: true
+          example: "2026-02-01T10:00:00.000Z"
+        legalEntityId:
+          type: string
+          description: The tenant this key is bound to
+          example: "tenant-abc-123"
+
+    RegisterOidcProviderRequest:
+      type: object
+      required:
+        - wellKnownConfigUri
+      properties:
+        wellKnownConfigUri:
+          type: string
+          format: uri
+          description: URI to the OIDC provider's well-known configuration endpoint
+          example: "https://oidc-domain.local/.well-known/openid-configuration"
+        issuers:
+          type: array
+          description: |
+            Optional but highly recommended list of allowed issuer URIs from this OIDC provider.
+            When present, JWT validation will require the 'iss' claim to match one of these values.
+            When set to null or empty array, the 'iss' claim validation is skipped.
+          minItems: 1
+          items:
+            type: string
+          example: ["https://oidc-domain.local/"]
+
+    UpdateOidcProviderRequest:
+      type: object
+      properties:
+        issuers:
+          type: array
+          description: |
+            Optional but highly recommended list of allowed issuer URIs from this OIDC provider.
+            When present, JWT validation will require the 'iss' claim to match one of these values.
+            When set to null or empty array, the 'iss' claim validation is skipped.
+          minItems: 1
+          items:
+            type: string
+          example: ["https://oidc-domain.local/", "https://oidc-domain.local/tenant1"]
+
+    InvalidateKeyRequest:
+      type: object
+      properties:
+        gracePeriodSec:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of seconds to keep the key valid after invalidation. Default is 0 (immediate invalidation).
+          example: 3600
+
+    ReactivateOidcProviderRequest:
+      type: object
+      properties:
+        reactivateKeys:
+          type: boolean
+          default: true
+          description: If true, also reactivates all related JWK keys that were invalidated with this provider
+          example: true
+
+    OidcProviderResponse:
+      type: object
+      required:
+        - id
+        - wellKnownConfigUri
+        - active
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: ID for this OIDC provider entity
+          example: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        wellKnownConfigUri:
+          type: string
+          format: uri
+          description: URI to the OIDC provider's well-known configuration endpoint
+          example: "https://oidc-domain.local/.well-known/openid-configuration"
+        issuers:
+          type: array
+          description: |
+            List of allowed issuer URIs from this OIDC provider.
+            When present and non-empty, JWT validation requires the 'iss' claim to match one of these values.
+          items:
+            type: string
+          example: ["https://oidc-domain.local/"]
+        active:
+          type: boolean
+          description: Whether this OIDC provider is currently active and used for JWT validation
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          description: When this OIDC provider was registered
+          example: "2025-11-01T10:00:00.000Z"
+

@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+
+package org.cyoda.cloud.api.grpc;
+
+import "cloudevents.proto";
+
+service CloudEventsService {
+
+  //
+  // API for calculation externalization:
+  //
+
+  rpc startStreaming(stream io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+
+  //
+  // API for managing models:
+  //
+
+  /*
+   * Following event pairs supported:
+   * Input: EntityModelImportRequest, Output: EntityModelImportResponse
+   * Input: EntityModelExportRequest, Output: EntityModelExportResponse
+   * Input: EntityModelTransitionRequest, Output: EntityModelTransitionResponse
+   * Input: EntityModelDeleteRequest, Output: EntityModelDeleteResponse
+   * Input: EntityModelGetAllRequest, Output: EntityModelGetAllResponse
+   */
+  rpc entityModelManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+
+  //
+  // API for managing entities:
+  //
+
+  /*
+   * Following event pairs supported:
+   * Input: EntityCreateRequest, Output: EntityTransactionResponse
+   * Input: EntityUpdateRequest, Output: EntityTransactionResponse
+   * Input: EntityDeleteRequest, Output: EntityDeleteResponse
+   * Input: EntityTransitionRequest, Output: EntityTransitionResponse
+   */
+  rpc entityManage(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+
+  /*
+   * Following event pairs supported:
+   * Input: EntityDeleteAllRequest, Output: EntityDeleteAllResponse
+   * Input: EntityCreateCollectionRequest, Output: EntityTransactionResponse
+   * Input: EntityUpdateCollectionRequest, Output: EntityTransactionResponse
+   */
+  rpc entityManageCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+
+  //
+  // API for searching entities:
+  //
+
+  /*
+   * Following event pairs supported:
+   * Input: EntitySnapshotSearchRequest, Output: EntitySnapshotSearchResponse
+   * Input: SnapshotGetStatusRequest, Output: EntitySearchResponse
+   * Input: SnapshotCancelRequest, Output: EntitySearchResponse
+   * Input: EntityGetRequest, Output: EntityResponse
+   */
+  rpc entitySearch(io.cloudevents.v1.CloudEvent) returns (io.cloudevents.v1.CloudEvent);
+
+  /*
+   * Following event pairs supported:
+   * Input: EntityGetAllRequest, Output: EntityResponse
+   * Input: SnapshotGetRequest, Output: EntityResponse
+   * Input: EntitySearchRequest, Output: EntityResponse
+   * Input: EntityStatsGetRequest, Output: EntityStatsResponse
+   * Input: EntityStatsByStateGetRequest, Output: EntityStatsByStateResponse
+   * Input: EntityChangesMetadataGetRequest, Output: EntityChangesMetadataResponse
+   */
+  rpc entitySearchCollection(io.cloudevents.v1.CloudEvent) returns (stream io.cloudevents.v1.CloudEvent);
+
+}

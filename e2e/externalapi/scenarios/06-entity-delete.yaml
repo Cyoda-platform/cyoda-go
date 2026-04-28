@@ -1,0 +1,157 @@
+# Entity delete scenarios. The delete-all-by-model endpoint accepts an
+# optional `pointInTime` and an optional GroupCondition JSON body.
+
+scenarios:
+  - id: delete/01-single-by-id
+    name: Delete a single entity by id
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteSingle
+    description: |
+      Ingest five family entities, then delete one by id. The response
+      must report the deleted id and (name, version). A subsequent listing
+      must return four entities.
+    data:
+      model: { name: family, version: 1 }
+    steps:
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/family/1 }
+        body_ref: "family.json (5 members)"
+      - action: delete_entity
+        endpoint:
+          rest: DELETE /entity/{entityId}
+          grpc: EntityService.entityManage (EntityDeleteRequest)
+        capture: deleteResp
+    assertions:
+      - type: field_equals
+        target: deleteResp.id
+        expected: "<entityId>"
+      - type: field_equals
+        target: deleteResp.modelKey
+        expected: { name: family, version: 1 }
+      - type: entity_count_for_model
+        model: { name: family, version: 1 }
+        value: 4
+
+  - id: delete/02-all-by-model-version
+    name: Delete every entity for a (name, version) in batches of 50
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteAllByModelVersion
+    description: |
+      Ingest 500 family entities, then issue one DELETE on the model path.
+      The server must remove all entities regardless of count. A subsequent
+      listing must be empty.
+    data:
+      model: { name: family, version: 1 }
+      count: 500
+    steps:
+      - action: create_entity
+        repeat: 100
+        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=1000&waitForConsistencyAfter=true" }
+        body_ref: "family.json (5 members)"
+      - action: delete_entities_by_model
+        endpoint: { rest: DELETE /entity/family/1 }
+    assertions:
+      - type: entity_count_global
+        value: 0
+
+  - id: delete/03-by-condition-jsonpath-equals
+    name: Delete by JSONPath condition ($.kids[*].kids[*].name = grandSon)
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteByCondition
+    description: |
+      Delete only the entity whose grandSon child name matches. Exactly
+      one entity must be removed; the remaining count must decrease by 1.
+    data:
+      model: { name: family, version: 1 }
+      condition_json: |
+        {
+          "operator": "AND",
+          "conditions": [
+            { "jsonPath": "$.kids[*].kids[*].name",
+              "operation": "EQUALS",
+              "value": "grandSon" }
+          ]
+        }
+    steps:
+      - action: delete_entities_by_condition
+        endpoint: { rest: DELETE /entity/family/1 }
+        body_ref: data.condition_json
+        capture: deleteResp
+    assertions:
+      - type: field_equals
+        target: deleteResp.numberOfEntititesRemoved
+        expected: 1
+
+  - id: delete/04-by-condition-not-null
+    name: Delete by condition "NOT_NULL" on $.kids[*].name
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteByCondition
+    data:
+      model: { name: family, version: 1 }
+      condition_json: |
+        {
+          "operator": "AND",
+          "conditions": [
+            { "jsonPath": "$.kids[*].name",
+              "operation": "NOT_NULL",
+              "value": null }
+          ]
+        }
+    steps:
+      - action: delete_entities_by_condition
+        endpoint: { rest: "DELETE /entity/family/1?verbose=true" }
+        body_ref: data.condition_json
+    assertions:
+      - type: field_equals
+        target: deleteResp.numberOfEntititesRemoved
+        expected: 1
+
+  - id: delete/05-by-condition-at-point-in-time-too-many-entities
+    name: Condition delete at pointInTime with entitySearchLimit=1 is rejected
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteByCondition
+    description: |
+      The server protects against ambiguous point-in-time deletes: when a
+      condition at pointInTime matches more than `entitySearchLimit`,
+      the request is rejected.
+    data:
+      model: { name: family, version: 1 }
+      point_in_time: "<now>"
+      condition_json: |
+        {
+          "operator": "AND",
+          "conditions": [
+            { "jsonPath": "$.age", "operation": "LESS_THAN", "value": "10" }
+          ]
+        }
+    steps:
+      - action: delete_entities_by_condition
+        endpoint: { rest: "DELETE /entity/family/1?pointInTime={point_in_time}&entitySearchLimit=1" }
+        body_ref: data.condition_json
+    negative: true
+    expected_error:
+      http_status: 400
+      class_or_message_pattern: "TooManyEntitiesToDeleteWithConditionAndPointInTime"
+
+  - id: delete/06-all-by-model-at-point-in-time
+    name: Delete-all at different points in time is selective in history
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#testDeleteAllByModelVersionAtPointInTime
+    description: |
+      Make two ingestion waves of 500 family entities each (total 1000).
+      A DELETE at t0 (before any save) deletes nothing; a DELETE at t1
+      (after wave 1) deletes only wave 1; a DELETE at t2 (after wave 2)
+      deletes both waves.
+    data:
+      model: { name: family, version: 1 }
+    steps:
+      - action: delete_entities_by_model
+        endpoint: { rest: "DELETE /entity/family/1?pointInTime={t0}" }
+      - action: delete_entities_by_model
+        endpoint: { rest: "DELETE /entity/family/1?pointInTime={t1}" }
+      - action: delete_entities_by_model
+        endpoint: { rest: "DELETE /entity/family/1?pointInTime={t2}" }
+    assertions:
+      - type: entity_count_at_step
+        step: 1
+        value_after: 1000
+      - type: entity_count_at_step
+        step: 2
+        value_after: 500
+      - type: entity_count_at_step
+        step: 3
+        value_after: 0

@@ -1,0 +1,166 @@
+# Point-in-time reads and change-history metadata.
+# All reads are performed via REST GET /entity/{id}[?pointInTime=...|transactionId=...]
+# and GET /entity/{id}/changes[?pointInTime=...] (EntityController).
+
+scenarios:
+  - id: pit/01-get-single-entity-at-point-in-time
+    name: GET entity at three different points in time returns three states
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getSingleEntity with pointInTime returns entity at specific point in time
+    description: |
+      Capture three wall-clock points: t0 (before create), t1 (after create),
+      t2 (after update). A read at t0 must 404, at t1 must return the
+      original JSON, at t2 the updated JSON, and without pointInTime the
+      latest JSON.
+    data:
+      model: { name: pointInTimeTest, version: 1 }
+      sample_json: |
+        {"name":"original","value":100}
+      updated_json: |
+        {"name":"updated","value":200}
+    steps:
+      - action: capture_time
+        as: t0
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/pointInTimeTest/1 }
+        body_ref: data.sample_json
+        capture: entityId
+      - action: capture_time
+        as: t1
+      - action: update_entity_transition
+        endpoint: { rest: PUT /entity/JSON/{entityId}/UPDATE }
+        body_ref: data.updated_json
+      - action: capture_time
+        as: t2
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{entityId}?pointInTime={t0}" }
+        capture: readAtT0
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{entityId}?pointInTime={t1}" }
+        capture: readAtT1
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{entityId}?pointInTime={t2}" }
+        capture: readAtT2
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{entityId}" }
+        capture: readLatest
+    assertions:
+      - type: http_status
+        target: readAtT0
+        expected: 404
+      - type: entity_equals_json
+        target: readAtT1
+        expected_ref: data.sample_json
+      - type: entity_equals_json
+        target: readAtT2
+        expected_ref: data.updated_json
+      - type: entity_equals_json
+        target: readLatest
+        expected_ref: data.updated_json
+
+  - id: pit/02-get-single-entity-by-transaction-id
+    name: GET entity by transactionId returns the entity version at that tx
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getSingleEntity with transactionId returns entity version at that transaction
+    description: |
+      The create response and each update response carry a `transactionId`.
+      Passing that id back to GET /entity/{id}?transactionId=... must yield
+      the exact version committed in that transaction. A non-existent
+      transactionId must return 404.
+    data:
+      model: { name: transactionIdTest, version: 1 }
+      v1_json: |
+        {"name":"version1","counter":1}
+      v2_json: |
+        {"name":"version2","counter":2}
+    steps:
+      - action: create_entity
+        endpoint: { rest: POST /entity/JSON/transactionIdTest/1 }
+        body_ref: data.v1_json
+        capture: create
+      - action: update_entity_transition
+        endpoint: { rest: PUT /entity/JSON/{create.entityId}/UPDATE }
+        body_ref: data.v2_json
+        capture: upd
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{create.entityId}?transactionId={create.transactionId}" }
+        capture: readAtCreate
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{create.entityId}?transactionId={upd.transactionId}" }
+        capture: readAtUpdate
+      - action: get_entity
+        endpoint: { rest: "GET /entity/{create.entityId}?transactionId=<random-uuid>" }
+        capture: readAtBadTx
+    assertions:
+      - type: entity_equals_json
+        target: readAtCreate
+        expected_ref: data.v1_json
+      - type: entity_equals_json
+        target: readAtUpdate
+        expected_ref: data.v2_json
+      - type: http_status
+        target: readAtBadTx
+        expected: 404
+
+  - id: pit/03-entity-change-history-full
+    name: Full change history lists CREATE + N UPDATEs in chronological order
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getEntityChangesMetadata returns complete change history for entity
+    description: |
+      After one create and two updates, GET /entity/{id}/changes must
+      return exactly three elements. Element [0] must be CREATE and its
+      transactionId must equal the create response's. Elements [1..2] must
+      be UPDATE with matching transactionIds. Every element must carry
+      `timeOfChange`, `user`, and `fieldsChangedCount > 0`. The list must
+      be strictly ordered in ascending time.
+    data:
+      model: { name: changeHistoryTest, version: 1 }
+    steps:
+      - action: get_entity_changes
+        endpoint: { rest: GET /entity/{entityId}/changes }
+        capture: changes
+    assertions:
+      - type: length
+        target: changes
+        expected: 3
+      - type: sequence_types
+        target: changes
+        expected: [CREATE, UPDATE, UPDATE]
+      - type: field_match_per_element
+        target: changes
+        fields: [transactionId, timeOfChange, user]
+      - type: strictly_increasing
+        target: "changes[*].timeOfChange"
+
+  - id: pit/04-entity-change-history-point-in-time
+    name: Change history at pointInTime is truncated to changes up to that time
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getEntityChangesMetadata with pointInTime returns changes up to that point
+    steps:
+      - action: get_entity_changes
+        endpoint: { rest: "GET /entity/{entityId}/changes?pointInTime={afterCreate}" }
+        capture: chAfterCreate
+      - action: get_entity_changes
+        endpoint: { rest: "GET /entity/{entityId}/changes?pointInTime={afterFirstUpdate}" }
+        capture: chAfterFirst
+      - action: get_entity_changes
+        endpoint: { rest: "GET /entity/{entityId}/changes" }
+        capture: chAll
+    assertions:
+      - type: length
+        target: chAfterCreate
+        expected: 1
+      - type: length
+        target: chAfterFirst
+        expected: 2
+      - type: length
+        target: chAll
+        expected: 3
+
+  - id: pit/05-change-history-non-existent-entity
+    name: Change history for unknown entity returns 404
+    source_test: integration-tests/src/test/kotlin/net/cyoda/saas/entity/EntityInteractorIT.kt#getEntityChangesMetadata for non-existent entity throws EntityNotFoundException
+    negative: true
+    steps:
+      - action: get_entity_changes
+        endpoint: { rest: GET /entity/<random-uuid>/changes }
+        capture: resp
+    expected_error:
+      http_status: 404
+      class_or_message_pattern: "EntityNotFoundException"

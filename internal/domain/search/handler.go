@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,14 +17,12 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 )
 
 const (
 	maxSearchBodySize = 10 * 1024 * 1024 // 10 MiB
-	// maxPageSize caps sync and async pagination limits. Attacker-supplied
-	// values above this would let a single request pull an unreasonable
-	// volume of data (issue #98).
-	maxPageSize = 10000
 )
 
 // jobLookupError maps a service-level error to a handler response. Job-not-
@@ -41,11 +38,62 @@ func jobLookupError(err error) *common.AppError {
 // Handler handles search-related HTTP endpoints.
 type Handler struct {
 	searchSvc *SearchService
+	factory   spi.StoreFactory
 }
 
 // NewHandler creates a new search handler wired to the given SearchService.
 func NewHandler(searchSvc *SearchService) *Handler {
 	return &Handler{searchSvc: searchSvc}
+}
+
+// NewHandlerWithModel creates a search handler that additionally validates
+// condition value types against the model schema before executing search.
+// Pass a nil factory to disable condition-type validation (e.g. in tests
+// that don't need it).
+func NewHandlerWithModel(searchSvc *SearchService, factory spi.StoreFactory) *Handler {
+	return &Handler{searchSvc: searchSvc, factory: factory}
+}
+
+// lookupModelSchema fetches the parsed model schema for the given entity/version.
+// Returns nil (with no error) when the model is not found or cannot be parsed —
+// callers treat this as "no type constraints available".
+func (h *Handler) lookupModelSchema(r *http.Request, entityName string, modelVersion int32) *schema.ModelNode {
+	if h.factory == nil {
+		return nil
+	}
+	modelStore, err := h.factory.ModelStore(r.Context())
+	if err != nil {
+		return nil
+	}
+	ref := spi.ModelRef{
+		EntityName:   entityName,
+		ModelVersion: fmt.Sprintf("%d", modelVersion),
+	}
+	desc, err := modelStore.Get(r.Context(), ref)
+	if err != nil || len(desc.Schema) == 0 {
+		return nil
+	}
+	node, err := schema.Unmarshal(desc.Schema)
+	if err != nil {
+		return nil
+	}
+	return node
+}
+
+// validateConditionTypes checks all simple clauses in cond against the model
+// schema for the given entity. Returns a non-nil AppError (HTTP 400) if any
+// clause has a type-mismatched value. Returns nil when the model is not found
+// or the condition has no type violations.
+func (h *Handler) validateConditionTypes(r *http.Request, entityName string, modelVersion int32, cond predicate.Condition) *common.AppError {
+	node := h.lookupModelSchema(r, entityName, modelVersion)
+	if node == nil {
+		return nil // model not found or unparseable — no constraints to apply
+	}
+	if err := ValidateConditionValueTypes(node, cond); err != nil {
+		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch,
+			err.Error())
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +117,10 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
 		return
 	}
+	if appErr := h.validateConditionTypes(r, entityName, modelVersion, cond); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -84,8 +136,8 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		// Reject (don't silently clamp): the async path does the same.
 		// Silent clamping would hide misuse from clients and mask bugs
 		// where a caller assumed a larger window than the server allows.
-		if lim > maxPageSize {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("limit exceeds maximum %d", maxPageSize)))
+		if lim > pagination.MaxPageSize {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize)))
 			return
 		}
 		opts.Limit = lim
@@ -98,6 +150,14 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 
 	results, err := h.searchSvc.Search(r.Context(), modelRef, cond, opts)
 	if err != nil {
+		// Pre-execution validation (issue #77) returns a classified
+		// *common.AppError directly; forward it so the 4xx surfaces
+		// instead of being shrouded as a 5xx ticket.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, common.Internal("search failed", err))
 		return
 	}
@@ -140,6 +200,10 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
 		return
 	}
+	if appErr := h.validateConditionTypes(r, entityName, modelVersion, cond); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
 	opts := SearchOptions{
 		PointInTime: params.PointInTime,
@@ -152,6 +216,14 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 
 	jobID, err := h.searchSvc.SubmitAsync(r.Context(), modelRef, cond, opts)
 	if err != nil {
+		// Pre-execution validation (issue #77) returns a classified
+		// *common.AppError directly; forward it so the 4xx surfaces
+		// instead of being shrouded as a 5xx ticket.
+		var appErr *common.AppError
+		if errors.As(err, &appErr) {
+			common.WriteError(w, r, appErr)
+			return
+		}
 		common.WriteError(w, r, common.Internal("failed to submit async search", err))
 		return
 	}
@@ -185,40 +257,42 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 	pageSize := 1000 // default
 	if params.PageSize != nil {
 		ps, err := strconv.Atoi(*params.PageSize)
-		if err != nil || ps < 0 {
+		if err != nil {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pageSize"))
 			return
 		}
-		// Match the sync path's ceiling (handler.go sync branch): a
-		// pageSize above the cap would let attackers pull much more data
-		// per request than the endpoint is designed for (issue #98).
-		if ps > maxPageSize {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("pageSize exceeds maximum %d", maxPageSize)))
-			return
-		}
-		opts.Limit = ps
 		pageSize = ps
 	}
 
 	pageNumber := 0
 	if params.PageNumber != nil {
 		pn, err := strconv.Atoi(*params.PageNumber)
-		if err != nil || pn < 0 {
+		if err != nil {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pageNumber"))
 			return
 		}
 		pageNumber = pn
-		if pageSize <= 0 {
-			pageSize = 1000
-		}
-		// Guard against int overflow when computing offset = pn*pageSize
-		// with attacker-supplied values (issue #98). Reject anything whose
-		// product would wrap int.
-		if pn > 0 && pageSize > 0 && pn > math.MaxInt/pageSize {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "pageNumber*pageSize overflows int"))
-			return
-		}
-		opts.Offset = pn * pageSize
+	}
+
+	// Cap + overflow check via the shared helper (issue #98, #68 item
+	// 10): rejects negative values, pageSize > MaxPageSize, pageNumber >
+	// MaxPageNumber, and any pageNumber*pageSize that overflows int64.
+	// Apply the cap to the *effective* pageSize (with the 1000 default
+	// substituted for non-positive values) so the bound matches what is
+	// actually used downstream.
+	effectivePageSize := pageSize
+	if effectivePageSize <= 0 {
+		effectivePageSize = 1000
+	}
+	if vErr := pagination.ValidateOffset(int64(pageNumber), int64(effectivePageSize)); vErr != nil {
+		common.WriteError(w, r, vErr.(*common.AppError))
+		return
+	}
+	if params.PageSize != nil {
+		opts.Limit = pageSize
+	}
+	if params.PageNumber != nil {
+		opts.Offset = pageNumber * effectivePageSize
 	}
 
 	page, err := h.searchSvc.GetAsyncResults(r.Context(), jobId.String(), opts)

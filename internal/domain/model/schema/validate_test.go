@@ -197,3 +197,54 @@ func TestValidate_LongSchema_RejectsDouble(t *testing.T) {
 		t.Errorf("expected rejection; Double value cannot validate against Long schema")
 	}
 }
+
+// TestValidate_PolymorphicArrayElement_AcceptsParticipatingType covers the
+// 14/01 scenario: $.some-array[*].some-object is an object in element 0 and
+// a plain string in element 1.  After merging, the array element node has
+// Kind=KindObject but Types contains String.  The validator must accept both
+// branches instead of rejecting the string with "expected object, got string".
+func TestValidate_PolymorphicArrayElement_AcceptsParticipatingType(t *testing.T) {
+	// Build the merged element node by hand, mirroring what walker+Merge produce.
+	// Element 0: KindObject with child "some-key"
+	objElem := schema.NewObjectNode()
+	objElem.SetChild("some-key", schema.NewLeafNode(schema.String))
+
+	// Element 1: KindLeaf(String)
+	strElem := schema.NewLeafNode(schema.String)
+
+	// Merge as the walker would after seeing both array elements.
+	merged := schema.Merge(objElem, strElem)
+
+	arrModel := schema.NewArrayNode(merged)
+	root := schema.NewObjectNode()
+	root.SetChild("some-array", arrModel)
+
+	// Object branch must validate cleanly.
+	objBranch := map[string]any{
+		"some-array": []any{
+			map[string]any{"some-key": "v1"},
+		},
+	}
+	if errs := schema.Validate(root, objBranch); len(errs) != 0 {
+		t.Errorf("object branch: expected no errors, got %v", errs)
+	}
+
+	// String branch must also validate cleanly (was rejected before the fix).
+	strBranch := map[string]any{
+		"some-array": []any{"abc"},
+	}
+	if errs := schema.Validate(root, strBranch); len(errs) != 0 {
+		t.Errorf("string branch: expected no errors, got %v", errs)
+	}
+
+	// Both branches together must validate cleanly.
+	bothBranch := map[string]any{
+		"some-array": []any{
+			map[string]any{"some-key": "v1"},
+			"abc",
+		},
+	}
+	if errs := schema.Validate(root, bothBranch); len(errs) != 0 {
+		t.Errorf("both branches: expected no errors, got %v", errs)
+	}
+}

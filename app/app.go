@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -61,6 +62,7 @@ type App struct {
 	txLifecycle        *lifecycle.Manager
 	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
+	grpcStopOnce       sync.Once
 }
 
 func New(cfg Config) *App {
@@ -127,7 +129,11 @@ func New(cfg Config) *App {
 
 	factory, err := plugin.NewFactory(startupCtx, os.Getenv, factoryOpts...)
 	if err != nil {
-		panic(fmt.Sprintf("create storage factory for %s: %v", plugin.Name(), err))
+		slog.Error("startup failure",
+			"phase", "create-storage-factory",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
 	}
 
 	// Wire the schema.Apply replay function into the plugin factory so
@@ -168,14 +174,22 @@ func New(cfg Config) *App {
 	// postgres) don't implement Startable, so this is a no-op for them.
 	if s, ok := factory.(spi.Startable); ok {
 		if err := s.Start(startupCtx); err != nil {
-			panic(fmt.Sprintf("start storage factory for %s: %v", plugin.Name(), err))
+			slog.Error("startup failure",
+				"phase", "start-storage-factory",
+				"backend", plugin.Name(),
+				"error", err.Error())
+			os.Exit(1)
 		}
 		slog.Info("storage plugin started", "pkg", "app", "backend", plugin.Name())
 	}
 
 	txMgr, err := factory.TransactionManager(startupCtx)
 	if err != nil {
-		panic(fmt.Sprintf("get transaction manager from %s: %v", plugin.Name(), err))
+		slog.Error("startup failure",
+			"phase", "transaction-manager",
+			"backend", plugin.Name(),
+			"error", err.Error())
+		os.Exit(1)
 	}
 	a.transactionManager = txMgr
 
@@ -191,7 +205,10 @@ func New(cfg Config) *App {
 	var authSvc *auth.AuthService
 	if cfg.IAM.Mode == "jwt" {
 		if cfg.IAM.JWTSigningKey == "" {
-			panic("CYODA_JWT_SIGNING_KEY is required when IAM mode is jwt")
+			slog.Error("startup failure",
+				"phase", "jwt-signing-key",
+				"error", "CYODA_JWT_SIGNING_KEY is required when IAM mode is jwt")
+			os.Exit(1)
 		}
 		// Create a KV-backed trusted key store for persistence across restarts.
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
@@ -201,11 +218,17 @@ func New(cfg Config) *App {
 		})
 		kvStore, err := a.storeFactory.KeyValueStore(systemCtx)
 		if err != nil {
-			panic(fmt.Sprintf("failed to get KV store for trusted keys: %v", err))
+			slog.Error("startup failure",
+				"phase", "kv-store-trusted-keys",
+				"error", err.Error())
+			os.Exit(1)
 		}
 		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore)
 		if err != nil {
-			panic(fmt.Sprintf("failed to create KV trusted key store: %v", err))
+			slog.Error("startup failure",
+				"phase", "kv-trusted-store-bootstrap",
+				"error", err.Error())
+			os.Exit(1)
 		}
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
 			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
@@ -214,7 +237,10 @@ func New(cfg Config) *App {
 			TrustedKeyStore: trustedKeyStore,
 		})
 		if err != nil {
-			panic(fmt.Sprintf("failed to create auth service: %v", err))
+			slog.Error("startup failure",
+				"phase", "auth-service",
+				"error", err.Error())
+			os.Exit(1)
 		}
 		// The built-in IAM holds its signing keys in-process, so the validator
 		// reads public keys directly from the local key store. No loopback JWKS
@@ -240,7 +266,11 @@ func New(cfg Config) *App {
 				cfg.Bootstrap.ClientSecret,
 				roles,
 			); err != nil {
-				panic(fmt.Sprintf("failed to create bootstrap M2M client: %v", err))
+				slog.Error("startup failure",
+					"phase", "bootstrap-m2m-client",
+					"clientId", cfg.Bootstrap.ClientID,
+					"error", err.Error())
+				os.Exit(1)
 			}
 			slog.Info("bootstrap M2M client registered",
 				"pkg", "app",
@@ -267,9 +297,19 @@ func New(cfg Config) *App {
 	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, common.NewDefaultUUIDGenerator())
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
-		panic(fmt.Sprintf("failed to get async search store: %v", err))
+		slog.Error("startup failure",
+			"phase", "async-search-store",
+			"error", err.Error())
+		os.Exit(1)
 	}
-	a.searchService = search.NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore)
+	// Negative cache for pre-execution field-path validation. Shares
+	// the model.invalidate gossip topic with the descriptor cache so a
+	// single schema-change event drops both layers in lock step. The
+	// cache is bounded; otter's S3-FIFO eviction handles overflow.
+	pathValidationCache := search.NewPathValidationCache(cacheBroadcaster)
+	a.searchService = search.
+		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
+		WithPathValidationCache(pathValidationCache)
 
 	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
 	a.stopSearchReaper = make(chan struct{})
@@ -390,7 +430,7 @@ func New(cfg Config) *App {
 	server.Entity = entityHandler
 	server.Model = modelHandler
 	server.Workflow = workflow.New(a.storeFactory, a.workflowEngine)
-	server.Search = search.NewHandler(a.searchService)
+	server.Search = search.NewHandlerWithModel(a.searchService, a.storeFactory)
 	server.Audit = audit.New(a.storeFactory)
 	server.Messaging = messaging.New(a.storeFactory, common.NewDefaultUUIDGenerator())
 	server.Account = account.New(a.authService, a.authzService)
@@ -404,16 +444,33 @@ func New(cfg Config) *App {
 	// Infrastructure routes (no auth, receives health flag)
 	internalapi.RegisterHealthRoutes(mux, healthFlag)
 
-	// Auth service routes: public endpoints (no auth needed)
+	// Auth service route registration is split into two strict groups so
+	// nothing administrative leaks into the public surface (#34 item 1):
+	//
+	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
+	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
+	//     and must be reachable by unauthenticated callers by protocol.
+	//
+	//   ADMIN (authMW + ROLE_ADMIN): /oauth/keys/*, /account/m2m, /account/m2m/*.
+	//     Two-layer enforcement: middleware.Auth populates UserContext (or
+	//     rejects with 401), then the handlers in internal/auth/ call the
+	//     requireAdmin guard which enforces ROLE_ADMIN (or rejects with 403).
+	//     Both layers are required — authMW alone would let any
+	//     authenticated caller manage signing keys.
+
+	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
 		mux.Handle("/.well-known/", authSvc.Handler())
 		mux.Handle("POST /oauth/token", authSvc.Handler())
 	}
 
-	// Admin routes (with auth)
+	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
-	// Auth admin routes: key management, M2M clients, trusted keys (requires auth)
+	// Admin auth endpoints: key management, M2M clients, trusted keys.
+	// The handler-side requireAdmin guard enforces ROLE_ADMIN; authMW here
+	// guarantees the UserContext is populated so the guard has something
+	// to check.
 	if authSvc != nil {
 		mux.Handle("/oauth/keys/", authMW(authSvc.AdminHandler()))
 		mux.Handle("/account/m2m/", authMW(authSvc.AdminHandler()))
@@ -512,22 +569,65 @@ func (a *App) TokenSigner() *token.Signer                   { return a.tokenSign
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
 func (a *App) TxLifecycle() *lifecycle.Manager              { return a.txLifecycle }
 
+// gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
+// Matched to the HTTP server's drain deadline in cmd/cyoda/main.go so a
+// caller can predict total stop time as ~max(http, grpc) drain budgets.
+const gRPCGracefulStopBudget = 10 * time.Second
+
 // Close performs graceful shutdown of all backend resources.
+//
+// Close is the single teardown path for storeFactory and the gRPC server;
+// Shutdown only releases background goroutines and cluster registration.
+// Order: storage first, then gRPC. The gRPC server can block waiting on
+// in-flight streams, so we want pools released before that blocks.
+//
+// gRPC is stopped via GracefulStop bounded by gRPCGracefulStopBudget; if
+// the budget elapses without graceful completion (a stuck stream, a
+// non-cooperative client) we fall back to a hard Stop and emit a slog.Warn
+// so operators can see the budget was hit (#68 item 19).
 func (a *App) Close() error {
 	slog.Info("shutting down")
-	// Close StoreFactory first so it can release connection pools before the
-	// gRPC stop, which can block waiting on in-flight streams.
 	var err error
 	if a.storeFactory != nil {
 		err = a.storeFactory.Close()
 	}
-	if a.grpcServer != nil {
-		a.grpcServer.GRPCServer().Stop() // hard stop — process is exiting, no need for graceful drain
-	}
+	a.StopGRPC()
 	return err
 }
 
-// Shutdown performs graceful cleanup of background goroutines and cluster resources.
+// StopGRPC drains the gRPC server with a deadline-bounded graceful-stop
+// (gRPCGracefulStopBudget). The drain runs at most once across the
+// lifetime of the App via sync.Once — runServers' watcher invokes this
+// when rootCtx cancels, and Close() calls it again as a belt-and-braces
+// teardown. Without the once, a stuck stream could burn up to 2× the
+// budget across the runServers + Close layers.
+func (a *App) StopGRPC() {
+	a.grpcStopOnce.Do(func() {
+		if a.grpcServer == nil {
+			return
+		}
+		done := make(chan struct{})
+		go func() {
+			a.grpcServer.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+			// Graceful drain completed within budget.
+		case <-time.After(gRPCGracefulStopBudget):
+			slog.Warn("gRPC graceful stop deadline exceeded; forcing",
+				"phase", "shutdown",
+				"budget", gRPCGracefulStopBudget.String())
+			a.grpcServer.GRPCServer().Stop()
+		}
+	})
+}
+
+// Shutdown performs graceful cleanup of background goroutines and cluster
+// resources. The storeFactory is intentionally NOT closed here — Close()
+// is the single teardown path for that, so callers invoking Shutdown()
+// followed by Close() (the runServers sequence) close the factory
+// exactly once.
 func (a *App) Shutdown() {
 	if a.stopSearchReaper != nil {
 		close(a.stopSearchReaper)
@@ -538,11 +638,6 @@ func (a *App) Shutdown() {
 	if a.nodeRegistry != nil && a.config.Cluster.Enabled {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {
 			slog.Warn("failed to deregister from cluster", "pkg", "cluster", "err", err)
-		}
-	}
-	if a.storeFactory != nil {
-		if err := a.storeFactory.Close(); err != nil {
-			slog.Warn("failed to close store factory", "pkg", "app", "err", err)
 		}
 	}
 }

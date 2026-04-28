@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -27,16 +26,20 @@ func (s *stubAuthService) Authenticate(_ context.Context, _ *http.Request) (*spi
 	return nil, s.err
 }
 
-// TestAuthMiddleware_ResponseBodyIsGenericForEveryFailureMode is the
-// regression test for issue #100. Clients must not be able to distinguish
-// between distinct auth failure modes via the HTTP response body — all
-// failures yield the same generic "authentication failed" text.
+// TestAuthMiddleware_ResponseBodyIsGenericForEveryFailureMode pins issues
+// #100 / #68 item 12: regardless of which Authenticate failure mode the
+// upstream auth service signalled, the HTTP response body must be the same
+// generic "authentication failed" RFC 9457 problem-detail. No per-branch
+// detail may leak into the body — that's the user-enumeration risk.
 func TestAuthMiddleware_ResponseBodyIsGenericForEveryFailureMode(t *testing.T) {
+	// The DelegatingAuthenticator now returns the bare sentinel for every
+	// failure mode; that is the only error shape the middleware ever sees in
+	// production. We still assert that even an exotic error wrapping the
+	// sentinel produces the generic body — defence in depth against future
+	// implementations of contract.AuthenticationService.
 	cases := []error{
-		fmt.Errorf("%w: missing Authorization header", auth.ErrAuthenticationFailed),
-		fmt.Errorf("%w: invalid Authorization header: expected Bearer scheme", auth.ErrAuthenticationFailed),
-		fmt.Errorf("%w: empty bearer token", auth.ErrAuthenticationFailed),
-		fmt.Errorf("%w: token validation failed: signature verification failed", auth.ErrAuthenticationFailed),
+		auth.ErrAuthenticationFailed,
+		errors.New("some-future-implementation-leak: token=abc.def.ghi"),
 	}
 
 	for _, authErr := range cases {
@@ -58,27 +61,29 @@ func TestAuthMiddleware_ResponseBodyIsGenericForEveryFailureMode(t *testing.T) {
 			if !strings.Contains(body, "authentication failed") {
 				t.Errorf("body = %q; expected generic \"authentication failed\"", body)
 			}
-			// The specific reason (per branch) must NOT appear in the body —
-			// that's the enumeration risk the fix closes.
-			specific := strings.TrimPrefix(authErr.Error(), "authentication failed: ")
-			if specific != "" && strings.Contains(body, specific) {
-				t.Errorf("response body leaked reason %q: %q", specific, body)
+			// Body must never carry the auth implementation's raw error
+			// string — that would re-open the enumeration channel.
+			if authErr != auth.ErrAuthenticationFailed {
+				if strings.Contains(body, "some-future-implementation-leak") || strings.Contains(body, "abc.def.ghi") {
+					t.Errorf("response body leaked auth-impl detail: %q", body)
+				}
 			}
 		})
 	}
 }
 
-// TestAuthMiddleware_LogsSpecificFailureReason pins that the HTTP auth
-// middleware emits an operator-visible log with the specific failure reason,
-// so collapsing client-facing messages does not also collapse observability.
-func TestAuthMiddleware_LogsSpecificFailureReason(t *testing.T) {
+// TestAuthMiddleware_DoesNotDuplicateAuthLayerLog pins the
+// "one event = one log line" rule for auth failures. The auth-layer
+// implementation (DelegatingAuthenticator) is the source of truth for the
+// per-failure structured WARN record; the middleware must not emit a
+// duplicate WARN keyed on the now-uniform err.Error() string.
+func TestAuthMiddleware_DoesNotDuplicateAuthLayerLog(t *testing.T) {
 	var logBuf bytes.Buffer
 	prev := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
-	authErr := fmt.Errorf("%w: missing Authorization header", auth.ErrAuthenticationFailed)
-	mw := middleware.Auth(&stubAuthService{err: authErr})
+	mw := middleware.Auth(&stubAuthService{err: auth.ErrAuthenticationFailed})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	rec := httptest.NewRecorder()
@@ -86,10 +91,7 @@ func TestAuthMiddleware_LogsSpecificFailureReason(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	logs := logBuf.String()
-	if !strings.Contains(logs, "missing Authorization header") {
-		t.Errorf("expected log to include specific reason \"missing Authorization header\"; got: %s", logs)
-	}
-	if !errors.Is(authErr, auth.ErrAuthenticationFailed) {
-		t.Fatalf("test-fixture assertion: authErr must wrap ErrAuthenticationFailed")
+	if strings.Contains(logs, "HTTP auth failed") {
+		t.Errorf("middleware emitted a duplicate auth-failure log; the auth layer is the single source of truth: %s", logs)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 )
 
@@ -33,6 +34,38 @@ const maxEntityBodySize = 10 * 1024 * 1024
 // prior string-match classifier would have silently shifted a renamed
 // "failed to extend schema" to 4xx.
 var errInternalSchema = errors.New("internal schema processing failure")
+
+// incompatibleTypeError is the typed validation failure surfaced when at
+// least one ValidationError carries ErrKindIncompatibleType (the
+// dictionary-aligned "wrong DataType" signal — Cloud's
+// FoundIncompatibleTypeWithEntityModelException).
+//
+// Rendered by classifyValidateOrExtendErr into a 400 INCOMPATIBLE_TYPE
+// AppError with Props {fieldPath, expectedType, actualType} so SDKs can
+// branch on the precondition without scraping the message string.
+type incompatibleTypeError struct {
+	path          string
+	expectedTypes []schema.DataType
+	actualType    schema.DataType
+	message       string
+	entityName    string // populated by enrichWithModelRef post-validation
+	entityVersion string // populated by enrichWithModelRef post-validation
+}
+
+func (e *incompatibleTypeError) Error() string { return e.message }
+
+// enrichWithModelRef threads model identification (entity name, version)
+// onto an *incompatibleTypeError so the classifier can render those Props
+// alongside the validator-supplied (path, expected/actualType). For all
+// other error types the input is returned unchanged.
+func enrichWithModelRef(err error, ref spi.ModelRef) error {
+	var incompatErr *incompatibleTypeError
+	if errors.As(err, &incompatErr) {
+		incompatErr.entityName = ref.EntityName
+		incompatErr.entityVersion = ref.ModelVersion
+	}
+	return err
+}
 
 // maxStatesFilterSize bounds the cardinality of the user-supplied ?states= query
 // parameter on stats-by-state endpoints. Without this cap, an oversized list would
@@ -75,11 +108,7 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	if desc.ChangeLevel == "" {
 		errs := schema.Validate(modelNode, parsedData)
 		if len(errs) > 0 {
-			msgs := make([]string, len(errs))
-			for i, e := range errs {
-				msgs[i] = e.Error()
-			}
-			return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+			return enrichWithModelRef(validationErrorsToError(errs), desc.Ref)
 		}
 		return nil
 	}
@@ -167,12 +196,29 @@ func validateDescriptor(desc *spi.ModelDescriptor, data any) []schema.Validation
 
 // validationErrorsToError converts a []ValidationError to a single error,
 // preserving the concatenation style used by validateOrExtend.
+//
+// When at least one entry classifies as ErrKindIncompatibleType (the
+// dictionary-aligned "wrong DataType" signal), the function returns a
+// typed *incompatibleTypeError carrying the first such entry's structured
+// fields so classifyValidateOrExtendErr can render INCOMPATIBLE_TYPE Props
+// without scraping the message string. Other validation errors fall back
+// to the generic "validation failed: ..." wrap, classified as
+// BAD_REQUEST downstream.
 func validationErrorsToError(errs []schema.ValidationError) error {
 	msgs := make([]string, len(errs))
 	for i, e := range errs {
 		msgs[i] = e.Error()
 	}
-	return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+	joined := fmt.Sprintf("validation failed: %s", strings.Join(msgs, "; "))
+	if first := schema.FirstIncompatibleType(errs); first != nil {
+		return &incompatibleTypeError{
+			path:          first.Path,
+			expectedTypes: first.ExpectedTypes,
+			actualType:    first.ActualType,
+			message:       joined,
+		}
+	}
+	return fmt.Errorf("%s", joined)
 }
 
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
@@ -181,13 +227,37 @@ func validationErrorsToError(errs []schema.ValidationError) error {
 // Classification is sentinel-based to keep it robust against wording drift
 // in the wrap strings:
 //
-//   - ErrPolymorphicSlot → 4xx POLYMORPHIC_SLOT (client normalizes payload)
-//   - errInternalSchema  → 5xx with logged ticket (codec/diff/store failure)
-//   - anything else      → 4xx BAD_REQUEST (change-level violation,
-//                          validation failure, malformed walk input)
+//   - ErrPolymorphicSlot      → 4xx POLYMORPHIC_SLOT (client normalizes payload)
+//   - *incompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
+//     (fieldPath, expectedType, actualType) — Cloud's
+//     FoundIncompatibleTypeWithEntityModelException equivalent
+//   - errInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
+//   - anything else           → 4xx BAD_REQUEST (change-level violation,
+//     other validation failure, malformed walk input)
 func classifyValidateOrExtendErr(err error) *common.AppError {
 	if errors.Is(err, schema.ErrPolymorphicSlot) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
+	}
+	var incompatErr *incompatibleTypeError
+	if errors.As(err, &incompatErr) {
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeIncompatibleType, err.Error())
+		expected := make([]string, len(incompatErr.expectedTypes))
+		for i, dt := range incompatErr.expectedTypes {
+			expected[i] = dt.String()
+		}
+		props := map[string]any{
+			"fieldPath":    incompatErr.path,
+			"expectedType": expected,
+			"actualType":   incompatErr.actualType.String(),
+		}
+		if incompatErr.entityName != "" {
+			props["entityName"] = incompatErr.entityName
+		}
+		if incompatErr.entityVersion != "" {
+			props["entityVersion"] = incompatErr.entityVersion
+		}
+		appErr.Props = props
+		return appErr
 	}
 	if errors.Is(err, errInternalSchema) {
 		return common.Internal("failed to process model schema", err)
@@ -254,7 +324,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 }
 
 func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetOneEntityParams) {
-	// Reject if both pointInTime and transactionId are set
+	// Reject if both pointInTime and transactionId are set — the two
+	// scopes are mutually exclusive on the dictionary contract.
 	if params.PointInTime != nil && params.TransactionId != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "cannot specify both pointInTime and transactionId"))
 		return
@@ -263,6 +334,13 @@ func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId 
 	input := GetOneEntityInput{
 		EntityID:    entityId.String(),
 		PointInTime: params.PointInTime,
+	}
+	// Propagate transactionId scope. Issue #150: previously this query
+	// param was parsed by the generated server interface but never plumbed
+	// into the service input, so the handler silently returned the latest
+	// entity regardless of transactionId.
+	if params.TransactionId != nil {
+		input.TransactionID = params.TransactionId.String()
 	}
 
 	envelope, err := h.GetEntity(r.Context(), input)
@@ -385,7 +463,7 @@ func (h *Handler) DeleteSingleEntity(w http.ResponseWriter, r *http.Request, ent
 }
 
 func (h *Handler) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetEntityChangesMetadataParams) {
-	entries, err := h.GetChangesMetadata(r.Context(), entityId.String())
+	entries, err := h.GetChangesMetadata(r.Context(), entityId.String(), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -436,6 +514,17 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	}
 	if params.PageNumber != nil {
 		pageNumber = *params.PageNumber
+	}
+
+	// Reject negative / over-cap / overflow-prone values BEFORE the
+	// storage lookup. Without this guard, an attacker-supplied
+	// pageNumber=MaxInt32 panics in ListEntities (slice bounds out of
+	// range) and surfaces as 500 — see PR #149 follow-up. ValidateOffset
+	// returns *common.AppError as error; classifyError routes it to the
+	// 400 BAD_REQUEST response.
+	if err := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
 	}
 
 	envelopes, err := h.ListEntities(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), PaginationParams{

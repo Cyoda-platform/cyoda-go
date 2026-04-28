@@ -465,6 +465,10 @@ func (s *entityStore) GetVersionHistory(ctx context.Context, entityID string) ([
 		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
+	if len(history) == 0 {
+		return nil, fmt.Errorf("entity %s: %w", entityID, spi.ErrNotFound)
+	}
+
 	return history, nil
 }
 

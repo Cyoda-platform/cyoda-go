@@ -16,6 +16,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/app"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -81,6 +82,16 @@ func doGetEntityWithPointInTime(t *testing.T, base, entityID string, pit time.Ti
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("get entity with pointInTime request failed: %v", err)
+	}
+	return resp
+}
+
+func doGetEntityWithTransactionID(t *testing.T, base, entityID, txID string) *http.Response {
+	t.Helper()
+	url := fmt.Sprintf("%s/entity/%s?transactionId=%s", base, entityID, txID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get entity with transactionId request failed: %v", err)
 	}
 	return resp
 }
@@ -1390,6 +1401,218 @@ func TestGetEntityChangesMetadata(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestGetEntityChangesMetadata_PointInTime asserts that the pointInTime
+// query parameter constrains the returned change history to entries whose
+// timeOfChange is at or before the supplied timestamp. Regression test
+// for issue #152: handler previously dropped the parameter silently.
+func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
+
+	// Create entity (k=1).
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
+
+	// Update (k=2).
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Capture cutoff between updates.
+	time.Sleep(50 * time.Millisecond)
+	cutoff := time.Now().UTC()
+	time.Sleep(50 * time.Millisecond)
+
+	// Update (k=3) — after cutoff.
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Without pointInTime — full history (3 entries).
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes (full): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var full []map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		t.Fatalf("parse full: %v", err)
+	}
+	if len(full) != 3 {
+		t.Fatalf("full history: expected 3 entries, got %d", len(full))
+	}
+
+	// With pointInTime=cutoff — truncated history (2 entries: CREATED + first UPDATED).
+	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, cutoff.Format(time.RFC3339Nano))
+	resp, err = http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var truncated []map[string]any
+	if err := json.Unmarshal(body, &truncated); err != nil {
+		t.Fatalf("parse truncated: %v", err)
+	}
+	if len(truncated) != 2 {
+		t.Fatalf("truncated history: expected 2 entries (CREATED + UPDATED), got %d: %v", len(truncated), truncated)
+	}
+	// Newest-first order: [UPDATED, CREATED].
+	if ct, _ := truncated[0]["changeType"].(string); ct != "UPDATED" {
+		t.Errorf("truncated[0].changeType: got %v, want UPDATED", truncated[0]["changeType"])
+	}
+	if ct, _ := truncated[1]["changeType"].(string); ct != "CREATED" {
+		t.Errorf("truncated[1].changeType: got %v, want CREATED", truncated[1]["changeType"])
+	}
+
+	// All returned entries must have timeOfChange <= cutoff.
+	for i, entry := range truncated {
+		ts, _ := entry["timeOfChange"].(string)
+		got, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			t.Fatalf("entry %d: bad timeOfChange %q: %v", i, ts, err)
+		}
+		if got.After(cutoff) {
+			t.Errorf("entry %d: timeOfChange %s is after cutoff %s", i, got, cutoff)
+		}
+	}
+}
+
+// TestGetEntityChangesMetadata_PointInTimeFuture asserts that a pointInTime
+// strictly after the latest change returns the full history — equivalent to
+// omitting the parameter. Boundary case for issue #152.
+func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
+
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// pointInTime strictly after the latest change.
+	future := time.Now().UTC().Add(1 * time.Hour)
+	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, future.Format(time.RFC3339Nano))
+	resp, err := http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (future pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var futureResult []map[string]any
+	if err := json.Unmarshal(body, &futureResult); err != nil {
+		t.Fatalf("parse future result: %v", err)
+	}
+	if len(futureResult) != 3 {
+		t.Fatalf("future pointInTime: expected full history (3 entries), got %d", len(futureResult))
+	}
+
+	// Cross-check: omitting the parameter yields the same result set.
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err = http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes (no pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var fullResult []map[string]any
+	if err := json.Unmarshal(body, &fullResult); err != nil {
+		t.Fatalf("parse full result: %v", err)
+	}
+	if len(fullResult) != len(futureResult) {
+		t.Fatalf("future pointInTime length %d != full history length %d", len(futureResult), len(fullResult))
+	}
+	for i := range fullResult {
+		if fullResult[i]["timeOfChange"] != futureResult[i]["timeOfChange"] {
+			t.Errorf("entry %d: full timeOfChange=%v, future timeOfChange=%v",
+				i, fullResult[i]["timeOfChange"], futureResult[i]["timeOfChange"])
+		}
+		if fullResult[i]["changeType"] != futureResult[i]["changeType"] {
+			t.Errorf("entry %d: full changeType=%v, future changeType=%v",
+				i, fullResult[i]["changeType"], futureResult[i]["changeType"])
+		}
+	}
+}
+
+// TestGetEntityChangesMetadata_PointInTimeExactBoundary asserts that a
+// pointInTime exactly equal to a change's timestamp INCLUDES that change —
+// the filter is at-or-before (<=), not strictly-before. Boundary case for
+// issue #152.
+func TestGetEntityChangesMetadata_PointInTimeExactBoundary(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "ChangesMetaPITExact", 1, `{"k":1}`)
+
+	entityID := createEntityAndGetID(t, srv.URL, "ChangesMetaPITExact", 1, `{"k":1}`)
+	resp := doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Read the full history to discover an actual change timestamp.
+	url := fmt.Sprintf("%s/entity/%s/changes", srv.URL, entityID)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get changes (full): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var full []map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		t.Fatalf("parse full: %v", err)
+	}
+	if len(full) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(full))
+	}
+
+	// History is newest-first: pick the middle change (first UPDATED).
+	// Using its exact timestamp as pointInTime must include that change
+	// (the boundary is inclusive) and exclude the later one.
+	boundaryStr, _ := full[1]["timeOfChange"].(string)
+	boundary, err := time.Parse(time.RFC3339Nano, boundaryStr)
+	if err != nil {
+		t.Fatalf("parse boundary timestamp %q: %v", boundaryStr, err)
+	}
+
+	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, boundary.Format(time.RFC3339Nano))
+	resp, err = http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (exact pit): %v", err)
+	}
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var atBoundary []map[string]any
+	if err := json.Unmarshal(body, &atBoundary); err != nil {
+		t.Fatalf("parse boundary result: %v", err)
+	}
+
+	// Inclusive semantics: the boundary entry (full[1]) AND the older
+	// CREATED entry (full[2]) must be present; the newer entry (full[0])
+	// must be absent.
+	if len(atBoundary) != 2 {
+		t.Fatalf("exact-boundary pointInTime: expected 2 entries (boundary + older), got %d: %v",
+			len(atBoundary), atBoundary)
+	}
+	// Newest-first: [boundary UPDATED, CREATED].
+	if got := atBoundary[0]["timeOfChange"]; got != boundaryStr {
+		t.Errorf("atBoundary[0].timeOfChange: got %v, want %s (boundary entry must be included)", got, boundaryStr)
+	}
+	if ct, _ := atBoundary[0]["changeType"].(string); ct != "UPDATED" {
+		t.Errorf("atBoundary[0].changeType: got %v, want UPDATED", atBoundary[0]["changeType"])
+	}
+	if ct, _ := atBoundary[1]["changeType"].(string); ct != "CREATED" {
+		t.Errorf("atBoundary[1].changeType: got %v, want CREATED", atBoundary[1]["changeType"])
+	}
+}
+
 // --- Workflow integration tests ---
 
 // importWorkflow posts a workflow definition for the given model.
@@ -1642,7 +1865,7 @@ func TestWaitForConsistencyFalse(t *testing.T) {
 	resp.Body.Close()
 }
 
-// --- MVCC If-Match tests ---
+// --- If-Match optimistic-concurrency tests ---
 
 func getEntityTransactionID(t *testing.T, base, entityID string) string {
 	t.Helper()
@@ -1698,6 +1921,7 @@ func TestMVCCMismatchFails(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	expectStatus(t, resp, http.StatusPreconditionFailed)
+	commontest.ExpectErrorCode(t, resp, "ENTITY_MODIFIED")
 	resp.Body.Close()
 }
 
@@ -1725,6 +1949,107 @@ func TestGetEntityPointInTimeBothParamsRejected(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	expectStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
+}
+
+// TestGetEntityByTransactionID verifies that GET /entity/{id}?transactionId=<tx>
+// returns the entity envelope as it stood at that transaction — not the
+// latest version. Issue #150: the handler previously parsed
+// params.TransactionId but never propagated it, so the query parameter was
+// silently dropped and the latest version was returned regardless.
+func TestGetEntityByTransactionID(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "TxGet", 1, `{"k":1}`)
+
+	// Create — capture the create transactionId.
+	entityID := createEntityAndGetID(t, srv.URL, "TxGet", 1, `{"k":1}`)
+	resp := doGetEntity(t, srv.URL, entityID)
+	expectStatus(t, resp, http.StatusOK)
+	body := readBody(t, resp)
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode current envelope: %v", err)
+	}
+	meta := envelope["meta"].(map[string]any)
+	createTxID, _ := meta["transactionId"].(string)
+	if createTxID == "" {
+		t.Fatalf("expected non-empty transactionId on freshly created entity")
+	}
+
+	// Update twice — k=1 → 2 → 3.
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":2}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doUpdateEntity(t, srv.URL, "JSON", entityID, "UPDATE", `{"k":3}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Sanity check: latest is k=3.
+	resp = doGetEntity(t, srv.URL, entityID)
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var latestEnv map[string]any
+	json.Unmarshal(body, &latestEnv)
+	latestData := latestEnv["data"].(map[string]any)
+	if v, _ := latestData["k"].(float64); v != 3 {
+		t.Fatalf("sanity: latest k=%v, want 3", latestData["k"])
+	}
+
+	// GET with createTxID — must return the create-time snapshot k=1.
+	resp = doGetEntityWithTransactionID(t, srv.URL, entityID, createTxID)
+	expectStatus(t, resp, http.StatusOK)
+	body = readBody(t, resp)
+	var atTxEnv map[string]any
+	if err := json.Unmarshal(body, &atTxEnv); err != nil {
+		t.Fatalf("decode at-tx envelope: %v", err)
+	}
+	atTxData := atTxEnv["data"].(map[string]any)
+	if v, _ := atTxData["k"].(float64); v != 1 {
+		t.Errorf("GET ?transactionId=%s: k=%v, want 1 (create-time snapshot)", createTxID, atTxData["k"])
+	}
+	atTxMeta := atTxEnv["meta"].(map[string]any)
+	if got, _ := atTxMeta["transactionId"].(string); got != createTxID {
+		t.Errorf("at-tx envelope meta.transactionId: got %q, want %q", got, createTxID)
+	}
+}
+
+// TestGetEntityByTransactionID_BogusReturns404 verifies that a transactionId
+// that doesn't appear in the entity's version history yields 404
+// ENTITY_NOT_FOUND. Issue #150 (dictionary 12/neg/05): cyoda-go previously
+// returned HTTP 200 with the latest entity because the query parameter was
+// dropped silently.
+func TestGetEntityByTransactionID_BogusReturns404(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "TxGetBogus", 1, `{"k":1}`)
+	entityID := createEntityAndGetID(t, srv.URL, "TxGetBogus", 1, `{"k":1}`)
+
+	resp := doGetEntityWithTransactionID(t, srv.URL, entityID, "00000000-0000-0000-0000-000000000000")
+	expectStatus(t, resp, http.StatusNotFound)
+	body := readBody(t, resp)
+	var apiErr struct {
+		Properties struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &apiErr); err != nil {
+		t.Fatalf("decode error response: %v\nbody: %s", err, body)
+	}
+	if apiErr.Properties.ErrorCode != common.ErrCodeEntityNotFound {
+		t.Errorf("expected errorCode %q, got %q (body: %s)",
+			common.ErrCodeEntityNotFound, apiErr.Properties.ErrorCode, body)
+	}
+}
+
+// TestGetEntityByTransactionID_NonExistentEntityReturns404 verifies that a
+// transactionId-scoped GET on a non-existent entity yields 404
+// ENTITY_NOT_FOUND (mirrors the latest-GET path).
+func TestGetEntityByTransactionID_NonExistentEntityReturns404(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "TxGetMissing", 1, `{"k":1}`)
+	bogusEntityID := uuid.NewString()
+
+	resp := doGetEntityWithTransactionID(t, srv.URL, bogusEntityID, "00000000-0000-0000-0000-000000000001")
+	expectStatus(t, resp, http.StatusNotFound)
 	resp.Body.Close()
 }
 
@@ -1838,5 +2163,56 @@ func TestBatchDeleteTransaction(t *testing.T) {
 	body := readBody(t, resp)
 	if strings.TrimSpace(string(body)) != "[]" {
 		t.Fatalf("expected empty array after batch delete, got %s", string(body))
+	}
+}
+
+// TestCreateEntity_IncompatibleType_ReturnsSpecificCode asserts the full
+// HTTP stack (handler → AppError → RFC 9457 problem-detail body) emits
+// HTTP 400 with `errorCode: "INCOMPATIBLE_TYPE"` and the structured Props
+// (`fieldPath`, `expectedType`, `actualType`, `entityName`,
+// `entityVersion`) when an entity payload's leaf value type is not
+// assignable to the schema's declared DataType.
+//
+// Closes #129. Cloud equivalent:
+// FoundIncompatibleTypeWithEntityModelException.
+func TestCreateEntity_IncompatibleType_ReturnsSpecificCode(t *testing.T) {
+	srv := newTestServer(t)
+	// Sample model infers price as INTEGER.
+	importAndLockModel(t, srv.URL, "IncompatibleTypeTest", 1, `{"price":13}`)
+
+	// Submit a DOUBLE — incompatible with the locked INTEGER schema (no
+	// changeLevel, no widening).
+	resp := doCreateEntity(t, srv.URL, "JSON", "IncompatibleTypeTest", 1, `{"price":13.111}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 400; body: %s", resp.StatusCode, string(body))
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeIncompatibleType)
+
+	// Decode and assert structured Props.
+	body, _ := io.ReadAll(resp.Body)
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, string(body))
+	}
+	if got := pd.Properties["fieldPath"]; got != "price" {
+		t.Errorf("properties.fieldPath: got %v, want %q", got, "price")
+	}
+	if got := pd.Properties["actualType"]; got != "DOUBLE" {
+		t.Errorf("properties.actualType: got %v, want %q", got, "DOUBLE")
+	}
+	expectedAny, ok := pd.Properties["expectedType"].([]any)
+	if !ok || len(expectedAny) != 1 || expectedAny[0] != "INTEGER" {
+		t.Errorf("properties.expectedType: got %v, want [\"INTEGER\"]", pd.Properties["expectedType"])
+	}
+	if got := pd.Properties["entityName"]; got != "IncompatibleTypeTest" {
+		t.Errorf("properties.entityName: got %v, want %q", got, "IncompatibleTypeTest")
+	}
+	if got := pd.Properties["entityVersion"]; got != "1" {
+		t.Errorf("properties.entityVersion: got %v, want %q", got, "1")
 	}
 }

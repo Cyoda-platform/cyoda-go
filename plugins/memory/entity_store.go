@@ -96,6 +96,12 @@ func (s *EntityStore) SaveAll(ctx context.Context, entities iter.Seq[*spi.Entity
 func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		// Hold tx.OpMu.RLock for the duration of the buffer mutation so
+		// that Commit/Rollback (which take tx.OpMu.Lock) cannot race with
+		// writes to tx.Buffer / tx.WriteSet. Lock order matches
+		// txmanager.Commit: tx.OpMu before factory.entityMu.
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return 0, fmt.Errorf("transaction has been rolled back")
 		}
@@ -115,29 +121,43 @@ func (s *EntityStore) Save(ctx context.Context, entity *spi.Entity) (int64, erro
 func (s *EntityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, expectedTxID string) (int64, error) {
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
+		// Hold tx.OpMu.RLock for the duration of the CAS+buffer mutation
+		// so that Commit/Rollback (which take tx.OpMu.Lock) cannot race
+		// with writes to tx.Buffer / tx.WriteSet. Lock order matches
+		// txmanager.Commit: tx.OpMu before factory.entityMu.
+		tx.OpMu.RLock()
+		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return 0, fmt.Errorf("transaction has been rolled back")
 		}
 		// Check CAS against main store (committed data), not buffer.
-		// Hold RLock through both version check AND buffer write to prevent TOCTOU.
-		s.factory.entityMu.RLock()
-		versions := s.factory.entityData[s.tenant][entity.Meta.ID]
-		if len(versions) > 0 {
-			for i := len(versions) - 1; i >= 0; i-- {
-				if !versions[i].deleted && versions[i].entity != nil {
-					if versions[i].entity.Meta.TransactionID != expectedTxID {
-						s.factory.entityMu.RUnlock()
-						return 0, spi.ErrConflict
+		// Hold entityMu.RLock through both version check AND buffer write
+		// to prevent TOCTOU. Wrap in an IIFE so the unlock runs via defer
+		// (per .claude/rules/go-mutex-discipline.md).
+		var conflict bool
+		func() {
+			s.factory.entityMu.RLock()
+			defer s.factory.entityMu.RUnlock()
+			versions := s.factory.entityData[s.tenant][entity.Meta.ID]
+			if len(versions) > 0 {
+				for i := len(versions) - 1; i >= 0; i-- {
+					if !versions[i].deleted && versions[i].entity != nil {
+						if versions[i].entity.Meta.TransactionID != expectedTxID {
+							conflict = true
+							return
+						}
+						break
 					}
-					break
 				}
 			}
+			// Write to buffer under the same lock hold.
+			cp := copyEntity(entity)
+			tx.Buffer[entity.Meta.ID] = cp
+			tx.WriteSet[entity.Meta.ID] = true
+		}()
+		if conflict {
+			return 0, spi.ErrConflict
 		}
-		// Write to buffer under the same lock hold.
-		cp := copyEntity(entity)
-		tx.Buffer[entity.Meta.ID] = cp
-		tx.WriteSet[entity.Meta.ID] = true
-		s.factory.entityMu.RUnlock()
 		return 0, nil
 	}
 
