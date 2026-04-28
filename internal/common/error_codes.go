@@ -15,6 +15,14 @@ const (
 	ErrCodeConflict             = "CONFLICT"
 	ErrCodeEpochMismatch        = "EPOCH_MISMATCH"
 	ErrCodeBadRequest           = "BAD_REQUEST"
+	// ErrCodeIncompatibleType is returned when an entity payload's leaf
+	// value type is not assignable to the schema's declared DataType for
+	// that field (e.g. submitting "abc" or 13.111 against an INTEGER
+	// field). Equivalent to Cloud's
+	// FoundIncompatibleTypeWithEntityModelException. Distinct from
+	// ErrCodeConditionTypeMismatch which is the search-side equivalent
+	// for a condition's literal-vs-field mismatch.
+	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
 	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
 	ErrCodePolymorphicSlot      = "POLYMORPHIC_SLOT"
 	ErrCodeUnauthorized         = "UNAUTHORIZED"

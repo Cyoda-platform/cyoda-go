@@ -2165,3 +2165,54 @@ func TestBatchDeleteTransaction(t *testing.T) {
 		t.Fatalf("expected empty array after batch delete, got %s", string(body))
 	}
 }
+
+// TestCreateEntity_IncompatibleType_ReturnsSpecificCode asserts the full
+// HTTP stack (handler → AppError → RFC 9457 problem-detail body) emits
+// HTTP 400 with `errorCode: "INCOMPATIBLE_TYPE"` and the structured Props
+// (`fieldPath`, `expectedType`, `actualType`, `entityName`,
+// `entityVersion`) when an entity payload's leaf value type is not
+// assignable to the schema's declared DataType.
+//
+// Closes #129. Cloud equivalent:
+// FoundIncompatibleTypeWithEntityModelException.
+func TestCreateEntity_IncompatibleType_ReturnsSpecificCode(t *testing.T) {
+	srv := newTestServer(t)
+	// Sample model infers price as INTEGER.
+	importAndLockModel(t, srv.URL, "IncompatibleTypeTest", 1, `{"price":13}`)
+
+	// Submit a DOUBLE — incompatible with the locked INTEGER schema (no
+	// changeLevel, no widening).
+	resp := doCreateEntity(t, srv.URL, "JSON", "IncompatibleTypeTest", 1, `{"price":13.111}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 400; body: %s", resp.StatusCode, string(body))
+	}
+	commontest.ExpectErrorCode(t, resp, common.ErrCodeIncompatibleType)
+
+	// Decode and assert structured Props.
+	body, _ := io.ReadAll(resp.Body)
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, string(body))
+	}
+	if got := pd.Properties["fieldPath"]; got != "price" {
+		t.Errorf("properties.fieldPath: got %v, want %q", got, "price")
+	}
+	if got := pd.Properties["actualType"]; got != "DOUBLE" {
+		t.Errorf("properties.actualType: got %v, want %q", got, "DOUBLE")
+	}
+	expectedAny, ok := pd.Properties["expectedType"].([]any)
+	if !ok || len(expectedAny) != 1 || expectedAny[0] != "INTEGER" {
+		t.Errorf("properties.expectedType: got %v, want [\"INTEGER\"]", pd.Properties["expectedType"])
+	}
+	if got := pd.Properties["entityName"]; got != "IncompatibleTypeTest" {
+		t.Errorf("properties.entityName: got %v, want %q", got, "IncompatibleTypeTest")
+	}
+	if got := pd.Properties["entityVersion"]; got != "1" {
+		t.Errorf("properties.entityVersion: got %v, want %q", got, "1")
+	}
+}

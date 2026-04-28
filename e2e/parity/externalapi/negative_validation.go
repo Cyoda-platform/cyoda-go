@@ -56,11 +56,11 @@ func RunExternalAPI_12_01_CreateEntityOnUnlockedModel(t *testing.T, fixture pari
 
 // RunExternalAPI_12_02_CreateEntityWithIncompatibleType — dictionary 12/neg/02.
 // Dictionary expects HTTP 400 + FoundIncompatibleTypeWitEntityModelException.
-// worse: cyoda-go emits generic BAD_REQUEST — same code path as scenario 02/03.
-// Tracked by #129. The entity-count assertion is preserved for when #129 lands.
+// equiv_or_better after #129: cyoda-go emits INCOMPATIBLE_TYPE @400 with
+// structured Props (fieldPath, expectedType, actualType, entityName,
+// entityVersion); same code path as scenario 02/03.
 func RunExternalAPI_12_02_CreateEntityWithIncompatibleType(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #129 — cyoda-go emits generic BAD_REQUEST; dictionary requires FoundIncompatibleTypeWitEntityModelException-level specificity (TYPE_MISMATCH). Discover-and-compare worse case.")
 	d := driver.NewInProcess(t, fixture)
 	if err := d.CreateModelFromSample("neg2", 1, `{"price":13}`); err != nil {
 		t.Fatalf("create: %v", err)
@@ -72,11 +72,11 @@ func RunExternalAPI_12_02_CreateEntityWithIncompatibleType(t *testing.T, fixture
 	if err != nil {
 		t.Fatalf("CreateEntityRaw: %v", err)
 	}
-	// Tighten to TYPE_MISMATCH once #129 lands.
-	// Cloud equivalent: FoundIncompatibleTypeWitEntityModelException.
+	// equiv_or_better: INCOMPATIBLE_TYPE maps to
+	// FoundIncompatibleTypeWithEntityModelException in the cloud dictionary.
 	errorcontract.Match(t, status, body, errorcontract.ExpectedError{
 		HTTPStatus: http.StatusBadRequest,
-		ErrorCode:  "TYPE_MISMATCH",
+		ErrorCode:  "INCOMPATIBLE_TYPE",
 	})
 	// Entity count must remain zero — write was rejected.
 	list, err := d.ListEntitiesByModel("neg2", 1)

@@ -19,7 +19,7 @@ type ErrorKind int
 
 const (
 	// ErrKindGeneric covers validation failures that do not map to a
-	// more specific kind (type mismatches, shape mismatches).
+	// more specific kind (shape mismatches, malformed schema entries).
 	ErrKindGeneric ErrorKind = iota
 
 	// ErrKindUnknownElement fires when a data document carries a field
@@ -28,13 +28,29 @@ const (
 	// refresh from authoritative storage and retry (see
 	// internal/domain/entity/handler.go).
 	ErrKindUnknownElement
+
+	// ErrKindIncompatibleType fires when a leaf value's inferred DataType
+	// is not assignable to any of the schema's declared DataTypes for
+	// that path (e.g. submitting "abc" against an INTEGER field, or 13.111
+	// against an INTEGER field that has not been widened by an extension).
+	// Equivalent to Cloud's FoundIncompatibleTypeWithEntityModelException;
+	// surfaces the dictionary-aligned INCOMPATIBLE_TYPE error code at the
+	// HTTP boundary.
+	ErrKindIncompatibleType
 )
 
 // ValidationError describes a single validation failure at a specific path.
+//
+// ExpectedTypes and ActualType are only populated when Kind is
+// ErrKindIncompatibleType — they carry the structured context the entity
+// handler renders into RFC 9457 problem-detail Props (`expectedType`,
+// `actualType`).
 type ValidationError struct {
-	Path    string
-	Message string
-	Kind    ErrorKind
+	Path          string
+	Message       string
+	Kind          ErrorKind
+	ExpectedTypes []DataType
+	ActualType    DataType
 }
 
 // Error implements the error interface.
@@ -56,6 +72,19 @@ func HasUnknownSchemaElement(errs []ValidationError) bool {
 		}
 	}
 	return false
+}
+
+// FirstIncompatibleType returns a pointer to the first ErrKindIncompatibleType
+// entry in errs, or nil if none is present. Handlers use this to surface the
+// dictionary-aligned INCOMPATIBLE_TYPE response with structured Props
+// (path, expectedType, actualType) instead of the generic BAD_REQUEST.
+func FirstIncompatibleType(errs []ValidationError) *ValidationError {
+	for i := range errs {
+		if errs[i].Kind == ErrKindIncompatibleType {
+			return &errs[i]
+		}
+	}
+	return nil
 }
 
 // Validate checks whether data conforms to the given model schema.
@@ -156,9 +185,15 @@ func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
 			return nil
 		}
 	}
+	// Copy modelTypes to detach from the model node's internal slice.
+	expected := make([]DataType, len(modelTypes))
+	copy(expected, modelTypes)
 	return []ValidationError{{
-		Path:    path,
-		Message: fmt.Sprintf("value of type %s is not compatible with %v", dataType, modelTypes),
+		Path:          path,
+		Message:       fmt.Sprintf("value of type %s is not compatible with %v", dataType, modelTypes),
+		Kind:          ErrKindIncompatibleType,
+		ExpectedTypes: expected,
+		ActualType:    dataType,
 	}}
 }
 

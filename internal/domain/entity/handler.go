@@ -35,6 +35,38 @@ const maxEntityBodySize = 10 * 1024 * 1024
 // "failed to extend schema" to 4xx.
 var errInternalSchema = errors.New("internal schema processing failure")
 
+// incompatibleTypeError is the typed validation failure surfaced when at
+// least one ValidationError carries ErrKindIncompatibleType (the
+// dictionary-aligned "wrong DataType" signal — Cloud's
+// FoundIncompatibleTypeWithEntityModelException).
+//
+// Rendered by classifyValidateOrExtendErr into a 400 INCOMPATIBLE_TYPE
+// AppError with Props {fieldPath, expectedType, actualType} so SDKs can
+// branch on the precondition without scraping the message string.
+type incompatibleTypeError struct {
+	path          string
+	expectedTypes []schema.DataType
+	actualType    schema.DataType
+	message       string
+	entityName    string // populated by enrichWithModelRef post-validation
+	entityVersion string // populated by enrichWithModelRef post-validation
+}
+
+func (e *incompatibleTypeError) Error() string { return e.message }
+
+// enrichWithModelRef threads model identification (entity name, version)
+// onto an *incompatibleTypeError so the classifier can render those Props
+// alongside the validator-supplied (path, expected/actualType). For all
+// other error types the input is returned unchanged.
+func enrichWithModelRef(err error, ref spi.ModelRef) error {
+	var incompatErr *incompatibleTypeError
+	if errors.As(err, &incompatErr) {
+		incompatErr.entityName = ref.EntityName
+		incompatErr.entityVersion = ref.ModelVersion
+	}
+	return err
+}
+
 // maxStatesFilterSize bounds the cardinality of the user-supplied ?states= query
 // parameter on stats-by-state endpoints. Without this cap, an oversized list would
 // reach SQL backends and either exceed driver parameter limits (SQLite's
@@ -76,11 +108,7 @@ func (h *Handler) validateOrExtend(ctx context.Context, modelStore spi.ModelStor
 	if desc.ChangeLevel == "" {
 		errs := schema.Validate(modelNode, parsedData)
 		if len(errs) > 0 {
-			msgs := make([]string, len(errs))
-			for i, e := range errs {
-				msgs[i] = e.Error()
-			}
-			return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+			return enrichWithModelRef(validationErrorsToError(errs), desc.Ref)
 		}
 		return nil
 	}
@@ -168,12 +196,29 @@ func validateDescriptor(desc *spi.ModelDescriptor, data any) []schema.Validation
 
 // validationErrorsToError converts a []ValidationError to a single error,
 // preserving the concatenation style used by validateOrExtend.
+//
+// When at least one entry classifies as ErrKindIncompatibleType (the
+// dictionary-aligned "wrong DataType" signal), the function returns a
+// typed *incompatibleTypeError carrying the first such entry's structured
+// fields so classifyValidateOrExtendErr can render INCOMPATIBLE_TYPE Props
+// without scraping the message string. Other validation errors fall back
+// to the generic "validation failed: ..." wrap, classified as
+// BAD_REQUEST downstream.
 func validationErrorsToError(errs []schema.ValidationError) error {
 	msgs := make([]string, len(errs))
 	for i, e := range errs {
 		msgs[i] = e.Error()
 	}
-	return fmt.Errorf("validation failed: %s", strings.Join(msgs, "; "))
+	joined := fmt.Sprintf("validation failed: %s", strings.Join(msgs, "; "))
+	if first := schema.FirstIncompatibleType(errs); first != nil {
+		return &incompatibleTypeError{
+			path:          first.Path,
+			expectedTypes: first.ExpectedTypes,
+			actualType:    first.ActualType,
+			message:       joined,
+		}
+	}
+	return fmt.Errorf("%s", joined)
 }
 
 // classifyValidateOrExtendErr determines whether a validateOrExtend error is
@@ -182,13 +227,37 @@ func validationErrorsToError(errs []schema.ValidationError) error {
 // Classification is sentinel-based to keep it robust against wording drift
 // in the wrap strings:
 //
-//   - ErrPolymorphicSlot → 4xx POLYMORPHIC_SLOT (client normalizes payload)
-//   - errInternalSchema  → 5xx with logged ticket (codec/diff/store failure)
-//   - anything else      → 4xx BAD_REQUEST (change-level violation,
-//                          validation failure, malformed walk input)
+//   - ErrPolymorphicSlot      → 4xx POLYMORPHIC_SLOT (client normalizes payload)
+//   - *incompatibleTypeError  → 4xx INCOMPATIBLE_TYPE with structured Props
+//     (fieldPath, expectedType, actualType) — Cloud's
+//     FoundIncompatibleTypeWithEntityModelException equivalent
+//   - errInternalSchema       → 5xx with logged ticket (codec/diff/store failure)
+//   - anything else           → 4xx BAD_REQUEST (change-level violation,
+//     other validation failure, malformed walk input)
 func classifyValidateOrExtendErr(err error) *common.AppError {
 	if errors.Is(err, schema.ErrPolymorphicSlot) {
 		return common.Operational(http.StatusBadRequest, common.ErrCodePolymorphicSlot, err.Error())
+	}
+	var incompatErr *incompatibleTypeError
+	if errors.As(err, &incompatErr) {
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeIncompatibleType, err.Error())
+		expected := make([]string, len(incompatErr.expectedTypes))
+		for i, dt := range incompatErr.expectedTypes {
+			expected[i] = dt.String()
+		}
+		props := map[string]any{
+			"fieldPath":    incompatErr.path,
+			"expectedType": expected,
+			"actualType":   incompatErr.actualType.String(),
+		}
+		if incompatErr.entityName != "" {
+			props["entityName"] = incompatErr.entityName
+		}
+		if incompatErr.entityVersion != "" {
+			props["entityVersion"] = incompatErr.entityVersion
+		}
+		appErr.Props = props
+		return appErr
 	}
 	if errors.Is(err, errInternalSchema) {
 		return common.Internal("failed to process model schema", err)

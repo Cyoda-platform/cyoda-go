@@ -124,3 +124,39 @@ func TestClassifyValidateOrExtendErr_UntaggedError_Is4xx(t *testing.T) {
 		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeBadRequest)
 	}
 }
+
+// TestClassifyValidateOrExtendErr_IncompatibleType_GetsSpecificCode —
+// validation errors carrying an ErrKindIncompatibleType entry must surface
+// as 400 INCOMPATIBLE_TYPE with structured Props (`fieldPath`,
+// `expectedType`, `actualType`) rather than the generic BAD_REQUEST.
+// Wires the cyoda-go response to Cloud's
+// FoundIncompatibleTypeWithEntityModelException dictionary class.
+func TestClassifyValidateOrExtendErr_IncompatibleType_GetsSpecificCode(t *testing.T) {
+	underlying := &incompatibleTypeError{
+		path:          "price",
+		expectedTypes: []schema.DataType{schema.Integer},
+		actualType:    schema.Double,
+		message:       "validation failed: price: value of type DOUBLE is not compatible with [INTEGER]",
+	}
+
+	appErr := classifyValidateOrExtendErr(underlying)
+	if appErr == nil {
+		t.Fatal("nil appErr")
+	}
+	if appErr.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", appErr.Status)
+	}
+	if appErr.Code != common.ErrCodeIncompatibleType {
+		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeIncompatibleType)
+	}
+	if appErr.Props["fieldPath"] != "price" {
+		t.Errorf("fieldPath: got %v, want %q", appErr.Props["fieldPath"], "price")
+	}
+	if appErr.Props["actualType"] != "DOUBLE" {
+		t.Errorf("actualType: got %v, want %q", appErr.Props["actualType"], "DOUBLE")
+	}
+	expected, _ := appErr.Props["expectedType"].([]string)
+	if len(expected) != 1 || expected[0] != "INTEGER" {
+		t.Errorf("expectedType: got %v, want [INTEGER]", appErr.Props["expectedType"])
+	}
+}
