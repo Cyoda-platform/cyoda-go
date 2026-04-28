@@ -123,6 +123,31 @@ func main() {
 	rootCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
+	// Second-signal escape hatch: signal.NotifyContext only cancels on
+	// the first signal; subsequent signals are no-ops, leaving the
+	// operator with no recourse if the graceful drain hangs (stuck
+	// in-flight RPC, slow-closing storage pool). Register the hard-exit
+	// channel up-front so it is already armed when the first signal
+	// arrives — otherwise the second signal can race the goroutine
+	// setup and be lost. The goroutine only acts once rootCtx is
+	// cancelled, so the first signal still flows through the graceful
+	// path; only signals received AFTER cancellation force os.Exit(2).
+	hardExitCh := make(chan os.Signal, 1)
+	signal.Notify(hardExitCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-rootCtx.Done()
+		// Drain any signal that landed in the buffered channel before
+		// rootCtx was cancelled — that one is the first signal and is
+		// already being handled by signal.NotifyContext.
+		select {
+		case <-hardExitCh:
+		default:
+		}
+		<-hardExitCh
+		slog.Warn("hard exit forced by second signal")
+		os.Exit(2)
+	}()
+
 	// gRPC listen happens here (before runServers) so a bind error fails
 	// fast with a clear non-zero exit — the deferred OTel flush still
 	// runs because we use os.Exit only after the deferred-flush guard.
