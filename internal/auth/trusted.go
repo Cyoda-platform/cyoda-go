@@ -18,11 +18,14 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// trustedKIDPattern matches the KID character/length whitelist enforced at the
-// trusted-key registration handler boundary (#34 item 3). The set
-// (alphanumeric plus '.', '_', '-') covers RFC-style key identifiers without
-// permitting path-traversal segments, control characters, or unbounded length.
-var trustedKIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,256}$`)
+// trustedKIDPattern is the character whitelist enforced on trusted-key
+// identifiers across every lifecycle endpoint (register, delete, invalidate,
+// reactivate). Allowed: ASCII alphanumerics plus '-', '_', '.', length 1..128.
+// Anything else (control characters, slashes, query syntax, JSON-breaking
+// punctuation, unicode confusables) is rejected at the boundary so neither
+// the persistence layer nor downstream logs ever see attacker-controlled
+// fragments outside this safe set.
+var trustedKIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // registerTrustedKeyRequest is the JSON body for POST /oauth/keys/trusted.
 // Matches Cyoda Cloud's RegisterTrustedKeyRequest schema.
@@ -112,18 +115,22 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 
 	var req registerTrustedKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
 
 	if !trustedKIDPattern.MatchString(req.KeyID) {
-		http.Error(w, `{"error":"invalid keyId: must match ^[a-zA-Z0-9._-]{1,256}$"}`, http.StatusBadRequest)
+		slog.Info("trusted key register: invalid keyId format", "kid", req.KeyID)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return
 	}
 
 	pubKey, err := parseRSAPublicKeyFromJWK(req.JWK)
 	if err != nil {
-		http.Error(w, `{"error":"invalid jwk"}`, http.StatusBadRequest)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid jwk"))
 		return
 	}
 
@@ -131,7 +138,8 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	if req.ValidFrom != nil {
 		parsed, err := time.Parse(time.RFC3339, *req.ValidFrom)
 		if err != nil {
-			http.Error(w, `{"error":"invalid validFrom: expected RFC3339 format"}`, http.StatusBadRequest)
+			common.WriteError(w, r, common.Operational(
+				http.StatusBadRequest, common.ErrCodeBadRequest, "invalid validFrom: expected RFC3339 format"))
 			return
 		}
 		validFrom = parsed
@@ -141,7 +149,8 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	if req.ValidTo != nil {
 		t, err := time.Parse(time.RFC3339, *req.ValidTo)
 		if err != nil {
-			http.Error(w, `{"error":"invalid validTo: expected RFC3339 format"}`, http.StatusBadRequest)
+			common.WriteError(w, r, common.Operational(
+				http.StatusBadRequest, common.ErrCodeBadRequest, "invalid validTo: expected RFC3339 format"))
 			return
 		}
 		validTo = &t
@@ -175,14 +184,13 @@ func (h *TrustedKeysHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		slog.Debug("failed to encode response", "error", err)
 	}
 }
 
 func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request, path string) {
-	keyID := extractKeyID(path, "/oauth/keys/trusted/")
-	if keyID == "" {
-		http.Error(w, "missing key ID", http.StatusBadRequest)
+	keyID, ok := validateLifecycleKID(w, r, path, "/oauth/keys/trusted/")
+	if !ok {
 		return
 	}
 	if err := h.trustedKeyStore.Delete(keyID); err != nil {
@@ -199,9 +207,8 @@ func (h *TrustedKeysHandler) handleDelete(w http.ResponseWriter, r *http.Request
 func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/invalidate
 	trimmed := strings.TrimSuffix(path, "/invalidate")
-	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
-	if keyID == "" {
-		http.Error(w, "missing key ID", http.StatusBadRequest)
+	keyID, ok := validateLifecycleKID(w, r, trimmed, "/oauth/keys/trusted/")
+	if !ok {
 		return
 	}
 	if err := h.trustedKeyStore.Invalidate(keyID); err != nil {
@@ -218,9 +225,8 @@ func (h *TrustedKeysHandler) handleInvalidate(w http.ResponseWriter, r *http.Req
 func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Request, path string) {
 	// path: /oauth/keys/trusted/{keyId}/reactivate
 	trimmed := strings.TrimSuffix(path, "/reactivate")
-	keyID := extractKeyID(trimmed, "/oauth/keys/trusted/")
-	if keyID == "" {
-		http.Error(w, "missing key ID", http.StatusBadRequest)
+	keyID, ok := validateLifecycleKID(w, r, trimmed, "/oauth/keys/trusted/")
+	if !ok {
 		return
 	}
 	if err := h.trustedKeyStore.Reactivate(keyID); err != nil {
@@ -232,6 +238,21 @@ func (h *TrustedKeysHandler) handleReactivate(w http.ResponseWriter, r *http.Req
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// validateLifecycleKID extracts the {keyId} path segment and rejects
+// anything that fails the trustedKIDPattern whitelist with a 400 problem
+// detail. Returns (keyID, true) on success or ("", false) when the
+// response has already been written.
+func validateLifecycleKID(w http.ResponseWriter, r *http.Request, path, prefix string) (string, bool) {
+	keyID := extractKeyID(path, prefix)
+	if !trustedKIDPattern.MatchString(keyID) {
+		slog.Info("trusted key lifecycle: invalid keyId format", "kid", keyID, "path", r.URL.Path)
+		common.WriteError(w, r, common.Operational(
+			http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
+		return "", false
+	}
+	return keyID, true
 }
 
 // extractKeyID returns the key ID from a path like /oauth/keys/trusted/{keyId}.

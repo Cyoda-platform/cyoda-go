@@ -572,3 +572,67 @@ func TestTrustedKeysHandler_DeleteNotFound_GenericMessage(t *testing.T) {
 		t.Errorf("errorCode = %q, want %q", got, common.ErrCodeTrustedKeyNotFound)
 	}
 }
+
+// TestTrustedKeysHandler_LifecycleEnforcesKIDWhitelist covers MED-4: every
+// lifecycle endpoint (Register, Delete, Invalidate, Reactivate) must apply
+// the same {keyId} character whitelist. Previously only Register validated
+// the input, leaving DELETE/Invalidate/Reactivate accepting arbitrary
+// strings — including ones that could produce noisy logs or downstream
+// store errors with attacker-controlled fragments.
+//
+// Whitelist: alnum + '-' + '_' + '.', length 1..128.
+func TestTrustedKeysHandler_LifecycleEnforcesKIDWhitelist(t *testing.T) {
+	// Path-safe but disallowed: a tilde is not in the whitelist set.
+	const malformed = "kid~with~tilde"
+
+	type tcase struct {
+		name string
+		req  func() *http.Request
+	}
+	jwk := generateTestJWK(t)
+	body := registerTrustedKeyRequest{
+		KeyID:    malformed,
+		JWK:      jwk,
+		Audience: "svc",
+	}
+	bodyBytes, _ := json.Marshal(body)
+	cases := []tcase{
+		{"register", func() *http.Request {
+			req := adminReq(http.MethodPost, "/oauth/keys/trusted", bytes.NewReader(bodyBytes))
+			req.Header.Set("Content-Type", "application/json")
+			return req
+		}},
+		{"delete", func() *http.Request {
+			return adminReq(http.MethodDelete, "/oauth/keys/trusted/"+malformed, nil)
+		}},
+		{"invalidate", func() *http.Request {
+			return adminReq(http.MethodPost, "/oauth/keys/trusted/"+malformed+"/invalidate", nil)
+		}},
+		{"reactivate", func() *http.Request {
+			return adminReq(http.MethodPost, "/oauth/keys/trusted/"+malformed+"/reactivate", nil)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewTrustedKeysHandler(NewInMemoryTrustedKeyStore())
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, tc.req())
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for malformed keyId, got %d (body=%q)", rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+				t.Fatalf("expected Content-Type=application/problem+json, got %q", ct)
+			}
+			var pd common.ProblemDetail
+			if err := json.NewDecoder(rec.Body).Decode(&pd); err != nil {
+				t.Fatalf("failed to decode problem-detail: %v", err)
+			}
+			code, _ := pd.Props["errorCode"].(string)
+			if code != common.ErrCodeBadRequest {
+				t.Errorf("expected errorCode=%s, got %s", common.ErrCodeBadRequest, code)
+			}
+		})
+	}
+}
