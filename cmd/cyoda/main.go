@@ -6,18 +6,15 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/cmd/cyoda/help"
-	"github.com/cyoda-platform/cyoda-go/internal/admin"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 
@@ -94,6 +91,11 @@ func main() {
 	printBanner(cfg)
 	printMockAuthWarningTo(os.Stdout, cfg)
 
+	// OTel flush is deferred at the top of main so it runs on every exit
+	// path (signal handler, server failure, panic recovery). All later
+	// errors below this point go through normal returns/exit codes so the
+	// deferred shutdown actually fires. Issue #26 specifically called out
+	// the previous os.Exit-from-goroutine pattern that bypassed this.
 	if cfg.OTelEnabled {
 		nodeID := cfg.Cluster.NodeID
 		if nodeID == "" {
@@ -116,72 +118,51 @@ func main() {
 	// while the SIGINT handler runs the graceful shutdown.
 	signal.Ignore(syscall.SIGPIPE)
 
-	// Graceful shutdown: SIGINT (Ctrl+C) and SIGTERM trigger orderly teardown.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Graceful shutdown: SIGINT (Ctrl+C) and SIGTERM cancel rootCtx; the
+	// errgroup in runServers picks that up and drains every server.
+	rootCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
 
-	// Start gRPC server
+	// Second-signal escape hatch: signal.NotifyContext only cancels on
+	// the first signal; subsequent signals are no-ops, leaving the
+	// operator with no recourse if the graceful drain hangs (stuck
+	// in-flight RPC, slow-closing storage pool). Register the hard-exit
+	// channel up-front so it is already armed when the first signal
+	// arrives — otherwise the second signal can race the goroutine
+	// setup and be lost. The goroutine only acts once rootCtx is
+	// cancelled, so the first signal still flows through the graceful
+	// path; only signals received AFTER cancellation force os.Exit(2).
+	hardExitCh := make(chan os.Signal, 1)
+	signal.Notify(hardExitCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-rootCtx.Done()
+		// Drain any signal that landed in the buffered channel before
+		// rootCtx was cancelled — that one is the first signal and is
+		// already being handled by signal.NotifyContext.
+		select {
+		case <-hardExitCh:
+		default:
+		}
+		<-hardExitCh
+		slog.Warn("hard exit forced by second signal")
+		os.Exit(2)
+	}()
+
+	// gRPC listen happens here (before runServers) so a bind error fails
+	// fast with a clear non-zero exit — the deferred OTel flush still
+	// runs because we use os.Exit only after the deferred-flush guard.
 	grpcAddr := fmt.Sprintf(":%d", cfg.GRPC.Port)
 	lis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		slog.Error("gRPC listen failed", "error", err)
 		os.Exit(1)
 	}
-	go func() {
-		slog.Info("gRPC server starting", "addr", grpcAddr)
-		if err := a.GRPCServer().Serve(lis); err != nil {
-			slog.Error("gRPC server failed", "error", err)
-		}
-	}()
 
-	// Start HTTP server
-	httpAddr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	httpServer := &http.Server{Addr: httpAddr, Handler: a.Handler()}
-	go func() {
-		slog.Info("HTTP server starting", "addr", httpAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP server failed", "error", err)
-		}
-	}()
-
-	// Start admin listener. /livez and /readyz are unauth (kubelet has
-	// no bearer); /metrics can optionally be bearer-gated via
-	// CYODA_METRICS_BEARER — wired here from the validated config.
-	adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.BindAddress, cfg.Admin.Port)
-	adminServer := &http.Server{
-		Addr: adminAddr,
-		Handler: admin.NewHandler(admin.Options{
-			Readiness:          a.ReadinessCheck,
-			MetricsBearerToken: cfg.Admin.MetricsBearerToken,
-		}),
+	if err := runServers(rootCtx, a, cfg, lis); err != nil {
+		// runServers has already triggered a.Shutdown / a.Close before
+		// returning; surface the failure as a non-zero exit code.
+		os.Exit(1)
 	}
-	go func() {
-		slog.Info("admin server starting", "addr", adminAddr)
-		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("admin server failed", "error", err)
-		}
-	}()
-
-	// Block until signal received.
-	sig := <-sigCh
-	slog.Info("received signal, starting graceful shutdown", "signal", sig)
-
-	// Shut down HTTP server with a deadline.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("HTTP server shutdown failed", "error", err)
-	}
-	if err := adminServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("admin server shutdown failed", "error", err)
-	}
-
-	// Close app — releases backend resources (e.g. database pool).
-	if err := a.Close(); err != nil {
-		slog.Error("app shutdown failed", "error", err)
-	}
-
-	slog.Info("shutdown complete")
 }
 
 func printBanner(cfg app.Config) {
