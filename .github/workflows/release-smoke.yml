@@ -43,7 +43,7 @@ jobs:
         # is installed via the release workflow's own step — config
         # bugs there surface at the first real release, which is
         # acceptable given SBOM config rarely changes.
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --snapshot --clean --skip=publish --skip=sign --skip=sbom
