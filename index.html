@@ -4,32 +4,151 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cyoda-go Helm chart repository</title>
+  <meta name="description" content="Helm chart repository for cyoda-go — a lightweight, multi-node Go digital twin of the Cyoda platform.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <style>
-    body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
-    h1 { margin-bottom: 0.25rem; }
-    p.lede { color: #555; margin-top: 0; }
-    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    pre { background: #f5f5f5; padding: 0.75rem 1rem; border-radius: 6px; overflow-x: auto; }
-    a { color: #0a58ca; }
-    footer { margin-top: 2rem; font-size: 0.875rem; color: #666; }
+    :root {
+      --cyoda-aqua: #0D8484;
+      --cyoda-aqua-dark: #0a6868;
+      --cyoda-bg: #EEF3F3;
+      --cyoda-orange: #FD9E29;
+      --cyoda-purple: #5A18AC;
+      --cyoda-grey: #6B6A6D;
+      --cyoda-text: #1a1a1a;
+      --cyoda-muted: #555;
+      --cyoda-hairline: rgba(107, 106, 109, 0.2);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color: var(--cyoda-text);
+      background: var(--cyoda-bg);
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 48rem; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+    header { display: flex; align-items: center; gap: 0.85rem; margin-bottom: 2rem; }
+    header img { width: 44px; height: 44px; }
+    header .titles { line-height: 1.2; }
+    header h1 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--cyoda-aqua-dark);
+      letter-spacing: -0.01em;
+    }
+    header .sub { color: var(--cyoda-grey); font-size: 0.95rem; margin-top: 0.15rem; }
+    h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin: 2rem 0 0.6rem;
+      color: var(--cyoda-text);
+      border-bottom: 2px solid var(--cyoda-aqua);
+      padding-bottom: 0.3rem;
+    }
+    p { margin: 0.65rem 0; color: var(--cyoda-text); }
+    p.lede { font-size: 1.05rem; color: var(--cyoda-muted); }
+    a {
+      color: var(--cyoda-aqua-dark);
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+      transition: border-color 0.15s;
+    }
+    a:hover { border-bottom-color: var(--cyoda-aqua-dark); }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+    code {
+      font-size: 0.9em;
+      background: rgba(13, 132, 132, 0.08);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: #fff;
+      border: 1px solid var(--cyoda-hairline);
+      border-left: 4px solid var(--cyoda-aqua);
+      border-radius: 6px;
+      padding: 0.85rem 1rem;
+      overflow-x: auto;
+      font-size: 0.9rem;
+      line-height: 1.55;
+    }
+    pre code { background: none; padding: 0; font-size: inherit; }
+    ul.links { list-style: none; padding: 0; margin: 0.75rem 0 0; }
+    ul.links li {
+      padding: 0.55rem 0;
+      border-bottom: 1px solid var(--cyoda-hairline);
+    }
+    ul.links li:last-child { border-bottom: none; }
+    ul.links a {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    ul.links .name { font-weight: 600; }
+    ul.links .desc { color: var(--cyoda-muted); font-size: 0.9rem; }
+    footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--cyoda-hairline);
+      font-size: 0.85rem;
+      color: var(--cyoda-grey);
+    }
   </style>
 </head>
 <body>
-  <h1>cyoda-go Helm chart repository</h1>
-  <p class="lede">Helm repo for <a href="https://github.com/Cyoda-platform/cyoda-go">Cyoda-platform/cyoda-go</a> &mdash; a lightweight, multi-node Go digital twin of the Cyoda platform.</p>
+  <main class="wrap">
+    <header>
+      <img src="favicon.svg" alt="Cyoda logo">
+      <div class="titles">
+        <h1>cyoda-go Helm chart repository</h1>
+        <div class="sub">Lightweight, multi-node Go digital twin of the Cyoda platform.</div>
+      </div>
+    </header>
 
-  <h2>Install</h2>
-  <pre>helm repo add cyoda https://cyoda-platform.github.io/cyoda-go
+    <p class="lede">
+      Helm repo for
+      <a href="https://github.com/Cyoda-platform/cyoda-go">Cyoda-platform/cyoda-go</a>.
+      Open source, single Go binary, Postgres-backed.
+    </p>
+
+    <h2>Install</h2>
+    <pre><code>helm repo add cyoda https://cyoda-platform.github.io/cyoda-go
 helm repo update
 helm search repo cyoda --versions
-helm install cyoda cyoda/cyoda --version 0.6.3</pre>
+helm install cyoda cyoda/cyoda --version 0.6.3</code></pre>
+    <p>The Helm repo manifest is served at <a href="index.yaml"><code>index.yaml</code></a>.</p>
 
-  <h2>Index</h2>
-  <p>The Helm repo manifest is served at <a href="index.yaml"><code>index.yaml</code></a>.</p>
+    <h2>Cyoda</h2>
+    <ul class="links">
+      <li>
+        <a href="https://docs.cyoda.net">
+          <span class="name">docs.cyoda.net</span>
+          <span class="desc">Cyoda documentation</span>
+        </a>
+      </li>
+      <li>
+        <a href="https://cyoda.org">
+          <span class="name">cyoda.org</span>
+          <span class="desc">Open source project site</span>
+        </a>
+      </li>
+      <li>
+        <a href="https://cyoda.com">
+          <span class="name">cyoda.com</span>
+          <span class="desc">Company site</span>
+        </a>
+      </li>
+    </ul>
 
-  <footer>
-    Source: <a href="https://github.com/Cyoda-platform/cyoda-go">github.com/Cyoda-platform/cyoda-go</a> &middot;
-    Releases: <a href="https://github.com/Cyoda-platform/cyoda-go/releases">tags</a>
-  </footer>
+    <footer>
+      Source: <a href="https://github.com/Cyoda-platform/cyoda-go">github.com/Cyoda-platform/cyoda-go</a>
+      &middot;
+      Releases: <a href="https://github.com/Cyoda-platform/cyoda-go/releases">tags</a>
+    </footer>
+  </main>
 </body>
 </html>

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+    <!-- Circular background -->
+    <circle cx="512" cy="512" r="512" fill="#EEF3F3"/>
+
+  <!-- Outer ring (annulus) using evenodd fill -->
+  <path fill="#0D8484" fill-rule="evenodd"
+        d="
+           M 512 74
+           A 438 438 0 1 1 512 950
+           A 438 438 0 1 1 512 74
+
+           M 512 264
+           A 248 248 0 1 0 512 760
+           A 248 248 0 1 0 512 264
+         "/>
+
+  <!-- Cut the vertical notches from the ring by overdrawing background-colored rects -->
+  <rect x="474" y="70" width="76" height="200" fill="#EEF3F3"/>
+  <rect x="474" y="750" width="76" height="200" fill="#EEF3F3"/>
+
+  <!-- Central circle -->
+  <circle cx="512" cy="512" r="120" fill="#0D8484"/>
+</svg>
