@@ -66,7 +66,7 @@ jobs:
 
       - name: Generate Homebrew tap token
         id: homebrew-tap-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.HOMEBREW_TAP_APP_ID }}
           private-key: ${{ secrets.HOMEBREW_TAP_APP_KEY }}
