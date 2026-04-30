@@ -108,6 +108,8 @@ This pattern (vs `os.Exit(1)` from `TestMain`) preserves Go's normal test cleanu
 - If filtered AND mode is `enforce`: middleware calls `t.Errorf` directly on the captured `*testing.T` (extracted from request context — see Test-name capture below) when validation fails. Single-test workflow gets immediate per-request failures on the test that triggered them.
 - If full suite (no `-run` filter): middleware only appends to the collector; `TestOpenAPIConformanceReport` fails once with the aggregate. This preserves the user-requested "single failure with list of deviations" pattern for the common full-suite case.
 
+**Panic-safe `t.Errorf` from middleware.** Calling `t.Errorf` is safe from any goroutine while the test is running. Edge case: if a test issues a request and exits before the response (fire-and-forget pattern), the captured `*testing.T` is no longer valid by the time the middleware runs. Wrap the `t.Errorf` call in a `defer recover()` to swallow the panic and append to the collector instead — the conformance report still surfaces the mismatch, just without the per-test failure attribution.
+
 The mode + filter combinations:
 
 | Run kind | Mode | Per-request behavior | Aggregate test |
@@ -147,6 +149,33 @@ const Mode = ModeRecord  // flipped to ModeEnforce in commit 11
 Why a constant rather than env var: an env var lets developers diverge from CI silently (forget to set it locally, get green; CI sets it, fails) and lets someone toggle to record on `main` to silence a flaky validator. A constant change is reviewable code; toggling it requires a PR. If a future "I really need to run E2E without the validator just this once" escape hatch is ever needed, add a build tag — but until proven necessary, no escape hatch.
 
 The flip in commit 11 is the gate signaling "every mismatch fixed; drift is now a hard failure." Commit 11 is **non-optional** — the PR does not merge with the constant in `ModeRecord` (see Section 8 acceptance).
+
+**Mechanical enforcement of the flip.** Commit 11 also adds a unit test in the validator package:
+
+```go
+// internal/e2e/openapivalidator/mode_test.go
+func TestModeIsEnforce(t *testing.T) {
+    if Mode != ModeEnforce {
+        t.Fatalf("Mode = %v; expected ModeEnforce on main. Re-flipping to ModeRecord requires explicit PR review.")
+    }
+}
+```
+
+The test pins the constant. Any future PR that flips back to `ModeRecord` must remove or change the test — visible in diff review, not silent. Lands in commit 11 alongside the constant flip.
+
+### `-shuffle=on` incompatibility
+
+Go's test runner supports `-shuffle on` (or `-shuffle <seed>`) which randomizes test order. This defeats the file-name-based ordering that ensures `TestOpenAPIConformanceReport` runs last. Under shuffle, the conformance test could run before other tests, find an empty collector, and falsely pass.
+
+**Mitigation:** the conformance test detects shuffle at runtime and fails with a clear message:
+
+```go
+if v := flag.Lookup("test.shuffle"); v != nil && v.Value.String() != "off" {
+    t.Fatalf("openapi conformance suite is not compatible with -shuffle; rerun without it")
+}
+```
+
+Documented in the validator package's package doc. CI does not use `-shuffle`; developers running locally see the explanatory failure if they try.
 
 ## 3. Audit table — format and process
 
@@ -255,13 +284,39 @@ Change:
 "content": json.RawMessage(payloadBytes),
 ```
 
-**No fallback helper.** The `NewMessage` handler (`internal/domain/messaging/handler.go:30-100`) decodes the request envelope via `json.Unmarshal` into a `json.RawMessage` field, which guarantees stored `payloadBytes` is valid JSON by construction. The #193 workaround for non-JSON content is explicit: clients stringify non-JSON content into a JSON string (which IS valid JSON). So `json.RawMessage(payloadBytes)` is always safe; no `rawJSONOrString` guard is needed.
+**No fallback helper, but remove the existing dead-code path that motivates one.** The current `NewMessage` handler (`internal/domain/messaging/handler.go:59-66`) has this code:
 
-Considered and rejected: a `rawJSONOrString` helper that falls back to `string(b)` for non-JSON bytes. Two reasons to reject:
+```go
+var compacted bytes.Buffer
+if err := json.Compact(&compacted, envelope.Payload); err != nil {
+    // Not valid JSON — store as-is (payload is opaque).
+    compacted.Reset()
+    compacted.Write(envelope.Payload)
+}
+```
+
+The fallback branch is **dead code**: `envelope.Payload` is a `json.RawMessage` field that has just been successfully populated by `json.Unmarshal` (which validates JSON during parsing — invalid input would have been rejected at line 49 before reaching here). The "Not valid JSON" comment is misleading and the branch is unreachable.
+
+Per Gate 6, **remove the dead branch** as part of the messaging commit:
+
+```go
+var compacted bytes.Buffer
+if err := json.Compact(&compacted, envelope.Payload); err != nil {
+    // json.Unmarshal already validated this — defensive only; surface bug.
+    common.WriteError(w, r, common.Internal("payload validation invariant broken", err))
+    return
+}
+```
+
+After this cleanup, the **invariant holds**: every byte sequence stored as a payload via the handler is valid JSON. `json.RawMessage(payloadBytes)` in `GetMessage` is then always safe to marshal.
+
+**External-write risk.** Storage could in principle be populated via paths that bypass the handler (migrations from a legacy system, direct DB edits, future bulk-import endpoints). If invalid JSON arrives in storage that way, `json.RawMessage(payloadBytes).MarshalJSON()` will surface a marshal error → handler returns 500 with a ticket UUID per CLAUDE.md's 5xx convention. This is correct: the contract is "stored bytes are valid JSON"; violating the contract via an out-of-band write produces an honest 500, not a silent shape-shift.
+
+**Considered and rejected: a `rawJSONOrString` helper that falls back to `string(b)` for non-JSON bytes.** Two reasons to reject:
 - It would mask storage corruption silently. If invalid JSON ever appears in storage, that's a bug to surface, not paper over.
-- The wire shape `"content": "<xml>..."` is ambiguous — a client can't tell whether that's a stringified payload or stored XML returned via fallback. Forcing one path through `json.RawMessage` keeps the wire unambiguous.
+- The wire shape `"content": "<xml>..."` is ambiguous — a client can't tell whether that's a stringified payload (the #193 workaround) or stored XML returned via fallback. Forcing one path through `json.RawMessage` keeps the wire unambiguous.
 
-If invalid JSON in storage ever becomes a real concern (e.g. data migration from a legacy system), surface it as a Gate 6 stop-and-ask, not a silent fallback.
+If/when a future ingestion path is added that doesn't go through `NewMessage` (e.g. a bulk-import endpoint), it MUST validate input JSON at the boundary — same invariant. Adding such a path without enforcing the invariant would be a Gate 6 stop-and-ask in that PR, not a problem to solve here.
 
 Spec change in lockstep — `EdgeMessagePayload` becomes the field's schema (polymorphic) instead of `type: string`. The polymorphic schema admits any JSON value, including JSON strings used per the #193 workaround. The constraint named in #21 stays: when `contentType` is genuinely binary (`application/octet-stream`), base64 string with `format: byte` remains correct; the rule applies only when the bytes are JSON. **Today's reality** (per the spec's `contentType` description and the workaround documented in #193) is that `contentType` is informational — clients stringify non-JSON content into JSON strings. The polymorphic `EdgeMessagePayload` accommodates that workaround without ambiguity.
 
