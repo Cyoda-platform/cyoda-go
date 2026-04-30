@@ -238,3 +238,50 @@ func TestValidator_DiscriminatorVariants(t *testing.T) {
 // Helpers used by the fixture tests above.
 var _ = bytes.NewReader
 var _ = json.Marshal
+
+// streamingFixtureSpec returns a tiny spec with one operation that declares
+// application/x-ndjson for its 200 response.
+func streamingFixtureSpec(t *testing.T) *openapi3.T {
+	t.Helper()
+	const yaml = `openapi: 3.1.0
+info: { title: streaming-fixture, version: "1" }
+paths:
+  /stream:
+    get:
+      operationId: getStream
+      responses:
+        "200":
+          description: ok
+          content:
+            application/x-ndjson:
+              schema:
+                type: array
+                items: { type: object }
+`
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData([]byte(yaml))
+	if err != nil {
+		t.Fatalf("load streaming fixture spec: %v", err)
+	}
+	if err := doc.Validate(loader.Context); err != nil {
+		t.Fatalf("validate streaming fixture spec: %v", err)
+	}
+	return doc
+}
+
+// TestValidator_StreamingResponseDoesNotPanic — kin-openapi panics when
+// input.Body is nil (the `defer body.Close()` line in
+// validate_response.go:128). The streaming branch must pass a non-nil body
+// and set ExcludeResponseBody so the body is never read.
+func TestValidator_StreamingResponseDoesNotPanic(t *testing.T) {
+	v, err := NewValidator(streamingFixtureSpec(t))
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	req, _ := http.NewRequest("GET", "http://x/stream", nil)
+	resp := mkResp(200, "application/x-ndjson", `{"a":1}`+"\n"+`{"a":2}`+"\n")
+	mismatches := v.Validate(context.Background(), req, resp)
+	if len(mismatches) > 0 {
+		t.Errorf("streaming response should pass validation; got mismatches: %+v", mismatches)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -138,9 +139,13 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("get swagger: %v", err)
 	}
-	// Some specs declare server URLs; clear them so the kin-openapi router
-	// matches against any host (httptest assigns a random port).
-	swagger.Servers = nil
+	// Replace declared server URLs with a single relative-base entry that
+	// reflects the test server's mount point. The test server hosts the app
+	// under cfg.ContextPath ("/api"); the spec's paths are relative to the
+	// server URL. Without this, the kin-openapi router matches /entity/{id}
+	// from the spec against the test server's /api/entity/{id} requests and
+	// reports every operation as "no spec route matches".
+	swagger.Servers = openapi3.Servers{{URL: cfg.ContextPath}}
 	validator, err := openapivalidator.NewValidator(swagger)
 	if err != nil {
 		log.Fatalf("build validator: %v", err)

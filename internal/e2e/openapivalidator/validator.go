@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -52,7 +54,21 @@ func NewValidator(doc *openapi3.T) (*Validator, error) {
 //
 // Records the matched operationId in the package's exercised set, regardless
 // of whether validation passed.
-func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.Response) []Mismatch {
+//
+// Wraps the underlying call in a panic recovery so that bugs in kin-openapi
+// (or in our spec/wire data hitting an untested code path) surface as
+// mismatch records rather than crashing the test server's request goroutine.
+func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.Response) (mismatches []Mismatch) {
+	defer func() {
+		if r := recover(); r != nil {
+			mismatches = append(mismatches, Mismatch{
+				Method: req.Method,
+				Path:   req.URL.Path,
+				Status: resp.StatusCode,
+				Reason: fmt.Sprintf("validator panic: %v", r),
+			})
+		}
+	}()
 	route, _, err := v.router.FindRoute(req)
 	if err != nil {
 		// No matching route — the request hit a path the spec doesn't declare.
@@ -69,10 +85,13 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 
 	// Streaming check: if the matched operation declares
 	// application/x-ndjson for the actual status code, skip body validation.
+	// kin-openapi's ValidateResponse panics if input.Body is nil (the
+	// `defer body.Close()` line in validate_response.go), so we use a
+	// dedicated streaming-only options copy with ExcludeResponseBody=true
+	// AND pass a non-nil empty body for defense-in-depth.
 	if v.isStreaming(route, resp.StatusCode) {
-		// Still validate that the status code is declared at all.
-		// Options must be set on ResponseValidationInput — ValidateResponse reads
-		// input.Options (not input.RequestValidationInput.Options).
+		streamingOpts := *v.opts // copy; do not mutate the shared opts
+		streamingOpts.ExcludeResponseBody = true
 		input := &openapi3filter.ResponseValidationInput{
 			RequestValidationInput: &openapi3filter.RequestValidationInput{
 				Request: req,
@@ -80,7 +99,8 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			},
 			Status:  resp.StatusCode,
 			Header:  resp.Header,
-			Options: v.opts,
+			Body:    io.NopCloser(strings.NewReader("")),
+			Options: &streamingOpts,
 		}
 		if err := openapi3filter.ValidateResponse(ctx, input); err != nil {
 			return v.toMismatches(err, opId, req, resp.StatusCode)
