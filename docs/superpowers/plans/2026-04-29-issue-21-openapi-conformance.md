@@ -1046,15 +1046,21 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 
 	// Read response body for validation. The middleware passed the captured
 	// bytes via resp.Body; we consume them here.
+	//
+	// IMPORTANT: Options must be set on ResponseValidationInput (not on the
+	// nested RequestValidationInput.Options) — ValidateResponse reads from
+	// input.Options directly. Verified by fixture test #4 (TestValidator_
+	// UndeclaredStatus); a misplaced Options field silently lets undeclared
+	// status codes through.
 	input := &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{
 			Request: req,
 			Route:   route,
-			Options: v.opts,
 		},
-		Status: resp.StatusCode,
-		Header: resp.Header,
-		Body:   resp.Body,
+		Status:  resp.StatusCode,
+		Header:  resp.Header,
+		Body:    resp.Body,
+		Options: v.opts,
 	}
 	if err := openapi3filter.ValidateResponse(ctx, input); err != nil {
 		return v.toMismatches(err, opId, req, resp.StatusCode)
