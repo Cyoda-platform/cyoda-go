@@ -105,7 +105,7 @@ func TestGetOneEntity_ReturnsEnvelope(t *testing.T) {
 	const model = "e2e-getone-env-1"
 	importModel(t, model, 1)
 
-	entityID := createEntityE2E(t, model, 1, `{"name":"envelope-test","value":42}`)
+	entityID := createEntityE2E(t, model, 1, `{"x":42}`)
 
 	path := fmt.Sprintf("/api/entity/%s", entityID)
 	resp := doAuth(t, http.MethodGet, path, "")
@@ -141,8 +141,8 @@ func TestGetAllEntities_ReturnsJSONArray(t *testing.T) {
 	const model = "e2e-getall-env-1"
 	importModel(t, model, 1)
 
-	createEntityE2E(t, model, 1, `{"item":1}`)
-	createEntityE2E(t, model, 1, `{"item":2}`)
+	createEntityE2E(t, model, 1, `{"x":1}`)
+	createEntityE2E(t, model, 1, `{"x":2}`)
 
 	path := fmt.Sprintf("/api/entity/%s/1", model)
 	resp := doAuth(t, http.MethodGet, path, "")
@@ -193,10 +193,12 @@ func TestUpdateSingle_EntityIdsIsArrayOfStrings(t *testing.T) {
 	}`
 	setupModelWithWorkflow(t, model, wf)
 
-	entityID := createEntityE2E(t, model, 1, `{"v":1}`)
+	// Use fields from workflowSampleModel (name, amount, status) which
+	// setupModelWithWorkflow uses as the schema reference.
+	entityID := createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"draft"}`)
 
 	path := fmt.Sprintf("/api/entity/JSON/%s/approve", entityID)
-	resp := doAuth(t, http.MethodPut, path, `{"v":2}`)
+	resp := doAuth(t, http.MethodPut, path, `{"name":"Alice","amount":100,"status":"approved"}`)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("updateSingle: expected 200, got %d: %s", resp.StatusCode, body)
@@ -232,14 +234,25 @@ func keys(m map[string]any) []string {
 	return ks
 }
 
-// importModel registers a bare entity model with no workflow.
+// importModel registers an entity model and locks it so entities can be created.
+// Uses the SAMPLE_DATA converter — the payload is example data; the server
+// infers the schema from it.
 func importModel(t *testing.T, name string, version int) {
 	t.Helper()
-	schema := `{"type":"object","additionalProperties":true}`
-	path := fmt.Sprintf("/api/model/import/JSON/FLAT_JSON/%s/%d", name, version)
-	resp := doAuth(t, http.MethodPost, path, schema)
+	// SAMPLE_DATA converter infers schema from example JSON data.
+	sampleData := `{"x":1}`
+	importPath := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/%d", name, version)
+	resp := doAuth(t, http.MethodPost, importPath, sampleData)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("importModel %s/%d: expected 200, got %d: %s", name, version, resp.StatusCode, body)
+	}
+
+	// Lock the model so entities can be created.
+	lockPath := fmt.Sprintf("/api/model/%s/%d/lock", name, version)
+	lockResp := doAuth(t, http.MethodPut, lockPath, "")
+	lockBody := readBody(t, lockResp)
+	if lockResp.StatusCode != http.StatusOK {
+		t.Fatalf("lockModel %s/%d: expected 200, got %d: %s", name, version, lockResp.StatusCode, lockBody)
 	}
 }
