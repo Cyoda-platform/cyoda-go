@@ -235,6 +235,86 @@ func TestValidator_DiscriminatorVariants(t *testing.T) {
 	}
 }
 
+// TestValidator_OverlappingPathTemplates verifies the fallback matcher
+// handles paths where multiple templates could match but only one's
+// parameter constraints are satisfied by the actual request segments.
+func TestValidator_OverlappingPathTemplates(t *testing.T) {
+	const yaml = `openapi: 3.1.0
+info: { title: overlap-fixture, version: "1" }
+paths:
+  /entity/{format}:
+    post:
+      operationId: createCollection
+      parameters:
+        - name: format
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [JSON, XML]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+  /entity/{entityId}:
+    get:
+      operationId: getOneEntity
+      parameters:
+        - name: entityId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData([]byte(yaml))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+	if err := doc.Validate(loader.Context); err != nil {
+		t.Fatalf("validate fixture: %v", err)
+	}
+	v, err := NewValidator(doc)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	// GET /entity/<UUID> — should match getOneEntity, NOT createCollection
+	req, _ := http.NewRequest("GET", "http://x/entity/123e4567-e89b-12d3-a456-426614174000", nil)
+	resp := mkResp(200, "application/json", `{}`)
+	mismatches := v.Validate(context.Background(), req, resp)
+	if len(mismatches) != 0 {
+		t.Errorf("GET /entity/<UUID> should match getOneEntity (no mismatches); got %d:\n%+v", len(mismatches), mismatches)
+	}
+
+	// POST /entity/JSON — should match createCollection
+	req2, _ := http.NewRequest("POST", "http://x/entity/JSON", nil)
+	resp2 := mkResp(200, "application/json", `{}`)
+	mismatches2 := v.Validate(context.Background(), req2, resp2)
+	if len(mismatches2) != 0 {
+		t.Errorf("POST /entity/JSON should match createCollection (no mismatches); got %d:\n%+v", len(mismatches2), mismatches2)
+	}
+
+	// POST /entity/<UUID> — should NOT match anything (UUID isn't in format enum)
+	req3, _ := http.NewRequest("POST", "http://x/entity/123e4567-e89b-12d3-a456-426614174000", nil)
+	resp3 := mkResp(200, "application/json", `{}`)
+	mismatches3 := v.Validate(context.Background(), req3, resp3)
+	if len(mismatches3) == 0 {
+		t.Errorf("POST /entity/<UUID> should not match any spec route; got 0 mismatches")
+	}
+}
+
 // Helpers used by the fixture tests above.
 var _ = bytes.NewReader
 var _ = json.Marshal
