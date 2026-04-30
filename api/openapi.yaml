@@ -2678,20 +2678,21 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: array
+                items:
+                  $ref: "#/components/schemas/MessageDeleteBatchResponse"
               examples:
                 Delete Collection Response:
                   description: Delete Collection Response
                   value:
-                    - transactionId: 8824c480-c166-11ee-9cc7-ae468cd3ed16
-                      entityIds:
+                    - entityIds:
                         - 8824c480-c166-11ee-9cc7-ae468cd3ed16
                         - 31134900-d9cb-11ee-9cc7-ae468cd3ed16
                       success: true
         "400":
           description: Invalid UUID format or not a time-based UUID
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2706,6 +2707,12 @@ paths:
                     instance: /api/message/123e4567-e89b-12d3-a456-426614174000
                     properties:
                       uuid: 123e4567-e89b-12d3-a456-426614174000
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /message/new/{subject}:
     post:
       tags:
@@ -2863,18 +2870,20 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: array
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               examples:
                 Transaction Response:
                   description: Transaction Response
                   value:
                     - entityIds:
                         - 8824c480-c166-11ee-bf9f-ae468cd3ed16
-                      success: true
+                      transactionId: 9f3a0000-c166-11ee-bf9f-ae468cd3ed16
         "400":
           description: Invalid message format or parsing error
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2891,7 +2900,7 @@ paths:
         "413":
           description: Payload too large
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -2903,6 +2912,12 @@ paths:
                     status: 413
                     detail: Request payload size exceeds maximum allowed limit of 10MB
                     instance: /api/message/new/nobel.prize.events
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /message/{messageId}:
     get:
       tags:
@@ -2945,34 +2960,29 @@ paths:
                     metaData:
                       values: {}
                       indexedValues: {}
-                    content: >-
-                      {
-                        "eventType" : "nobel.prize.announced",
-                        "timestamp" : "2024-10-09T12:00:00Z",
-                        "data" : {
-                          "category" : "physics",
-                          "year" : "2024",
-                          "laureates" : [ {
-                            "firstname" : "John",
-                            "surname" : "Hopfield",
-                            "id" : "1037",
-                            "motivation" : "for foundational discoveries and inventions that enable machine learning with artificial neural networks",
-                            "share" : "2"
-                          }, {
-                            "firstname" : "Geoffrey",
-                            "surname" : "Hinton",
-                            "id" : "1038",
-                            "motivation" : "for foundational discoveries and inventions that enable machine learning with artificial neural networks",
-                            "share" : "2"
-                          } ]
-                        }
-                      }
+                    content:
+                      eventType: nobel.prize.announced
+                      timestamp: "2024-10-09T12:00:00Z"
+                      data:
+                        category: physics
+                        year: "2024"
+                        laureates:
+                          - firstname: John
+                            surname: Hopfield
+                            id: "1037"
+                            motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
+                            share: "2"
+                          - firstname: Geoffrey
+                            surname: Hinton
+                            id: "1038"
+                            motivation: for foundational discoveries and inventions that enable machine learning with artificial neural networks
+                            share: "2"
         "400":
           description: Invalid UUID format or not a time-based UUID
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ProblemDetail"
               examples:
                 Not a Time UUID:
                   description: Not a Time UUID
@@ -2988,9 +2998,9 @@ paths:
         "404":
           description: Message not found
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ProblemDetail"
               examples:
                 Message Not Found:
                   description: Message Not Found
@@ -3002,6 +3012,12 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     delete:
       tags:
         - Edge message
@@ -3025,19 +3041,17 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                $ref: "#/components/schemas/MessageDeleteResponse"
               examples:
                 Delete Response:
                   description: Delete Response
                   value:
-                    transactionId: 8824c480-c166-11ee-9cc7-ae468cd3ed16
                     entityIds:
                       - 8824c480-c166-11ee-9cc7-ae468cd3ed16
-                    success: true
         "400":
           description: Invalid UUID format or not a time-based UUID
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -3055,7 +3069,7 @@ paths:
         "404":
           description: Message not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
               examples:
@@ -3069,6 +3083,12 @@ paths:
                     instance: /api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16
                     properties:
                       messageId: 8824c480-c166-11ee-bf9f-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/:
     get:
       tags:
@@ -8652,7 +8672,7 @@ components:
         metaData:
           $ref: "#/components/schemas/EdgeMessageMetaData"
         content:
-          type: string
+          $ref: "#/components/schemas/EdgeMessagePayload"
       required:
         - header
         - metaData
@@ -8663,6 +8683,7 @@ components:
           type: string
         contentType:
           type: string
+          description: "Informational only; see EdgeMessagePayload note. See #193 for proper handling."
         contentLength:
           type: integer
           format: int64
@@ -8693,6 +8714,45 @@ components:
       required:
         - indexedValues
         - values
+    EdgeMessagePayload:
+      description: |
+        Polymorphic by intent — accepts any JSON value. The contentType field
+        in the message header is informational; it does not affect storage or
+        retrieval format. Clients needing to store non-JSON content should
+        stringify it (e.g. base64 for binary, plain string with escape for
+        non-JSON text). See https://github.com/Cyoda-platform/cyoda-go/issues/193
+        for proper content-type support as a future feature.
+      additionalProperties: true
+    MessageDeleteResponse:
+      type: object
+      description: |
+        Response returned by deleteMessage. Contains the IDs of deleted entities.
+        No transactionId is present — delete operations in the messaging path are
+        not transactional in the same way as entity create/update.
+      properties:
+        entityIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+      required:
+        - entityIds
+    MessageDeleteBatchResponse:
+      type: object
+      description: |
+        One element of the array returned by deleteMessages (batch delete).
+        Contains the IDs of deleted entities and a success flag.
+      properties:
+        entityIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        success:
+          type: boolean
+      required:
+        - entityIds
+        - success
     LocalTime:
       type: object
       properties:

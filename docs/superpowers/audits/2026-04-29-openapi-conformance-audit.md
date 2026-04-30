@@ -52,10 +52,10 @@ content-types, new error status declarations.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| deleteMessage | DELETE | /message/{messageId} | `internal/domain/messaging/handler.go:190` | `$ref EntityTransactionResponse` — object with `transactionId`, `entityIds[]object` | `map{entityIds:[]string}` (no transactionId; entityIds is []string not []object) | fix-both | |
-| deleteMessages | DELETE | /message | `internal/domain/messaging/handler.go:222` | `type:string` (loose — spec is wrong; example shows array) | `[]map{entityIds,success}` — array | fix-spec | |
-| getMessage | GET | /message/{messageId} | `internal/domain/messaging/handler.go:115` | `$ref EdgeMessageDto` — object with `header`, `metaData`, `content` | `map{header,metaData,content}` — matches shape; Content-Type mismatch on 404 errors (application/problem+json vs ErrorResponse) | fix-server | |
-| newMessage | POST | /message/new/{subject} | `internal/domain/messaging/handler.go:32` | `type:string` (loose — spec is wrong; example shows array) | `[]map{entityIds,success}` — array | fix-spec | |
+| deleteMessage | DELETE | /message/{messageId} | `internal/domain/messaging/handler.go:190` | ~~`$ref EntityTransactionResponse` — object with `transactionId`, `entityIds[]object`~~ → `$ref MessageDeleteResponse` (`{entityIds:[]string}`, no transactionId) | `map{entityIds:[]string}` (no transactionId; entityIds is []string not []object) | fix-both → spec fixed to `MessageDeleteResponse`; 401/403/default added | TBD |
+| deleteMessages | DELETE | /message | `internal/domain/messaging/handler.go:222` | ~~`type:string`~~ → `type:array items:$ref MessageDeleteBatchResponse` | `[]map{entityIds,success}` — array now matches corrected spec | fix-spec → schema fixed to array of `MessageDeleteBatchResponse`; 401/403/default added | TBD |
+| getMessage | GET | /message/{messageId} | `internal/domain/messaging/handler.go:115` | ~~`content: type:string`~~ → `content: $ref EdgeMessagePayload` (polymorphic); ~~404: `ErrorResponse` with `application/json`~~ → `ProblemDetail` with `application/problem+json` | `map{header,metaData,content}` where content is now embedded JSON via `json.RawMessage` (was JSON-in-string); 404 uses `application/problem+json` | fix-both — JSON-in-string defect fixed in handler; EdgeMessagePayload schema added; 404 Content-Type spec corrected; 401/403/default added | TBD |
+| newMessage | POST | /message/new/{subject} | `internal/domain/messaging/handler.go:32` | ~~`type:string`~~ → `type:array items:$ref EntityTransactionResponse` | `[]map{entityIds,transactionId}` — array now matches corrected spec | fix-spec → response schema fixed to array; dead-code "not valid JSON" fallback replaced with explicit invariant-broken 500; 401/403/default added | TBD |
 
 ---
 
