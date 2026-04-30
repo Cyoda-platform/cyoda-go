@@ -72,14 +72,14 @@ content-types, new error status declarations.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| deleteEntityModel | DELETE | /model/{entityName}/{modelVersion} | `internal/domain/model/handler.go:142` | `$ref EntityModelActionResultDto` — object with `success`, `modelKey`, `message`, `modelId` | `genapi.EntityModelActionResultDto` struct | | |
-| exportMetadata | GET | /model/export/{converter}/{entityName}/{modelVersion} | `internal/domain/model/handler.go:103` | `type:string` (loose — spec says string; content is actually JSON object) | raw JSON bytes written directly to response writer | fix-spec | |
-| getAvailableEntityModels | GET | /model/ | `internal/domain/model/handler.go:168` | `type:array + $ref EntityModelDto` (malformed — array with sibling $ref) | `[]genapi.EntityModelDto` | fix-spec | |
-| importEntityModel | POST | /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion} | `internal/domain/model/handler.go:78` | `type:string, format:uuid` — bare UUID string | `result.ModelID` (UUID value) | | |
-| lockEntityModel | PUT | /model/{entityName}/{modelVersion}/lock | `internal/domain/model/handler.go:116` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | | |
-| setEntityModelChangeLevel | POST | /model/{entityName}/{modelVersion}/changeLevel/{changeLevel} | `internal/domain/model/handler.go:155` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | | |
-| unlockEntityModel | PUT | /model/{entityName}/{modelVersion}/unlock | `internal/domain/model/handler.go:129` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | | |
-| validateEntityModel | POST | /model/validate/{entityName}/{modelVersion} | `internal/domain/model/handler.go:191` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | | |
+| deleteEntityModel | DELETE | /model/{entityName}/{modelVersion} | `internal/domain/model/handler.go:142` | `$ref EntityModelActionResultDto` — object with `success`, `modelKey`, `message`, `modelId` | `genapi.EntityModelActionResultDto` struct | match | Task 8.1 |
+| exportMetadata | GET | /model/export/{converter}/{entityName}/{modelVersion} | `internal/domain/model/handler.go:103` | `type:string` (loose — spec says string; content is actually JSON object) | raw JSON bytes written directly to response writer | fix-spec | Task 8.1 |
+| getAvailableEntityModels | GET | /model/ | `internal/domain/model/handler.go:168` | `type:array + $ref EntityModelDto` (malformed — array with sibling $ref) | `[]genapi.EntityModelDto` | fix-spec | Task 8.1 |
+| importEntityModel | POST | /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion} | `internal/domain/model/handler.go:78` | `type:string, format:uuid` — bare UUID string | `result.ModelID` (UUID value) | match | Task 8.1 |
+| lockEntityModel | PUT | /model/{entityName}/{modelVersion}/lock | `internal/domain/model/handler.go:116` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | match | Task 8.1 |
+| setEntityModelChangeLevel | POST | /model/{entityName}/{modelVersion}/changeLevel/{changeLevel} | `internal/domain/model/handler.go:155` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | match | Task 8.1 |
+| unlockEntityModel | PUT | /model/{entityName}/{modelVersion}/unlock | `internal/domain/model/handler.go:129` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | match | Task 8.1 |
+| validateEntityModel | POST | /model/validate/{entityName}/{modelVersion} | `internal/domain/model/handler.go:191` | `$ref EntityModelActionResultDto` | `genapi.EntityModelActionResultDto` struct | fix-spec (404 used ErrorResponseDto→ProblemDetail; added 400 + 401/403/default) | Task 8.1 |
 
 ---
 
@@ -87,8 +87,8 @@ content-types, new error status declarations.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| exportEntityModelWorkflow | GET | /model/{entityName}/{modelVersion}/workflow/export | `internal/domain/workflow/handler.go:122` | `$ref WorkflowExportResponseDto` | `map{entityName,modelVersion,workflows}` — shape matches; 404 Content-Type is application/problem+json (spec expects ErrorResponseDto with application/json) | fix-server | |
-| importEntityModelWorkflow | POST | /model/{entityName}/{modelVersion}/workflow/import | `internal/domain/workflow/handler.go:33` | `content:{}` (no body — 200 with empty body) | `map{success:true}` — non-empty body when spec declares empty | fix-server | |
+| exportEntityModelWorkflow | GET | /model/{entityName}/{modelVersion}/workflow/export | `internal/domain/workflow/handler.go:122` | `$ref WorkflowExportResponseDto` | `map{entityName,modelVersion,workflows}` — shape matches; replaced inline ErrorResponseDto 401/403/500 with shared ProblemDetail $refs | fix-spec | Task 8.1 |
+| importEntityModelWorkflow | POST | /model/{entityName}/{modelVersion}/workflow/import | `internal/domain/workflow/handler.go:33` | `content:{}` (no body — 200 with empty body) | `map{success:true}` — non-empty body when spec declares empty | fix-spec (server-is-truth: spec now declares `WorkflowImportSuccessDto {success:bool}`) | Task 8.1 |
 
 ---
 

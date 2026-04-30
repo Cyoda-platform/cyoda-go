@@ -3108,6 +3108,8 @@ paths:
 
         \        "
       operationId: getAvailableEntityModels
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of available entity models
@@ -3115,7 +3117,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityModelDto"
+                items:
+                  $ref: "#/components/schemas/EntityModelDto"
               examples:
                 models:
                   description: models
@@ -3130,6 +3133,12 @@ paths:
                       modelVersion: 3
                       currentState: UNLOCKED
                       modelUpdateDate: 2025-08-12T13:31:48.141103-07:00
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/export/{converter}/{entityName}/{modelVersion}:
     get:
       tags:
@@ -3157,6 +3166,8 @@ paths:
 
         \        "
       operationId: exportMetadata
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3189,7 +3200,11 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: object
+                additionalProperties: true
+                description: >
+                  Exported model metadata in the converter's output format.
+                  Shape depends on the converter argument (JSON_SCHEMA or SIMPLE_VIEW).
               examples:
                 Simple View:
                   summary: SIMPLE_VIEW export example
@@ -3262,6 +3277,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/import/{dataFormat}/{converter}/{entityName}/{modelVersion}:
     post:
       tags:
@@ -3288,6 +3309,8 @@ paths:
 
         \        "
       operationId: importEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3375,6 +3398,12 @@ paths:
                 properties:
                   parameter: converter
                   invalidValue: WRONG
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/validate/{entityName}/{modelVersion}:
     post:
       tags:
@@ -3411,12 +3440,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EntityModelActionResultDto"
+        "400":
+          description: Failed to read or parse request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: Model not found
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /model/{entityName}/{modelVersion}:
@@ -3438,6 +3479,8 @@ paths:
 
         Returns a confirmation message upon successful deletion.
       operationId: deleteEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3486,6 +3529,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/changeLevel/{changeLevel}:
     post:
       tags:
@@ -3523,6 +3572,8 @@ paths:
 
         \        "
       operationId: setEntityModelChangeLevel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3591,6 +3642,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/lock:
     put:
       tags:
@@ -3615,6 +3672,8 @@ paths:
 
         \        "
       operationId: lockEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3663,6 +3722,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/unlock:
     put:
       tags:
@@ -3692,6 +3757,8 @@ paths:
 
         \        "
       operationId: unlockEntityModel
+      security:
+        - bearerAuth: []
       parameters:
         - name: entityName
           in: path
@@ -3740,6 +3807,12 @@ paths:
                 properties:
                   entityName: nobel-prize
                   entityVersion: 2
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /model/{entityName}/{modelVersion}/workflow/export:
     get:
       tags:
@@ -3776,30 +3849,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowExportResponseDto"
-        "401":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "403":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
         "404":
-          description: Error response
+          description: No workflows found for this model
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "500":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /model/{entityName}/{modelVersion}/workflow/import:
@@ -3845,37 +3906,28 @@ paths:
       responses:
         "200":
           description: Workflows imported successfully
-          content: {}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: Error response
+          description: Invalid request body or unknown importMode
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "401":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "403":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: Error response
+          description: Target entity model not found
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
-        "500":
-          description: Error response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponseDto"
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /oauth/keys/keypair:
@@ -8643,6 +8695,16 @@ components:
         - entityName
         - modelVersion
         - workflows
+    WorkflowImportSuccessDto:
+      type: object
+      description: Confirmation returned when a workflow import completes successfully.
+      properties:
+        success:
+          type: boolean
+          description: Always true on a successful import.
+          example: true
+      required:
+        - success
     EntityModelDto:
       type: object
       properties:
