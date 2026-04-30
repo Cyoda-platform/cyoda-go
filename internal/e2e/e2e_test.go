@@ -17,7 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 
 	// Register stock storage plugins so spi.GetPlugin("postgres") resolves.
@@ -26,9 +28,10 @@ import (
 )
 
 var (
-	serverURL string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
-	dbPool    *pgxpool.Pool                     // direct DB access for verification queries
-	procSvc   *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
+	serverURL      string                            // base URL of the test server (e.g., "http://127.0.0.1:12345")
+	dbPool         *pgxpool.Pool                     // direct DB access for verification queries
+	procSvc        *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
+	allOperationIds []string
 )
 
 func TestMain(m *testing.M) {
@@ -127,7 +130,32 @@ func TestMain(m *testing.M) {
 	cfg.HTTPPort = srvPort
 
 	a := app.New(cfg)
-	srv.Config.Handler = a.Handler()
+
+	// Build the conformance validator from the embedded spec. Wraps the
+	// production handler; failures collected end-to-end and reported by
+	// TestOpenAPIConformanceReport (zzz_openapi_conformance_test.go).
+	swagger, err := api.GetSwagger()
+	if err != nil {
+		log.Fatalf("get swagger: %v", err)
+	}
+	// Some specs declare server URLs; clear them so the kin-openapi router
+	// matches against any host (httptest assigns a random port).
+	swagger.Servers = nil
+	validator, err := openapivalidator.NewValidator(swagger)
+	if err != nil {
+		log.Fatalf("build validator: %v", err)
+	}
+	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(a.Handler())
+
+	// Capture the full operationId set so the conformance test can compute
+	// the uncovered list at end-of-suite.
+	for _, item := range swagger.Paths.Map() {
+		for _, op := range item.Operations() {
+			if op.OperationID != "" {
+				allOperationIds = append(allOperationIds, op.OperationID)
+			}
+		}
+	}
 
 	os.Exit(m.Run())
 }
