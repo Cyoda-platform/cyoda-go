@@ -39,18 +39,33 @@
 
 `github.com/getkin/kin-openapi/openapi3filter` (the validation subpackage of `kin-openapi v0.137.0`, already a direct dep). Exposes `ValidateResponse(ctx, ValidateResponseInput{...})` which checks a `*http.Response` against the matched route's response schema for the actual status code.
 
+**Required `Options` flags** (verified against `kin-openapi/openapi3filter/validate_response.go:48-58` — defaults are unsafe):
+
+- `IncludeResponseStatus: true` — without this, undeclared status codes pass silently. This flag is **load-bearing** for the design's claim that the validator catches undeclared statuses; verified by the fixture pinning test below.
+- `MultiError: true` — accumulate all errors per response rather than failing on the first. Lets the per-response collection surface the full mismatch picture.
+
+These flags are set in the validator package's constructor; tests verify they are set (a small unit test that constructs the validator and asserts `opts.IncludeResponseStatus == true`).
+
 ### Hook point
 
 Wrap the `http.Handler` returned by `app.New(...)` before it's passed to `httptest.NewServer` in `internal/e2e/e2e_test.go`'s `TestMain`. The wrapper is a small `http.Handler` middleware that:
 
-1. Constructs a `httptest.ResponseRecorder` proxy around the real `http.ResponseWriter`.
-2. Calls the wrapped handler with the proxy.
-3. Routes the captured request through `kin-openapi`'s router (built once in `TestMain` from the embedded spec via `genapi.GetSwagger()`) to find the matched operation.
-4. Calls `openapi3filter.ValidateResponse` with the captured response.
-5. If validation fails, appends the diff (operation, path, status, JSON path, expected, actual) to a process-level collector via a mutex-guarded `append`.
-6. Forwards the captured response bytes to the real `ResponseWriter`.
+1. Constructs a tee-writer (a `http.ResponseWriter` wrapper that forwards bytes to the real writer AND buffers them) around the real `http.ResponseWriter`.
+2. The tee-writer also implements `http.Flusher` and `http.Hijacker` via optional-interface delegation when the underlying writer supports them — required for streaming responses to flush properly.
+3. Calls the wrapped handler with the tee-writer.
+4. Routes the captured request through `kin-openapi`'s router (built once in `TestMain` from the embedded spec via `genapi.GetSwagger()`) to find the matched operation.
+5. Calls `openapi3filter.ValidateResponse` with the buffered response — **except** when the response `Content-Type` is `application/x-ndjson`, in which case validation is skipped (see Streaming responses below).
+6. If validation fails, appends the diff (operation, path, status, JSON path, expected, actual) to a process-level collector via a mutex-guarded `append`.
 
-Single insertion point, zero changes to test code.
+Single insertion point, zero changes to test code. The tee-writer pattern (vs `httptest.ResponseRecorder` which doesn't implement `http.Flusher` and would silently break streaming) is required because the spec contains streaming endpoints.
+
+### Streaming responses
+
+The spec declares `application/x-ndjson` for two response variants (the streaming variant of `getAllEntities` and `searchEntities`'s direct synchronous mode). `kin-openapi/openapi3filter.ValidateResponse` parses the body as a single JSON document and cannot validate ndjson, which is a stream of newline-delimited JSON values.
+
+**Decision:** the validator skips response-body validation for `application/x-ndjson` responses but still validates the matched operation's status code and headers. The audit table flags these endpoints as "validator coverage: status only; body shape verified by hand." Future work could add a custom ndjson validator (line-by-line parse + per-line schema check) but is out of scope for this PR.
+
+Streaming endpoints are documented in the audit table's notes column.
 
 ### Collector + report
 
@@ -73,7 +88,14 @@ var collector struct {
 }
 ```
 
-After `m.Run()` returns in `TestMain`, the collector's contents are written to a markdown file (path: `internal/e2e/_openapi-conformance-report.md`, gitignored). If `len(collector.out) > 0`, `TestMain` calls `os.Exit(1)` with a stderr summary listing the first 20 mismatches and pointing to the full report file.
+A dedicated test `TestZZZ_OpenAPIConformance` (named `ZZZ` to sort last alphabetically, ensuring it runs after every other E2E test in the package) reads the collector and:
+
+- Writes the full mismatch list to a markdown file (`internal/e2e/_openapi-conformance-report.md`, gitignored).
+- If `len(collector.out) > 0`, calls `t.Fatalf` with a summary listing the first 20 mismatches and pointing to the full report file.
+
+This pattern (vs `os.Exit(1)` from `TestMain`) preserves Go's normal test cleanup machinery — `t.Cleanup` registrations run, postgres testcontainers are torn down, the test runner reports the failure with normal CI integration.
+
+**`-run` filtering safety.** `TestZZZ_OpenAPIConformance` only enforces "every operationId was exercised at least once" when running the full suite. When the runner has been invoked with `-run` (detected via `flag.Lookup("test.run").Value.String() != ""`), the conformance test still runs but only reports mismatches for *exercised* operations; the "uncovered ops" check is skipped. Single-test workflow (`go test -run TestEntity_Create`) is preserved.
 
 ### Test-name capture
 
@@ -81,7 +103,16 @@ Each `httptest`-issued request gets the current test name attached via a context
 
 ### Coverage gap reporting
 
-The same end-of-suite hook prints any operationId that was *never* exercised during the run — surfaces dead spots in E2E coverage. This list informs the per-domain commits (Section 8) — every uncovered op needs a happy-path test before merge.
+`TestZZZ_OpenAPIConformance` reports any operationId that was *never* exercised during the run — surfaces dead spots in E2E coverage. This list informs the per-domain commits (Section 8) — every uncovered op needs a happy-path test before merge.
+
+### Enforcement gate
+
+The validator runs in two modes controlled by env var `CYODA_OPENAPI_VALIDATOR_MODE`:
+
+- **`record`** (default during early commits) — runs validation, writes the report file, but does NOT fail the suite. Lets the audit pass and per-domain commits land sequentially without each commit having to fix every mismatch from earlier domains. The mismatch list informs the audit table.
+- **`enforce`** (default for the final cleanup commit and for CI on `main`) — same as `record`, but `TestZZZ_OpenAPIConformance` calls `t.Fatalf` if the collector is non-empty.
+
+Mode flips from `record` → `enforce` in commit 11 (Section 8). The flip is the gate signaling "every mismatch fixed; drift is now a hard failure."
 
 ## 3. Audit table — format and process
 
@@ -112,7 +143,16 @@ Where:
 
 ### Generation
 
-The initial pass is partly mechanical: `operationId` / `method` / `path` come from parsing `api/openapi.yaml`; `handler` comes from `oapi-codegen`'s `ServerInterface` method names + grep. A small one-shot Go script in `tools/audit-skeleton/` (not retained beyond this PR) emits the skeleton table; the human or implementing agent fills in the response-shape columns by reading each handler.
+The implementing agent populates the table directly — reading the spec and the ~11 handler files is fast (minutes, not hours, at LLM pace). No tooling required.
+
+Process:
+1. Parse `api/openapi.yaml` to enumerate the 81 ops with method + path + tag.
+2. For each op, find the `ServerInterface` method in `api/generated.go` and the implementing function in `internal/domain/<domain>/handler.go`. Record handler:line.
+3. Read the handler's `WriteJSON` / `WriteError` calls to characterize the actual response shape. Record in the "server response" column.
+4. Read the spec block for the same op to characterize the declared response. Record in the "spec response" column.
+5. The `record`-mode validator output (Section 2) cross-checks the human-recorded "server response" against the actual wire — any disagreement flags a human-error in the audit, surfacing it before per-domain commits start.
+
+The cross-check makes hand-error tolerable. If it surfaces noise, fix the audit table row.
 
 ### Future use
 
@@ -171,11 +211,23 @@ Change:
 ```go
 // before
 "content": string(payloadBytes),
-// after
-"content": json.RawMessage(payloadBytes),
+// after — guarded against non-JSON payloads
+"content": rawJSONOrString(payloadBytes),
 ```
 
-Spec change in lockstep — `EdgeMessagePayload` becomes the field's schema (polymorphic) instead of `type: string`. The constraint named in #21 stays: when `contentType` is genuinely binary (`application/octet-stream`), base64 string with `format: byte` remains correct; the rule applies only when the bytes are JSON. **Today's reality** (per the spec's `contentType` description and the workaround documented in #193) is that `contentType` is informational — clients stringify non-JSON content. The polymorphic `EdgeMessagePayload` accommodates that workaround.
+Where `rawJSONOrString` is a small helper:
+```go
+func rawJSONOrString(b []byte) any {
+    if json.Valid(b) {
+        return json.RawMessage(b)
+    }
+    return string(b)  // fallback for #193 workaround payloads (legacy stringified non-JSON)
+}
+```
+
+The guard exists because the #193 workaround documented in this PR's `contentType` description allows clients to store non-JSON bytes (e.g. base64-binary, raw XML) by passing them as a JSON string today. Older messages stored before this fix may contain such bytes; emitting `json.RawMessage` on invalid JSON would cause an `encoding/json` panic at marshal time. The fallback preserves backward compatibility with stored data.
+
+Spec change in lockstep — `EdgeMessagePayload` becomes the field's schema (polymorphic) instead of `type: string`. The polymorphic schema admits both JSON values and JSON strings, so both branches of `rawJSONOrString` produce wire output that validates. The constraint named in #21 stays: when `contentType` is genuinely binary (`application/octet-stream`), base64 string with `format: byte` remains correct; the rule applies only when the bytes are JSON. **Today's reality** (per the spec's `contentType` description and the workaround documented in #193) is that `contentType` is informational — clients stringify non-JSON content. The polymorphic `EdgeMessagePayload` accommodates that workaround.
 
 Test pinning: a new E2E test posts a message with a JSON payload, calls `GetMessage`, asserts the `content` field is parseable as JSON without a second `json.Unmarshal` (i.e. it's already JSON, not a string). The validator's `EdgeMessagePayload` schema then prevents future regression on the wire shape.
 
@@ -243,24 +295,24 @@ Foundation-then-domains. ~10-11 commits.
 ### Foundation
 
 1. **Validator + collector + end-of-suite report.** Adds `internal/e2e/openapivalidator/` package with collector, `Mismatch` type, and the wrapping middleware. Wires into `internal/e2e/e2e_test.go`'s `TestMain`. No spec or handler changes yet. Build green; existing E2E tests pass; validator runs against the current (drifted) spec and produces the first list of mismatches printed at end-of-suite. Test that pins the validator itself (small unit test feeding a known-mismatching response, asserting it's collected) is also part of this commit.
-2. **Audit table skeleton.** Adds `docs/superpowers/audits/2026-04-29-openapi-conformance-audit.md` with all 81 ops listed, columns `operationId`/`method`/`path`/`handler` filled in via the one-shot `tools/audit-skeleton/` script. Response-shape columns filled in by reading each handler. Disposition column empty; resolved-by-commit column empty. The validator output from commit 1 informs which rows need fix-spec / fix-server / fix-both.
+2. **Audit table.** Adds `docs/superpowers/audits/2026-04-29-openapi-conformance-audit.md` with all 81 ops listed: `operationId`/`method`/`path`/`handler` enumerated by reading the spec and `api/generated.go`; `spec response` and `server response` columns populated by reading each handler (Section 3 process). Disposition column empty; resolved-by-commit column empty. The `record`-mode validator output from commit 1 cross-checks the human-recorded "server response" column against the actual wire and surfaces audit-table errors before per-domain commits start.
 
 ### Per-domain commits
 
 (One per domain, each: spec changes + handler fixes + new E2E coverage + parity updates + audit table rows updated.)
 
-3. **account / IAM** (10 ops; mostly simple GETs)
-4. **messaging** (5 ops; includes the JSON-in-string fix and #193's documentation marker)
-5. **audit** (4 ops; includes the `AuditEvent` discriminator-union schema)
-6. **search** (6 ops)
-7. **model** (12 ops; export/import; possibly XML schemas need careful handling)
+3. **messaging** (5 ops; includes the JSON-in-string fix, the polymorphic `EdgeMessagePayload` schema, and #193's documentation marker). **First** because it exercises the hardest pattern — polymorphic payload schemas with the `rawJSONOrString` guard — before the easier domains lock in conventions that don't generalize.
+4. **audit** (4 ops; includes the `AuditEvent` discriminator-union schema). Second-hardest pattern: `oneOf` + discriminator. Locking the convention here means later domains have a reference.
+5. **account / IAM** (10 ops; mostly simple GETs)
+6. **search** (6 ops; includes streaming `application/x-ndjson` variant)
+7. **model** (12 ops; export/import; XML schemas need careful handling)
 8. **workflow** (8 ops)
 9. **entity** (14 ops; includes the original #21 confirmed defects — POST array, GET envelope)
 10. **dispatch / health** (4 ops; trivial)
 
 ### Final cleanup
 
-11. **Derived artefacts + final consistency check.** `cmd/cyoda/help/content/openapi.md` narrative pass; final `e2e/parity` consistency check; verify ADR 0001 is unchanged (no decision drift during execution); close out any audit-table rows still empty (everything `match` if no fix was needed); confirm validator end-of-suite report is empty.
+11. **Mode flip + derived artefacts + final consistency check.** Switch the validator's default `CYODA_OPENAPI_VALIDATOR_MODE` from `record` to `enforce` (Section 2). `cmd/cyoda/help/content/openapi.md` narrative pass; final `e2e/parity` consistency check; verify ADR 0001 is unchanged (no decision drift during execution); close out any audit-table rows still empty (everything `match` if no fix was needed); confirm `TestZZZ_OpenAPIConformance` reports zero mismatches and zero uncovered ops.
 
 ### Verification cadence
 
@@ -268,7 +320,9 @@ After each commit: `go build ./... && go test -short ./...`. Before merge: `make
 
 ### Order rationale
 
-Account/IAM first because it's mostly trivial GETs — proves the per-domain commit pattern works against simple cases before hitting harder ones. Audit and search later because the discriminator-union and `oneOf` shapes are the riskiest. Entity last because it's the largest and contains the original #21 defects — by then the pattern is settled.
+**Hardest patterns first**, easier domains follow. Messaging and audit are the load-bearing pattern probes (polymorphic payload, discriminator union); locking conventions there means later domains inherit a known-good template instead of inventing one that may not generalize. Account/IAM and the trivial domains slot in after as bulk work. Entity is last because it's the largest and contains the original #21 defects — by then the pattern is fully settled and the changes are mechanical applications of it.
+
+This order inverts the conventional "easy first" instinct in favor of "risky first" — the project's "do it right or don't bother" philosophy: better to discover a load-bearing flaw early on a small domain than after migrating most of the codebase.
 
 ## 9. Risk register
 
