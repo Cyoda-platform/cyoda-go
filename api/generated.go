@@ -1967,9 +1967,22 @@ type EntityResultDto struct {
 }
 
 // EntityTransactionResponse defines model for EntityTransactionResponse.
+// entityIds is a slice of UUID strings — server is source of truth (emits []string).
 type EntityTransactionResponse struct {
-	EntityIds     []map[string]interface{} `json:"entityIds"`
-	TransactionId *openapi_types.UUID      `json:"transactionId,omitempty"`
+	EntityIds     []openapi_types.UUID `json:"entityIds"`
+	TransactionId *openapi_types.UUID  `json:"transactionId,omitempty"`
+}
+
+// Envelope defines model for Envelope.
+// Wire envelope returned by GET /entity/{entityId} and each element of
+// GET /entity/{entityName}/{modelVersion}. The shape is the source of truth.
+type Envelope struct {
+	// Type entity type discriminator (e.g. "ENTITY").
+	Type string `json:"type"`
+	// Data polymorphic entity payload as supplied at create/update time.
+	Data map[string]interface{} `json:"data"`
+	// Meta system-managed metadata.
+	Meta map[string]interface{} `json:"meta"`
 }
 
 // ErrorResponse defines model for ErrorResponse.

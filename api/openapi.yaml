@@ -834,7 +834,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/ModelStatsDto"
+                items:
+                  $ref: "#/components/schemas/ModelStatsDto"
               example:
                 - modelName: nobel-prize
                   modelVersion: 1
@@ -842,6 +843,12 @@ paths:
                 - modelName: flight-ticket
                   modelVersion: 1
                   count: 3458659339
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/stats/states:
     get:
       tags:
@@ -878,7 +885,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/ModelStateStatsDto"
+                items:
+                  $ref: "#/components/schemas/ModelStateStatsDto"
               example:
                 - modelName: nobel-prize
                   modelVersion: 1
@@ -916,6 +924,18 @@ paths:
                   modelVersion: 1
                   state: CANCELLED
                   count: 23452345
+        "400":
+          description: Bad request — states filter exceeds maximum cardinality
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/stats/states/{entityName}/{modelVersion}:
     get:
       tags:
@@ -968,7 +988,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/ModelStateStatsDto"
+                items:
+                  $ref: "#/components/schemas/ModelStateStatsDto"
               example:
                 - modelName: nobel-prize
                   modelVersion: 1
@@ -1004,6 +1025,18 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "400":
+          description: Bad request — states filter exceeds maximum cardinality
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/stats/{entityName}/{modelVersion}:
     get:
       tags:
@@ -1066,6 +1099,12 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}:
     get:
       tags:
@@ -1107,26 +1146,31 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/Envelope"
               examples:
                 Nobel Prize Example:
                   description: Nobel Prize Example
                   value:
-                    category: physics
-                    laureates:
-                      - firstname: John
-                        surname: Hopfield
-                        id: "1037"
-                        motivation: '"for foundational discoveries and inventions that enable machine
-                          learning with artificial neural networks"'
-                        share: "2"
-                      - firstname: Geoffrey
-                        surname: Hinton
-                        id: "1038"
-                        motivation: '"for foundational discoveries and inventions that enable machine
-                          learning with artificial neural networks"'
-                        share: "2"
-                    year: "2024"
+                    type: ENTITY
+                    data:
+                      category: physics
+                      laureates:
+                        - firstname: John
+                          surname: Hopfield
+                          id: "1037"
+                          motivation: '"for foundational discoveries and inventions that enable machine
+                            learning with artificial neural networks"'
+                          share: "2"
+                        - firstname: Geoffrey
+                          surname: Hinton
+                          id: "1038"
+                          motivation: '"for foundational discoveries and inventions that enable machine
+                            learning with artificial neural networks"'
+                          share: "2"
+                      year: "2024"
+                    meta:
+                      id: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+                      state: VALIDATED
         "400":
           description: Conflicting request paramters (both pointInTime and transactionId
             provided)
@@ -1158,6 +1202,12 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     delete:
       tags:
         - Entity Management
@@ -1218,6 +1268,12 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}/changes:
     get:
       tags:
@@ -1288,7 +1344,8 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityChangeMeta"
+                items:
+                  $ref: "#/components/schemas/EntityChangeMeta"
               examples:
                 Entity Change History:
                   description: Entity Change History
@@ -1337,6 +1394,12 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{entityId}/transitions:
     get:
       tags:
@@ -1501,10 +1564,11 @@ paths:
         "200":
           description: Successfully retrieved entities
           content:
-            application/x-ndjson:
+            application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/JsonNode"
+                items:
+                  $ref: "#/components/schemas/Envelope"
               examples:
                 Nobel Prize Winners:
                   description: Nobel Prize Winners
@@ -1593,6 +1657,12 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     delete:
       tags:
         - Entity Management
@@ -1743,6 +1813,12 @@ paths:
                     properties:
                       entityName: submarine
                       entityVersion: 1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}:
     put:
       tags:
@@ -1856,13 +1932,38 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               example:
-                transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
-                entityIds:
-                  - 74807f00-ed0d-11ee-a357-ae468cd3ed16
-                  - 72428380-0704-11ef-a357-ae468cd3ed16
-                  - 459ac800-2032-11ef-a357-ae468cd3ed16
+                - transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
+                  entityIds:
+                    - 74807f00-ed0d-11ee-a357-ae468cd3ed16
+                    - 72428380-0704-11ef-a357-ae468cd3ed16
+                    - 459ac800-2032-11ef-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload, collection too large, or unsupported format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: One or more entities not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — serialization failure (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
     post:
       tags:
         - Entity Management
@@ -1989,13 +2090,32 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               example:
-                transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
-                entityIds:
-                  - 74807f00-ed0d-11ee-a357-ae468cd3ed16
-                  - 72428380-0704-11ef-a357-ae468cd3ed16
-                  - 459ac800-2032-11ef-a357-ae468cd3ed16
+                - transactionId: cb91fa80-d4a8-11ee-a357-ae468cd3ed16
+                  entityIds:
+                    - 74807f00-ed0d-11ee-a357-ae468cd3ed16
+                    - 72428380-0704-11ef-a357-ae468cd3ed16
+                    - 459ac800-2032-11ef-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid JSON array or payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: One or more entity models not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}:
     put:
       tags:
@@ -2131,6 +2251,36 @@ paths:
                 transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload or validation failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Entity not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — serialization failure (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: Precondition Failed — If-Match header does not match current version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}/{transition}:
     put:
       tags:
@@ -2278,6 +2428,36 @@ paths:
                 transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload, validation failure, or invalid transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: Entity not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: Conflict — serialization failure (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "412":
+          description: Precondition Failed — If-Match header does not match current version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityName}/{modelVersion}:
     post:
       tags:
@@ -2423,11 +2603,42 @@ paths:
             application/json:
               schema:
                 type: array
-                $ref: "#/components/schemas/EntityTransactionResponse"
+                items:
+                  $ref: "#/components/schemas/EntityTransactionResponse"
               example:
-                transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
-                entityIds:
-                  - cdcff600-bab1-11ee-a357-ae468cd3ed16
+                - transactionId: 733e7180-c055-11ef-a357-ae468cd3ed16
+                  entityIds:
+                    - cdcff600-bab1-11ee-a357-ae468cd3ed16
+        "400":
+          description: Bad request — invalid payload, validation failure, or change level violation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "validation failed: field x is required"
+                instance: /api/entity/JSON/nobel-prize/1
+        "404":
+          description: Entity model not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: cannot find model entityName=nobel-prize, version=1
+                instance: /api/entity/JSON/nobel-prize/1
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /message:
     delete:
       tags:
@@ -6900,6 +7111,32 @@ paths:
                   schemaId: 8824c480-c166-11ee-822a-ae468cd3ed16
 components:
   schemas:
+    Envelope:
+      type: object
+      description: |
+        Wire envelope returned by GET /entity/{entityId} and each element of
+        GET /entity/{entityName}/{modelVersion}. The server reconstructs this
+        envelope from internal storage — the shape is the source of truth.
+      required:
+        - type
+        - data
+        - meta
+      properties:
+        type:
+          type: string
+          description: Entity type discriminator (e.g. "ENTITY").
+          example: ENTITY
+        data:
+          type: object
+          additionalProperties: true
+          description: |
+            Polymorphic entity payload as supplied at create/update time.
+            Exact fields depend on the entity model.
+        meta:
+          type: object
+          additionalProperties: true
+          description: |
+            System-managed metadata: id, state, creationDate, previousTransition, etc.
     TransitionNameList:
       type: array
       description: >
@@ -7167,6 +7404,11 @@ components:
         - version
     EntityTransactionResponse:
       type: object
+      description: |
+        Response returned by entity create/update operations. Contains the
+        transaction ID and the list of entity IDs affected by the operation.
+        entityIds contains UUID strings (server is source of truth — the
+        server emits []string, not []object).
       properties:
         transactionId:
           type: string
@@ -7174,7 +7416,8 @@ components:
         entityIds:
           type: array
           items:
-            type: object
+            type: string
+            format: uuid
       required:
         - entityIds
     LaureateDto:
