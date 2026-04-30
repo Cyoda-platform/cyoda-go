@@ -523,7 +523,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StateMachineFinishedDto"
+                $ref: "#/components/schemas/StateMachineAuditEventDto"
         "400":
           description: Invalid request - UUID is not time-based
           content:
@@ -8693,6 +8693,12 @@ components:
               - $ref: "#/components/schemas/EntityChangeAuditEventDto"
               - $ref: "#/components/schemas/StateMachineAuditEventDto"
               - $ref: "#/components/schemas/SystemAuditEventDto"
+            discriminator:
+              propertyName: auditEventType
+              mapping:
+                EntityChange: "#/components/schemas/EntityChangeAuditEventDto"
+                StateMachine: "#/components/schemas/StateMachineAuditEventDto"
+                System: "#/components/schemas/SystemAuditEventDto"
       required:
         - pagination
     EntityChangeAuditEventDto:
@@ -8753,39 +8759,32 @@ components:
               type: string
               description: Type of the state machine event
               enum:
-                - STARTED
-                - FINISHED
-                - CANCELLED
-                - FORCED_SUCCESS
+                - STATE_MACHINE_START
+                - STATE_MACHINE_FINISH
+                - CANCEL
+                - FORCE_SUCCESS
                 - WORKFLOW_FOUND
                 - WORKFLOW_NOT_FOUND
-                - WORKFLOW_SKIPPED
-                - TRANSITION_MADE
+                - WORKFLOW_SKIP
+                - TRANSITION_MAKE
                 - TRANSITION_NOT_FOUND
-                - TRANSITION_CRITERION_NOT_MATCHED
-                - PROCESS_CRITERION_NOT_MATCHED
-                - PROCESSING_PAUSED
+                - TRANSITION_NOT_MATCH_CRITERION
+                - PROCESS_NOT_MATCH_CRITERION
+                - PAUSE_FOR_PROCESSING
                 - STATE_PROCESS_RESULT
             data:
-              oneOf:
-                - $ref: "#/components/schemas/StateMachineCancelledDto"
-                - $ref: "#/components/schemas/StateMachineFinishedDto"
-                - $ref: "#/components/schemas/StateMachineForcedSuccessDto"
-                - $ref: "#/components/schemas/StateMachineProcessCriterionNotMatchedDto"
-                - $ref: "#/components/schemas/StateMachineProcessingPausedDto"
-                - $ref: "#/components/schemas/StateMachineStartedDto"
-                - $ref: "#/components/schemas/StateMachineStateProcessResultDto"
-                - $ref: "#/components/schemas/StateMachineTransitionCriterionNotMatchedDto"
-                - $ref: "#/components/schemas/StateMachineTransitionMadeDto"
-                - $ref: "#/components/schemas/StateMachineTransitionNotFoundDto"
-                - $ref: "#/components/schemas/StateMachineWorkflowFoundDto"
-                - $ref: "#/components/schemas/StateMachineWorkflowNotFoundDto"
-                - $ref: "#/components/schemas/StateMachineWorkflowSkippedDto"
+              type: object
+              nullable: true
+              description: >
+                Optional event-specific payload. Present for some event types
+                (e.g. STATE_MACHINE_FINISH includes {"success": true},
+                STATE_PROCESS_RESULT includes {"success": false}).
+                Null for most event types.
+              additionalProperties: true
       required:
         - eventType
         - microsTime
         - severity
-        - state
         - utcTime
     StateMachineCancelledDto:
       allOf:

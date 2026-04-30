@@ -52,8 +52,8 @@ and marked out-of-scope. 59 are in scope for #21.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| getStateMachineFinishedEvent | GET | /audit/entity/{entityId}/workflow/{transactionId}/finished | `internal/domain/audit/handler.go:231` | `object{state,stopReason,success}` (required: state, stopReason, success) | `map{auditEventType,eventType,severity,utcTime,entityId,details,data,...}` — missing `stopReason`, `success` at top level; extra fields present | fix-server | |
-| searchEntityAuditEvents | GET | /audit/entity/{entityId} | `internal/domain/audit/handler.go:26` | `$ref EntityAuditEventsResponseDto` — paginated object with `items[]` (discriminated by eventType) | `map{items,pagination}` — outer shape matches; items mixin of EntityChange and StateMachine events; StateMachine events use non-spec eventType values (TRANSITION_MAKE vs TRANSITION_MADE) and null data field violations | fix-server | |
+| getStateMachineFinishedEvent | GET | /audit/entity/{entityId}/workflow/{transactionId}/finished | `internal/domain/audit/handler.go:231` | `object{state,stopReason,success}` (required: state, stopReason, success) | `map{auditEventType,eventType,severity,utcTime,entityId,details,data,...}` — missing `stopReason`, `success` at top level; extra fields present | fix-spec | TBD |
+| searchEntityAuditEvents | GET | /audit/entity/{entityId} | `internal/domain/audit/handler.go:26` | `$ref EntityAuditEventsResponseDto` — paginated object with `items[]` (discriminated by eventType) | `map{items,pagination}` — outer shape matches; items mixin of EntityChange and StateMachine events; StateMachine events use non-spec eventType values (TRANSITION_MAKE vs TRANSITION_MADE) and null data field violations | fix-spec | TBD |
 
 ---
 
