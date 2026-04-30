@@ -84,7 +84,7 @@ Response: `200 OK`, `application/json` — same shape as a single element of the
 
 ## SPEC SHAPE
 
-The spec covers 67 paths across these tag groups:
+The spec covers 69 paths across these tag groups:
 
 - **Entity Management** — create, update, delete, transition, and stats endpoints under `/entity/`
 - **Entity Model** — model import, export, lock, unlock, delete, changeLevel, and workflow under `/model/`
@@ -101,7 +101,7 @@ All paths in the spec are relative to the `servers[0].url`, which is set at runt
 
 ## AUTHENTICATION
 
-The spec declares one security scheme:
+The spec declares two security schemes:
 
 ```yaml
 components:
@@ -111,9 +111,12 @@ components:
       scheme: bearer
       description: >-
         Authorization header: `Bearer <access_token>`
+    basicAuth:
+      type: http
+      scheme: basic
 ```
 
-Global security is applied to all operations: `security: [{bearerAuth: []}]`. Discovery endpoints (`/openapi.json`, `/docs`) and help endpoints are not part of the spec and carry no security requirement.
+Global security is applied to all operations: `security: [{bearerAuth: []}]`. The `basicAuth` scheme is declared for spec validity — it is referenced by Platform API (Stream Data) operations that are out of scope for the cyoda-go server. Discovery endpoints (`/openapi.json`, `/docs`) and help endpoints are not part of the spec and carry no security requirement.
 
 When `CYODA_IAM_MODE=mock`, the server accepts requests without a token. When `CYODA_IAM_MODE=jwt`, a valid JWT Bearer token is required on all protected endpoints.
 
