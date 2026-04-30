@@ -97,16 +97,16 @@ and marked out-of-scope. 59 are in scope for #21.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| deleteJwtKeyPair | DELETE | /oauth/keys/keypair/{keyId} | `internal/domain/account/handler.go:93` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| deleteTrustedKey | DELETE | /oauth/keys/trusted/{keyId} | `internal/domain/account/handler.go:113` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| getCurrentJwtKeyPair | GET | /oauth/keys/keypair/current | `internal/domain/account/handler.go:89` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| invalidateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/invalidate | `internal/domain/account/handler.go:97` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| invalidateTrustedKey | POST | /oauth/keys/trusted/{keyId}/invalidate | `internal/domain/account/handler.go:117` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| issueJwtKeyPair | POST | /oauth/keys/keypair | `internal/domain/account/handler.go:85` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| listTrustedKeys | GET | /oauth/keys/trusted | `internal/domain/account/handler.go:105` | `type:array items:$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| reactivateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/reactivate | `internal/domain/account/handler.go:101` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| reactivateTrustedKey | POST | /oauth/keys/trusted/{keyId}/reactivate | `internal/domain/account/handler.go:121` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| registerTrustedKey | POST | /oauth/keys/trusted | `internal/domain/account/handler.go:109` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
+| deleteJwtKeyPair | DELETE | /oauth/keys/keypair/{keyId} | `internal/domain/account/handler.go:93` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| deleteTrustedKey | DELETE | /oauth/keys/trusted/{keyId} | `internal/domain/account/handler.go:113` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| getCurrentJwtKeyPair | GET | /oauth/keys/keypair/current | `internal/domain/account/handler.go:89` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| invalidateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/invalidate | `internal/domain/account/handler.go:97` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| invalidateTrustedKey | POST | /oauth/keys/trusted/{keyId}/invalidate | `internal/domain/account/handler.go:117` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| issueJwtKeyPair | POST | /oauth/keys/keypair | `internal/domain/account/handler.go:85` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| listTrustedKeys | GET | /oauth/keys/trusted | `internal/domain/account/handler.go:105` | `type:array items:$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| reactivateJwtKeyPair | POST | /oauth/keys/keypair/{keyId}/reactivate | `internal/domain/account/handler.go:101` | `$ref JwtKeyPairResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| reactivateTrustedKey | POST | /oauth/keys/trusted/{keyId}/reactivate | `internal/domain/account/handler.go:121` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| registerTrustedKey | POST | /oauth/keys/trusted | `internal/domain/account/handler.go:109` | `$ref TrustedKeyResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
 
 ---
 
@@ -114,13 +114,13 @@ and marked out-of-scope. 59 are in scope for #21.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| deleteOidcProvider | DELETE | /oauth/oidc/providers/{id} | `internal/domain/account/handler.go:137` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| invalidateOidcProvider | POST | /oauth/oidc/providers/{id}/invalidate | `internal/domain/account/handler.go:145` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| listOidcProviders | GET | /oauth/oidc/providers | `internal/domain/account/handler.go:125` | `type:array items:$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| reactivateOidcProvider | POST | /oauth/oidc/providers/{id}/reactivate | `internal/domain/account/handler.go:149` | `$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| registerOidcProvider | POST | /oauth/oidc/providers | `internal/domain/account/handler.go:129` | `$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| reloadOidcProviders | POST | /oauth/oidc/providers/reload | `internal/domain/account/handler.go:133` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| updateOidcProvider | PATCH | /oauth/oidc/providers/{id} | `internal/domain/account/handler.go:141` | `$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
+| deleteOidcProvider | DELETE | /oauth/oidc/providers/{id} | `internal/domain/account/handler.go:137` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| invalidateOidcProvider | POST | /oauth/oidc/providers/{id}/invalidate | `internal/domain/account/handler.go:145` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| listOidcProviders | GET | /oauth/oidc/providers | `internal/domain/account/handler.go:125` | `type:array items:$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| reactivateOidcProvider | POST | /oauth/oidc/providers/{id}/reactivate | `internal/domain/account/handler.go:149` | `$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| registerOidcProvider | POST | /oauth/oidc/providers | `internal/domain/account/handler.go:129` | `$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| reloadOidcProviders | POST | /oauth/oidc/providers/reload | `internal/domain/account/handler.go:133` | `content:{}` (empty body); `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| updateOidcProvider | PATCH | /oauth/oidc/providers/{id} | `internal/domain/account/handler.go:141` | `$ref OidcProviderResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
 
 ---
 
@@ -128,8 +128,8 @@ and marked out-of-scope. 59 are in scope for #21.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| accountGet | GET | /account | `internal/domain/account/handler.go:27` | `$ref UserAccountInfoResponseDto`; `401` added; `UserRoleDto.desc` made optional (server has no role desc) | `map{userAccountInfo{userId,userName,legalEntity,roles[{id}],currentSubscription}}` — matches spec after desc fix | match | TBD |
-| accountSubscriptionsGet | GET | /account/subscriptions | `internal/domain/account/handler.go:61` | `$ref SubscriptionsResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
+| accountGet | GET | /account | `internal/domain/account/handler.go:27` | `$ref UserAccountInfoResponseDto`; `401` added; `UserRoleDto.desc` made optional (server has no role desc) | `map{userAccountInfo{userId,userName,legalEntity,roles[{id}],currentSubscription}}` — matches spec after desc fix | match | 766df8b |
+| accountSubscriptionsGet | GET | /account/subscriptions | `internal/domain/account/handler.go:61` | `$ref SubscriptionsResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
 
 ---
 
@@ -137,11 +137,11 @@ and marked out-of-scope. 59 are in scope for #21.
 
 | operationId | method | path | handler | spec response (today) | server response (today) | disposition | resolved-by-commit |
 |---|---|---|---|---|---|---|---|
-| createTechnicalUser | POST | /clients | `internal/domain/account/handler.go:69` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| deleteTechnicalUser | DELETE | /clients/{clientId} | `internal/domain/account/handler.go:73` | `$ref DeleteTechnicalUser200ResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| getTechnicalUserToken | POST | /oauth/token | real impl in `internal/auth/token.go` (account handler stub bypassed) | `$ref TokenResponseDto`; 200/400/401/403/500 declared — matches server for `client_credentials`; note: `issued_token_type` enum only has `access_token` but server returns `jwt` for token-exchange (fix-spec minor) | real impl via `auth/token.go`; `client_credentials` wire matches spec; `token-exchange` `issued_token_type` enum drift noted | fix-spec (minor: issued_token_type enum) | TBD |
-| listTechnicalUsers | GET | /clients | `internal/domain/account/handler.go:65` | `type:array items:$ref TechnicalUserDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD |
-| resetTechnicalUserSecret | PUT | /clients/{clientId}/secret | `internal/domain/account/handler.go:77` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | TBD | |
+| createTechnicalUser | POST | /clients | `internal/domain/account/handler.go:69` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| deleteTechnicalUser | DELETE | /clients/{clientId} | `internal/domain/account/handler.go:73` | `$ref DeleteTechnicalUser200ResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| getTechnicalUserToken | POST | /oauth/token | real impl in `internal/auth/token.go` (account handler stub bypassed) | `$ref TokenResponseDto`; 200/400/401/403/500 declared — matches server for `client_credentials`; note: `issued_token_type` enum only has `access_token` but server returns `jwt` for token-exchange (fix-spec minor) | real impl via `auth/token.go`; `client_credentials` wire matches spec; `token-exchange` `issued_token_type` enum drift noted | fix-spec (minor: issued_token_type enum) | 766df8b |
+| listTechnicalUsers | GET | /clients | `internal/domain/account/handler.go:65` | `type:array items:$ref TechnicalUserDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
+| resetTechnicalUserSecret | PUT | /clients/{clientId}/secret | `internal/domain/account/handler.go:77` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b | |
 
 ---
 
