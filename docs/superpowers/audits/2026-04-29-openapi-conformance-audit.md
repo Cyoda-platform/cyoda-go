@@ -37,8 +37,8 @@ mounted by the server but undocumented. Added to the spec by Task 5.1 commit —
 | updateCollection | PUT | /entity/{format} | `internal/domain/entity/handler.go:604` | `type:array + $ref EntityTransactionResponse` (malformed — array with sibling $ref) | `[]any{map{transactionId,entityIds}}` — array wrapping one object | fix-spec | |
 | updateSingle | PUT | /entity/{format}/{entityId}/{transition} | `internal/domain/entity/handler.go:704` | `$ref EntityTransactionResponse` — object with `transactionId`, `entityIds[]object` | `map{transactionId,entityIds}` where entityIds is `[]string` (string vs object mismatch) | fix-both | |
 | updateSingleWithLoopback | PUT | /entity/{format}/{entityId} | `internal/domain/entity/handler.go:671` | `$ref EntityTransactionResponse` — object with `transactionId`, `entityIds[]object` | `map{transactionId,entityIds}` where entityIds is `[]string` (string vs object mismatch) | fix-both | |
-| getEntityTransitions | GET | /entity/{entityId}/transitions | `internal/domain/entity/transitions_handler.go:14` | `$ref TransitionNameList` — array of strings (added by Task 5.1) | `[]string` | fix-spec (added) | TBD |
-| fetchEntityTransitions | GET | /platform-api/entity/fetch/transitions | `internal/domain/entity/transitions_handler.go:73` | `$ref TransitionNameList` — array of strings (added by Task 5.1) | `[]string` | fix-spec (added) | TBD |
+| getEntityTransitions | GET | /entity/{entityId}/transitions | `internal/domain/entity/transitions_handler.go:14` | `$ref TransitionNameList` — array of strings (added by Task 5.1) | `[]string` | fix-spec (added) | 302ba1e |
+| fetchEntityTransitions | GET | /platform-api/entity/fetch/transitions | `internal/domain/entity/transitions_handler.go:73` | `$ref TransitionNameList` — array of strings (added by Task 5.1) | `[]string` | fix-spec (added) | 302ba1e |
 
 ---
 
