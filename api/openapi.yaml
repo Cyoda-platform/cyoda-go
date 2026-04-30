@@ -5630,12 +5630,24 @@ paths:
               schema:
                 type: string
                 format: uuid
+        "400":
+          description: Invalid search criteria (malformed condition, type mismatch, unknown field path)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetailDto"
         "404":
           description: Entity model not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/async/{jobId}:
@@ -5702,15 +5714,21 @@ paths:
           description: Invalid parameters (malformed point-in-time or invalid page
             parameters)
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
         "404":
           description: Search job not found or expired
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/async/{jobId}/cancel:
@@ -5748,9 +5766,15 @@ paths:
         "404":
           description: Search job not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/async/{jobId}/status:
@@ -5798,9 +5822,15 @@ paths:
         "404":
           description: Search job not found
           content:
-            application/json:
+            application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /search/direct/{entityName}/{modelVersion}:
@@ -5936,6 +5966,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProblemDetailDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/InternalServerError'
       security:
         - bearerAuth: []
   /sql/schema/:
@@ -7306,8 +7342,10 @@ components:
           format: uri
         properties:
           type: object
-          additionalProperties:
-            type: object
+          additionalProperties: true
+          description: |
+            Additional diagnostic properties. Values may be any JSON type
+            (string, number, boolean, object, array).
     CancelAsyncSearchDto:
       type: object
       properties:
@@ -7324,7 +7362,7 @@ components:
             - NOT_FOUND
         cancelled:
           type: boolean
-          writeOnly: true
+          description: Alias for isCancelled — both fields are present in the response for compatibility
       required:
         - currentSearchJobStatus
         - isCancelled
@@ -7354,9 +7392,10 @@ components:
             problem
         properties:
           type: object
-          additionalProperties:
-            type: object
-          description: Additional properties specific to the problem type
+          additionalProperties: true
+          description: |
+            Additional diagnostic properties. Values may be any JSON type
+            (string, number, boolean, object, array).
     AbstractCondition:
       type: object
       properties:
@@ -7606,6 +7645,9 @@ components:
         - error_description
     EntityMetadataDto:
       type: object
+      description: |
+        System-managed metadata returned for each entity in search results.
+        The server reconstructs this from internal storage — the shape is the source of truth.
       properties:
         id:
           type: string
@@ -7618,11 +7660,22 @@ components:
           type: string
           format: date-time
           description: When the entity was created
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: When the entity was last modified
+        transactionId:
+          type: string
+          description: The transaction ID associated with the latest save (omitted if none)
         transitionForLatestSave:
           type: string
-          description: The transition that triggered the latest save
+          description: The transition that triggered the latest save (omitted if none)
     EntityResultDto:
       type: object
+      description: |
+        Wire envelope returned by search endpoints. Each result contains the
+        entity payload and system-managed metadata. Shape matches the Envelope
+        schema used by GET /entity/{entityId}.
       properties:
         type:
           type: string
@@ -7630,9 +7683,10 @@ components:
           example: ENTITY
         data:
           type: object
-          additionalProperties:
-            type: object
-          description: The entity data as a JSON object
+          additionalProperties: true
+          description: |
+            Polymorphic entity payload as supplied at create/update time.
+            Field values may be any JSON type (string, number, boolean, object, array).
         meta:
           $ref: "#/components/schemas/EntityMetadataDto"
     ArrayConditionDto:
