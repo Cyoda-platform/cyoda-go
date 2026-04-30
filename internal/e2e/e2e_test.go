@@ -133,7 +133,11 @@ func TestMain(m *testing.M) {
 }
 
 func TestHealth(t *testing.T) {
-	resp, err := http.Get(serverURL + "/api/health")
+	req, err := e2eNewRequest(t, "GET", serverURL+"/api/health", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
