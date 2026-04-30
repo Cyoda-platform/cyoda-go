@@ -2,7 +2,6 @@ package openapivalidator
 
 import (
 	"bufio"
-	"bytes"
 	"io"
 	"net"
 	"net/http"
@@ -41,18 +40,49 @@ type flusherRecorder struct {
 
 func (f *flusherRecorder) Flush() { f.flushed = true; f.ResponseRecorder.Flush() }
 
-func TestTee_DelegatesFlusher(t *testing.T) {
+// TestTee_DelegatesFlusher_WhenUnderlyingFlushable verifies that calling Flush
+// on the tee propagates to the underlying writer when it supports flushing.
+func TestTee_DelegatesFlusher_WhenUnderlyingFlushable(t *testing.T) {
 	rec := &flusherRecorder{ResponseRecorder: httptest.NewRecorder()}
 	tee := newTeeWriter(rec)
 
 	flusher, ok := tee.(http.Flusher)
 	if !ok {
-		t.Fatal("tee does not implement http.Flusher when underlying does")
+		t.Fatal("tee does not implement http.Flusher")
 	}
 	flusher.Flush()
 	if !rec.flushed {
 		t.Error("Flush did not delegate to underlying writer")
 	}
+}
+
+// nonFlusherWriter is an http.ResponseWriter that intentionally does not
+// implement http.Flusher (or Hijacker, ReaderFrom).
+type nonFlusherWriter struct {
+	headers http.Header
+	body    []byte
+	code    int
+}
+
+func (n *nonFlusherWriter) Header() http.Header  { return n.headers }
+func (n *nonFlusherWriter) Write(p []byte) (int, error) {
+	n.body = append(n.body, p...)
+	return len(p), nil
+}
+func (n *nonFlusherWriter) WriteHeader(c int) { n.code = c }
+
+// TestTee_FlushIsNoop_WhenUnderlyingNotFlushable verifies that Flush is safe
+// to call even when the underlying writer doesn't support flushing —
+// *teeWriter implements http.Flusher unconditionally; the call is a no-op
+// in this case.
+func TestTee_FlushIsNoop_WhenUnderlyingNotFlushable(t *testing.T) {
+	rec := &nonFlusherWriter{headers: http.Header{}}
+	tee := newTeeWriter(rec)
+	if _, ok := tee.(http.Flusher); !ok {
+		t.Fatal("tee should always implement http.Flusher")
+	}
+	// Should not panic.
+	tee.(http.Flusher).Flush()
 }
 
 type readerFromRecorder struct {
@@ -63,6 +93,12 @@ type readerFromRecorder struct {
 func (r *readerFromRecorder) ReadFrom(src io.Reader) (int64, error) {
 	r.readFromCalled = true
 	return io.Copy(r.ResponseRecorder, src)
+}
+
+// captureGetter is the accessor interface every tee variant satisfies via
+// its embedded *teeWriter.
+type captureGetter interface {
+	captureBytes() []byte
 }
 
 func TestTee_DelegatesReaderFrom(t *testing.T) {
@@ -80,36 +116,9 @@ func TestTee_DelegatesReaderFrom(t *testing.T) {
 	if !rec.readFromCalled {
 		t.Error("ReadFrom did not delegate to underlying writer")
 	}
-	// Find the underlying *teeWriter to inspect captured bytes.
-	type captureGetter interface{ captureBytes() []byte }
 	cg, ok := tee.(captureGetter)
 	if !ok {
-		// Variant struct without accessor method yet; test direct field access via embedded pointer.
-		// The variant types embed *teeWriter; reach in.
-		switch v := tee.(type) {
-		case *teeR:
-			if got := v.captured.String(); got != "hello" {
-				t.Errorf("captured = %q, want %q", got, "hello")
-			}
-			return
-		case *teeFR:
-			if got := v.captured.String(); got != "hello" {
-				t.Errorf("captured = %q, want %q", got, "hello")
-			}
-			return
-		case *teeHR:
-			if got := v.captured.String(); got != "hello" {
-				t.Errorf("captured = %q, want %q", got, "hello")
-			}
-			return
-		case *teeFHR:
-			if got := v.captured.String(); got != "hello" {
-				t.Errorf("captured = %q, want %q", got, "hello")
-			}
-			return
-		default:
-			t.Fatalf("unexpected tee type %T", tee)
-		}
+		t.Fatalf("tee %T does not implement captureGetter", tee)
 	}
 	if got := string(cg.captureBytes()); got != "hello" {
 		t.Errorf("captured = %q, want %q", got, "hello")
@@ -143,5 +152,3 @@ func TestTee_DefaultStatusIs200(t *testing.T) {
 		t.Errorf("default status after implicit WriteHeader = %d, want 200", tee.status)
 	}
 }
-
-var _ = bytes.NewReader // keep import in case future tests need it

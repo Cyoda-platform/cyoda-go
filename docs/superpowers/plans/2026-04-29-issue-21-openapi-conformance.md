@@ -170,6 +170,8 @@ git commit -m "feat(e2e): scaffold openapivalidator package with Mode constant"
 
 ### Task 1.2: Implement the tee-writer
 
+> **Implementation note (post-spec):** `httptest.NewRecorder()` IS an `http.Flusher` in Go 1.26, which made the original spec design (returning a `*teeWriter` only when none of the optional interfaces was supported) unworkable for tests using a bare recorder. Resolution: `Flush()` is implemented directly on `*teeWriter` as a delegate-or-noop, eliminating the `teeF` and `teeFH` variants. Only `teeH`, `teeR`, and `teeHR` remain as variants for the conditional Hijacker/ReaderFrom interfaces.
+
 **Files:**
 - Create: `internal/e2e/openapivalidator/tee.go`
 - Test: `internal/e2e/openapivalidator/tee_test.go`

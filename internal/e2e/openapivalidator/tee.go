@@ -99,22 +99,3 @@ func (t *teeHR) ReadFrom(src io.Reader) (int64, error) {
 	return t.w.(io.ReaderFrom).ReadFrom(io.TeeReader(src, &t.captured))
 }
 
-// teeFR and teeFHR exist so the test's type-switch arms referencing them
-// compile. In practice newTeeWriter never returns these types because
-// http.Flusher is handled on *teeWriter itself and does not require a
-// separate variant.
-
-type teeFR struct{ *teeWriter }
-
-func (t *teeFR) ReadFrom(src io.Reader) (int64, error) {
-	return t.w.(io.ReaderFrom).ReadFrom(io.TeeReader(src, &t.captured))
-}
-
-type teeFHR struct{ *teeWriter }
-
-func (t *teeFHR) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return t.w.(http.Hijacker).Hijack()
-}
-func (t *teeFHR) ReadFrom(src io.Reader) (int64, error) {
-	return t.w.(io.ReaderFrom).ReadFrom(io.TeeReader(src, &t.captured))
-}
