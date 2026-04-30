@@ -16,6 +16,6 @@ const (
 // or t.Errorf the requesting test (-run-filtered single-test workflow).
 //
 // Default is ModeRecord during the conformance work (commits 1-10 of #21).
-// The final commit flips this to ModeEnforce. See
+// Flipped to ModeEnforce in Task 11.2 — the final commit of #21. See
 // docs/adr/0001-openapi-server-spec-conformance.md.
-const Mode = ModeRecord
+const Mode = ModeEnforce

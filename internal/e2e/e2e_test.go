@@ -154,11 +154,31 @@ func TestMain(m *testing.M) {
 
 	// Capture the full operationId set so the conformance test can compute
 	// the uncovered list at end-of-suite.
+	//
+	// Build the exclude-tags set (mirrors api/config.yaml). Excluded ops aren't
+	// in cyoda-go's shipped API and shouldn't count toward coverage.
+	excludeTags := map[string]bool{
+		"Stream Data":              true,
+		"CQL Execution Statistics": true,
+		"SQL-Schema":               true,
+	}
 	for _, item := range swagger.Paths.Map() {
 		for _, op := range item.Operations() {
-			if op.OperationID != "" {
-				allOperationIds = append(allOperationIds, op.OperationID)
+			if op.OperationID == "" {
+				continue
 			}
+			// Skip ops whose tags are in the exclude list.
+			skip := false
+			for _, tag := range op.Tags {
+				if excludeTags[tag] {
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+			allOperationIds = append(allOperationIds, op.OperationID)
 		}
 	}
 

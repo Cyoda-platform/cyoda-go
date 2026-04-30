@@ -16,6 +16,40 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
+// knownUncoveredOps are operationIds that have no E2E coverage by design:
+// either they're stub-implemented (#194) or mounted outside the generated
+// ServerInterface dispatch (transitions handler — #21 design Section 8 noted
+// the wart). Audit table at docs/superpowers/audits/2026-04-29-openapi-
+// conformance-audit.md captures the full disposition for each.
+var knownUncoveredOps = map[string]bool{
+	// Stub IAM/account ops — implementation tracked in #194.
+	"accountSubscriptionsGet":  true,
+	"createTechnicalUser":      true,
+	"deleteTechnicalUser":      true,
+	"listTechnicalUsers":       true,
+	"resetTechnicalUserSecret": true,
+	"deleteJwtKeyPair":         true,
+	"deleteTrustedKey":         true,
+	"getCurrentJwtKeyPair":     true,
+	"invalidateJwtKeyPair":     true,
+	"invalidateTrustedKey":     true,
+	"issueJwtKeyPair":          true,
+	"listTrustedKeys":          true,
+	"reactivateJwtKeyPair":     true,
+	"reactivateTrustedKey":     true,
+	"registerTrustedKey":       true,
+	"deleteOidcProvider":       true,
+	"invalidateOidcProvider":   true,
+	"listOidcProviders":        true,
+	"reactivateOidcProvider":   true,
+	"registerOidcProvider":     true,
+	"reloadOidcProviders":      true,
+	"updateOidcProvider":       true,
+	// Outside the generated ServerInterface dispatch — see #21 design
+	// Section 8, Task 5.1's Option B note. Tracked as future cleanup.
+	"fetchEntityTransitions": true,
+}
+
 // TestOpenAPIConformanceReport runs after every other E2E test, drains the
 // validator's collector, writes the markdown report, and (in ModeEnforce)
 // fails if any mismatches were collected.
@@ -45,7 +79,7 @@ func TestOpenAPIConformanceReport(t *testing.T) {
 		if !runFilterSet() {
 			uncovered := []string{}
 			for _, op := range allOperationIds {
-				if !exercised[op] {
+				if !exercised[op] && !knownUncoveredOps[op] {
 					uncovered = append(uncovered, op)
 				}
 			}

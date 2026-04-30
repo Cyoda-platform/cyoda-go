@@ -189,3 +189,20 @@ content-types, new error status declarations.
 | putSchema | PUT | /sql/schema/... | out-of-scope | n/a (excluded by api/config.yaml) | n/a (excluded by api/config.yaml) | out-of-scope | |
 | saveSchema | POST | /sql/schema/... | out-of-scope | n/a (excluded by api/config.yaml) | n/a (excluded by api/config.yaml) | out-of-scope | |
 | updateTables | PUT | /sql/schema/... | out-of-scope | n/a (excluded by api/config.yaml) | n/a (excluded by api/config.yaml) | out-of-scope | |
+
+---
+
+## Validator state at end of #21
+
+- Mode: `ModeEnforce` (flipped in Task 11.2)
+- Mismatches: 0
+- Uncovered ops accepted via `knownUncoveredOps` (in `internal/e2e/zzz_openapi_conformance_test.go`):
+  - 22 stub-implemented IAM/account ops — see #194
+  - 1 transitions handler outside generated ServerInterface — see Task 5.1 commit `302ba1e` Option B note
+- Excluded-tag ops (Stream Data, CQL Execution Statistics, SQL-Schema) filtered out of `allOperationIds` in `internal/e2e/e2e_test.go`.
+
+Future readers: if a new operation is added to the spec and not yet covered by
+E2E, the conformance test will fail with that operationId in the uncovered
+list. Either add an E2E test or, if intentionally uncovered, add the operationId
+to `knownUncoveredOps` with a comment explaining why (and link to the tracking
+issue).
