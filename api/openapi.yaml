@@ -1337,6 +1337,89 @@ paths:
                 instance: /api/entity/2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
                 properties:
                   entityId: 2ed54d80-f3c2-11ee-9e63-ae468cd3ed16
+  /entity/{entityId}/transitions:
+    get:
+      tags:
+        - Entity Management
+      summary: Get available transitions for an entity
+      description: >
+        Returns the names of workflow transitions available from the entity's
+        current state at the given point in time.
+
+
+        Exactly one of `pointInTime` or `transactionId` may be supplied;
+        both together is an error. When neither is provided the current
+        consistency time is used.
+
+
+        The transitions list is derived from the workflow definition that
+        matches the entity's model. If no workflow matches, the default
+        workflow is used.
+      operationId: getEntityTransitions
+      parameters:
+        - name: entityId
+          in: path
+          description: The unique identifier (UUID) of the entity
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+        - name: pointInTime
+          in: query
+          description: Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339).
+            Mutually exclusive with transactionId.
+          required: false
+          schema:
+            type: string
+            format: date-time
+          example: 2035-01-01T12:00:00Z
+        - name: transactionId
+          in: query
+          description: Evaluate available transitions as of the submit time of this
+            transaction. Mutually exclusive with pointInTime.
+          required: false
+          schema:
+            type: string
+            format: uuid
+          example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+      responses:
+        "200":
+          description: Successfully retrieved available transitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransitionNameList"
+              example:
+                - APPROVE
+                - REJECT
+        "400":
+          description: Bad request — invalid entityId, mutually exclusive parameters
+            supplied, or invalid format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "pointInTime and transactionId are mutually exclusive"
+                instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        "404":
+          description: Entity not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
+                instance: /api/entity/1d1e1b10-1155-11f0-bcd5-ae468cd3ed16/transitions
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/{entityName}/{modelVersion}:
     get:
       tags:
@@ -5048,6 +5131,72 @@ paths:
             application/hal+json:
               schema:
                 type: string
+  /platform-api/entity/fetch/transitions:
+    get:
+      tags:
+        - Entity Management
+      summary: Fetch available transitions (platform-library format)
+      description: >
+        Returns the names of workflow transitions available for an entity,
+        using the platform-library query format (`entityClass=Name.Version`).
+
+
+        This endpoint mirrors `GET /entity/{entityId}/transitions` but accepts
+        the entity class in `Name.Version` dot-notation instead of a path
+        parameter, matching the Cyoda Cloud platform-library convention.
+      operationId: fetchEntityTransitions
+      parameters:
+        - name: entityClass
+          in: query
+          description: Entity class in `Name.Version` format (e.g. `Offer.1`)
+          required: true
+          schema:
+            type: string
+          example: Offer.1
+        - name: entityId
+          in: query
+          description: The unique identifier (UUID) of the entity
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
+      responses:
+        "200":
+          description: Successfully retrieved available transitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransitionNameList"
+              example:
+                - APPROVE
+                - REJECT
+        "400":
+          description: Bad request — missing or malformed required parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: "entityClass must be in format Name.Version (e.g., Offer.1)"
+                instance: /api/platform-api/entity/fetch/transitions
+        "404":
+          description: Entity not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: entity 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16 not found
+                instance: /api/platform-api/entity/fetch/transitions
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /search/async/{entityName}/{modelVersion}:
     post:
       tags:
@@ -6751,6 +6900,19 @@ paths:
                   schemaId: 8824c480-c166-11ee-822a-ae468cd3ed16
 components:
   schemas:
+    TransitionNameList:
+      type: array
+      description: >
+        An ordered list of workflow transition names available from the
+        entity's current state. Each entry is the name of a configured
+        transition (e.g. "APPROVE", "REJECT") or a virtual loopback
+        transition name. An empty array means no transitions are available
+        from the current state.
+      items:
+        type: string
+      example:
+        - APPROVE
+        - REJECT
     FieldConfigDto:
       type: object
       properties:

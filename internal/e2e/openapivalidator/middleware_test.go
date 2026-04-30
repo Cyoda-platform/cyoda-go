@@ -63,6 +63,40 @@ func TestMiddleware_RecordsMismatchOnDriftedResponse(t *testing.T) {
 	}
 }
 
+// TestMiddleware_SkipsOperationalPaths confirms that requests to operational/admin
+// paths (health checks, docs UI, admin endpoints, OAuth discovery) are not
+// recorded as mismatches even though they are not declared in the customer API spec.
+func TestMiddleware_SkipsOperationalPaths(t *testing.T) {
+	v := newFixtureValidator(t)
+	defaultCollector = newCollector()
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, `{"status":"UP"}`)
+	})
+	wrapped := NewMiddleware(v)(inner)
+
+	for _, path := range []string{
+		"/api/health",
+		"/api/admin/log-level",
+		"/api/.well-known/openid-configuration",
+		"/api/docs",
+		"/api/openapi.json",
+		"/api/oauth/keys/",
+		"/api/account/m2m",
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", path, nil)
+			wrapped.ServeHTTP(rec, req)
+		})
+	}
+
+	if got := len(defaultCollector.drain()); got != 0 {
+		t.Errorf("operational paths produced %d mismatches; expected 0", got)
+	}
+}
+
 // In ModeRecord, the middleware never calls t.Errorf on the captured *T,
 // even if a -run filter is active.
 func TestMiddleware_RecordModeNeverFailsTest(t *testing.T) {

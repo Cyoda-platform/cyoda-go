@@ -3060,6 +3060,24 @@ type GetEntityChangesMetadataParams struct {
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
+// GetEntityTransitionsParams defines parameters for GetEntityTransitions.
+type GetEntityTransitionsParams struct {
+	// PointInTime Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339). Mutually exclusive with transactionId.
+	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
+
+	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime.
+	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
+}
+
+// FetchEntityTransitionsParams defines parameters for FetchEntityTransitions.
+type FetchEntityTransitionsParams struct {
+	// EntityClass Entity class in `Name.Version` format (e.g. `Offer.1`)
+	EntityClass string `form:"entityClass" json:"entityClass"`
+
+	// EntityId The unique identifier (UUID) of the entity
+	EntityId openapi_types.UUID `form:"entityId" json:"entityId"`
+}
+
 // DeleteEntitiesParams defines parameters for DeleteEntities.
 type DeleteEntitiesParams struct {
 	// TransactionSize Maximum number of entities to delete in a single transaction. Higher values may improve performance but increase memory usage.
@@ -4313,6 +4331,9 @@ type ServerInterface interface {
 	// Get Entity Changes Metadata
 	// (GET /entity/{entityId}/changes)
 	GetEntityChangesMetadata(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params GetEntityChangesMetadataParams)
+	// Get available transitions for an entity
+	// (GET /entity/{entityId}/transitions)
+	GetEntityTransitions(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params GetEntityTransitionsParams)
 	// Delete entities of a model and version
 	// (DELETE /entity/{entityName}/{modelVersion})
 	DeleteEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params DeleteEntitiesParams)
@@ -4430,6 +4451,9 @@ type ServerInterface interface {
 	// Obtain access token for M2M client
 	// (POST /oauth/token)
 	GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params GetTechnicalUserTokenParams)
+	// Fetch available transitions (platform-library format)
+	// (GET /platform-api/entity/fetch/transitions)
+	FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params FetchEntityTransitionsParams)
 	// Submit async search job
 	// (POST /search/async/{entityName}/{modelVersion})
 	SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params SubmitAsyncSearchJobParams)
@@ -5039,6 +5063,56 @@ func (siw *ServerInterfaceWrapper) GetEntityChangesMetadata(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEntityChangesMetadata(w, r, entityId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetEntityTransitions operation middleware
+func (siw *ServerInterfaceWrapper) GetEntityTransitions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "entityId" -------------
+	var entityId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "entityId", r.PathValue("entityId"), &entityId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetEntityTransitionsParams
+
+	// ------------- Optional query parameter "pointInTime" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pointInTime", r.URL.Query(), &params.PointInTime, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "pointInTime", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "transactionId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "transactionId", r.URL.Query(), &params.TransactionId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetEntityTransitions(w, r, entityId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7025,6 +7099,47 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// FetchEntityTransitions operation middleware
+func (siw *ServerInterfaceWrapper) FetchEntityTransitions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params FetchEntityTransitionsParams
+
+	// ------------- Required query parameter "entityClass" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "entityClass", r.URL.Query(), &params.EntityClass, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityClass", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "entityId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "entityId", r.URL.Query(), &params.EntityId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entityId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.FetchEntityTransitions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -7160,6 +7275,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("DELETE "+options.BaseURL+"/entity/{entityId}", wrapper.DeleteSingleEntity)
 	m.HandleFunc("GET "+options.BaseURL+"/entity/{entityId}", wrapper.GetOneEntity)
 	m.HandleFunc("GET "+options.BaseURL+"/entity/{entityId}/changes", wrapper.GetEntityChangesMetadata)
+	m.HandleFunc("GET "+options.BaseURL+"/entity/{entityId}/transitions", wrapper.GetEntityTransitions)
 	m.HandleFunc("DELETE "+options.BaseURL+"/entity/{entityName}/{modelVersion}", wrapper.DeleteEntities)
 	m.HandleFunc("GET "+options.BaseURL+"/entity/{entityName}/{modelVersion}", wrapper.GetAllEntities)
 	m.HandleFunc("POST "+options.BaseURL+"/entity/{format}", wrapper.CreateCollection)
@@ -7199,6 +7315,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("POST "+options.BaseURL+"/oauth/oidc/providers/{id}/invalidate", wrapper.InvalidateOidcProvider)
 	m.HandleFunc("POST "+options.BaseURL+"/oauth/oidc/providers/{id}/reactivate", wrapper.ReactivateOidcProvider)
 	m.HandleFunc("POST "+options.BaseURL+"/oauth/token", wrapper.GetTechnicalUserToken)
+	m.HandleFunc("GET "+options.BaseURL+"/platform-api/entity/fetch/transitions", wrapper.FetchEntityTransitions)
 	m.HandleFunc("POST "+options.BaseURL+"/search/async/{entityName}/{modelVersion}", wrapper.SubmitAsyncSearchJob)
 	m.HandleFunc("GET "+options.BaseURL+"/search/async/{jobId}", wrapper.GetAsyncSearchResults)
 	m.HandleFunc("PUT "+options.BaseURL+"/search/async/{jobId}/cancel", wrapper.CancelAsyncSearch)

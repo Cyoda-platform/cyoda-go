@@ -8,6 +8,40 @@ import (
 	"strings"
 )
 
+// operationalPathPrefixes are paths the test server mounts but the OpenAPI
+// spec deliberately doesn't document — health checks, admin endpoints,
+// Scalar docs UI, OAuth discovery. Validation is skipped for these so they
+// don't appear in the conformance report as "no spec route matches".
+//
+// Path prefixes are matched against r.URL.Path after the test server's
+// /api context-path mount (e.g. "/api/health" matches prefix "/api/health").
+var operationalPathPrefixes = []string{
+	"/api/health",
+	"/api/docs",
+	"/api/openapi.json",
+	"/api/admin/",
+	"/api/.well-known/",
+	"/api/oauth/keys/",
+	"/api/account/m2m",
+}
+
+// isOperationalPath reports whether path p is an operational/admin endpoint
+// that is intentionally excluded from the customer API spec.
+func isOperationalPath(p string) bool {
+	for _, prefix := range operationalPathPrefixes {
+		if p == prefix {
+			return true
+		}
+		if strings.HasSuffix(prefix, "/") && strings.HasPrefix(p, prefix) {
+			return true
+		}
+		if !strings.HasSuffix(prefix, "/") && strings.HasPrefix(p, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // captureSource lets the middleware extract the captured bytes and status
 // from any teeWriter variant via a single interface check.
 type captureSource interface {
@@ -40,6 +74,13 @@ func runFilterActive() bool {
 func NewMiddleware(v *Validator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isOperationalPath(r.URL.Path) {
+				// Operational endpoint; not in the customer API spec. Skip validation
+				// and don't record as exercised (these aren't operationIds).
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			tw := newTeeWriter(w)
 			next.ServeHTTP(tw, r)
 

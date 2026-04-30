@@ -5,9 +5,12 @@ Per #21 design Section 3. One row per operationId. Disposition values:
 disposition means TBD — populated by the per-domain commits (Tasks 3.1
 through 10.1).
 
-**Totals:** 81 operations declared in `api/openapi.yaml`. 22 are excluded
-from codegen by `api/config.yaml` `exclude-tags` (`Stream Data`, `SQL-Schema`)
-and marked out-of-scope. 59 are in scope for #21.
+**Totals:** 83 operations declared in `api/openapi.yaml` (was 81; 2 ops added by Task 5.1 — see note below).
+22 are excluded from codegen by `api/config.yaml` `exclude-tags` (`Stream Data`, `SQL-Schema`)
+and marked out-of-scope. 61 are in scope for #21.
+
+**Note (Task 5.1):** 2 ops (`getEntityTransitions`, `fetchEntityTransitions`) were previously
+mounted by the server but undocumented. Added to the spec by Task 5.1 commit — total now 83 declared ops.
 
 **Inputs:**
 - Spec: `api/openapi.yaml`
@@ -34,6 +37,8 @@ and marked out-of-scope. 59 are in scope for #21.
 | updateCollection | PUT | /entity/{format} | `internal/domain/entity/handler.go:604` | `type:array + $ref EntityTransactionResponse` (malformed — array with sibling $ref) | `[]any{map{transactionId,entityIds}}` — array wrapping one object | fix-spec | |
 | updateSingle | PUT | /entity/{format}/{entityId}/{transition} | `internal/domain/entity/handler.go:704` | `$ref EntityTransactionResponse` — object with `transactionId`, `entityIds[]object` | `map{transactionId,entityIds}` where entityIds is `[]string` (string vs object mismatch) | fix-both | |
 | updateSingleWithLoopback | PUT | /entity/{format}/{entityId} | `internal/domain/entity/handler.go:671` | `$ref EntityTransactionResponse` — object with `transactionId`, `entityIds[]object` | `map{transactionId,entityIds}` where entityIds is `[]string` (string vs object mismatch) | fix-both | |
+| getEntityTransitions | GET | /entity/{entityId}/transitions | `internal/domain/entity/transitions_handler.go:14` | `$ref TransitionNameList` — array of strings (added by Task 5.1) | `[]string` | fix-spec (added) | TBD |
+| fetchEntityTransitions | GET | /platform-api/entity/fetch/transitions | `internal/domain/entity/transitions_handler.go:73` | `$ref TransitionNameList` — array of strings (added by Task 5.1) | `[]string` | fix-spec (added) | TBD |
 
 ---
 
