@@ -12,6 +12,12 @@ and marked out-of-scope. 61 are in scope for #21.
 **Note (Task 5.1):** 2 ops (`getEntityTransitions`, `fetchEntityTransitions`) were previously
 mounted by the server but undocumented. Added to the spec by Task 5.1 commit — total now 83 declared ops.
 
+**Note (Task 6.1):** `api/generated.go` contains a gzip+base64-encoded snapshot of `api/openapi.yaml`
+returned by `api.GetSwagger()` (the runtime validator's spec source). Since oapi-codegen v2.6.0 is
+incompatible with Go 1.26, the snapshot is manually re-encoded after each spec edit (commit 7ec63f3).
+The embedded spec now reflects all Task 6.1 changes: Envelope schema, entityIds→string[], corrected
+content-types, new error status declarations.
+
 **Inputs:**
 - Spec: `api/openapi.yaml`
 - Validator's record-mode output: `internal/e2e/_openapi-conformance-report.md` (gitignored — regenerate via `go test ./internal/e2e/... -count=1`)
