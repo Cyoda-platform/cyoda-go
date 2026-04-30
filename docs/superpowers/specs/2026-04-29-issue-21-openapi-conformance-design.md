@@ -156,7 +156,7 @@ The flip in commit 11 is the gate signaling "every mismatch fixed; drift is now 
 // internal/e2e/openapivalidator/mode_test.go
 func TestModeIsEnforce(t *testing.T) {
     if Mode != ModeEnforce {
-        t.Fatalf("Mode = %v; expected ModeEnforce on main. Re-flipping to ModeRecord requires explicit PR review.")
+        t.Fatalf("Mode = %v; expected ModeEnforce on main. Re-flipping to ModeRecord requires explicit PR review.", Mode)
     }
 }
 ```
@@ -297,16 +297,21 @@ if err := json.Compact(&compacted, envelope.Payload); err != nil {
 
 The fallback branch is **dead code**: `envelope.Payload` is a `json.RawMessage` field that has just been successfully populated by `json.Unmarshal` (which validates JSON during parsing — invalid input would have been rejected at line 49 before reaching here). The "Not valid JSON" comment is misleading and the branch is unreachable.
 
-Per Gate 6, **remove the dead branch** as part of the messaging commit:
+Per Gate 6, **replace the dead branch with a defensive guard** as part of the messaging commit:
 
 ```go
 var compacted bytes.Buffer
 if err := json.Compact(&compacted, envelope.Payload); err != nil {
-    // json.Unmarshal already validated this — defensive only; surface bug.
+    // Unreachable in practice: json.Unmarshal above validated envelope.Payload
+    // as a JSON value. This guard documents the invariant and surfaces the
+    // bug as a 500 if a future code path violates it (e.g. constructing
+    // envelope.Payload by hand instead of via json.Unmarshal).
     common.WriteError(w, r, common.Internal("payload validation invariant broken", err))
     return
 }
 ```
+
+The branch is effectively unreachable today — if `json.Unmarshal` validated the envelope (line 49), `envelope.Payload` is valid JSON and `json.Compact` cannot fail on it. The guard is intentionally retained as **executable documentation** of the invariant: anyone who modifies the handler in the future and breaks the invariant gets an honest 500 instead of silent corruption.
 
 After this cleanup, the **invariant holds**: every byte sequence stored as a payload via the handler is valid JSON. `json.RawMessage(payloadBytes)` in `GetMessage` is then always safe to marshal.
 
