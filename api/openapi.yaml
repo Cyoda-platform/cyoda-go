@@ -331,6 +331,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserAccountInfoResponseDto"
+        "401":
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /account/subscriptions:
@@ -348,6 +354,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SubscriptionsResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /audit/entity/{entityId}:
@@ -595,6 +603,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -658,6 +668,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -725,6 +737,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -792,6 +806,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /entity/stats:
@@ -3596,6 +3612,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -3653,6 +3671,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -3701,6 +3721,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -3756,6 +3778,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -3809,6 +3833,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
@@ -3853,6 +3879,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -3944,6 +3972,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}:
@@ -3992,6 +4022,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/invalidate:
@@ -4048,6 +4080,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/keys/trusted/{keyId}/reactivate:
@@ -4110,6 +4144,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers:
@@ -4155,6 +4191,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     post:
@@ -4211,6 +4249,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/reload:
@@ -4264,6 +4304,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}:
@@ -4313,6 +4355,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
     patch:
@@ -4385,6 +4429,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/invalidate:
@@ -4437,6 +4483,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/oidc/providers/{id}/reactivate:
@@ -4497,6 +4545,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
       security:
         - bearerAuth: []
   /oauth/token:
@@ -9116,7 +9166,6 @@ components:
           type: string
           description: Role description
       required:
-        - desc
         - id
     SubscriptionsResponseDto:
       type: object
@@ -9194,7 +9243,41 @@ components:
       required:
         - clientId
         - message
+  responses:
+    Unauthorized:
+      description: Unauthorized — missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Forbidden:
+      description: Forbidden — caller does not have permission for this resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    InternalServerError:
+      description: |
+        Internal Server Error — generic message with ticketId for correlation.
+        Per CLAUDE.md's 5xx convention; the underlying error is logged
+        server-side at ERROR level with the same ticketId.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    NotImplemented:
+      description: |
+        Not yet implemented — see https://github.com/Cyoda-platform/cyoda-go/issues/194.
+        The handler exists as a placeholder but returns 501 Not Implemented;
+        real implementation is tracked separately.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
   securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
     bearerAuth:
       type: http
       name: bearerAuth
