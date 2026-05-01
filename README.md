@@ -60,6 +60,14 @@ A running server exposes the same tree over HTTP at `{ContextPath}/help` (defaul
 - **Docker** (optional, for PostgreSQL backend and container builds)
 - **PostgreSQL 17+** (required for PostgreSQL mode)
 
+## Versioning
+
+Cyoda-Go is **pre-1.0**: minor version bumps (e.g. `0.6.x` → `0.7.0`) may include breaking changes to the wire format, configuration, or operational surface. Patch bumps (`0.x.y` → `0.x.y+1`) are non-breaking.
+
+Each release lists breaking changes in [`CHANGELOG.md`](./CHANGELOG.md). Active release line: see the latest tag at [Releases](https://github.com/Cyoda-platform/cyoda-go/releases).
+
+**Older release lines (e.g. `v0.6.x`) are not maintained.** No back-port branches exist. If a real consumer needs a fix on an older line, branch from the relevant tag (e.g. `git checkout -b release/v0.6.x v0.6.3`) and open an issue describing the constraint — we'll consider creating an official maintenance branch if the need is concrete.
+
 ## Install
 
 ### macOS or Linux via Homebrew
