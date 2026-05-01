@@ -33,13 +33,15 @@ var operationalPathPrefixes = []string{
 // that is intentionally excluded from the customer API spec.
 func isOperationalPath(p string) bool {
 	for _, prefix := range operationalPathPrefixes {
-		if p == prefix {
-			return true
+		if strings.HasSuffix(prefix, "/") {
+			// Prefix already ends with "/" — match if request path starts with it.
+			if strings.HasPrefix(p, prefix) {
+				return true
+			}
+			continue
 		}
-		if strings.HasSuffix(prefix, "/") && strings.HasPrefix(p, prefix) {
-			return true
-		}
-		if !strings.HasSuffix(prefix, "/") && strings.HasPrefix(p, prefix+"/") {
+		// Prefix has no trailing slash — match exact equality OR prefix-with-slash.
+		if p == prefix || strings.HasPrefix(p, prefix+"/") {
 			return true
 		}
 	}
@@ -53,10 +55,10 @@ type captureSource interface {
 	captureStatus() int
 }
 
-// runFilterActive returns true if the suite was started with -run set to
-// any non-empty value. Computed each call (cheap and avoids package-init
+// RunFilterActive reports whether the test runner was invoked with -run set
+// to any non-empty value. Computed each call (cheap; avoids package-init
 // ordering surprises during tests that toggle the flag).
-func runFilterActive() bool {
+func RunFilterActive() bool {
 	f := flag.Lookup("test.run")
 	if f == nil {
 		return false
@@ -111,7 +113,7 @@ func NewMiddleware(v *Validator) func(http.Handler) http.Handler {
 				}
 				defaultCollector.append(m)
 
-				if Mode == ModeEnforce && runFilterActive() {
+				if Mode == ModeEnforce && RunFilterActive() {
 					func() {
 						defer func() { _ = recover() }()
 						if t := TestTFromContext(r.Context()); t != nil {

@@ -152,7 +152,7 @@ content-types, new error status declarations.
 | deleteTechnicalUser | DELETE | /clients/{clientId} | `internal/domain/account/handler.go:73` | `$ref DeleteTechnicalUser200ResponseDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
 | getTechnicalUserToken | POST | /oauth/token | real impl in `internal/auth/token.go` (account handler stub bypassed) | `$ref TokenResponseDto`; 200/400/401/403/500 declared — matches server for `client_credentials`; note: `issued_token_type` enum only has `access_token` but server returns `jwt` for token-exchange (fix-spec minor) | real impl via `auth/token.go`; `client_credentials` wire matches spec; `token-exchange` `issued_token_type` enum drift noted | fix-spec (minor: issued_token_type enum) | 766df8b |
 | listTechnicalUsers | GET | /clients | `internal/domain/account/handler.go:65` | `type:array items:$ref TechnicalUserDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
-| resetTechnicalUserSecret | PUT | /clients/{clientId}/secret | `internal/domain/account/handler.go:77` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b | |
+| resetTechnicalUserSecret | PUT | /clients/{clientId}/secret | `internal/domain/account/handler.go:77` | `$ref TechnicalUserCredentialsDto`; `501` added | `stub → 501` | out-of-scope-not-implemented (#194) | 766df8b |
 
 ---
 

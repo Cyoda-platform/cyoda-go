@@ -76,7 +76,7 @@ func TestOpenAPIConformanceReport(t *testing.T) {
 	if len(mismatches) == 0 {
 		// Enforce mode, no mismatches: also check coverage. Skip the
 		// coverage check when -run is set (single-test workflow).
-		if !runFilterSet() {
+		if !openapivalidator.RunFilterActive() {
 			uncovered := []string{}
 			for _, op := range allOperationIds {
 				if !exercised[op] && !knownUncoveredOps[op] {
@@ -102,9 +102,4 @@ func TestOpenAPIConformanceReport(t *testing.T) {
 	}
 	t.Fatalf("openapi conformance: %d mismatches (first %d shown); full report at %s%s",
 		len(mismatches), limit, reportPath, summary)
-}
-
-func runFilterSet() bool {
-	f := flag.Lookup("test.run")
-	return f != nil && f.Value.String() != ""
 }

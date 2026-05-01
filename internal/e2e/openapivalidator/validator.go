@@ -97,10 +97,11 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		// No matching route — the request hit a path the spec doesn't declare.
 		// This is a real mismatch (handler exists for an undeclared route).
 		return []Mismatch{{
-			Method: req.Method,
-			Path:   req.URL.Path,
-			Status: resp.StatusCode,
-			Reason: fmt.Sprintf("no spec route matches %s %s: %v", req.Method, req.URL.Path, err),
+			Operation: "<unmatched>",
+			Method:    req.Method,
+			Path:      req.URL.Path,
+			Status:    resp.StatusCode,
+			Reason:    fmt.Sprintf("no spec route matches %s %s: %v", req.Method, req.URL.Path, err),
 		}}
 	}
 
@@ -115,10 +116,11 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			return nil
 		}
 		return []Mismatch{{
-			Method: req.Method,
-			Path:   req.URL.Path,
-			Status: resp.StatusCode,
-			Reason: fmt.Sprintf("no spec route matches %s %s: path parameter constraints not satisfied", req.Method, req.URL.Path),
+			Operation: "<unmatched>",
+			Method:    req.Method,
+			Path:      req.URL.Path,
+			Status:    resp.StatusCode,
+			Reason:    fmt.Sprintf("no spec route matches %s %s: path parameter constraints not satisfied", req.Method, req.URL.Path),
 		}}
 	}
 
@@ -172,6 +174,13 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 
 // isStreaming reports whether the matched operation declares
 // application/x-ndjson for the given status code.
+//
+// IMPORTANT: when isStreaming returns true, the body is NOT validated against
+// the items schema. kin-openapi's ValidateResponse parses the body as a single
+// JSON document and cannot process newline-delimited streams. Per-item shape
+// assertions for streaming endpoints belong in domain-specific E2E tests
+// (see internal/e2e/search_test.go for the searchEntities ndjson coverage).
+// Future work: a custom line-by-line validator could close this gap.
 func (v *Validator) isStreaming(route *routers.Route, status int) bool {
 	if route.Operation == nil || route.Operation.Responses == nil {
 		return false
