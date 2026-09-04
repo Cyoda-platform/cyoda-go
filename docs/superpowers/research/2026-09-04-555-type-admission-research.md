@@ -1,11 +1,15 @@
 # Research: how type admission works, in Cyoda Cloud and in cyoda-go
 
 Date: 2026-09-04. Factual current-state record — no design decisions here.
-The design built on it is `../specs/2026-09-04-544-type-admission-design.md`.
+The design built on it is `../specs/2026-09-04-555-type-admission-design.md`
+(tracking issue #555).
 
 Sources:
 - Cyoda Cloud: `/Users/paul/dev/cyoda` @ `d5ce7c1c`.
-- cyoda-go: `release/v0.8.4` @ `f5ce7de`.
+- cyoda-go: `release/v0.8.4` @ `f5ce7de`. Measurements predate `b3cd9d5`
+  (#544's fix), which changed the leaf gate from label equality to label
+  assignability; rows below marked as measured at that commit still describe
+  the pre-fix behaviour for `INTEGER`-range whole numbers.
 - SPI: `github.com/cyoda-platform/cyoda-go-spi@v0.8.4-0.20260903130721-1d3b6ed501f0`.
 
 Every "measured" line below was produced by running code against those trees.
