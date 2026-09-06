@@ -42,7 +42,10 @@ func TestValidate_ObjectOrArrayUnionValidatesTheSelectedBranch(t *testing.T) {
 	model.SetChild("both", objectOrArray())
 
 	cases := []struct{ doc, want string }{
-		{`{"both":["x"]}`, "both[0]: value of type STRING is not compatible with [INTEGER]"},
+		// Admit judges every array element against one shared element path
+		// ("both[]"), not a per-index path — Extend's checkBranch never had
+		// per-element indices either, since it compared models, not documents.
+		{`{"both":["x"]}`, "both[]: value of type STRING is not compatible with [INTEGER]"},
 		{`{"both":{"k":1}}`, "both.k: value of type INTEGER is not compatible with [STRING]"},
 		{`{"both":{"nope":"v"}}`, "both.nope: unexpected field not present in model"},
 	}
@@ -168,16 +171,33 @@ func TestValidate_NullFollowsTheDeclaration(t *testing.T) {
 }
 
 // An ARRAY node whose element was never observed — the empty-array seed the
-// codec preserves — still declares "array" and nothing else.
+// codec preserves — still declares "array" and nothing else (a kind mismatch
+// still names it, not "no value"). Content, though, is now judged the same
+// way Extend has always judged it (Task 8: Validate shares Admit's gate with
+// Extend): an array that has never been observed with real content has never
+// had its element type recorded, so admitting one is schema learning —
+// ARRAY_ELEMENTS — which strict validation (no ChangeLevel at all) always
+// refuses. Before Task 8, Validate had no concept of "was this ever
+// observed" and accepted array content silently whenever the declared
+// element was nil; that silent acceptance is exactly the asymmetry with
+// Extend the unification closes.
+//
+// Width is a different story: len(arr) > the array branch's MaxWidth is
+// NOT rendered as a Validate failure at all (see the ReasonArrayWidth case
+// in Validate's loop) because MaxWidth does not survive a persisted
+// schema's Marshal/Unmarshal round trip, so every freshly loaded model
+// would otherwise fail this exact assertion for an array of ANY length.
 func TestValidate_UnobservedElementArrayStillDeclaresArray(t *testing.T) {
 	model := NewObjectNode()
 	model.SetChild("a", NewArrayNode(nil))
 
-	if errs := Validate(model, decodeJSON(t, `{"a":["x"]}`)); len(errs) != 0 {
-		t.Errorf("Validate({\"a\":[\"x\"]}) = %v, want no errors", errs)
+	errs := Validate(model, decodeJSON(t, `{"a":["x"]}`))
+	if len(errs) != 1 || errs[0].Error() != "a[]: expected array, got null" {
+		t.Errorf("Validate({\"a\":[\"x\"]}) = %v, want a single \"a[]: expected array, got null\"", errs)
 	}
-	errs := Validate(model, decodeJSON(t, `{"a":"x"}`))
-	if len(errs) != 1 || errs[0].Error() != "a: expected array, got string" {
-		t.Errorf("got %v, want a single \"a: expected array, got string\"", errs)
+
+	kindMismatch := Validate(model, decodeJSON(t, `{"a":"x"}`))
+	if len(kindMismatch) != 1 || kindMismatch[0].Error() != "a: expected array, got string" {
+		t.Errorf("got %v, want a single \"a: expected array, got string\"", kindMismatch)
 	}
 }

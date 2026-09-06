@@ -54,7 +54,10 @@ func TestValidate_ArrayElementLeafRejectsNonScalarKinds(t *testing.T) {
 	if len(errs) != 1 {
 		t.Fatalf("got %d errors %v, want exactly 1", len(errs), errs)
 	}
-	if want := "a[0]: expected scalar, got object"; errs[0].Error() != want {
+	// Admit judges every array element against one shared element path
+	// ("a[]"), not a per-index path — Extend's checkBranch never had
+	// per-element indices either, since it compared models, not documents.
+	if want := "a[]: expected scalar, got object"; errs[0].Error() != want {
 		t.Errorf("message = %q, want %q", errs[0].Error(), want)
 	}
 }

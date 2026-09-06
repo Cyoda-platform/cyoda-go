@@ -248,3 +248,61 @@ func TestValidate_PolymorphicArrayElement_AcceptsParticipatingType(t *testing.T)
 		t.Errorf("both branches: expected no errors, got %v", errs)
 	}
 }
+
+// Strict validation and the change-level gate answer the same question, so a
+// value a field holds passes strict validation too — including the case no
+// changeLevel could work around.
+func TestValidate_HeldValuesPassStrict(t *testing.T) {
+	cases := []struct {
+		name     string
+		declared schema.DataType
+		value    any
+	}{
+		{"a date-shaped string in a STRING field", schema.String, "2026-03-01"},
+		{"a whole number past 2^31 in a DOUBLE field", schema.Double, num("2147483648")},
+		{"an ordinary string", schema.String, "hello"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := schema.NewObjectNode()
+			model.SetChild("f", schema.NewLeafNode(tc.declared))
+			if errs := schema.Validate(model, map[string]any{"f": tc.value}); len(errs) != 0 {
+				t.Errorf("want no errors, got %v", errs)
+			}
+		})
+	}
+}
+
+// A value the field does not hold keeps its code and its Props.
+func TestValidate_UnheldValueKeepsIncompatibleType(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("f", schema.NewLeafNode(schema.String))
+
+	errs := schema.Validate(model, map[string]any{"f": num("5")})
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %v", errs)
+	}
+	if errs[0].Kind != schema.ErrKindIncompatibleType {
+		t.Errorf("Kind = %v, want ErrKindIncompatibleType", errs[0].Kind)
+	}
+	if errs[0].ActualType != schema.Integer {
+		t.Errorf("ActualType = %v, want INTEGER", errs[0].ActualType)
+	}
+	if len(errs[0].ExpectedTypes) != 1 || errs[0].ExpectedTypes[0] != schema.String {
+		t.Errorf("ExpectedTypes = %v, want [STRING]", errs[0].ExpectedTypes)
+	}
+}
+
+// An unknown field is still the stale-schema signal handlers branch on.
+func TestValidate_UnknownFieldKeepsItsKind(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("known", schema.NewLeafNode(schema.String))
+
+	errs := schema.Validate(model, map[string]any{"known": "x", "surprise": "y"})
+	if len(errs) != 1 || errs[0].Kind != schema.ErrKindUnknownElement {
+		t.Fatalf("want one ErrKindUnknownElement, got %v", errs)
+	}
+	if !schema.HasUnknownSchemaElement(errs) {
+		t.Error("HasUnknownSchemaElement must still recognise it")
+	}
+}

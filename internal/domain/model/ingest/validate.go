@@ -18,7 +18,6 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -78,22 +77,15 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 		return nil
 	}
 
-	incomingModel, err := importer.Walk(parsedData)
+	extended, err := schema.Extend(modelNode, parsedData, desc.ChangeLevel)
 	if err != nil {
-		// A field name the wire jsonPath grammar cannot address is a client
-		// contract violation with a concrete remedy — rename the key — so it
-		// gets the same 400 VALIDATION_FAILED the explicit model import
-		// answers, pre-classified here because this door is shared by the
-		// entity handler, the collection writer and the processor-output
-		// ingress and none of them should have to re-derive it. Everything
-		// else the walker rejects keeps the generic wrap.
 		if errors.Is(err, schema.ErrInvalidFieldName) {
+			// A field name the wire jsonPath grammar cannot address is a
+			// client contract violation with a concrete remedy — rename the
+			// key — so it gets the same 400 VALIDATION_FAILED the explicit
+			// model import answers.
 			return common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 		}
-		return fmt.Errorf("failed to walk data: %w", err)
-	}
-	extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
-	if err != nil {
 		return fmt.Errorf("change level violation: %w", err)
 	}
 

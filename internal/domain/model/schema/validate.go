@@ -88,185 +88,175 @@ func FirstIncompatibleType(errs []ValidationError) *ValidationError {
 	return nil
 }
 
-// Validate checks whether data conforms to the given model schema.
-// It returns a slice of validation errors; an empty slice means the data is valid.
+// Validate checks whether data conforms to the model without extending it.
+// It returns a slice of validation errors; an empty slice means the data is
+// valid.
+//
+// This asks Admit the same question Extend asks and renders every change as
+// a refusal, so strict validation and the change-level gate cannot disagree
+// about what a field accepts.
 func Validate(model *ModelNode, data any) []ValidationError {
-	return validateNode(model, data, "", 0)
-}
-
-func validateNode(model *ModelNode, data any, path string, depth int) []ValidationError {
-	if depth >= MaxValidationDepth {
-		return []ValidationError{{
-			Path:    path,
-			Message: fmt.Sprintf("validation depth exceeded (max %d)", MaxValidationDepth),
-			Kind:    ErrKindGeneric,
-		}}
-	}
-	if model.Object() == nil && model.Array() == nil {
-		return validateLeaf(model, data, path)
-	}
-
-	// A container node is validated against the branch the value's own kind
-	// selects. A node can carry more than one: a field observed in several
-	// kinds records a branch for each, and every branch it carries is a kind
-	// the field declares. Asking for one label instead would refuse a value the
-	// model does declare, since a label can only name one of the three.
-	switch v := data.(type) {
-	case nil:
-		// Null against a container is admissible where the model observed one:
-		// the nullable marker, and any node that also declares a scalar.
-		if model.Nullable() || model.Scalar() != nil {
-			return nil
+	_, changes, err := Admit(model, data)
+	if err != nil {
+		if ve, ok := depthExceededError(err); ok {
+			return []ValidationError{ve}
 		}
-	case map[string]any:
-		if model.Object() != nil {
-			return validateObject(model, v, path, depth)
-		}
-	case []any:
-		if model.Array() != nil {
-			return validateArray(model, v, path, depth)
-		}
-	default:
-		if matchesScalarBranch(model, data) {
-			return nil
-		}
-		// The scalar KIND is declared here, so the value's kind is not the
-		// complaint — its type is. Answer exactly as a leaf declaration does,
-		// so identical input gets the identical code and Props whether the
-		// scalar was observed alone or alongside a container.
-		if s := model.Scalar(); s != nil {
-			return []ValidationError{incompatibleType(s.Types(), data, path)}
-		}
+		return []ValidationError{{Message: err.Error(), Kind: ErrKindGeneric}}
 	}
-	return []ValidationError{{
-		Path:    path,
-		Message: "expected " + declaredKindNames(model) + ", got " + JSONKindName(data),
-		Kind:    ErrKindGeneric,
-	}}
-}
-
-// matchesScalarBranch reports whether a scalar value is assignable to one of
-// the types the node's scalar branch carries — the record of the field having
-// been observed holding a bare scalar.
-func matchesScalarBranch(node *ModelNode, data any) bool {
-	return assignableToAny(inferDataType(data), node.DeclaredTypes())
-}
-
-// assignableToAny reports whether a value classified as dt is admitted by a
-// leaf declaring these types — the type itself, or one that widens into a
-// declared type per the numeric lattice. It is the single answer to "does this
-// leaf already accept this type", shared with the change-level gate in
-// extend.go so validation and extension cannot disagree about it.
-func assignableToAny(dt DataType, declared []DataType) bool {
-	for _, mt := range declared {
-		if IsAssignableTo(dt, mt) {
-			return true
-		}
-	}
-	return false
-}
-
-// declaredKindNames names the kinds a container node declares, so a rejection
-// tells the caller what the field does accept rather than only what it does not.
-func declaredKindNames(node *ModelNode) string {
-	names := make([]string, 0, len(node.Kinds()))
-	if node.Object() != nil {
-		names = append(names, "object")
-	}
-	if node.Array() != nil {
-		names = append(names, "array")
-	}
-	if node.Scalar() != nil {
-		names = append(names, "scalar")
-	}
-	if len(names) == 0 {
-		return "no value"
-	}
-	return strings.Join(names, " or ")
-}
-
-// validateObject validates the object branch of model. The caller selected it
-// by the value's kind.
-func validateObject(model *ModelNode, obj map[string]any, path string, depth int) []ValidationError {
-	var errs []ValidationError
-	children := model.Object().Children()
-	for name, childModel := range children {
-		childPath := joinPath(path, name)
-		val, exists := obj[name]
-		if !exists {
-			// Missing fields are accepted — model describes known structure, not required fields.
+	errs := make([]ValidationError, 0, len(changes))
+	for _, c := range changes {
+		if c.Reason == ReasonArrayWidth {
+			// ArrayWidth is not a rejection strict validation can render
+			// correctly, because the count it compares against — the array
+			// branch's MaxWidth — does not survive a persisted schema's
+			// Marshal/Unmarshal round trip (see Apply's doc comment: "this
+			// round-trip drops the observed array widths, which the
+			// persistence format does not carry"). Every model this
+			// function is handed after a real load therefore starts each
+			// array branch at MaxWidth 0, so treating "wider than that" as
+			// an error would refuse an array of any length, including one
+			// identical to what originally defined the field — exactly a
+			// value the model already admits, which Validate must not
+			// refuse (see model_kind_enforcement_test.go's "declared kinds
+			// accepted" case).
+			//
+			// This does not put Validate at odds with Extend: ARRAY_LENGTH
+			// is the floor of the change-level hierarchy (changeLevelRank),
+			// so an ArrayWidth change is already permitted by every
+			// non-empty configured level — the one case Extend is ever
+			// reached at all, since ChangeLevel=="" routes to Validate
+			// instead (see ingest.ValidateOrExtend). Extend's ARRAY_LENGTH
+			// gate has therefore never rejected a write in practice; this
+			// keeps Validate agreeing with what Extend actually does, not
+			// just with its unreachable worst case.
 			continue
 		}
-		errs = append(errs, validateNode(childModel, val, childPath, depth+1)...)
+		errs = append(errs, validationErrorFor(c))
 	}
-	// Extra fields in data that are not in the model are rejected.
-	for name := range obj {
-		if _, known := children[name]; !known {
-			errs = append(errs, ValidationError{
-				Path:    joinPath(path, name),
-				Message: "unexpected field not present in model",
-				Kind:    ErrKindUnknownElement,
-			})
+	if len(errs) == 0 {
+		return nil
+	}
+	return errs
+}
+
+// depthExceededMessage is the message half of Admit's depth-cap error,
+// rendered by validateNode long before Admit existed and pinned by
+// validate_depth_test.go. Kept separate from the path so both old callers —
+// the ValidationError shape here, and Admit's own "%s: %s" wrap — agree on
+// the wording without one having to parse the other's format string.
+const depthExceededMessage = "validation depth exceeded (max 256)"
+
+// depthExceededError recognises Admit's depth-cap error ("<path>: validation
+// depth exceeded (max 256)") and renders it into the ValidationError shape
+// validateNode always used: Path and Message as separate fields, not the
+// path folded into the message text. A generic {Message: err.Error()} would
+// have doubled the path into the ValidationError.Error() rendering (which
+// already prefixes Path) and dropped the machine-readable Path field
+// entirely.
+func depthExceededError(err error) (ValidationError, bool) {
+	const suffix = ": " + depthExceededMessage
+	msg := err.Error()
+	if !strings.HasSuffix(msg, suffix) {
+		return ValidationError{}, false
+	}
+	path := strings.TrimSuffix(msg, suffix)
+	if path == "(root)" {
+		path = ""
+	}
+	return ValidationError{
+		Path:    wirePath(path),
+		Message: depthExceededMessage,
+		Kind:    ErrKindGeneric,
+	}, true
+}
+
+// wirePath adapts Admit's path convention onto the wire shape Validate's
+// ValidationError.Path has always used.
+//
+// Admit (and Extend, which shares its traversal) name every path from an
+// implicit root: a top-level field is ".price", a nested one ".outer.b".
+// Validate's ValidationError.Path predates Admit and has always been bare —
+// "price", "outer.b" — because entity handler responses echo it verbatim as
+// the `fieldPath` problem-detail property (see
+// TestCreateEntity_IncompatibleType_ReturnsSpecificCode in
+// internal/domain/entity/handler_test.go, which asserts fieldPath == "price"
+// for a root-level field, not ".price"). Extend's own error strings keep
+// Admit's leading dot unchanged — that already matches what checkAndExtend
+// printed — so this trim applies only on the Validate side.
+func wirePath(p string) string {
+	return strings.TrimPrefix(p, ".")
+}
+
+func validationErrorFor(c Change) ValidationError {
+	switch c.Reason {
+	case ReasonLeafType:
+		expected := make([]DataType, len(c.Declared))
+		copy(expected, c.Declared)
+		return ValidationError{
+			Path:          wirePath(c.Path),
+			Message:       fmt.Sprintf("value of type %s is not compatible with %v", c.Observed, c.Declared),
+			Kind:          ErrKindIncompatibleType,
+			ExpectedTypes: expected,
+			ActualType:    c.Observed,
+		}
+	case ReasonNewField:
+		return ValidationError{
+			Path:    wirePath(c.Path),
+			Message: "unexpected field not present in model",
+			Kind:    ErrKindUnknownElement,
+		}
+	case ReasonNewKind:
+		return validationErrorForNewKind(c)
+	default:
+		return ValidationError{
+			Path:    wirePath(c.Path),
+			Message: "expected " + c.DeclaredKinds + ", got " + JSONKindName(c.Value),
+			Kind:    ErrKindGeneric,
 		}
 	}
-	return errs
 }
 
-// validateArray validates the array branch of model. The caller selected it by
-// the value's kind.
-func validateArray(model *ModelNode, arr []any, path string, depth int) []ValidationError {
-	elem := model.Array().Element()
-	if elem == nil {
-		return nil
-	}
+// validationErrorForNewKind renders ReasonNewKind — a value whose JSON kind
+// the node does not declare at all — matching what the old validateLeaf and
+// validateNode fallbacks produced for the identical cases.
+//
+// A scalar value against a node with no object or array branch is exactly
+// the case validateLeaf answered: the kind IS scalar, so the complaint is the
+// TYPE, rendered identically to ReasonLeafType (ErrKindIncompatibleType). A
+// container value against such a node is validateLeaf's "expected scalar,
+// got object/array" — pinned verbatim by internal/e2e/model_kind_enforcement_
+// test.go and internal/grpc/model_kind_enforcement_test.go. Anything else (a
+// node that already declares some kind, so a genuinely new branch is being
+// added) is validateNode's generic "expected <kinds>, got <kind>".
+func validationErrorForNewKind(c Change) ValidationError {
+	declaresContainer := strings.Contains(c.DeclaredKinds, "object") || strings.Contains(c.DeclaredKinds, "array")
 
-	var errs []ValidationError
-	for i, item := range arr {
-		elemPath := fmt.Sprintf("%s[%d]", path, i)
-		errs = append(errs, validateNode(elem, item, elemPath, depth+1)...)
-	}
-	return errs
-}
-
-func validateLeaf(model *ModelNode, data any, path string) []ValidationError {
-	if data == nil {
-		// Null is compatible with any type.
-		return nil
-	}
-	// Kind before type. A leaf declares a scalar and nothing else, so a
-	// container value is inadmissible whatever its contents — the mirror of
-	// the "expected object/array, got …" checks a container declaration
-	// makes. Asking inferDataType first would classify a container as String
-	// (its default for anything it does not recognise) and a STRING field
-	// would then admit any array or object.
-	switch data.(type) {
+	switch c.Value.(type) {
+	case json.Number, string, bool:
+		if !declaresContainer {
+			expected := make([]DataType, len(c.Declared))
+			copy(expected, c.Declared)
+			return ValidationError{
+				Path:          wirePath(c.Path),
+				Message:       fmt.Sprintf("value of type %s is not compatible with %v", c.Observed, c.Declared),
+				Kind:          ErrKindIncompatibleType,
+				ExpectedTypes: expected,
+				ActualType:    c.Observed,
+			}
+		}
 	case map[string]any, []any:
-		return []ValidationError{{
-			Path:    path,
-			Message: "expected scalar, got " + JSONKindName(data),
-			Kind:    ErrKindGeneric,
-		}}
+		if !declaresContainer {
+			return ValidationError{
+				Path:    wirePath(c.Path),
+				Message: "expected scalar, got " + JSONKindName(c.Value),
+				Kind:    ErrKindGeneric,
+			}
+		}
 	}
-	if matchesScalarBranch(model, data) {
-		return nil
-	}
-	return []ValidationError{incompatibleType(model.DeclaredTypes(), data, path)}
-}
-
-// incompatibleType builds the "kind is right, type is wrong" failure — the
-// dictionary-aligned INCOMPATIBLE_TYPE signal, carrying the structured context
-// the entity handler renders into problem-detail Props.
-func incompatibleType(declared []DataType, data any, path string) ValidationError {
-	dataType := inferDataType(data)
-	// Copy declared to detach from the model node's internal slice.
-	expected := make([]DataType, len(declared))
-	copy(expected, declared)
 	return ValidationError{
-		Path:          path,
-		Message:       fmt.Sprintf("value of type %s is not compatible with %v", dataType, declared),
-		Kind:          ErrKindIncompatibleType,
-		ExpectedTypes: expected,
-		ActualType:    dataType,
+		Path:    wirePath(c.Path),
+		Message: "expected " + c.DeclaredKinds + ", got " + JSONKindName(c.Value),
+		Kind:    ErrKindGeneric,
 	}
 }
 
@@ -356,9 +346,21 @@ func JSONKindName(data any) string {
 	}
 }
 
-func joinPath(parent, child string) string {
-	if parent == "" {
-		return child
+// declaredKindNames names the kinds a container node declares, so a rejection
+// tells the caller what the field does accept rather than only what it does not.
+func declaredKindNames(node *ModelNode) string {
+	names := make([]string, 0, len(node.Kinds()))
+	if node.Object() != nil {
+		names = append(names, "object")
 	}
-	return parent + "." + child
+	if node.Array() != nil {
+		names = append(names, "array")
+	}
+	if node.Scalar() != nil {
+		names = append(names, "scalar")
+	}
+	if len(names) == 0 {
+		return "no value"
+	}
+	return strings.Join(names, " or ")
 }
