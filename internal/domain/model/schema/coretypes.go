@@ -121,3 +121,8 @@ var (
 // date-shaped strings is classified as a temporal subtype — the same
 // classification the search leaf kernel applies to stored temporal values.
 var ClassifyTemporalString = spi.ClassifyTemporalString
+
+// AdmitsNumeric is the SPI's single numeric admission predicate. The write
+// path and the search kernel both ask it, so a value admitted into a field is
+// by construction a value search can find in that field.
+var AdmitsNumeric = spi.AdmitsNumeric
