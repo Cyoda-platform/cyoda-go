@@ -49,6 +49,11 @@ type Change struct {
 	// error rendering never has to reach back to the node.
 	DeclaredKinds string
 	Value         any // the value that forced the change, for error rendering
+	// ObservedWidth is the array branch's MaxWidth at the moment a
+	// ReasonArrayWidth change was recorded — the widest count the model has
+	// actually seen — so Validate can name it without reaching back into the
+	// node. Zero and unused for every other Reason.
+	ObservedWidth int
 }
 
 // DepthExceededError marks a document that nested deeper than
@@ -407,6 +412,7 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 		a.record(Change{
 			Path: path, Reason: ReasonArrayWidth,
 			Required: spi.ChangeLevelArrayLength, DeclaredKinds: declaredKindNames(model),
+			Value: arr, ObservedWidth: exArr.MaxWidth(),
 		})
 		widened = true
 	}
