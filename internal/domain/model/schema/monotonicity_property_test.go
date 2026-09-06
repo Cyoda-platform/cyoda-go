@@ -20,14 +20,45 @@ func TestMonotonicityDirect(t *testing.T) {
 	// existed when it was written.
 	cfg.KindMutationRate = 0.3
 	const N = 200
+	var ran, skipped int
 	for i := 0; i < N; i++ {
 		seed := int64(i + 20_000)
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			defer func() {
+				if t.Skipped() {
+					skipped++
+				} else {
+					ran++
+				}
+			}()
 			r := gentree.NewRNG(seed)
 			base := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
-			doc := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
-			if errs := schema.Validate(base, doc); len(errs) > 0 {
-				t.Skipf("doc not valid against base; skipping")
+
+			// GenExtensionPair's own strategy proposes a NEW field roughly
+			// 30% of the time per object node, unconditionally of
+			// cfg.KindMutationRate — so across a multi-node tree, "the
+			// generator's draw already validates against base" is the
+			// uncommon case, not the common one, and a single draw skips
+			// this precondition far more often than it satisfies it. Retry
+			// a bounded number of times with fresh draws from the same RNG
+			// stream (deterministic per seed) rather than accepting the
+			// first one: this is the precondition the property needs — a
+			// document base ALREADY holds — not a property of the
+			// generator's typical output, so redrawing until one is found
+			// exercises I3 direct instead of skipping past it almost every
+			// seed.
+			var doc any
+			validDoc := false
+			for attempt := 0; attempt < 20; attempt++ {
+				candidate := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
+				if errs := schema.Validate(base, candidate); len(errs) == 0 {
+					doc = candidate
+					validDoc = true
+					break
+				}
+			}
+			if !validDoc {
+				t.Skipf("doc not valid against base after 20 attempts; skipping")
 			}
 			newDoc := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
 			extended, err := schema.Extend(base, newDoc, cfg.TargetLevel)
@@ -44,6 +75,7 @@ func TestMonotonicityDirect(t *testing.T) {
 			}
 		})
 	}
+	assertSkipRatio(t, ran, skipped, "TestMonotonicityDirect")
 }
 
 // TestMonotonicityDual — a document rejected by Apply(B, d) is rejected
@@ -56,9 +88,17 @@ func TestMonotonicityDual(t *testing.T) {
 	// existed when it was written.
 	cfg.KindMutationRate = 0.3
 	const N = 200
+	var ran, skipped int
 	for i := 0; i < N; i++ {
 		seed := int64(i + 30_000)
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			defer func() {
+				if t.Skipped() {
+					skipped++
+				} else {
+					ran++
+				}
+			}()
 			r := gentree.NewRNG(seed)
 			base := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
 			newDoc := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
@@ -83,4 +123,5 @@ func TestMonotonicityDual(t *testing.T) {
 			}
 		})
 	}
+	assertSkipRatio(t, ran, skipped, "TestMonotonicityDual")
 }

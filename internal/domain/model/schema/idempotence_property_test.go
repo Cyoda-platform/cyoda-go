@@ -19,9 +19,17 @@ func TestIdempotenceApply(t *testing.T) {
 	// existed when it was written.
 	cfg.KindMutationRate = 0.3
 	const N = 500
+	var ran, skipped int
 	for i := 0; i < N; i++ {
 		seed := int64(i + 40_000)
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			defer func() {
+				if t.Skipped() {
+					skipped++
+				} else {
+					ran++
+				}
+			}()
 			r := gentree.NewRNG(seed)
 			base := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
 			incoming := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
@@ -45,6 +53,7 @@ func TestIdempotenceApply(t *testing.T) {
 			}
 		})
 	}
+	assertSkipRatio(t, ran, skipped, "TestIdempotenceApply")
 }
 
 // TestIdempotenceIngest — ingesting the same data twice yields the same
@@ -62,9 +71,17 @@ func TestIdempotenceIngest(t *testing.T) {
 	// existed when it was written.
 	cfg.KindMutationRate = 0.3
 	const N = 300
+	var ran, skipped int
 	for i := 0; i < N; i++ {
 		seed := int64(i + 50_000)
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			defer func() {
+				if t.Skipped() {
+					skipped++
+				} else {
+					ran++
+				}
+			}()
 			r := gentree.NewRNG(seed)
 			base := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
 			data := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
@@ -83,4 +100,5 @@ func TestIdempotenceIngest(t *testing.T) {
 			}
 		})
 	}
+	assertSkipRatio(t, ran, skipped, "TestIdempotenceIngest")
 }
