@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -16,16 +17,15 @@ import (
 // TestExtend_AddingAScalarBranchNamesStructural — an array path that the
 // payload sends a scalar to is proposing a second kind for that path.
 func TestExtend_AddingAScalarBranchNamesStructural(t *testing.T) {
-	build := func() (*ModelNode, *ModelNode) {
+	build := func() (*ModelNode, map[string]any) {
 		existing := NewObjectNode()
 		existing.SetChild("x", NewArrayNode(NewLeafNode(String)))
-		incoming := NewObjectNode()
-		incoming.SetChild("x", NewLeafNode(Integer))
-		return existing, incoming
+		doc := map[string]any{"x": json.Number("42")}
+		return existing, doc
 	}
 
-	existing, incoming := build()
-	_, err := Extend(existing, incoming, spi.ChangeLevelType)
+	existing, doc := build()
+	_, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err == nil {
 		t.Fatal("adding a branch below STRUCTURAL must error")
 	}
@@ -37,8 +37,8 @@ func TestExtend_AddingAScalarBranchNamesStructural(t *testing.T) {
 		t.Errorf("the rejection must say what is being added: %q", msg)
 	}
 
-	existing, incoming = build()
-	got, err := Extend(existing, incoming, spi.ChangeLevelStructural)
+	existing, doc = build()
+	got, err := Extend(existing, doc, spi.ChangeLevelStructural)
 	if err != nil {
 		t.Fatalf("raising the level must resolve it; got: %v", err)
 	}
@@ -54,11 +54,9 @@ func TestExtend_ChangeLevelViolation_NamesItsLevel(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("a", NewLeafNode(String))
 
-	incoming := NewObjectNode()
-	incoming.SetChild("a", NewLeafNode(String))
-	incoming.SetChild("b", NewLeafNode(String)) // new field requires STRUCTURAL
+	doc := map[string]any{"a": "x", "b": "y"} // new field requires STRUCTURAL
 
-	_, err := Extend(existing, incoming, spi.ChangeLevelType)
+	_, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err == nil {
 		t.Fatal("new field at TYPE level must error")
 	}
@@ -70,16 +68,15 @@ func TestExtend_ChangeLevelViolation_NamesItsLevel(t *testing.T) {
 // TestExtend_AddingABranchToAnArrayElementNamesStructural — an element that
 // declares one kind and is sent another follows the same rule, one level down.
 func TestExtend_AddingABranchToAnArrayElementNamesStructural(t *testing.T) {
-	build := func() (*ModelNode, *ModelNode) {
+	build := func() (*ModelNode, map[string]any) {
 		existing := NewObjectNode()
 		existing.SetChild("items", NewArrayNode(NewObjectNode()))
-		incoming := NewObjectNode()
-		incoming.SetChild("items", NewArrayNode(NewLeafNode(String)))
-		return existing, incoming
+		doc := map[string]any{"items": []any{"hello"}}
+		return existing, doc
 	}
 
-	existing, incoming := build()
-	_, err := Extend(existing, incoming, spi.ChangeLevelType)
+	existing, doc := build()
+	_, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err == nil {
 		t.Fatal("adding a branch to an array element below STRUCTURAL must error")
 	}
@@ -87,8 +84,8 @@ func TestExtend_AddingABranchToAnArrayElementNamesStructural(t *testing.T) {
 		t.Errorf("the rejection must name the level that resolves it: %q", err.Error())
 	}
 
-	existing, incoming = build()
-	got, err := Extend(existing, incoming, spi.ChangeLevelStructural)
+	existing, doc = build()
+	got, err := Extend(existing, doc, spi.ChangeLevelStructural)
 	if err != nil {
 		t.Fatalf("raising the level must resolve it; got: %v", err)
 	}
@@ -105,10 +102,9 @@ func TestExtend_RejectionNeverClaimsTheLevelIsIrrelevant(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("x", NewArrayNode(NewLeafNode(String)))
 
-	incoming := NewObjectNode()
-	incoming.SetChild("x", NewLeafNode(Integer))
+	doc := map[string]any{"x": json.Number("42")}
 
-	_, err := Extend(existing, incoming, spi.ChangeLevelType)
+	_, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err == nil {
 		t.Fatal("expected error")
 	}
