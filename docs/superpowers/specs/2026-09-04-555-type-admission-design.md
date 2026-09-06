@@ -720,10 +720,16 @@ stays green — so §10's gRPC ticks on the `2147483648` rows are all new tests.
 
 Confirmed near-misses that do **not** invert, checked so they are not disturbed:
 every `13.111`-into-`INTEGER` case; number and boolean into `STRING`; string
-into a numeric leaf; the `gentree` catalog fixtures; and
-`e2e/parity/externalapi/polymorphism.go:220`, whose `[LOCAL_DATE, YEAR_MONTH]`
-assertion comes from registration, which §8 leaves alone. No `plugins/*` test
-touches `schema.Extend` or `ValidateOrExtend`.
+into a numeric leaf; and `e2e/parity/externalapi/polymorphism.go:220`, whose
+`[LOCAL_DATE, YEAR_MONTH]` assertion comes from registration, which §8 leaves
+alone. No `plugins/*` test touches `schema.Extend` or `ValidateOrExtend`.
+
+One `gentree` catalog fixture did invert, for exactly §5's reason:
+`DecimalBoundaryExceedsBigDecimal` fed a `BIG_DECIMAL` leaf a value with 20
+fractional digits, expecting a widen — but `BIG_DECIMAL` admission is
+magnitude-only, so a value differing only in fractional digits is already
+held. Fixed by restating the fixture with a value whose magnitude exceeds
+`BIG_DECIMAL`'s bound, which is what actually forces the widen.
 
 ## 11. Work
 
