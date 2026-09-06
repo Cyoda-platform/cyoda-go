@@ -386,7 +386,7 @@ func TestAdmit_ContainerRules(t *testing.T) {
 			wantRequired: spi.ChangeLevelStructural,
 		},
 		{
-			name: "a wider array is ARRAY_LENGTH",
+			name: "a wider array is ARRAY_LENGTH, against an observed width",
 			model: func() *schema.ModelNode {
 				m := schema.NewObjectNode()
 				arr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
@@ -397,6 +397,21 @@ func TestAdmit_ContainerRules(t *testing.T) {
 			doc:          map[string]any{"a": []any{"x", "y", "z"}},
 			wantChanges:  1,
 			wantRequired: spi.ChangeLevelArrayLength,
+		},
+		{
+			// A width of 0 is what every array branch reloaded from storage
+			// has (the wire form never carries MaxWidth), not a real "no
+			// more than zero elements" constraint — an array of any length
+			// against it is not a width change. Element type still matches
+			// (String), so this document is fully admitted.
+			name: "an unobserved width (0) is not a constraint: no change",
+			model: func() *schema.ModelNode {
+				m := schema.NewObjectNode()
+				m.SetChild("a", schema.NewArrayNode(schema.NewLeafNode(schema.String)))
+				return m
+			},
+			doc:         map[string]any{"a": []any{"x", "y", "z"}},
+			wantChanges: 0,
 		},
 		{
 			name: "an element type change is ARRAY_ELEMENTS",

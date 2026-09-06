@@ -182,18 +182,21 @@ func TestValidate_NullFollowsTheDeclaration(t *testing.T) {
 // element was nil; that silent acceptance is exactly the asymmetry with
 // Extend the unification closes.
 //
-// Width is a different story: len(arr) > the array branch's MaxWidth is
-// NOT rendered as a Validate failure at all (see the ReasonArrayWidth case
-// in Validate's loop) because MaxWidth does not survive a persisted
-// schema's Marshal/Unmarshal round trip, so every freshly loaded model
-// would otherwise fail this exact assertion for an array of ANY length.
+// Width is a different story: a fixture built like this one — no
+// ObserveArrayWidth call, so MaxWidth is 0 — never records a ReasonArrayWidth
+// change at all (see admit.go's array(), which only compares against an
+// OBSERVED width): a width of 0 means the branch has never actually seen an
+// array, which is what every model loaded from storage looks like (the wire
+// form does not carry MaxWidth), not a real constraint of "no more than
+// zero elements".
 func TestValidate_UnobservedElementArrayStillDeclaresArray(t *testing.T) {
 	model := NewObjectNode()
 	model.SetChild("a", NewArrayNode(nil))
 
+	wantMsg := "a: array element type has never been observed; the document supplies array"
 	errs := Validate(model, decodeJSON(t, `{"a":["x"]}`))
-	if len(errs) != 1 || errs[0].Error() != "a[]: expected array, got null" {
-		t.Errorf("Validate({\"a\":[\"x\"]}) = %v, want a single \"a[]: expected array, got null\"", errs)
+	if len(errs) != 1 || errs[0].Error() != wantMsg {
+		t.Errorf("Validate({\"a\":[\"x\"]}) = %v, want a single %q", errs, wantMsg)
 	}
 
 	kindMismatch := Validate(model, decodeJSON(t, `{"a":"x"}`))

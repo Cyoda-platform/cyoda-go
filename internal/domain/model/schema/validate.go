@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -13,6 +14,12 @@ import (
 // of levels and crash the goroutine. 256 is well above any realistic JSON
 // nesting and well below the stack-blow threshold.
 const MaxValidationDepth = 256
+
+// depthExceededMessage is the message half of DepthExceededError's wire
+// text, shared with Validate's rendering of it. Computed from
+// MaxValidationDepth rather than duplicated as a literal, so the two can
+// never drift out of sync if the cap ever changes.
+var depthExceededMessage = fmt.Sprintf("validation depth exceeded (max %d)", MaxValidationDepth)
 
 // ErrorKind classifies a ValidationError so handlers can branch on
 // specific failure modes without matching error message text.
@@ -98,39 +105,13 @@ func FirstIncompatibleType(errs []ValidationError) *ValidationError {
 func Validate(model *ModelNode, data any) []ValidationError {
 	_, changes, err := Admit(model, data)
 	if err != nil {
-		if ve, ok := depthExceededError(err); ok {
+		if ve, ok := depthExceededValidationError(err); ok {
 			return []ValidationError{ve}
 		}
 		return []ValidationError{{Message: err.Error(), Kind: ErrKindGeneric}}
 	}
 	errs := make([]ValidationError, 0, len(changes))
 	for _, c := range changes {
-		if c.Reason == ReasonArrayWidth {
-			// ArrayWidth is not a rejection strict validation can render
-			// correctly, because the count it compares against — the array
-			// branch's MaxWidth — does not survive a persisted schema's
-			// Marshal/Unmarshal round trip (see Apply's doc comment: "this
-			// round-trip drops the observed array widths, which the
-			// persistence format does not carry"). Every model this
-			// function is handed after a real load therefore starts each
-			// array branch at MaxWidth 0, so treating "wider than that" as
-			// an error would refuse an array of any length, including one
-			// identical to what originally defined the field — exactly a
-			// value the model already admits, which Validate must not
-			// refuse (see model_kind_enforcement_test.go's "declared kinds
-			// accepted" case).
-			//
-			// This does not put Validate at odds with Extend: ARRAY_LENGTH
-			// is the floor of the change-level hierarchy (changeLevelRank),
-			// so an ArrayWidth change is already permitted by every
-			// non-empty configured level — the one case Extend is ever
-			// reached at all, since ChangeLevel=="" routes to Validate
-			// instead (see ingest.ValidateOrExtend). Extend's ARRAY_LENGTH
-			// gate has therefore never rejected a write in practice; this
-			// keeps Validate agreeing with what Extend actually does, not
-			// just with its unreachable worst case.
-			continue
-		}
 		errs = append(errs, validationErrorFor(c))
 	}
 	if len(errs) == 0 {
@@ -139,32 +120,22 @@ func Validate(model *ModelNode, data any) []ValidationError {
 	return errs
 }
 
-// depthExceededMessage is the message half of Admit's depth-cap error,
-// rendered by validateNode long before Admit existed and pinned by
-// validate_depth_test.go. Kept separate from the path so both old callers —
-// the ValidationError shape here, and Admit's own "%s: %s" wrap — agree on
-// the wording without one having to parse the other's format string.
-const depthExceededMessage = "validation depth exceeded (max 256)"
-
-// depthExceededError recognises Admit's depth-cap error ("<path>: validation
-// depth exceeded (max 256)") and renders it into the ValidationError shape
-// validateNode always used: Path and Message as separate fields, not the
-// path folded into the message text. A generic {Message: err.Error()} would
-// have doubled the path into the ValidationError.Error() rendering (which
-// already prefixes Path) and dropped the machine-readable Path field
-// entirely.
-func depthExceededError(err error) (ValidationError, bool) {
-	const suffix = ": " + depthExceededMessage
-	msg := err.Error()
-	if !strings.HasSuffix(msg, suffix) {
+// depthExceededValidationError recognises Admit's *DepthExceededError and
+// renders it into the ValidationError shape this package has always used
+// for the failure: Path and Message as separate fields, not the path folded
+// into the message text. errors.As, not string matching — a generic
+// {Message: err.Error()} would have doubled the path into the
+// ValidationError.Error() rendering (which already prefixes Path), dropped
+// the machine-readable Path field, and silently degraded the moment
+// DepthExceededError's wording drifted from whatever a string match
+// expected.
+func depthExceededValidationError(err error) (ValidationError, bool) {
+	var de *DepthExceededError
+	if !errors.As(err, &de) {
 		return ValidationError{}, false
 	}
-	path := strings.TrimSuffix(msg, suffix)
-	if path == "(root)" {
-		path = ""
-	}
 	return ValidationError{
-		Path:    wirePath(path),
+		Path:    wirePath(de.Path),
 		Message: depthExceededMessage,
 		Kind:    ErrKindGeneric,
 	}, true
@@ -181,8 +152,8 @@ func depthExceededError(err error) (ValidationError, bool) {
 // TestCreateEntity_IncompatibleType_ReturnsSpecificCode in
 // internal/domain/entity/handler_test.go, which asserts fieldPath == "price"
 // for a root-level field, not ".price"). Extend's own error strings keep
-// Admit's leading dot unchanged — that already matches what checkAndExtend
-// printed — so this trim applies only on the Validate side.
+// Admit's leading dot unchanged — the change-level gate has always named a
+// root-level path that way — so this trim applies only on the Validate side.
 func wirePath(p string) string {
 	return strings.TrimPrefix(p, ".")
 }
@@ -207,6 +178,22 @@ func validationErrorFor(c Change) ValidationError {
 		}
 	case ReasonNewKind:
 		return validationErrorForNewKind(c)
+	case ReasonArrayElement:
+		// The array's element was never observed at all — there is no
+		// declared element type to compare the document's content against,
+		// so this does not fit the "expected X, got Y" template the other
+		// reasons use (that would either misname a heterogeneous array's
+		// content with a single Y, or describe the array's own JSON kind,
+		// which the document DID supply correctly — the old rendering's
+		// "got null" was simply wrong for a document holding a real array).
+		// Name the actual situation instead: admitting content here is
+		// schema learning, and c.Value (the array itself) confirms what the
+		// document supplied rather than what the model failed to find.
+		return ValidationError{
+			Path:    wirePath(c.Path),
+			Message: "array element type has never been observed; the document supplies " + JSONKindName(c.Value),
+			Kind:    ErrKindGeneric,
+		}
 	default:
 		return ValidationError{
 			Path:    wirePath(c.Path),
@@ -217,17 +204,17 @@ func validationErrorFor(c Change) ValidationError {
 }
 
 // validationErrorForNewKind renders ReasonNewKind — a value whose JSON kind
-// the node does not declare at all — matching what the old validateLeaf and
-// validateNode fallbacks produced for the identical cases.
+// the node does not declare at all — matching the wire wording this package
+// has always used for the identical cases.
 //
 // A scalar value against a node with no object or array branch is exactly
-// the case validateLeaf answered: the kind IS scalar, so the complaint is the
-// TYPE, rendered identically to ReasonLeafType (ErrKindIncompatibleType). A
-// container value against such a node is validateLeaf's "expected scalar,
-// got object/array" — pinned verbatim by internal/e2e/model_kind_enforcement_
-// test.go and internal/grpc/model_kind_enforcement_test.go. Anything else (a
-// node that already declares some kind, so a genuinely new branch is being
-// added) is validateNode's generic "expected <kinds>, got <kind>".
+// the "kind IS scalar, so the complaint is the TYPE" case, rendered
+// identically to ReasonLeafType (ErrKindIncompatibleType). A container value
+// against such a node gets "expected scalar, got object/array" — pinned
+// verbatim by internal/e2e/model_kind_enforcement_test.go and
+// internal/grpc/model_kind_enforcement_test.go. Anything else (a node that
+// already declares some kind, so a genuinely new branch is being added) gets
+// the generic "expected <kinds>, got <kind>".
 func validationErrorForNewKind(c Change) ValidationError {
 	declaresContainer := strings.Contains(c.DeclaredKinds, "object") || strings.Contains(c.DeclaredKinds, "array")
 

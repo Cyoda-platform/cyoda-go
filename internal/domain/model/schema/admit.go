@@ -51,6 +51,27 @@ type Change struct {
 	Value         any // the value that forced the change, for error rendering
 }
 
+// DepthExceededError marks a document that nested deeper than
+// MaxValidationDepth before Admit (or Describe) could finish walking it. It
+// carries the path so a caller can render a structured failure — Validate's
+// ValidationError, in particular — without parsing an error string apart.
+// The write path already draws this line with sentinels and typed errors
+// rather than string matching (see ingest.ErrInternalSchema's doc comment,
+// and handler.go's classifyValidateOrExtendErr); a bare fmt.Errorf here
+// would have been the odd one out, and silently degrades the moment the
+// wrapped message text drifts from whatever a caller matches against.
+type DepthExceededError struct {
+	Path string
+}
+
+// Error renders the same "<path>: validation depth exceeded (max N)" text
+// this package has always used for the failure, so nothing downstream that
+// only looks at err.Error() (e.g. admit_test.go's own assertions) needs to
+// change alongside the type.
+func (e *DepthExceededError) Error() string {
+	return fmt.Sprintf("%s: %s", displayPath(e.Path), depthExceededMessage)
+}
+
 // Admit walks data against model, one value at a time, and reports what the
 // model would have to become to hold it.
 //
@@ -91,7 +112,7 @@ func (a *admitter) record(c Change) { a.changes = append(a.changes, c) }
 // rules stop applying.
 func (a *admitter) node(model *ModelNode, data any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	if depth >= MaxValidationDepth {
-		return nil, fmt.Errorf("%s: validation depth exceeded (max %d)", displayPath(path), MaxValidationDepth)
+		return nil, &DepthExceededError{Path: path}
 	}
 
 	switch v := data.(type) {
@@ -247,8 +268,8 @@ func (a *admitter) wrongKind(model *ModelNode, data any, path string, depth int,
 //
 // scalarLevel is deliberately not read here: every child is re-entered at the
 // fixed spi.ChangeLevelType below, which IS the reset the scalarLevel
-// discipline requires on descent into an object (see extend.go's checkBranch,
-// KindObject case, which does the same unconditional reset). Do not thread
+// discipline requires on descent into an object — the element-cost levels an
+// array's contents carry never reach through a nested object. Do not thread
 // the parameter through in its place — that would restore whatever level was
 // in force above the object, defeating the reset.
 func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
@@ -304,8 +325,8 @@ func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth
 //
 // scalarLevel is deliberately not read here: an already-typed element always
 // recurses at the fixed spi.ChangeLevelArrayElements below, and a
-// newly-learned element is charged that same level directly — both are the
-// re-assertion extend.go's checkBranch (KindArray case) always did, not a
+// newly-learned element is charged that same level directly — both are a
+// re-assertion of the level an array's own contents always cost, not a
 // value threaded down from above. Do not thread the parameter through in
 // its place.
 func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
@@ -322,13 +343,20 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 		// and an EMPTY array still triggers it: importer.Walk has always
 		// represented [] as an array whose element is Null (walkArray's
 		// NewLeafNode(Null)), so an incoming array from that walk always has
-		// a non-nil element, empty or not. checkBranch charged
-		// ARRAY_ELEMENTS whenever the existing element was nil and the
-		// incoming one was not, with no separate case for an empty incoming
-		// array — matching that here means charging it regardless of len(arr).
+		// a non-nil element, empty or not — charging ARRAY_ELEMENTS whenever
+		// the existing element is nil and the document supplies an array at
+		// all, with no separate case for an empty one, means charging it
+		// regardless of len(arr).
+		//
+		// Path is the array's own path, not elemPath, and Value is the
+		// document's array itself: this Change is about the array's element
+		// never having been observed at all, not about any one element's
+		// content, so both renderers (changeLevelError, validationErrorFor)
+		// name the array and describe that situation directly rather than
+		// reaching for a value they'd have to pick one element out of.
 		a.record(Change{
-			Path: elemPath, Reason: ReasonArrayElement,
-			Required: spi.ChangeLevelArrayElements, DeclaredKinds: declaredKindNames(model),
+			Path: path, Reason: ReasonArrayElement,
+			Required: spi.ChangeLevelArrayElements, DeclaredKinds: declaredKindNames(model), Value: arr,
 		})
 		if len(arr) == 0 {
 			elemOverlay = NewLeafNode(Null)
@@ -364,7 +392,18 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 		}
 	}
 
-	if len(arr) > exArr.MaxWidth() {
+	// A width of 0 means the array branch has never actually observed a
+	// width, not that it is pinned at zero — every model this function is
+	// handed after a real load starts here, because the wire form has never
+	// carried MaxWidth (Diff and Apply both leave it out of the persisted
+	// delta/schema, and neither reads it back on replay). Comparing len(arr)
+	// against an unobserved baseline would charge ARRAY_LENGTH for an array
+	// of any length at all, including one identical to what originally
+	// defined the field — exactly a value the model already admits. Once a
+	// width HAS been observed (above 0), growing past it is a genuine,
+	// meaningful change.
+	widthChanged := exArr.MaxWidth() > 0 && len(arr) > exArr.MaxWidth()
+	if widthChanged {
 		a.record(Change{
 			Path: path, Reason: ReasonArrayWidth,
 			Required: spi.ChangeLevelArrayLength, DeclaredKinds: declaredKindNames(model),
@@ -376,9 +415,12 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 		return nil, nil
 	}
 	overlay := NewArrayNode(elemOverlay)
-	if widened {
-		overlay.ObserveArrayWidth(len(arr))
-	}
+	// Record the overlay's own width whenever one is returned, regardless of
+	// which branch above produced it — an element-learning or element-type
+	// overlay must still describe an array of THIS length, or Describe's
+	// in-memory derivation would disagree with walkArray (which always calls
+	// ObserveArrayWidth(len(arr)), empty arrays included).
+	overlay.ObserveArrayWidth(len(arr))
 	return overlay, nil
 }
 
@@ -423,7 +465,7 @@ func Describe(v any, path string) (*ModelNode, error) {
 // — so array never returns nil when called from here.
 func describeAt(v any, path string, depth int) (*ModelNode, error) {
 	if depth >= MaxValidationDepth {
-		return nil, fmt.Errorf("%s: validation depth exceeded (max %d)", displayPath(path), MaxValidationDepth)
+		return nil, &DepthExceededError{Path: path}
 	}
 	a := &admitter{}
 	switch val := v.(type) {
