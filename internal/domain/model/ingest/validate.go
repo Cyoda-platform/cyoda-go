@@ -87,7 +87,7 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 		// entity handler, the collection writer and the processor-output
 		// ingress and none of them should have to re-derive it. Everything
 		// else the walker rejects keeps the generic wrap.
-		if errors.Is(err, importer.ErrInvalidFieldName) {
+		if errors.Is(err, schema.ErrInvalidFieldName) {
 			return common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 		}
 		return fmt.Errorf("failed to walk data: %w", err)

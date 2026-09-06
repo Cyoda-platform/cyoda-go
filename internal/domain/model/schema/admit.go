@@ -99,12 +99,12 @@ func (a *admitter) node(model *ModelNode, data any, path string, depth int, scal
 		return a.null(model, path, scalarLevel), nil
 	case map[string]any:
 		if model.Object() == nil {
-			return a.wrongKind(model, data, path, scalarLevel), nil
+			return a.wrongKind(model, data, path, scalarLevel)
 		}
 		return a.object(model, v, path, depth, scalarLevel)
 	case []any:
 		if model.Array() == nil {
-			return a.wrongKind(model, data, path, scalarLevel), nil
+			return a.wrongKind(model, data, path, scalarLevel)
 		}
 		return a.array(model, v, path, depth, scalarLevel)
 	case float64:
@@ -124,7 +124,7 @@ func (a *admitter) node(model *ModelNode, data any, path string, depth int, scal
 func (a *admitter) scalar(model *ModelNode, data any, path string, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	s := model.Scalar()
 	if s == nil {
-		return a.wrongKind(model, data, path, scalarLevel), nil
+		return a.wrongKind(model, data, path, scalarLevel)
 	}
 	if holdsScalar(s.Types(), data) {
 		return nil, nil
@@ -206,7 +206,15 @@ func (a *admitter) null(model *ModelNode, path string, scalarLevel spi.ChangeLev
 // nullable-marker promotion, which keeps the level it has always had; adding
 // a kind beside one already declared is a new branch, more fundamental than
 // a new field.
-func (a *admitter) wrongKind(model *ModelNode, data any, path string, scalarLevel spi.ChangeLevel) *ModelNode {
+//
+// For a container value the overlay is derived with Describe rather than
+// returned as an empty container: an empty object or an array whose element
+// is Null would merge to an overlay that admits nothing the document actually
+// carried. Describe can fail — a deeply nested container can exceed
+// MaxValidationDepth, or an object inside it can carry a field name the query
+// grammar cannot address — so wrongKind reports that failure rather than
+// swallowing it.
+func (a *admitter) wrongKind(model *ModelNode, data any, path string, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	required := spi.ChangeLevelStructural
 	if len(model.Kinds()) == 0 {
 		required = scalarLevel
@@ -221,20 +229,172 @@ func (a *admitter) wrongKind(model *ModelNode, data any, path string, scalarLeve
 		Observed: observed, Declared: model.DeclaredTypes(), DeclaredKinds: declaredKindNames(model), Value: data,
 	})
 	switch data.(type) {
-	case map[string]any:
-		return NewObjectNode()
-	case []any:
-		return NewArrayNode(NewLeafNode(Null))
+	case map[string]any, []any:
+		return Describe(data, path)
 	default:
-		return NewLeafNode(observed)
+		return NewLeafNode(observed), nil
 	}
 }
 
-// object and array are stubbed here; Task 7 fills in the container traversal.
+// object admits a JSON object against a node's object branch. Children of an
+// object are ordinary positions again: an array's element rules do not reach
+// through a nested object.
 func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
-	return nil, fmt.Errorf("admit: object traversal not yet implemented")
+	var overlay *ModelNode
+	ensure := func() *ModelNode {
+		if overlay == nil {
+			overlay = NewObjectNode()
+		}
+		return overlay
+	}
+
+	obj := model.Object()
+	for name, val := range m {
+		childPath := path + "." + name
+		child := obj.Child(name)
+
+		if child == nil {
+			// A field the model does not declare. Validate the key before it
+			// can become a schema field — this is the one point both
+			// field-set-establishing ingresses share.
+			if err := ValidateFieldName(path, name); err != nil {
+				return nil, err
+			}
+			a.record(Change{
+				Path: childPath, Reason: ReasonNewField,
+				Required: spi.ChangeLevelStructural, DeclaredKinds: declaredKindNames(model), Value: val,
+			})
+			derived, err := Describe(val, childPath)
+			if err != nil {
+				return nil, err
+			}
+			ensure().SetChild(name, derived)
+			continue
+		}
+
+		childOverlay, err := a.node(child, val, childPath, depth+1, spi.ChangeLevelType)
+		if err != nil {
+			return nil, err
+		}
+		if childOverlay != nil {
+			ensure().SetChild(name, childOverlay)
+		}
+	}
+	// A field the model declares but the document omits is not a change: the
+	// model describes known structure, not required fields.
+	return overlay, nil
 }
 
+// array admits a JSON array against a node's array branch, judging each
+// element individually. The old walk fused every element into one description
+// before anything was judged, so [2147483648, "hello"] became a single entry
+// meaning "large integer or text" and the number had already been widened.
 func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
-	return nil, fmt.Errorf("admit: array traversal not yet implemented")
+	exArr := model.Array()
+	elemPath := path + "[]"
+
+	var elemOverlay *ModelNode
+	widened := false
+
+	if exArr.Element() == nil {
+		// The array was observed, but never with content, so it declares no
+		// element type. Learning one is the same promotion a node declaring
+		// no kind undergoes, at the level an array element's changes cost.
+		if len(arr) > 0 {
+			a.record(Change{
+				Path: elemPath, Reason: ReasonArrayElement,
+				Required: spi.ChangeLevelArrayElements, DeclaredKinds: declaredKindNames(model),
+			})
+			for _, item := range arr {
+				derived, err := Describe(item, elemPath)
+				if err != nil {
+					return nil, err
+				}
+				if elemOverlay == nil {
+					elemOverlay = derived
+				} else {
+					elemOverlay = Merge(elemOverlay, derived)
+				}
+			}
+		}
+	} else {
+		// ARRAY_ELEMENTS applies at an array's element and keeps applying
+		// through further array levels.
+		for _, item := range arr {
+			itemOverlay, err := a.node(exArr.Element(), item, elemPath, depth+1, spi.ChangeLevelArrayElements)
+			if err != nil {
+				return nil, err
+			}
+			if itemOverlay == nil {
+				continue
+			}
+			if elemOverlay == nil {
+				elemOverlay = itemOverlay
+			} else {
+				elemOverlay = Merge(elemOverlay, itemOverlay)
+			}
+		}
+	}
+
+	if len(arr) > exArr.MaxWidth() {
+		a.record(Change{
+			Path: path, Reason: ReasonArrayWidth,
+			Required: spi.ChangeLevelArrayLength, DeclaredKinds: declaredKindNames(model),
+		})
+		widened = true
+	}
+
+	if elemOverlay == nil && !widened {
+		return nil, nil
+	}
+	overlay := NewArrayNode(elemOverlay)
+	if widened {
+		overlay.ObserveArrayWidth(len(arr))
+	}
+	return overlay, nil
 }
+
+// Describe derives the model fragment a value implies, with no stored model to
+// compare against — the shape a brand-new field or element takes. It is Admit
+// against an empty node, run in a throwaway admitter whose recorded changes
+// are discarded: only the overlay's content is wanted here, never a verdict.
+//
+// A container value dispatches straight into object/array against a node
+// that already declares the container's kind but has no children, rather
+// than through node against emptyNode(): emptyNode declares no branch at
+// all, so node would route a container back through wrongKind, which for a
+// container value calls Describe — looping forever. object/array also need a
+// non-nil overlay for an EMPTY container: importer.Walk has always recorded
+// an empty object or array as declaring that kind with no content (an empty
+// document admits nothing, so object/array return nil for "no change" against
+// a model that already holds everything), and Describe must produce the same
+// shape or a field whose only observed value is {} or [] would vanish from
+// the derived model instead of declaring an (empty) branch.
+func Describe(v any, path string) (*ModelNode, error) {
+	a := &admitter{}
+	switch val := v.(type) {
+	case map[string]any:
+		overlay, err := a.object(NewObjectNode(), val, path, 0, spi.ChangeLevelType)
+		if err != nil {
+			return nil, err
+		}
+		if overlay == nil {
+			overlay = NewObjectNode()
+		}
+		return overlay, nil
+	case []any:
+		overlay, err := a.array(NewArrayNode(nil), val, path, 0, spi.ChangeLevelType)
+		if err != nil {
+			return nil, err
+		}
+		if overlay == nil {
+			overlay = NewArrayNode(nil)
+		}
+		return overlay, nil
+	default:
+		return a.node(emptyNode(), v, path, 0, spi.ChangeLevelType)
+	}
+}
+
+// emptyNode is a node declaring nothing: every value is a change against it.
+func emptyNode() *ModelNode { return spi.NewEmptyNode() }

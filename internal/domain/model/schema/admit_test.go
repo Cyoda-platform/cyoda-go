@@ -306,3 +306,259 @@ func TestAdmit_OverlayDeclaresExactlyObserved(t *testing.T) {
 		t.Errorf("overlay.DeclaredTypes() = %v, want [LONG]", got)
 	}
 }
+
+// The defect Extend had: Merge ran over the whole walked document whenever
+// any node changed, so an unrelated field widened on a verdict about another.
+func TestAdmit_OverlayTouchesOnlyTheChangedPath(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.Double))
+	model.SetChild("y", schema.NewLeafNode(schema.Integer))
+
+	doc := map[string]any{"x": num("2147483648"), "y": num("1.5")}
+
+	overlay, changes, err := schema.Admit(model, doc)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("want exactly 1 change (y), got %d: %+v", len(changes), changes)
+	}
+	if changes[0].Path != ".y" {
+		t.Errorf("changed path = %q, want \".y\"", changes[0].Path)
+	}
+	if overlay.Object().Child("x") != nil {
+		t.Error("x is held; the overlay must not mention it")
+	}
+
+	merged := schema.Merge(model, overlay)
+	got := merged.Object().Child("x").DeclaredTypes()
+	if len(got) != 1 || got[0] != schema.Double {
+		t.Errorf("x must stay [DOUBLE], got %v", got)
+	}
+}
+
+// Each array element is judged on its own; nothing is fused beforehand.
+func TestAdmit_MixedKindArrayJudgedElementByElement(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("tags", schema.NewArrayNode(schema.NewLeafNode(schema.Double)))
+	model.Object().Child("tags").ObserveArrayWidth(2)
+
+	doc := map[string]any{"tags": []any{num("2147483648"), "hello"}}
+
+	overlay, changes, err := schema.Admit(model, doc)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	// 2147483648 is held by DOUBLE; only "hello" forces a change.
+	if len(changes) != 1 {
+		t.Fatalf("want exactly 1 change, got %d: %+v", len(changes), changes)
+	}
+	if changes[0].Required != spi.ChangeLevelArrayElements {
+		t.Errorf("Required = %v, want ARRAY_ELEMENTS", changes[0].Required)
+	}
+
+	merged := schema.Merge(model, overlay)
+	got := merged.Object().Child("tags").Array().Element().DeclaredTypes()
+	if len(got) != 2 {
+		t.Fatalf("element must declare DOUBLE and STRING, got %v", got)
+	}
+}
+
+func TestAdmit_ContainerRules(t *testing.T) {
+	cases := []struct {
+		name         string
+		model        func() *schema.ModelNode
+		doc          any
+		wantChanges  int
+		wantRequired spi.ChangeLevel
+	}{
+		{
+			name: "a new object field is STRUCTURAL",
+			model: func() *schema.ModelNode {
+				m := schema.NewObjectNode()
+				m.SetChild("a", schema.NewLeafNode(schema.String))
+				return m
+			},
+			doc:          map[string]any{"a": "x", "b": "y"},
+			wantChanges:  1,
+			wantRequired: spi.ChangeLevelStructural,
+		},
+		{
+			name: "a wider array is ARRAY_LENGTH",
+			model: func() *schema.ModelNode {
+				m := schema.NewObjectNode()
+				arr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
+				arr.ObserveArrayWidth(2)
+				m.SetChild("a", arr)
+				return m
+			},
+			doc:          map[string]any{"a": []any{"x", "y", "z"}},
+			wantChanges:  1,
+			wantRequired: spi.ChangeLevelArrayLength,
+		},
+		{
+			name: "an element type change is ARRAY_ELEMENTS",
+			model: func() *schema.ModelNode {
+				m := schema.NewObjectNode()
+				arr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
+				arr.ObserveArrayWidth(2)
+				m.SetChild("a", arr)
+				return m
+			},
+			doc:          map[string]any{"a": []any{"x", num("5")}},
+			wantChanges:  1,
+			wantRequired: spi.ChangeLevelArrayElements,
+		},
+		{
+			name: "an object inside an array resets to TYPE",
+			model: func() *schema.ModelNode {
+				inner := schema.NewObjectNode()
+				inner.SetChild("k", schema.NewLeafNode(schema.String))
+				arr := schema.NewArrayNode(inner)
+				arr.ObserveArrayWidth(1)
+				m := schema.NewObjectNode()
+				m.SetChild("a", arr)
+				return m
+			},
+			doc:          map[string]any{"a": []any{map[string]any{"k": num("5")}}},
+			wantChanges:  1,
+			wantRequired: spi.ChangeLevelType,
+		},
+		{
+			name: "a document the model fully admits produces nothing",
+			model: func() *schema.ModelNode {
+				m := schema.NewObjectNode()
+				m.SetChild("a", schema.NewLeafNode(schema.Double))
+				return m
+			},
+			doc:         map[string]any{"a": num("2147483648")},
+			wantChanges: 0,
+		},
+		{
+			name: "a missing field is not a change",
+			model: func() *schema.ModelNode {
+				m := schema.NewObjectNode()
+				m.SetChild("a", schema.NewLeafNode(schema.String))
+				m.SetChild("b", schema.NewLeafNode(schema.String))
+				return m
+			},
+			doc:         map[string]any{"a": "x"},
+			wantChanges: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, changes, err := schema.Admit(tc.model(), tc.doc)
+			if err != nil {
+				t.Fatalf("Admit: %v", err)
+			}
+			if len(changes) != tc.wantChanges {
+				t.Fatalf("want %d changes, got %d: %+v", tc.wantChanges, len(changes), changes)
+			}
+			if tc.wantChanges > 0 && changes[0].Required != tc.wantRequired {
+				t.Errorf("Required = %v, want %v", changes[0].Required, tc.wantRequired)
+			}
+		})
+	}
+}
+
+// Against an empty model everything is a change and the overlay is the whole
+// document's description — which is what registration needs.
+func TestAdmit_AgainstEmptyModelDescribesTheWholeDocument(t *testing.T) {
+	doc := map[string]any{
+		"note":  "hello",
+		"when":  "2026-03-01",
+		"count": num("5"),
+		"tags":  []any{"a", "b"},
+	}
+	overlay, changes, err := schema.Admit(schema.NewObjectNode(), doc)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if len(changes) == 0 {
+		t.Fatal("an empty model admits nothing; every field must be a change")
+	}
+	for _, f := range []string{"note", "when", "count", "tags"} {
+		if overlay.Object().Child(f) == nil {
+			t.Errorf("overlay is missing %q", f)
+		}
+	}
+	if got := overlay.Object().Child("when").DeclaredTypes(); len(got) != 1 || got[0] != schema.LocalDate {
+		t.Errorf("when = %v, want [LOCAL_DATE] — registration discovers temporal types", got)
+	}
+}
+
+// Handoff from Task 6 review: wrongKind's container return must describe the
+// value's real shape, not an empty container that would admit nothing on
+// merge. A [STRING] leaf against a mixed-kind array must produce an overlay
+// whose element declares both kinds actually observed.
+func TestAdmit_WrongKindContainerDescribesTheValue(t *testing.T) {
+	leaf := schema.NewLeafNode(schema.String)
+	overlay, changes, err := schema.Admit(leaf, []any{"a", num("5")})
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change, got %d: %+v", len(changes), changes)
+	}
+	if overlay == nil || overlay.Array() == nil {
+		t.Fatal("want an array overlay")
+	}
+	elem := overlay.Array().Element()
+	if elem == nil {
+		t.Fatal("want the overlay's element to describe the observed values")
+	}
+	got := elem.DeclaredTypes()
+	if len(got) != 2 {
+		t.Fatalf("element must declare STRING and INTEGER, got %v", got)
+	}
+	var hasString, hasInteger bool
+	for _, dt := range got {
+		if dt == schema.String {
+			hasString = true
+		}
+		if dt == schema.Integer {
+			hasInteger = true
+		}
+	}
+	if !hasString || !hasInteger {
+		t.Errorf("element declared types = %v, want STRING and INTEGER", got)
+	}
+}
+
+// An empty container is still an observation of its kind. importer.Walk has
+// always recorded an empty object/array as declaring that kind with no
+// content (walkObject's bare NewObjectNode(), walkArray's
+// NewArrayNode(NewLeafNode(Null))); describe must agree, or a brand-new field
+// whose only observed value is {} or [] would silently vanish from the
+// derived model instead of declaring an (empty) branch.
+func TestAdmit_EmptyContainerFieldStillDeclaresItsKind(t *testing.T) {
+	t.Run("empty object", func(t *testing.T) {
+		overlay, changes, err := schema.Admit(schema.NewObjectNode(), map[string]any{"a": map[string]any{}})
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d: %+v", len(changes), changes)
+		}
+		child := overlay.Object().Child("a")
+		if child == nil || child.Object() == nil {
+			t.Fatalf("field %q must declare an (empty) object branch, got %v", "a", child)
+		}
+	})
+
+	t.Run("empty array", func(t *testing.T) {
+		overlay, changes, err := schema.Admit(schema.NewObjectNode(), map[string]any{"a": []any{}})
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d: %+v", len(changes), changes)
+		}
+		child := overlay.Object().Child("a")
+		if child == nil || child.Array() == nil {
+			t.Fatalf("field %q must declare an (empty) array branch, got %v", "a", child)
+		}
+	})
+}
