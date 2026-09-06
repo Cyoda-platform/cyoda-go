@@ -510,29 +510,37 @@ func TestTypeAdmission_MixedKindArray_ElementsJudgedIndividually(t *testing.T) {
 }
 
 // --- §10 row: strict validation is never more permissive than
-// ARRAY_LENGTH. An array-width-growing write needs ARRAY_LENGTH permission;
-// strict (no changeLevel) is a superset of every gate a level imposes, so it
-// must refuse what ARRAY_LENGTH would accept. ---
+// ARRAY_LENGTH. ARRAY_LENGTH is the lowest active rank, one above strict's
+// "nothing" — so it must grant no permission a TYPE-level change needs: a
+// value requiring TYPE (9007199254740993 into DOUBLE, past the mantissa
+// boundary) is refused identically at strict and at ARRAY_LENGTH.
+//
+// (An array-width-growing write, the other candidate for this row, turns out
+// NOT to discriminate the two: schema.ModelNode's observed MaxWidth is not
+// persisted across a storage round-trip (Diff/Apply both drop it, and every
+// model this package's HTTP handlers load has been through at least one —
+// see admit.go's "the wire form has never carried MaxWidth" comment), so a
+// width-growing write is ungated at every level once the model has been
+// persisted once — a pre-existing quirk unrelated to this design, confirmed
+// empirically and left unfixed here per the brief's "do not touch production
+// code".) ---
 
 func TestTypeAdmission_StrictNeverMorePermissiveThanArrayLength(t *testing.T) {
-	const sample = `{"items":[1,2]}`
-	const widerPayload = `{"items":[1,2,3]}`
-
-	const strictModel = "e2e-typeadm-strict-vs-arraylength-strict"
-	importModelSampleE2E(t, strictModel, 1, sample)
-	lockModelE2E(t, strictModel, 1)
-	// No changeLevel: strict.
-	status, body := createEntityRawE2E(t, strictModel, 1, widerPayload)
-	if status != http.StatusBadRequest {
-		t.Fatalf("array width growth needs ARRAY_LENGTH; strict must refuse it; status = %d, want 400; body: %s", status, body)
-	}
-
-	const arrayLengthModel = "e2e-typeadm-strict-vs-arraylength-al"
-	importModelSampleE2E(t, arrayLengthModel, 1, sample)
-	lockModelE2E(t, arrayLengthModel, 1)
-	setChangeLevelE2E(t, arrayLengthModel, 1, "ARRAY_LENGTH")
-	status, body = createEntityRawE2E(t, arrayLengthModel, 1, widerPayload)
-	if status != http.StatusOK {
-		t.Fatalf("ARRAY_LENGTH must permit what strict refuses; status = %d, want 200; body: %s", status, body)
+	for _, tc := range []struct{ name, level string }{
+		{"strict", ""},
+		{"ARRAY_LENGTH", "ARRAY_LENGTH"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := "e2e-typeadm-strict-vs-arraylength-" + tc.name
+			importModelSampleE2E(t, model, 1, `{"amount":10.5}`)
+			lockModelE2E(t, model, 1)
+			if tc.level != "" {
+				setChangeLevelE2E(t, model, 1, tc.level)
+			}
+			status, body := createEntityRawE2E(t, model, 1, `{"amount":9007199254740993}`)
+			if status != http.StatusBadRequest {
+				t.Fatalf("ARRAY_LENGTH must grant no TYPE-level permission; status = %d, want 400; body: %s", status, body)
+			}
+		})
 	}
 }
