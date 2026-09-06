@@ -769,35 +769,43 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   - **A `DOUBLE` field now accepts a whole number past 2³¹ without
     widening the model.** `2147483648` (ten digits, exactly representable)
     is held by `DOUBLE` as it stands; only a value needing more than 15
-    significant digits — `9007199254740993`, for instance — or a scale past
-    292 still forces a type change. The old rule judged a value by its
-    classified label (`LONG`, whose 2⁶³ range exceeds `DOUBLE`'s 53-bit
-    mantissa) and refused every `LONG`-labelled value on that basis alone,
-    which refused `2147483648` along with values that genuinely cannot be
-    held. The new rule judges the value's own precision and scale, which is
-    the actual boundary the mantissa argument was about.
+    significant digits — `9007199254740993`, for instance — a scale past
+    292, or a magnitude past `DOUBLE`'s own ceiling
+    (`9.99999999999999e292`), still forces a type change. The old rule
+    judged a value by its classified label (`LONG`, whose 2⁶³ range exceeds
+    `DOUBLE`'s 53-bit mantissa) and refused every `LONG`-labelled value on
+    that basis alone, which refused `2147483648` along with values that
+    genuinely cannot be held. The new rule judges the value's own precision
+    and scale, which is the actual boundary the mantissa argument was
+    about.
 
   - **A `STRING` field now accepts a date- or timestamp-shaped string
     without changing the model, and an entity write no longer learns a
     temporal subtype for a text-declared field.** Writing `"2026-03-01"` to
-    a field declared `STRING` used to widen the field to also declare
-    `LOCAL_DATE`; it is now held by `STRING` as it stands, with no schema
-    change. A field additionally declared as a temporal type still requires
-    an exact classification match to hold a value under that type (a
-    `ZONED_DATE_TIME` field does not hold a bare year, a `LOCAL_DATE_TIME`
+    a field declared `STRING` under strict validation (no `changeLevel`)
+    used to fail outright with `400 INCOMPATIBLE_TYPE` — no configuration
+    could make it succeed, because strict validation grants no schema
+    change at all. With a `changeLevel` set it instead widened the field to
+    also declare `LOCAL_DATE`. Both are gone: the value is now held by
+    `STRING` as it stands, with no schema change, at every `changeLevel`
+    including none. A field additionally declared as a temporal type still
+    requires an exact classification match to hold a value under that type
+    (a `ZONED_DATE_TIME` field does not hold a bare year, a `LOCAL_DATE_TIME`
     field does not hold a string carrying a UTC offset). Registration is
     unchanged and remains the only way a field acquires a temporal type:
     importing sample data that shows both a plain and a date-shaped string
     still yields a field declared both `STRING` and the temporal type.
 
   - **`EQUALS 5.0` now finds a stored `5`; `NOT_EQUAL 5.0` no longer wrongly
-    matches it.** The comparison operand's trailing zeros are now stripped
-    once, at the point the operand is parsed, instead of only on the
-    integer side of the fold — so `EQUALS 5.000000000000000000` against a
-    `DOUBLE` leaf holding `5` now matches, and `NOT_EQUAL -0.0` against a
-    leaf holding `0` no longer wrongly matches. This closes the same defect
-    the stored-value filter fix above closes, on the operand side rather
-    than the stored side.
+    matches it.** The comparison operand's trailing zeros were never
+    stripped on the search side — `"5.0"` has two significant digits until
+    stripped, and precision was measured on the unstripped value, which is
+    exactly why `EQUALS 5.0` used to return zero rows. The operand is now
+    stripped once, at the point it is parsed, so `EQUALS
+    5.000000000000000000` against a `DOUBLE` leaf holding `5` now matches,
+    and `NOT_EQUAL -0.0` against a leaf holding `0` no longer wrongly
+    matches. This closes the same defect the stored-value filter fix above
+    closes, on the operand side rather than the stored side.
 
   - **Numeric-leaf model folding is order-dependent under concurrent
     extension, and that is accepted.** Today's fold skips a value only when
@@ -1186,8 +1194,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   supersedes this closing paragraph: the label-based lattice this entry
   describes is replaced by a per-value admission test, and a value past 2³¹
   — `2147483648` included — is held by `DOUBLE` as it stands. Only a value
-  needing more than 15 significant digits, such as `9007199254740993`,
-  remains a type change.)
+  needing more than 15 significant digits (such as `9007199254740993`), a
+  scale past 292, or a magnitude past `DOUBLE`'s own ceiling
+  (`9.99999999999999e292`), remains a type change.)
 
 - **memory and sqlite: direct writes stamp their submit time under the same
   monotonic floor commits use, so a write cannot stamp below a snapshot

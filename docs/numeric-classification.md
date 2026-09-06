@@ -85,19 +85,22 @@ by.
 
 **A field holds a numeric value when the value satisfies the declared type's
 admission predicate. That predicate is not "the value is inside the declared
-type's range."** An earlier version of this policy said exactly that — "a
+type's range."** An earlier draft of the design said exactly that — "a
 numeric type is its range, and only its range" — and it is wrong. `DOUBLE`'s
 range extends past 10²⁹², so `9007199254740993` is well inside it, yet a
-field declared `DOUBLE` cannot actually hold that value: the search operand
-side (`produceDecimalInRange` / `isDoubleBucketPrecise` in
-`numeric_bucket.go`) drops the `DOUBLE` comparison branch entirely for any
-operand needing more than 15 significant digits, regardless of magnitude.
-Admit `9007199254740993` into a `[DOUBLE]` field on the strength of "it's in
+field declared `DOUBLE` cannot actually hold that value: for a
+non-comparing op (`EQUALS`/`NOT_EQUAL`), the search operand side
+(`produceDecimalInRange`, in `cyoda-go-spi`'s `numeric_bucket.go`) drops the
+`DOUBLE` comparison branch entirely for any operand needing more than 15
+significant digits, regardless of magnitude — a comparison op (`<`, `>`,
+`<=`, `>=`) instead rounds the operand and keeps the branch, since a rounded
+bound admits exactly the same values as the original. Admit
+`9007199254740993` into a `[DOUBLE]` field on the strength of "it's in
 range" and `EQUALS 9007199254740993` finds nothing while `NOT_EQUAL
 9007199254740993` wrongly matches it — the exact defect admission exists to
 prevent, reintroduced by the rule meant to fix it. `1.234567890123456`
 (16 significant digits) and `1e-400` (scale past 292) fail the same way:
-both are "in range", neither is findable.
+both are "in range", neither is `EQUALS`-findable.
 
 So admission is a **conjunction**, tested directly against the value — never
 against a classified label, and never range alone:
@@ -114,13 +117,17 @@ against a classified label, and never range alone:
 mostly don't.** `DOUBLE` is the one family where the range test and the
 precision test are *both* load-bearing; a reader who keeps only "range" will
 silently reintroduce the bug two paragraphs up. The reason is the search
-operand bucket: `isDoubleBucketPrecise` refuses to produce a `DOUBLE`
-comparison branch for an operand needing more than 15 significant digits or
-a scale past 292 — independent of whether the value's magnitude fits
-`DOUBLE`'s range at all. A value can be comfortably inside the range and
-still fail that test, as `9007199254740993` does. Admission has to fail the
-same value the search bucket would refuse to compare against, or the two
-disagree and the "held ⟹ findable" invariant below breaks.
+operand bucket, `cyoda-go-spi`'s `numeric_bucket.go`: `isDoubleBucketPrecise`
+answers whether an operand fits in 15 significant digits and a scale of at
+most 292, and it is `produceDecimalInRange` that acts on that answer,
+refusing to produce a `DOUBLE` comparison branch for `EQUALS`/`NOT_EQUAL`
+when it does not — independent of whether the value's magnitude fits
+`DOUBLE`'s range at all. (A comparison op rounds instead of refusing, so
+this is specifically an equality-family hazard, per the note above.) A value
+can be comfortably inside the range and still fail that test, as
+`9007199254740993` does. Admission has to fail the same value
+`EQUALS`/`NOT_EQUAL` would refuse to compare against, or the two disagree
+and the "held ⟹ findable" invariant below breaks.
 
 `BIG_DECIMAL` really is magnitude-only: the search operand side documents
 its own scale ≤ 18 restriction as a Trino storage constraint irrelevant to a
@@ -137,11 +144,13 @@ reshape stored data. The worry was correct; judging it by the classified
 *label* was not. `2147483648` (10 digits, exactly representable in a
 `DOUBLE`) and `9007199254740993` (16 digits, not exactly representable) both
 classify no more precisely than `LONG` — the label cannot tell them apart.
-Precision can: any integer above 2⁵³ needs at least 16 significant digits, so
-`precision ≤ 15` excludes exactly the values the mantissa argument is
-actually about, without condemning a 10-digit value by association with its
-classified label. The boundary lands exactly where the mantissa puts it; what
-changed is the instrument judging it — the value, not its label.
+Precision can: **a decimal of at most 15 significant digits round-trips
+uniquely through a binary64 `double`** — the guarantee both `DOUBLE`'s own
+findability and a lossless `float8` pushdown on PostgreSQL need —
+and `2147483648` is inside that bound while `9007199254740993` is not. The
+boundary lands exactly where the mantissa puts it; what changed is the
+instrument judging it — the value's own precision, not its classified
+label.
 
 **One predicate, two consumers.** The same per-family test is what the
 search kernel uses to filter a stored value at query time (`evalCompare`,
