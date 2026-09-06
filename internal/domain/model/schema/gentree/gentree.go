@@ -205,10 +205,10 @@ func randString(r *rand.Rand, n int) string {
 }
 
 // GenExtensionPair given an existing schema returns a random JSON-like
-// value whose Walk output, when fed to Extend(old, ., level), is
-// typically accepted at Structural level. Strategy: emit a mutated
-// view of the schema (same shape, random additional fields) so the
-// extension is additive rather than kind-changing.
+// document that, fed directly to Extend(old, ., level), is typically
+// accepted at Structural level. Strategy: emit a mutated view of the
+// schema (same shape, random additional fields) so the extension is
+// additive rather than kind-changing.
 func GenExtensionPair(r *rand.Rand, old *schema.ModelNode, level spi.ChangeLevel, cfg GenConfig) any {
 	return mutateToValue(r, old, 0, cfg)
 }
