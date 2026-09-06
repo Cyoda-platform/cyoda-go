@@ -99,35 +99,36 @@ func TestExtend_NullIntoDeclaredScalar_CostsNothing(t *testing.T) {
 	}
 }
 
-// The boundary the relaxation stops at, and the reason it is not "whole
-// numbers are free on a DOUBLE leaf": classification is by magnitude, and
-// only INTEGER widens into DOUBLE. A whole number past 2^31 classifies LONG,
-// whose 2^63 range exceeds DOUBLE's 53-bit mantissa — the lattice refuses
-// that conversion deliberately — so it is a real type change, refused below
-// TYPE and collapsing the leaf to UNBOUND_DECIMAL at it. Pinning this stops a
-// later "any whole number is fine" simplification from silently reshaping
-// stored data.
-func TestExtend_WholeNumberPastIntegerRange_IsStillATypeChange(t *testing.T) {
-	build := func() (*schema.ModelNode, *schema.ModelNode) {
-		existing := schema.NewObjectNode()
-		existing.SetChild("amount", schema.NewLeafNode(schema.Double))
-		incoming := schema.NewObjectNode()
-		incoming.SetChild("amount", schema.NewLeafNode(schema.Long))
-		return existing, incoming
+// The boundary, and why it moved. Classification by LABEL condemned every
+// whole number past 2^31 as LONG, and LONG does not widen into DOUBLE
+// because 2^63 exceeds Double's 53-bit mantissa. The mantissa argument is
+// right; the instrument was wrong. 2147483648 is ten significant digits and
+// exactly representable, and it was refused only by association with values
+// that are not.
+//
+// Admission judges the value: a DOUBLE leaf holds a number inside DOUBLE's
+// range that needs at most 15 significant digits. Every integer above 2^53
+// needs at least 16, so the mantissa boundary is exactly where it was —
+// 9007199254740993 is still a type change, and is asserted below so a later
+// "any whole number is fine" simplification still cannot pass.
+func TestExtend_WholeNumberInDoubleRangeIsHeld(t *testing.T) {
+	build := func() *schema.ModelNode {
+		m := schema.NewObjectNode()
+		m.SetChild("amount", schema.NewLeafNode(schema.Double))
+		return m
 	}
 
-	existing, incoming := build()
-	if _, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength); err == nil {
-		t.Fatal("LONG does not widen into DOUBLE; it must stay a gated type change")
-	}
-
-	existing, incoming = build()
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelType)
+	// Held at the most restrictive level: no model change is needed.
+	got, err := schema.Extend(build(), map[string]any{"amount": num("2147483648")}, spi.ChangeLevelArrayLength)
 	if err != nil {
-		t.Fatalf("TYPE level permits it: %v", err)
+		t.Fatalf("a DOUBLE leaf holds 2147483648: %v", err)
 	}
-	got := result.Object().Child("amount").DeclaredTypes()
-	if len(got) != 1 || got[0] != schema.UnboundDecimal {
-		t.Errorf("DOUBLE and LONG share no common type below UNBOUND_DECIMAL, got %v", got)
+	if types := got.Object().Child("amount").DeclaredTypes(); len(types) != 1 || types[0] != schema.Double {
+		t.Errorf("amount = %v, want [DOUBLE] unchanged", types)
+	}
+
+	// The mantissa boundary is unmoved.
+	if _, err := schema.Extend(build(), map[string]any{"amount": num("9007199254740993")}, spi.ChangeLevelArrayLength); err == nil {
+		t.Error("16 significant digits exceed Double's mantissa; this must stay a gated type change")
 	}
 }

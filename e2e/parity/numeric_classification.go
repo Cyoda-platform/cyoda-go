@@ -178,12 +178,21 @@ func RunSchemaExtensionsSequentialFoldAcrossRequests(t *testing.T, fixture Backe
 }
 
 // RunNumericClassificationDoubleSchemaAcceptsWholeNumber confirms a leaf
-// declared DOUBLE admits a whole number under a below-TYPE change level. The
-// write path classifies the incoming value's type from the value alone —
-// every whole number is INTEGER, whatever its spelling — but INTEGER widens
-// into DOUBLE, so the model's admitted value space is unchanged and the write
-// spends no ChangeLevel permission. Under ARRAY_LENGTH every such write was
-// refused as a spurious "type change at .amount requires TYPE level".
+// declared DOUBLE admits a whole number under a below-TYPE change level, at
+// every magnitude DOUBLE actually holds. Classification by LABEL condemned
+// every whole number past 2^31 as LONG, and LONG does not widen into DOUBLE
+// because 2^63 exceeds DOUBLE's 53-bit mantissa — the mantissa argument is
+// right, the instrument was wrong. 2147483648 is ten significant digits and
+// exactly representable; it was refused only by association with values
+// that are not.
+//
+// Admission judges the value: a DOUBLE leaf holds a number inside DOUBLE's
+// range that needs at most 15 significant digits, so 2147483648 is held
+// under ARRAY_LENGTH with the model unmoved. Every integer above 2^53 needs
+// at least 16 significant digits, so the mantissa boundary is exactly where
+// it was — every backend must still fail closed there, and this scenario
+// asserts both halves so a later "any whole number is fine" simplification
+// still cannot pass.
 func RunNumericClassificationDoubleSchemaAcceptsWholeNumber(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -229,14 +238,35 @@ func RunNumericClassificationDoubleSchemaAcceptsWholeNumber(t *testing.T, fixtur
 			before, after)
 	}
 
-	// The lattice bounds the relaxation, and every backend must fail closed at
-	// the same place: past 2^31 the value classifies LONG, which does not widen
-	// into DOUBLE, so it is a genuine type change and stays refused here.
+	// Within DOUBLE's mantissa: held at the most restrictive level, and the
+	// model does not move for it either.
+	before, err = c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel before 2147483648: %v", err)
+	}
 	status, body, err := c.CreateEntityRaw(t, modelName, modelVersion, `{"amount":2147483648,"amounts":[1.5,2.5]}`)
 	if err != nil {
 		t.Fatalf("CreateEntityRaw transport: %v", err)
 	}
+	if status != http.StatusOK {
+		t.Errorf("2147483648 needs 10 significant digits, DOUBLE holds it; got %d: %s", status, body)
+	}
+	after, err = c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel after 2147483648: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("a held whole-number write must not change the schema\n  before: %s\n  after:  %s", before, after)
+	}
+
+	// Past the mantissa boundary, every backend must still fail closed at the
+	// same place: 9007199254740993 needs 16 significant digits, past DOUBLE's
+	// mantissa, so it is a genuine type change and stays refused here.
+	status, body, err = c.CreateEntityRaw(t, modelName, modelVersion, `{"amount":9007199254740993,"amounts":[1.5,2.5]}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw transport: %v", err)
+	}
 	if status != http.StatusBadRequest {
-		t.Errorf("LONG into a DOUBLE leaf is a type change; got %d: %s", status, body)
+		t.Errorf("9007199254740993 is past DOUBLE's mantissa; it is a type change; got %d: %s", status, body)
 	}
 }

@@ -51,20 +51,44 @@ func TestModelExtension_WholeNumberIntoDoubleLeaf(t *testing.T) {
 	}
 }
 
-// The relaxation stops where the widening lattice does. A whole number past
-// 2^31 classifies LONG, and LONG does not widen into DOUBLE (2^63 exceeds
-// DOUBLE's 53-bit mantissa), so it is a genuine type change: refused below
-// TYPE with the level named, and at TYPE it widens the leaf rather than
-// slipping in silently.
+// The boundary, and why it moved. Classification by LABEL condemned every
+// whole number past 2^31 as LONG, and LONG does not widen into DOUBLE
+// because 2^63 exceeds DOUBLE's 53-bit mantissa. The mantissa argument is
+// right; the instrument was wrong. 2147483648 is ten significant digits and
+// exactly representable, and it was refused only by association with values
+// that are not.
+//
+// Admission judges the value: a DOUBLE leaf holds a number inside DOUBLE's
+// range that needs at most 15 significant digits, so 2147483648 is held at
+// the most restrictive level with no model change. Every integer above 2^53
+// needs at least 16 significant digits, so the mantissa boundary is exactly
+// where it was — 9007199254740993 is still a genuine type change: refused
+// below TYPE with the level named, and at TYPE it widens the leaf rather
+// than slipping in silently.
 func TestModelExtension_WholeNumberPastIntegerRangeIntoDoubleLeaf(t *testing.T) {
 	const model = "e2e-double-long"
 	importModelSampleE2E(t, model, 1, `{"amount":10.5}`)
 	lockModelE2E(t, model, 1)
 	setChangeLevelE2E(t, model, 1, "ARRAY_LENGTH")
 
+	before := exportModelE2E(t, model, 1)
+
+	// Within DOUBLE's mantissa, held at the most restrictive level.
 	status, body := createEntityRawE2E(t, model, 1, `{"amount":2147483648}`)
+	if status != http.StatusOK {
+		t.Fatalf("2147483648 needs 10 significant digits, DOUBLE holds it; status = %d, want 200; body: %s", status, body)
+	}
+	after := exportModelE2E(t, model, 1)
+	beforeJSON, _ := json.Marshal(before)
+	afterJSON, _ := json.Marshal(after)
+	if string(beforeJSON) != string(afterJSON) {
+		t.Errorf("model changed under a held whole-number write\n  before: %s\n  after:  %s", beforeJSON, afterJSON)
+	}
+
+	// Past the mantissa boundary, still a genuine type change.
+	status, body = createEntityRawE2E(t, model, 1, `{"amount":9007199254740993}`)
 	if status != http.StatusBadRequest {
-		t.Fatalf("LONG into a DOUBLE leaf is a type change; status = %d, want 400; body: %s", status, body)
+		t.Fatalf("9007199254740993 needs 16 significant digits, past DOUBLE's mantissa; status = %d, want 400; body: %s", status, body)
 	}
 	if !strings.Contains(body, "TYPE") {
 		t.Errorf("the rejection must name the level that resolves it; body: %s", body)
@@ -73,7 +97,7 @@ func TestModelExtension_WholeNumberPastIntegerRangeIntoDoubleLeaf(t *testing.T) 
 	// Raising the level resolves it, and the leaf really does widen — the
 	// two types share no common type below UNBOUND_DECIMAL.
 	setChangeLevelE2E(t, model, 1, "TYPE")
-	status, body = createEntityRawE2E(t, model, 1, `{"amount":2147483648}`)
+	status, body = createEntityRawE2E(t, model, 1, `{"amount":9007199254740993}`)
 	if status != http.StatusOK {
 		t.Fatalf("TYPE level permits it; status = %d, want 200; body: %s", status, body)
 	}
