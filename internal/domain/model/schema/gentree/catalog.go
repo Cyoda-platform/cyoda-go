@@ -16,7 +16,7 @@ import (
 type Fixture struct {
 	Name          string
 	Old           *schema.ModelNode
-	Incoming      any // fed through importer.Walk
+	Incoming      any // fed directly to schema.Extend as the document
 	Level         spi.ChangeLevel
 	ExpectedKinds []schema.SchemaOpKind // nil = don't assert
 	ExpectError   bool
