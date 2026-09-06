@@ -238,12 +238,18 @@ this stops a later 'any whole number is fine' simplification from silently
 reshaping stored data."*
 
 That objection is correct, and the predicate answers it rather than overriding
-it. Any integer above 2^53 needs at least 16 significant digits, so `precision ≤
-15` excludes every value the mantissa argument is about. What the lattice got
-wrong was not the concern but the instrument: it judged the *label* `LONG`,
-which condemns `2147483648` — 10 digits, exactly representable — along with
-`9007199254740993`. The predicate judges the value, and keeps the boundary
-exactly where the mantissa puts it.
+it. **A decimal of at most 15 significant digits round-trips uniquely through a
+binary64 `double`** — the guarantee both the `DOUBLE` bucket's findability and
+a lossless Postgres pushdown (below) need — and `precision ≤ 15` excludes
+every value that guarantee does not cover. (This is not the same claim as "any
+integer above 2^53 needs 16 significant digits": a value like `1e16` needs
+only one significant digit after stripping trailing zeros despite exceeding
+2^53, and the predicate correctly admits it — the guarantee is about
+significant digits, not raw magnitude.) What the lattice got wrong was not the
+concern but the instrument: it judged the *label* `LONG`, which condemns
+`2147483648` — 10 digits, exactly representable — along with
+`9007199254740993`. The predicate judges the value's own precision, and keeps
+the boundary exactly where the mantissa puts it.
 
 Two consequences fall out:
 
@@ -252,9 +258,9 @@ Two consequences fall out:
   such a value would be dropped by the SQL pre-filter while the kernel matched
   it — and *not* dropped by sqlite, which binds an exact `int64`. That would be
   a cross-backend result divergence, which this project treats as a bug. Under
-  the predicate it cannot arise: no admitted value exceeds 2^53, and IEEE754
-  round-trips any 15-significant-digit decimal uniquely, so no two admitted
-  values collide in `float8`.
+  the predicate it cannot arise: every admitted value has at most 15
+  significant digits, and such a decimal round-trips uniquely through
+  `float8` regardless of its raw magnitude, so no two admitted values collide.
 - **§12's "reconciling the three tests is separate work" needs re-reading.** The
   design cannot pick "the correct one", because for `DOUBLE` two of the three
   are jointly load-bearing. What stays out of scope is *unifying* them; what
