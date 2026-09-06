@@ -127,7 +127,15 @@ func TestImport_FusesArrayElements(t *testing.T) {
 	}
 	got := node.Object().Child("tags").Array().Element().DeclaredTypes()
 	if len(got) != 2 {
-		t.Errorf("element = %v, want {STRING, LOCAL_DATE}", got)
+		t.Fatalf("element = %v, want {STRING, LOCAL_DATE}", got)
+	}
+	var hasString, hasDate bool
+	for _, dt := range got {
+		hasString = hasString || dt == schema.String
+		hasDate = hasDate || dt == schema.LocalDate
+	}
+	if !hasString || !hasDate {
+		t.Errorf("element = %v, want both STRING and LOCAL_DATE", got)
 	}
 }
 
