@@ -21,35 +21,34 @@ func TestExtend_ArrayElementKindMismatch_Rejected(t *testing.T) {
 	cases := []struct {
 		name         string
 		existingElem *ModelNode
-		incomingElem *ModelNode
+		itemsDoc     []any // the "items" document array whose element kind mismatches existingElem
 	}{
 		{
 			name:         "OBJECT elem vs LEAF[String] elem",
 			existingElem: NewObjectNode(),
-			incomingElem: NewLeafNode(String),
+			itemsDoc:     []any{"hello"},
 		},
 		{
 			name:         "LEAF[String] elem vs OBJECT elem",
 			existingElem: NewLeafNode(String),
-			incomingElem: NewObjectNode(),
+			itemsDoc:     []any{map[string]any{}},
 		},
 		{
 			name:         "OBJECT elem vs ARRAY elem",
 			existingElem: NewObjectNode(),
-			incomingElem: NewArrayNode(NewLeafNode(String)),
+			itemsDoc:     []any{[]any{"a"}},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			existing := NewObjectNode()
 			existing.SetChild("items", NewArrayNode(tc.existingElem))
-			incoming := NewObjectNode()
-			incoming.SetChild("items", NewArrayNode(tc.incomingElem))
+			doc := map[string]any{"items": tc.itemsDoc}
 
 			// Below STRUCTURAL, adding a kind to the element is refused —
 			// as a level violation that names the level which resolves it,
 			// not as a shape the model can never hold.
-			_, err := Extend(existing, incoming, spi.ChangeLevelType)
+			_, err := Extend(existing, doc, spi.ChangeLevelType)
 			if err == nil {
 				t.Fatal("array element gaining a kind must reject below STRUCTURAL, not silently absorb")
 			}
@@ -68,10 +67,9 @@ func TestExtend_ArrayElementNullableMarker_Accepted(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("items", NewArrayNode(NewObjectNode()))
 
-	incoming := NewObjectNode()
-	incoming.SetChild("items", NewArrayNode(NewLeafNode(Null)))
+	doc := map[string]any{"items": []any{nil, nil}}
 
-	got, err := Extend(existing, incoming, spi.ChangeLevelType)
+	got, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err != nil {
 		t.Fatalf("ARRAY[OBJECT] + ARRAY[LEAF[NULL]] must succeed (nullable marker): %v", err)
 	}
