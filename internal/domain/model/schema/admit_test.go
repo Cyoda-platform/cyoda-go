@@ -135,3 +135,174 @@ func TestAdmit_LeafRefusesAContainer(t *testing.T) {
 		}
 	}
 }
+
+// TestAdmit_NullablePromotion pins the nullable-marker promotion: a node
+// with no scalar declaration records ReasonNullable at scalarLevel and
+// overlays a bare nullable marker; a node that already declares a scalar
+// admits null silently.
+func TestAdmit_NullablePromotion(t *testing.T) {
+	t.Run("promotes a node with no scalar declaration", func(t *testing.T) {
+		model := schema.NewObjectNode()
+		overlay, changes, err := schema.Admit(model, nil)
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d: %+v", len(changes), changes)
+		}
+		c := changes[0]
+		if c.Reason != schema.ReasonNullable {
+			t.Errorf("Reason = %v, want ReasonNullable", c.Reason)
+		}
+		if c.Required != spi.ChangeLevelType {
+			t.Errorf("Required = %v, want TYPE (the default scalarLevel)", c.Required)
+		}
+		if c.Observed != schema.Null {
+			t.Errorf("Observed = %v, want NULL", c.Observed)
+		}
+		if overlay == nil {
+			t.Fatal("want an overlay describing the promotion")
+		}
+		if !overlay.Nullable() {
+			t.Error("overlay must be nullable")
+		}
+		if len(overlay.Kinds()) != 0 {
+			t.Errorf("overlay.Kinds() = %v, want none", overlay.Kinds())
+		}
+	})
+
+	t.Run("a node that already declares a scalar admits null silently", func(t *testing.T) {
+		leaf := schema.NewLeafNode(schema.String)
+		overlay, changes, err := schema.Admit(leaf, nil)
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 0 {
+			t.Fatalf("want no changes, got %+v", changes)
+		}
+		if overlay != nil {
+			t.Fatalf("want nil overlay, got %v", overlay.DeclaredTypes())
+		}
+	})
+}
+
+// TestAdmit_NewKindLevelSplit pins the STRUCTURAL-vs-scalarLevel split a new
+// kind costs: adding a kind beside one already declared is STRUCTURAL: more
+// fundamental than a new field. Establishing the first kind on a node that
+// declares none is the nullable-marker promotion instead, at scalarLevel.
+func TestAdmit_NewKindLevelSplit(t *testing.T) {
+	t.Run("a declared scalar gaining a container kind costs STRUCTURAL", func(t *testing.T) {
+		leaf := schema.NewLeafNode(schema.String)
+		overlay, changes, err := schema.Admit(leaf, map[string]any{"k": "v"})
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d: %+v", len(changes), changes)
+		}
+		c := changes[0]
+		if c.Required != spi.ChangeLevelStructural {
+			t.Errorf("Required = %v, want STRUCTURAL", c.Required)
+		}
+		if c.Reason != schema.ReasonNewKind {
+			t.Errorf("Reason = %v, want ReasonNewKind", c.Reason)
+		}
+		if overlay == nil {
+			t.Fatal("want an overlay")
+		}
+	})
+
+	t.Run("a node with no declared kinds learning a scalar costs the nullable-promotion level", func(t *testing.T) {
+		model := spi.NewEmptyNode()
+		overlay, changes, err := schema.Admit(model, "x")
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d: %+v", len(changes), changes)
+		}
+		c := changes[0]
+		if c.Required != spi.ChangeLevelType {
+			t.Errorf("Required = %v, want TYPE", c.Required)
+		}
+		if c.Reason != schema.ReasonNewKind {
+			t.Errorf("Reason = %v, want ReasonNewKind", c.Reason)
+		}
+		if c.Observed != schema.String {
+			t.Errorf("Observed = %v, want STRING", c.Observed)
+		}
+		if overlay == nil {
+			t.Fatal("want an overlay")
+		}
+	})
+}
+
+// TestAdmit_ChangeDeclaredKindsAndValue pins DeclaredKinds (rendered via the
+// same declaredKindNames wording Validate has always used) and Value on
+// every change kind this task produces.
+func TestAdmit_ChangeDeclaredKindsAndValue(t *testing.T) {
+	t.Run("a leaf type change carries the value and scalar DeclaredKinds", func(t *testing.T) {
+		leaf := schema.NewLeafNode(schema.String)
+		_, changes, err := schema.Admit(leaf, num("5"))
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d", len(changes))
+		}
+		c := changes[0]
+		if c.DeclaredKinds != "scalar" {
+			t.Errorf("DeclaredKinds = %q, want %q", c.DeclaredKinds, "scalar")
+		}
+		if c.Value != num("5") {
+			t.Errorf("Value = %v, want json.Number(\"5\")", c.Value)
+		}
+	})
+
+	t.Run("a container against a scalar leaf carries scalar DeclaredKinds", func(t *testing.T) {
+		leaf := schema.NewLeafNode(schema.String)
+		_, changes, err := schema.Admit(leaf, map[string]any{"k": "v"})
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d", len(changes))
+		}
+		if changes[0].DeclaredKinds != "scalar" {
+			t.Errorf("DeclaredKinds = %q, want %q", changes[0].DeclaredKinds, "scalar")
+		}
+	})
+
+	t.Run("a string against an object node carries object DeclaredKinds", func(t *testing.T) {
+		model := schema.NewObjectNode()
+		_, changes, err := schema.Admit(model, "x")
+		if err != nil {
+			t.Fatalf("Admit: %v", err)
+		}
+		if len(changes) != 1 {
+			t.Fatalf("want 1 change, got %d", len(changes))
+		}
+		if changes[0].DeclaredKinds != "object" {
+			t.Errorf("DeclaredKinds = %q, want %q", changes[0].DeclaredKinds, "object")
+		}
+	})
+}
+
+// TestAdmit_OverlayDeclaresExactlyObserved pins the overlay's CONTENT for a
+// leaf type change: it declares the observed type alone, not the union of
+// the observed and previously-declared types — Merge, not this traversal, is
+// where widening happens.
+func TestAdmit_OverlayDeclaresExactlyObserved(t *testing.T) {
+	leaf := schema.NewLeafNode(schema.Integer)
+	overlay, _, err := schema.Admit(leaf, num("2147483648"))
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if overlay == nil {
+		t.Fatal("want an overlay")
+	}
+	got := overlay.DeclaredTypes()
+	if len(got) != 1 || got[0] != schema.Long {
+		t.Errorf("overlay.DeclaredTypes() = %v, want [LONG]", got)
+	}
+}

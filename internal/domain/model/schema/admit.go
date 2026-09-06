@@ -35,8 +35,14 @@ type Change struct {
 	Path     string
 	Reason   ChangeReason
 	Required spi.ChangeLevel
-	Observed DataType   // ReasonLeafType, and ReasonNewKind for a scalar value; zero otherwise
-	Declared []DataType // ReasonLeafType only; what the leaf declares
+	Observed DataType // ReasonLeafType, and ReasonNewKind for a scalar value; zero otherwise
+	// Declared is the node's declared types at the moment of the change:
+	// what a leaf's scalar branch declares for ReasonLeafType, or
+	// model.DeclaredTypes() — [NULL] for a nullable-only node, nil for one
+	// declaring nothing — for ReasonNewKind and ReasonNullable. Task 8 needs
+	// it in both cases to render ErrKindIncompatibleType exactly as the old
+	// Validate did.
+	Declared []DataType
 	// DeclaredKinds names the kinds the node declared when the change was
 	// recorded — "object", "array", "scalar", joined with " or ", or
 	// "no value" — in the wording Validate has always used. Recorded here so
@@ -111,34 +117,24 @@ func (a *admitter) node(model *ModelNode, data any, path string, depth int, scal
 }
 
 // scalar is §4's rule: the value's JSON kind must match a declared type's
-// kind, and that type must admit the value.
+// kind, and that type must admit the value. A node with no scalar branch at
+// all is the same "path gains a kind it does not declare" case a container
+// value hits against a node lacking that branch — wrongKind is the single
+// site of that policy.
 func (a *admitter) scalar(model *ModelNode, data any, path string, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
+	s := model.Scalar()
+	if s == nil {
+		return a.wrongKind(model, data, path, scalarLevel), nil
+	}
+	if holdsScalar(s.Types(), data) {
+		return nil, nil
+	}
+	// The scalar kind IS declared here — the value's kind is not the
+	// complaint, its type is.
 	observed := inferDataType(data)
-
-	if s := model.Scalar(); s != nil {
-		if holdsScalar(s.Types(), data) {
-			return nil, nil
-		}
-		// The scalar kind IS declared here — the value's kind is not the
-		// complaint, its type is.
-		a.record(Change{
-			Path: path, Reason: ReasonLeafType, Required: scalarLevel,
-			Observed: observed, Declared: s.Types(), DeclaredKinds: declaredKindNames(model), Value: data,
-		})
-		return NewLeafNode(observed), nil
-	}
-
-	// The node declares no scalar at all. Establishing the first kinds on a
-	// node that declares nothing is the nullable-marker promotion, which keeps
-	// the level it has always had; adding a scalar beside a declared container
-	// is a new branch, which is more fundamental than a new field.
-	required := spi.ChangeLevelStructural
-	if len(model.Kinds()) == 0 {
-		required = scalarLevel
-	}
 	a.record(Change{
-		Path: path, Reason: ReasonNewKind, Required: required,
-		Observed: observed, Declared: model.DeclaredTypes(), DeclaredKinds: declaredKindNames(model), Value: data,
+		Path: path, Reason: ReasonLeafType, Required: scalarLevel,
+		Observed: observed, Declared: s.Types(), DeclaredKinds: declaredKindNames(model), Value: data,
 	})
 	return NewLeafNode(observed), nil
 }
@@ -203,8 +199,13 @@ func (a *admitter) null(model *ModelNode, path string, scalarLevel spi.ChangeLev
 	return overlay
 }
 
-// wrongKind records a path gaining a kind it does not declare. A node that
-// declares nothing at all is the nullable-marker promotion instead.
+// wrongKind is the single site of "a path gains a kind it does not declare":
+// a container against a node lacking that branch (called directly from
+// node), and a scalar against a node with no scalar branch (called from
+// scalar). Establishing the first kind on a node that declares none is the
+// nullable-marker promotion, which keeps the level it has always had; adding
+// a kind beside one already declared is a new branch, more fundamental than
+// a new field.
 func (a *admitter) wrongKind(model *ModelNode, data any, path string, scalarLevel spi.ChangeLevel) *ModelNode {
 	required := spi.ChangeLevelStructural
 	if len(model.Kinds()) == 0 {
@@ -222,8 +223,10 @@ func (a *admitter) wrongKind(model *ModelNode, data any, path string, scalarLeve
 	switch data.(type) {
 	case map[string]any:
 		return NewObjectNode()
-	default:
+	case []any:
 		return NewArrayNode(NewLeafNode(Null))
+	default:
+		return NewLeafNode(observed)
 	}
 }
 
