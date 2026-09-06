@@ -12,10 +12,8 @@ func TestExtendStructuralNewField(t *testing.T) {
 	// STRUCTURAL allows new fields
 	existing := schema.NewObjectNode()
 	existing.SetChild("name", schema.NewLeafNode(schema.String))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("name", schema.NewLeafNode(schema.String))
-	incoming.SetChild("age", schema.NewLeafNode(schema.Integer))
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelStructural)
+	doc := map[string]any{"name": "x", "age": num("30")}
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelStructural)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -28,21 +26,22 @@ func TestExtendTypeRejectsNewField(t *testing.T) {
 	// TYPE does not allow new fields
 	existing := schema.NewObjectNode()
 	existing.SetChild("name", schema.NewLeafNode(schema.String))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("name", schema.NewLeafNode(schema.String))
-	incoming.SetChild("age", schema.NewLeafNode(schema.Integer))
-	_, err := schema.Extend(existing, incoming, spi.ChangeLevelType)
+	doc := map[string]any{"name": "x", "age": num("30")}
+	_, err := schema.Extend(existing, doc, spi.ChangeLevelType)
 	if err == nil {
 		t.Error("expected error: TYPE should reject new fields")
 	}
 }
 
+// The value forces the widening now, not the label: the document supplies a
+// plain string against a field that only ever held INTEGER, which is a
+// genuine type mismatch under Admit's per-kind table (a JSON string is never
+// held by INTEGER).
 func TestExtendTypeAllowsTypeWidening(t *testing.T) {
 	existing := schema.NewObjectNode()
 	existing.SetChild("value", schema.NewLeafNode(schema.Integer))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("value", schema.NewLeafNode(schema.String))
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelType)
+	doc := map[string]any{"value": "hello"}
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelType)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,14 +51,15 @@ func TestExtendTypeAllowsTypeWidening(t *testing.T) {
 	}
 }
 
+// The array already has an observed element type (Integer); a document
+// element that Integer does not hold (a plain string) is what forces the
+// element widening now, not an incoming label.
 func TestExtendArrayElementsAllowsElementWidening(t *testing.T) {
 	existingArr := schema.NewArrayNode(schema.NewLeafNode(schema.Integer))
 	existing := schema.NewObjectNode()
 	existing.SetChild("scores", existingArr)
-	incomingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("scores", incomingArr)
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayElements)
+	doc := map[string]any{"scores": []any{"hello"}}
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelArrayElements)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,24 +72,23 @@ func TestExtendArrayElementsAllowsElementWidening(t *testing.T) {
 func TestExtendArrayElementsRejectsLeafTypeWidening(t *testing.T) {
 	existing := schema.NewObjectNode()
 	existing.SetChild("value", schema.NewLeafNode(schema.Integer))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("value", schema.NewLeafNode(schema.String))
-	_, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayElements)
+	doc := map[string]any{"value": "hello"}
+	_, err := schema.Extend(existing, doc, spi.ChangeLevelArrayElements)
 	if err == nil {
 		t.Error("expected error")
 	}
 }
 
+// The array already declares a String element and has an OBSERVED width of
+// 3 (ObserveArrayWidth); the document supplies 5 held Strings, so the only
+// change is the width, matching the old test's intent exactly.
 func TestExtendArrayLengthAllowsWidthChange(t *testing.T) {
 	existingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
 	existingArr.ObserveArrayWidth(3)
 	existing := schema.NewObjectNode()
 	existing.SetChild("tags", existingArr)
-	incomingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-	incomingArr.ObserveArrayWidth(5)
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("tags", incomingArr)
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
+	doc := map[string]any{"tags": []any{"a", "b", "c", "d", "e"}}
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,10 +101,8 @@ func TestExtendArrayLengthRejectsElementTypeChange(t *testing.T) {
 	existingArr := schema.NewArrayNode(schema.NewLeafNode(schema.Integer))
 	existing := schema.NewObjectNode()
 	existing.SetChild("scores", existingArr)
-	incomingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("scores", incomingArr)
-	_, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
+	doc := map[string]any{"scores": []any{"hello"}}
+	_, err := schema.Extend(existing, doc, spi.ChangeLevelArrayLength)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -114,10 +111,8 @@ func TestExtendArrayLengthRejectsElementTypeChange(t *testing.T) {
 func TestExtendEmptyLevelRejectsAll(t *testing.T) {
 	existing := schema.NewObjectNode()
 	existing.SetChild("name", schema.NewLeafNode(schema.String))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("name", schema.NewLeafNode(schema.String))
-	incoming.SetChild("extra", schema.NewLeafNode(schema.Integer))
-	_, err := schema.Extend(existing, incoming, "")
+	doc := map[string]any{"name": "x", "extra": num("5")}
+	_, err := schema.Extend(existing, doc, "")
 	if err == nil {
 		t.Error("expected error: empty level rejects all changes")
 	}
@@ -126,9 +121,8 @@ func TestExtendEmptyLevelRejectsAll(t *testing.T) {
 func TestExtendConformingDataNoChange(t *testing.T) {
 	existing := schema.NewObjectNode()
 	existing.SetChild("name", schema.NewLeafNode(schema.String))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("name", schema.NewLeafNode(schema.String))
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
+	doc := map[string]any{"name": "a plain string"}
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
