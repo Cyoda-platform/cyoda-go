@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -33,41 +34,37 @@ func assertRoundTripsTo(t *testing.T, old, extended *ModelNode) {
 // import could before.
 func TestExtendDiffApply_AddsABranchEndToEnd(t *testing.T) {
 	cases := []struct {
-		name               string
-		existing, incoming func() *ModelNode
+		name     string
+		existing func() *ModelNode
+		doc      any // the document value for field "f" that forces the gained branch
 	}{
 		{"scalar gains array", func() *ModelNode { return NewLeafNode(String) },
-			func() *ModelNode { return NewArrayNode(NewLeafNode(String)) }},
+			[]any{"a"}},
 		{"scalar gains object", func() *ModelNode { return NewLeafNode(String) },
-			func() *ModelNode { return NewObjectNode() }},
+			map[string]any{}},
 		{"object gains array", func() *ModelNode { return NewObjectNode() },
-			func() *ModelNode { return NewArrayNode(NewLeafNode(Integer)) }},
+			[]any{json.Number("5")}},
 		{"array gains object", func() *ModelNode { return NewArrayNode(NewLeafNode(Integer)) },
-			func() *ModelNode { return NewObjectNode() }},
+			map[string]any{}},
 		{"array gains scalar", func() *ModelNode { return NewArrayNode(NewLeafNode(Integer)) },
-			func() *ModelNode { return NewLeafNode(Integer) }},
+			json.Number("5")},
 		{"object gains scalar", func() *ModelNode { return NewObjectNode() },
-			func() *ModelNode { return NewLeafNode(Integer) }},
+			json.Number("5")},
 		{"object with children gains a scalar", func() *ModelNode {
 			o := NewObjectNode()
 			o.SetChild("k", NewLeafNode(Double))
 			return o
-		}, func() *ModelNode { return NewLeafNode(Integer) }},
+		}, json.Number("5")},
 		{"scalar gains an object with children", func() *ModelNode { return NewLeafNode(Integer) },
-			func() *ModelNode {
-				o := NewObjectNode()
-				o.SetChild("k", NewLeafNode(Double))
-				return o
-			}},
+			map[string]any{"k": json.Number("2.5")}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			old := NewObjectNode()
 			old.SetChild("f", c.existing())
-			in := NewObjectNode()
-			in.SetChild("f", c.incoming())
+			doc := map[string]any{"f": c.doc}
 
-			extended, err := Extend(old, in, spi.ChangeLevelStructural)
+			extended, err := Extend(old, doc, spi.ChangeLevelStructural)
 			if err != nil {
 				t.Fatalf("Extend: %v", err)
 			}
@@ -84,27 +81,19 @@ func TestExtendDiffApply_AddsABranchEndToEnd(t *testing.T) {
 // field first written as [], later holding object elements. Extend accepted it
 // at every level and Diff then said "kind change ... (not additive)".
 func TestExtendDiffApply_EmptyArrayThenObjectElements(t *testing.T) {
-	objElem := func() *ModelNode {
-		e := NewObjectNode()
-		e.SetChild("a", NewLeafNode(Integer))
-		return e
-	}
 	for _, c := range []struct {
-		name     string
-		incoming func() *ModelNode
+		name string
+		doc  []any // the document array for field "f"
 	}{
-		{"object elements", func() *ModelNode { return NewArrayNode(objElem()) }},
-		{"mixed object and scalar elements", func() *ModelNode {
-			return NewArrayNode(Merge(objElem(), NewLeafNode(String)))
-		}},
+		{"object elements", []any{map[string]any{"a": json.Number("5")}}},
+		{"mixed object and scalar elements", []any{map[string]any{"a": json.Number("5")}, "hello"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			old := NewObjectNode()
 			old.SetChild("f", NewArrayNode(NewLeafNode(Null))) // what Walk gives for []
-			in := NewObjectNode()
-			in.SetChild("f", c.incoming())
+			doc := map[string]any{"f": c.doc}
 
-			extended, err := Extend(old, in, spi.ChangeLevelArrayElements)
+			extended, err := Extend(old, doc, spi.ChangeLevelArrayElements)
 			if err != nil {
 				t.Fatalf("Extend: %v", err)
 			}
@@ -117,23 +106,18 @@ func TestExtendDiffApply_EmptyArrayThenObjectElements(t *testing.T) {
 // at TYPE and Diff could not express it.
 func TestExtendDiffApply_NullableMarkerGainsAContainer(t *testing.T) {
 	for _, c := range []struct {
-		name     string
-		incoming func() *ModelNode
+		name string
+		doc  any
 	}{
-		{"object", func() *ModelNode {
-			o := NewObjectNode()
-			o.SetChild("k", NewLeafNode(String))
-			return o
-		}},
-		{"array", func() *ModelNode { return NewArrayNode(NewLeafNode(String)) }},
+		{"object", map[string]any{"k": "x"}},
+		{"array", []any{"x"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			old := NewObjectNode()
 			old.SetChild("f", NewLeafNode(Null))
-			in := NewObjectNode()
-			in.SetChild("f", c.incoming())
+			doc := map[string]any{"f": c.doc}
 
-			extended, err := Extend(old, in, spi.ChangeLevelType)
+			extended, err := Extend(old, doc, spi.ChangeLevelType)
 			if err != nil {
 				t.Fatalf("promoting the marker keeps the TYPE contract; got: %v", err)
 			}
@@ -149,12 +133,9 @@ func TestExtendDiffApply_UnobservedElementArrayGainsObjectElements(t *testing.T)
 	old := NewObjectNode()
 	old.SetChild("f", NewArrayNode(nil))
 
-	elem := NewObjectNode()
-	elem.SetChild("a", NewLeafNode(Integer))
-	in := NewObjectNode()
-	in.SetChild("f", NewArrayNode(elem))
+	doc := map[string]any{"f": []any{map[string]any{"a": json.Number("5")}}}
 
-	extended, err := Extend(old, in, spi.ChangeLevelStructural)
+	extended, err := Extend(old, doc, spi.ChangeLevelStructural)
 	if err != nil {
 		t.Fatalf("Extend: %v", err)
 	}
@@ -166,10 +147,9 @@ func TestExtendDiffApply_UnobservedElementArrayGainsObjectElements(t *testing.T)
 func TestApply_AddKindBranchIsIdempotent(t *testing.T) {
 	old := NewObjectNode()
 	old.SetChild("f", NewLeafNode(String))
-	in := NewObjectNode()
-	in.SetChild("f", NewArrayNode(NewLeafNode(String)))
+	doc := map[string]any{"f": []any{"a"}}
 
-	extended, err := Extend(old, in, spi.ChangeLevelStructural)
+	extended, err := Extend(old, doc, spi.ChangeLevelStructural)
 	if err != nil {
 		t.Fatal(err)
 	}
