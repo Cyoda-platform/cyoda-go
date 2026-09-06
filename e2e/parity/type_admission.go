@@ -153,6 +153,19 @@ func RunTypeAdmissionHeldThenFound(t *testing.T, fixture BackendFixture) {
 		if len(residual) != 1 {
 			t.Errorf("[DOUBLE] < 1e300 must find the stored 2147483648; got %d hits", len(residual))
 		}
+
+		// §7(i) names evalBetween explicitly as one of the two stored-value-
+		// filter rewrite sites (alongside evalCompare) — this is changed
+		// behaviour, not the "expandBetween is already clean" operand-
+		// normalisation half of §7 that stays untouched.
+		between, err := c.SyncSearch(t, modelName, modelVersion,
+			`{"type":"simple","jsonPath":"$.amount","operatorType":"BETWEEN_INCLUSIVE","value":[2147483647,2147483649]}`)
+		if err != nil {
+			t.Fatalf("SyncSearch BETWEEN_INCLUSIVE: %v", err)
+		}
+		if len(between) != 1 {
+			t.Errorf("BETWEEN_INCLUSIVE [2147483647, 2147483649] must find the stored 2147483648; got %d hits", len(between))
+		}
 	})
 
 	t.Run("BIG_DECIMAL high scale", func(t *testing.T) {

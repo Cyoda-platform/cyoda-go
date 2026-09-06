@@ -171,7 +171,7 @@ func TestTypeAdmission_UnheldBelowTypeLevel_ThenWidensAtType(t *testing.T) {
 	if !strings.Contains(body, "VALIDATION_FAILED") {
 		t.Errorf("body must carry VALIDATION_FAILED; body: %s", body)
 	}
-	if !strings.Contains(body, "TYPE") {
+	if !strings.Contains(body, "requires TYPE level") {
 		t.Errorf("body must name the level that resolves it; body: %s", body)
 	}
 	after := exportModelE2E(t, model, 1)
@@ -299,13 +299,42 @@ func TestTypeAdmission_Search(t *testing.T) {
 		setupModelSampleWithWorkflow(t, model, `{"amount":10}`, noProcessorTypeAdmissionWorkflow("typeadm-int5-wf"))
 		createEntityE2E(t, model, 1, `{"amount":5}`)
 
-		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":5.0}`)
+		status, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":5.0}`)
+		if status != http.StatusOK {
+			t.Fatalf("EQUALS 5.0: expected 200, got %d", status)
+		}
 		if len(hits) != 1 {
 			t.Errorf("EQUALS 5.0 must find the stored 5; got %d hits", len(hits))
 		}
-		_, hits = directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"NOT_EQUAL","value":5.0}`)
+
+		status, hits = directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"NOT_EQUAL","value":5.0}`)
+		if status != http.StatusOK {
+			t.Fatalf("NOT_EQUAL 5.0: expected 200, got %d", status)
+		}
 		if len(hits) != 0 {
 			t.Errorf("NOT_EQUAL 5.0 must not match the stored 5; got %d hits", len(hits))
+		}
+
+		// The design's invariant restated as a NOT-wrapper: this is the
+		// exact case that inverts (§10's "NOT(EQUALS 5.0) and
+		// NOT(NOT_EQUAL 5.0) against a stored 5" row), not just NOT's
+		// wrapper mechanics — search_group_operator_not_test.go exercises
+		// the mechanics over a status field and never touches 5.0 against a
+		// stored 5.
+		status, hits = directSearch(t, model, 1, notCondition(`{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":5.0}`))
+		if status != http.StatusOK {
+			t.Fatalf("NOT(EQUALS 5.0): expected 200, got %d", status)
+		}
+		if len(hits) != 0 {
+			t.Errorf("NOT(EQUALS 5.0) must not match the stored 5; got %d hits", len(hits))
+		}
+
+		status, hits = directSearch(t, model, 1, notCondition(`{"type":"simple","jsonPath":"$.amount","operatorType":"NOT_EQUAL","value":5.0}`))
+		if status != http.StatusOK {
+			t.Fatalf("NOT(NOT_EQUAL 5.0): expected 200, got %d", status)
+		}
+		if len(hits) != 1 {
+			t.Errorf("NOT(NOT_EQUAL 5.0) must match the stored 5; got %d hits", len(hits))
 		}
 	})
 
@@ -314,7 +343,10 @@ func TestTypeAdmission_Search(t *testing.T) {
 		setupModelSampleWithWorkflow(t, model, `{"amount":10.5}`, noProcessorTypeAdmissionWorkflow("typeadm-double5-wf"))
 		createEntityE2E(t, model, 1, `{"amount":5}`)
 
-		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":5.000000000000000000}`)
+		status, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":5.000000000000000000}`)
+		if status != http.StatusOK {
+			t.Fatalf("EQUALS 5.000...0: expected 200, got %d", status)
+		}
 		if len(hits) != 1 {
 			t.Errorf("EQUALS 5.000...0 must find the stored 5 on a DOUBLE leaf; got %d hits", len(hits))
 		}
@@ -325,11 +357,18 @@ func TestTypeAdmission_Search(t *testing.T) {
 		setupModelSampleWithWorkflow(t, model, `{"amount":10.5}`, noProcessorTypeAdmissionWorkflow("typeadm-negzero-wf"))
 		createEntityE2E(t, model, 1, `{"amount":0}`)
 
-		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"NOT_EQUAL","value":-0.0}`)
+		status, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"NOT_EQUAL","value":-0.0}`)
+		if status != http.StatusOK {
+			t.Fatalf("NOT_EQUAL -0.0: expected 200, got %d", status)
+		}
 		if len(hits) != 0 {
 			t.Errorf("NOT_EQUAL -0.0 must not match a stored 0; got %d hits", len(hits))
 		}
-		_, hits = directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":0.000}`)
+
+		status, hits = directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":0.000}`)
+		if status != http.StatusOK {
+			t.Fatalf("EQUALS 0.000: expected 200, got %d", status)
+		}
 		if len(hits) != 1 {
 			t.Errorf("EQUALS 0.000 must match a stored 0; got %d hits", len(hits))
 		}
@@ -340,7 +379,10 @@ func TestTypeAdmission_Search(t *testing.T) {
 		setupModelSampleWithWorkflow(t, model, `{"amount":10}`, noProcessorTypeAdmissionWorkflow("typeadm-int-frac-wf"))
 		createEntityE2E(t, model, 1, `{"amount":13}`)
 
-		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":12.5}`)
+		status, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":12.5}`)
+		if status != http.StatusOK {
+			t.Fatalf("EQUALS 12.5: expected 200, got %d", status)
+		}
 		if len(hits) != 0 {
 			t.Errorf("no integer equals 12.5; got %d hits", len(hits))
 		}
@@ -351,9 +393,31 @@ func TestTypeAdmission_Search(t *testing.T) {
 		setupModelSampleWithWorkflow(t, model, `{"amount":10.5}`, noProcessorTypeAdmissionWorkflow("typeadm-ceilcmp-wf"))
 		createEntityE2E(t, model, 1, `{"amount":2147483648}`)
 
-		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"LESS_THAN","value":1e300}`)
+		status, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"LESS_THAN","value":1e300}`)
+		if status != http.StatusOK {
+			t.Fatalf("[DOUBLE] < 1e300: expected 200, got %d", status)
+		}
 		if len(hits) != 1 {
 			t.Errorf("[DOUBLE] < 1e300 must find the stored 2147483648 (the out-of-range NotNull residual); got %d hits", len(hits))
+		}
+	})
+
+	// §7(i) names evalBetween explicitly as one of the two stored-value-filter
+	// rewrite sites (alongside evalCompare) — this is changed behaviour, not
+	// the "expandBetween is already clean" operand-normalisation half of §7
+	// that stays untouched.
+	t.Run("[DOUBLE] BETWEEN_INCLUSIVE [2147483647, 2147483649] finds a stored 2147483648", func(t *testing.T) {
+		const model = "e2e-typeadm-search-between"
+		setupModelSampleWithWorkflow(t, model, `{"amount":10.5}`, noProcessorTypeAdmissionWorkflow("typeadm-between-wf"))
+		createEntityE2E(t, model, 1, `{"amount":2147483648}`)
+
+		status, hits := directSearch(t, model, 1,
+			`{"type":"simple","jsonPath":"$.amount","operatorType":"BETWEEN_INCLUSIVE","value":[2147483647,2147483649]}`)
+		if status != http.StatusOK {
+			t.Fatalf("BETWEEN_INCLUSIVE: expected 200, got %d", status)
+		}
+		if len(hits) != 1 {
+			t.Errorf("BETWEEN_INCLUSIVE [2147483647, 2147483649] must find the stored 2147483648; got %d hits", len(hits))
 		}
 	})
 
@@ -372,9 +436,7 @@ func TestTypeAdmission_Search(t *testing.T) {
 }
 
 // --- §10 rows not covered above: the DOUBLE ceiling and its gated
-// neighbours (magnitude, precision, scale). 9007199254740993 (the precision
-// boundary already at Task 12's exact value) is intentionally NOT repeated
-// here. ---
+// neighbours (magnitude, precision, scale). ---
 
 func TestTypeAdmission_DoubleBoundaries(t *testing.T) {
 	t.Run("value at the ceiling is held and then found", func(t *testing.T) {
@@ -386,7 +448,10 @@ func TestTypeAdmission_DoubleBoundaries(t *testing.T) {
 		after := exportModelE2E(t, model, 1)
 		assertModelUnchanged(t, before, after)
 
-		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":9.99999999999999e292}`)
+		status, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":9.99999999999999e292}`)
+		if status != http.StatusOK {
+			t.Fatalf("ceiling EQUALS: expected 200, got %d", status)
+		}
 		if len(hits) != 1 {
 			t.Errorf("the ceiling value must be findable; got %d hits", len(hits))
 		}
@@ -436,6 +501,13 @@ func TestTypeAdmission_DoubleBoundaries(t *testing.T) {
 func TestTypeAdmission_UnboundIntegerRefusesFraction(t *testing.T) {
 	const model = "e2e-typeadm-unbound-integer"
 	importModelSampleE2E(t, model, 1, `{"amount":170141183460469231731687303715884105728}`)
+
+	registered := exportModelE2E(t, model, 1)
+	registeredJSON, _ := json.Marshal(registered)
+	if !strings.Contains(string(registeredJSON), "UNBOUND_INTEGER") {
+		t.Fatalf("sample must register amount as UNBOUND_INTEGER: %s", registeredJSON)
+	}
+
 	lockModelE2E(t, model, 1)
 	setChangeLevelE2E(t, model, 1, "ARRAY_LENGTH")
 
@@ -463,7 +535,10 @@ func TestTypeAdmission_BigDecimalHighScale_HeldThenFound(t *testing.T) {
 	after := exportModelE2E(t, model, 1)
 	assertModelUnchanged(t, before, after)
 
-	_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":1.23456789012345678901234567890}`)
+	status, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":1.23456789012345678901234567890}`)
+	if status != http.StatusOK {
+		t.Fatalf("high-scale EQUALS: expected 200, got %d", status)
+	}
 	if len(hits) != 1 {
 		t.Errorf("a high-scale value held by BIG_DECIMAL must be findable; got %d hits", len(hits))
 	}
