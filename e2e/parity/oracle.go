@@ -2,8 +2,10 @@
 //
 // Deterministic in-memory oracles used by B parity tests. These
 // helpers produce the bytes that a byte-identical fold MUST return
-// for the named input sequence, computed via importer.Walk +
-// schema.Extend + exporter.SimpleViewExporter.Export. Backends
+// for the named input sequence, computed via importer.Walk (the
+// ImportModel seed only) + schema.Extend (every subsequent write, on the
+// raw document — the real entity-write ingress never walks a document
+// into a model first) + exporter.SimpleViewExporter.Export. Backends
 // matching these bytes satisfy B-I1 at the HTTP boundary.
 package parity
 
@@ -20,8 +22,9 @@ import (
 
 // expectedSimpleViewFromBodies computes the canonical SIMPLE_VIEW
 // bytes for a sequence of JSON bodies applied sequentially at
-// ChangeLevelStructural. The first body seeds the schema; each
-// subsequent body is Walk + Extend.
+// ChangeLevelStructural. The first body seeds the schema via Walk (the
+// ImportModel ingress); each subsequent body is Extend on the raw
+// document (the entity-write ingress, which never pre-walks).
 //
 // currentState is baked into the exporter output ("LOCKED" for
 // post-lock tests, "UNLOCKED" otherwise).
@@ -41,15 +44,20 @@ func expectedSimpleViewFromBodies(bodies []map[string]string, currentState strin
 		if err := dec.Decode(&parsed); err != nil {
 			return nil, fmt.Errorf("oracle: parse body %d: %w", i, err)
 		}
-		walked, err := importer.Walk(parsed)
-		if err != nil {
-			return nil, fmt.Errorf("oracle: walk body %d: %w", i, err)
-		}
 		if current == nil {
+			// Body 0 seeds the schema, mirroring the real ImportModel
+			// ingress (internal/domain/model/service.go), the one production
+			// caller of importer.Walk left after Task 8/9 — every subsequent
+			// write goes through schema.Extend with the raw document, never
+			// a pre-walked model.
+			walked, err := importer.Walk(parsed)
+			if err != nil {
+				return nil, fmt.Errorf("oracle: walk body %d: %w", i, err)
+			}
 			current = walked
 			continue
 		}
-		next, err := schema.Extend(current, walked, spi.ChangeLevelStructural)
+		next, err := schema.Extend(current, parsed, spi.ChangeLevelStructural)
 		if err != nil {
 			return nil, fmt.Errorf("oracle: extend body %d: %w", i, err)
 		}
@@ -78,15 +86,17 @@ func expectedSimpleViewFromSequence(n int, currentState string) ([]byte, error) 
 
 // expectedSimpleViewFromExtensions computes the canonical SIMPLE_VIEW
 // bytes for a sequence of arbitrary JSON-parsed values (e.g. produced by
-// gentree.GenValue). Each value is run through the same pipeline the
-// backend runs on a CreateEntity under a structural ChangeLevel:
+// gentree.GenValue). The first value seeds the schema via the ImportModel
+// ingress (importer.Walk); every subsequent value is run through the same
+// pipeline the backend runs on a CreateEntity under a structural
+// ChangeLevel:
 //
-//  1. importer.Walk           (handler.validateOrExtend)
-//  2. schema.Extend           (handler.validateOrExtend)
-//  3. schema.Diff             (handler.validateOrExtend)
-//  4. schema.Apply            (plugin's injected ApplyFunc on ExtendSchema)
+//  1. schema.Extend           (ingest.ValidateOrExtend, on the raw document —
+//     the entity-write ingress never pre-walks it into a model)
+//  2. schema.Diff             (ingest.ValidateOrExtend)
+//  3. schema.Apply            (plugin's injected ApplyFunc on ExtendSchema)
 //
-// The extension is accepted only when ALL four steps succeed. Any
+// The extension is accepted only when ALL three steps succeed. Any
 // earlier step failing → the schema is kept unchanged and the next
 // extension is attempted, mirroring the HTTP rollback on rejection.
 // The post-Apply node is used as the new current, mirroring the
@@ -100,13 +110,18 @@ func expectedSimpleViewFromExtensions(extensions []any, currentState string) ([]
 	var current *schema.ModelNode
 	accepted := make([]int, 0, len(extensions))
 	for i, ext := range extensions {
-		walked, err := importer.Walk(ext)
-		if err != nil {
-			// A Walk error means the extension is structurally malformed —
-			// the HTTP stack will reject it with the same root cause. Skip.
-			continue
-		}
 		if current == nil {
+			// Body 0 seeds the schema via the real ImportModel ingress
+			// (internal/domain/model/service.go), the one production caller
+			// of importer.Walk left after Task 8/9 — every subsequent write
+			// goes through schema.Extend with the raw document, never a
+			// pre-walked model. A Walk error here means the extension is
+			// structurally malformed for that ingress — the HTTP stack
+			// rejects it with the same root cause. Skip.
+			walked, err := importer.Walk(ext)
+			if err != nil {
+				continue
+			}
 			// Backend parity: ImportModel persists
 			// schema.Marshal(walked) and every subsequent read goes
 			// through schema.Unmarshal, so the in-memory ModelNode seen
@@ -127,10 +142,11 @@ func expectedSimpleViewFromExtensions(extensions []any, currentState string) ([]
 			accepted = append(accepted, i)
 			continue
 		}
-		extended, err := schema.Extend(current, walked, spi.ChangeLevelStructural)
+		extended, err := schema.Extend(current, ext, spi.ChangeLevelStructural)
 		if err != nil {
 			// Shape-incompatible at STRUCTURAL — oracle and backend both
-			// reject here. Keep current unchanged.
+			// reject here (the same call the real entity-write ingress
+			// makes, on the raw document). Keep current unchanged.
 			continue
 		}
 		// Backend parity: handler computes schema.Diff(current, extended)
