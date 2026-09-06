@@ -751,6 +751,82 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `errors.NOT_IMPLEMENTED_BY_BACKEND`, the OpenAPI `501` response and the
   documented code list all go with it.
 
+- **A field holds a value when its declared type admits it — a direct,
+  per-value test — not when a value's classified label happens to widen into
+  what the field declares.** Ingestion used to compute a value's own type
+  label (`INTEGER`, `LONG`, a temporal subtype, …) and ask whether that label
+  was assignable to a declared type; the answer could disagree with what
+  search can find, because search classifies the *stored* value the same way
+  and the two classifications did not always land on the same side of the
+  line. The write path now walks the document against the stored model one
+  value at a time and asks each declared type's own admission test directly,
+  and the search kernel's stored-value filter (`evalCompare`, `evalBetween`)
+  now defers to that same test — so a value that would not be admitted on
+  write is never matched by a comparison at read time either, and a value
+  that is held is always findable. See `docs/numeric-classification.md` and
+  `docs/cloud-parity/numeric-type-admission.md`.
+
+  - **A `DOUBLE` field now accepts a whole number past 2³¹ without
+    widening the model.** `2147483648` (ten digits, exactly representable)
+    is held by `DOUBLE` as it stands; only a value needing more than 15
+    significant digits — `9007199254740993`, for instance — or a scale past
+    292 still forces a type change. The old rule judged a value by its
+    classified label (`LONG`, whose 2⁶³ range exceeds `DOUBLE`'s 53-bit
+    mantissa) and refused every `LONG`-labelled value on that basis alone,
+    which refused `2147483648` along with values that genuinely cannot be
+    held. The new rule judges the value's own precision and scale, which is
+    the actual boundary the mantissa argument was about.
+
+  - **A `STRING` field now accepts a date- or timestamp-shaped string
+    without changing the model, and an entity write no longer learns a
+    temporal subtype for a text-declared field.** Writing `"2026-03-01"` to
+    a field declared `STRING` used to widen the field to also declare
+    `LOCAL_DATE`; it is now held by `STRING` as it stands, with no schema
+    change. A field additionally declared as a temporal type still requires
+    an exact classification match to hold a value under that type (a
+    `ZONED_DATE_TIME` field does not hold a bare year, a `LOCAL_DATE_TIME`
+    field does not hold a string carrying a UTC offset). Registration is
+    unchanged and remains the only way a field acquires a temporal type:
+    importing sample data that shows both a plain and a date-shaped string
+    still yields a field declared both `STRING` and the temporal type.
+
+  - **`EQUALS 5.0` now finds a stored `5`; `NOT_EQUAL 5.0` no longer wrongly
+    matches it.** The comparison operand's trailing zeros are now stripped
+    once, at the point the operand is parsed, instead of only on the
+    integer side of the fold — so `EQUALS 5.000000000000000000` against a
+    `DOUBLE` leaf holding `5` now matches, and `NOT_EQUAL -0.0` against a
+    leaf holding `0` no longer wrongly matches. This closes the same defect
+    the stored-value filter fix above closes, on the operand side rather
+    than the stored side.
+
+  - **Numeric-leaf model folding is order-dependent under concurrent
+    extension, and that is accepted.** Today's fold skips a value only when
+    its classified *label* is already absorbed by the declared set, which is
+    commutative — arrival order never mattered. The new rule skips a value
+    only when the declared set already *admits* it, which is not
+    commutative: whether a later write needs permission at all can now
+    depend on what an earlier concurrent write, or a cross-node gossip
+    window, already recorded. Two writers each starting from a leaf declared
+    `[INTEGER]` — one applying `2147483648` then `12.5`, the other `12.5`
+    then `2147483648` — can converge on different declared sets
+    (`[UNBOUND_DECIMAL]` versus a leaf that stayed `[DOUBLE]`), where before
+    both orders converged identically. Byte-identical convergence remains
+    the contract for structural extension — new fields, new kinds, array
+    width, the nullable marker — and is unaffected. For numeric- and
+    temporal-leaf widening, the property that replaces byte-identical
+    convergence is: **every reachable fold is monotone and admits every
+    value that was written.** No write is ever lost and no fold ever
+    narrows; what varies with history and concurrency is only how widely a
+    *future*, not-yet-written value is admitted without a schema-change
+    permission.
+
+  - **An invalid-field-name diagnostic now spells an array hop the same way
+    on both doors that establish a model's field set.** Sample-data import
+    said `[*]`; entity-write schema extension already said `[]`. Both now
+    say `[]`, since both run the same document walk. A conformance fix, not
+    a new contract — see `docs/cloud-parity/model-field-name-grammar.md`,
+    which already documented `[]` as the intended spelling.
+
 ### Added
 
 - **`STORAGE_UNAVAILABLE` — 503, retryable.** Raised when the pool cannot supply a
@@ -1106,7 +1182,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   The relaxation is bounded by the lattice, not by "whole number": past 2³¹ a
   value classifies `LONG`, `LONG → DOUBLE` is not a widening (2⁶³ exceeds
   `DOUBLE`'s 53-bit mantissa), and that write remains a type change that
-  widens the leaf to `UNBOUND_DECIMAL`.
+  widens the leaf to `UNBOUND_DECIMAL`. (A later `### Breaking` entry above
+  supersedes this closing paragraph: the label-based lattice this entry
+  describes is replaced by a per-value admission test, and a value past 2³¹
+  — `2147483648` included — is held by `DOUBLE` as it stands. Only a value
+  needing more than 15 significant digits, such as `9007199254740993`,
+  remains a type change.)
 
 - **memory and sqlite: direct writes stamp their submit time under the same
   monotonic floor commits use, so a write cannot stamp below a snapshot
@@ -1717,6 +1798,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   grouped stats records nothing in a transaction, matching sqlite and postgres.
   `GetAll` and `GetPage` also refuse a committed transaction's context, the
   guard sqlite already carried on every in-transaction entry point.
+
+### Known limitations
+
+- **`ARRAY_LENGTH` is not enforceable end to end.** An array width change is
+  only ever recorded against a stored array whose observed width is greater
+  than zero, and the wire form a loaded model is built from carries no
+  width — so every model reconstructed from storage has `MaxWidth() == 0` on
+  every array branch, and an `ARRAY_LENGTH`-gated width increase is never
+  actually charged. Whether to persist observed widths, or to retire the
+  `ARRAY_LENGTH` level, is an open decision and not part of this change.
 
 ## [0.8.3] — 2026-07-27
 
