@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -54,19 +53,15 @@ func TestAxis2KindMatrix(t *testing.T) {
 	for _, c := range cells {
 		c := c
 		t.Run(c.Name, func(t *testing.T) {
-			incomingNode, err := importer.Walk(c.Value)
-			if err != nil {
-				t.Fatalf("Walk: %v", err)
-			}
 			switch c.Action {
 			case "roundtrip":
-				extended, err := schema.Extend(c.Old, incomingNode, c.Level)
+				extended, err := schema.Extend(c.Old, c.Value, c.Level)
 				if err != nil {
 					t.Fatalf("Extend: %v", err)
 				}
 				assertRoundTrip(t, c.Old, extended, c.Name)
 			case "extendContract":
-				extended, err := schema.Extend(c.Old, incomingNode, c.Level)
+				extended, err := schema.Extend(c.Old, c.Value, c.Level)
 				if err != nil {
 					// Reject is an acceptable Extend-contract outcome;
 					// the contract is "no partial mutation".
