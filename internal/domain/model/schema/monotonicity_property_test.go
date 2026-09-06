@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
@@ -31,11 +30,7 @@ func TestMonotonicityDirect(t *testing.T) {
 				t.Skipf("doc not valid against base; skipping")
 			}
 			newDoc := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
-			newNode, err := importer.Walk(newDoc)
-			if err != nil {
-				t.Fatal(err)
-			}
-			extended, err := schema.Extend(base, newNode, cfg.TargetLevel)
+			extended, err := schema.Extend(base, newDoc, cfg.TargetLevel)
 			if err != nil {
 				t.Skipf("Extend rejected: %v", err)
 			}
@@ -67,11 +62,7 @@ func TestMonotonicityDual(t *testing.T) {
 			r := gentree.NewRNG(seed)
 			base := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
 			newDoc := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
-			newNode, err := importer.Walk(newDoc)
-			if err != nil {
-				t.Fatal(err)
-			}
-			extended, err := schema.Extend(base, newNode, cfg.TargetLevel)
+			extended, err := schema.Extend(base, newDoc, cfg.TargetLevel)
 			if err != nil {
 				t.Skipf("Extend rejected: %v", err)
 			}

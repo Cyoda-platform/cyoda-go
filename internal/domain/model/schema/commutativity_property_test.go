@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
@@ -29,19 +28,11 @@ func TestCommutativityPaired(t *testing.T) {
 			incomingA := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
 			incomingB := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
 
-			nodeA, err := importer.Walk(incomingA)
-			if err != nil {
-				t.Fatalf("Walk A: %v", err)
-			}
-			nodeB, err := importer.Walk(incomingB)
-			if err != nil {
-				t.Fatalf("Walk B: %v", err)
-			}
-			extA, err := schema.Extend(base, nodeA, cfg.TargetLevel)
+			extA, err := schema.Extend(base, incomingA, cfg.TargetLevel)
 			if err != nil {
 				t.Skipf("Extend A rejected, skipping seed: %v", err)
 			}
-			extB, err := schema.Extend(base, nodeB, cfg.TargetLevel)
+			extB, err := schema.Extend(base, incomingB, cfg.TargetLevel)
 			if err != nil {
 				t.Skipf("Extend B rejected, skipping seed: %v", err)
 			}
