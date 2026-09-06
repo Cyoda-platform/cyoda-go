@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -20,12 +21,9 @@ func TestExtend_ScalarPathGainsAnObjectBranch(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("f0", NewLeafNode(Integer))
 
-	incoming := NewObjectNode()
-	incomingF0 := NewObjectNode()
-	incomingF0.SetChild("k0", NewLeafNode(Double))
-	incoming.SetChild("f0", incomingF0)
+	doc := map[string]any{"f0": map[string]any{"k0": json.Number("2.5")}}
 
-	assertDeclaresBothKinds(t, existing, incoming, "f0")
+	assertDeclaresBothKinds(t, existing, doc, "f0")
 }
 
 func TestExtend_ObjectPathGainsAScalarBranch(t *testing.T) {
@@ -34,20 +32,19 @@ func TestExtend_ObjectPathGainsAScalarBranch(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("f0", existingF0)
 
-	incoming := NewObjectNode()
-	incoming.SetChild("f0", NewLeafNode(Integer))
+	doc := map[string]any{"f0": json.Number("42")}
 
-	assertDeclaresBothKinds(t, existing, incoming, "f0")
+	assertDeclaresBothKinds(t, existing, doc, "f0")
 }
 
 // assertDeclaresBothKinds checks that the extension is accepted at STRUCTURAL
 // and that the named child ends up declaring both kinds. That the delta then
 // replays to exactly this model — the property the original rejection was
 // protecting — is asserted end to end in add_kind_branch_test.go.
-func assertDeclaresBothKinds(t *testing.T, existing, incoming *ModelNode, child string) {
+func assertDeclaresBothKinds(t *testing.T, existing *ModelNode, doc map[string]any, child string) {
 	t.Helper()
 
-	extended, err := Extend(existing, incoming, spi.ChangeLevelStructural)
+	extended, err := Extend(existing, doc, spi.ChangeLevelStructural)
 	if err != nil {
 		t.Fatalf("Extend at STRUCTURAL: %v", err)
 	}
