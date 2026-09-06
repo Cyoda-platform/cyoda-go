@@ -101,6 +101,24 @@ fractional and drops the integer comparison entirely.
 A JSON number is not a string and a JSON string is not a number, so `STRING`
 does not become a universal sink.
 
+Two consequences worth stating rather than leaving a reader to infer.
+
+`CHARACTER`, `UUID_TYPE`, `TIME_UUID_TYPE` and `BYTE_ARRAY` never appear in a
+declared set: classification never produces them from JSON, and sample-data
+import is the only way a model is built. So the string row's silence about them
+is not a gap — a leaf declaring one cannot exist. (The search kernel does handle
+`CHARACTER` and `UUID_TYPE` on the stored side, an asymmetry that is harmless
+only because it is unreachable.)
+
+A leaf that declares `STRING` will no longer learn a temporal subtype at
+ingestion. Today a registration-produced `{STRING, LOCAL_DATE}` leaf that
+receives `"2026"` grows to include `YEAR`; under §4 it stays as it is, and that
+value is then matchable lexically through the `STRING` branch but not by a
+temporal predicate. That is the intended trade — the field declares text, and a
+write does not silently give it new search semantics — but it is a behaviour
+change, and §8's registration path remains the way a field acquires temporal
+types.
+
 The invariant this establishes, which nothing in the system claims today:
 
 > **The field holds it ⟹ the model is unchanged ⟹ the value is findable
