@@ -86,7 +86,7 @@ func TestPlanQuery_ComparisonOps_String(t *testing.T) {
 			if err != nil {
 				t.Fatalf("planQuery: %v", err)
 			}
-			want := "(doc->>'name' IS NOT NULL AND doc->>'name' " + tt.sqlOp + " $1)"
+			want := "(doc->>'name' IS NOT NULL AND (doc->>'name') COLLATE \"C\" " + tt.sqlOp + " $1)"
 			if plan.where != want {
 				t.Errorf("where:\n  got  %s\n  want %s", plan.where, want)
 			}
@@ -279,7 +279,7 @@ func TestPlanQuery_Between_String(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planQuery: %v", err)
 	}
-	wantWhere := "(doc->>'name' IS NOT NULL AND doc->>'name' BETWEEN $1 AND $2)"
+	wantWhere := "(doc->>'name' IS NOT NULL AND (doc->>'name') COLLATE \"C\" BETWEEN $1 AND $2)"
 	if plan.where != wantWhere {
 		t.Errorf("where:\n  got  %s\n  want %s", plan.where, wantWhere)
 	}
