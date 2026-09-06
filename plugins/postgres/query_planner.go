@@ -832,7 +832,13 @@ func sqlOpForTemporal(op spi.FilterOp) string {
 
 // orderingOp emits a comparison clause for Gt/Lt/Gte/Lte. Numeric values
 // route through cyoda_try_float8 with a ::float8 cast on the placeholder;
-// string values use plain text comparison.
+// string values use plain text comparison under COLLATE "C" — byte-order
+// comparison, mirroring orderByFieldExpr's ORDER BY collation (searcher.go)
+// so this WHERE-clause comparison agrees with both it and the kernel's
+// strings.Compare. Without it, a narrowing WHERE range under a non-C
+// database collation can disagree with the kernel's full-filter re-check
+// and drop a row the kernel would have matched — unrecoverably, since a row
+// the WHERE excludes is never fetched for the re-check to save.
 func orderingOp(f spi.Filter, sqlOp string, counter *int) (string, []any) {
 	numeric := isNumericValue(f.Value)
 	col := orderExpr(f, numeric)
@@ -840,7 +846,7 @@ func orderingOp(f spi.Filter, sqlOp string, counter *int) (string, []any) {
 	if numeric {
 		return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s::float8)", col, col, sqlOp, p), []any{numericArg(f.Value)}
 	}
-	return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s)", col, col, sqlOp, p), []any{textArg(f.Value)}
+	return fmt.Sprintf("(%s IS NOT NULL AND (%s) COLLATE \"C\" %s %s)", col, col, sqlOp, p), []any{textArg(f.Value)}
 }
 
 // escapeLike escapes LIKE wildcards (%, _, \) in a user-provided value
