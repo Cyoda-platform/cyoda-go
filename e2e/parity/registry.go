@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 262 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 269 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -224,6 +224,18 @@ var allTests = []NamedTest{
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
 	{"SchemaNumericFoldCarveout", RunSchemaNumericFoldCarveout},
+
+	// Type admission (design §4-9): one traversal judging each value against
+	// the stored model, rather than converting the document to a throwaway
+	// model and comparing labels. See type_admission.go.
+	{"TypeAdmissionHeldValueUnchanged", RunTypeAdmissionHeldValueUnchanged},
+	{"TypeAdmissionHeldThenFound", RunTypeAdmissionHeldThenFound},
+	{"TypeAdmissionDoubleCeiling", RunTypeAdmissionDoubleCeiling},
+	{"TypeAdmissionMixedKindArray", RunTypeAdmissionMixedKindArray},
+	{"TypeAdmissionSearchEqualsTrailingZeros", RunTypeAdmissionSearchEqualsTrailingZeros},
+	{"TypeAdmissionRegistrationYieldsStringLocalDate", RunTypeAdmissionRegistrationYieldsStringLocalDate},
+	{"TypeAdmissionStrictNeverMorePermissiveThanArrayLength", RunTypeAdmissionStrictNeverMorePermissiveThanArrayLength},
+
 	{"ModelFieldNameRejected", RunModelFieldNameRejected},
 	{"ModelKindEnforcementRejected", RunModelKindEnforcementRejected},
 	{"ModelKindBranchExtension", RunModelKindBranchExtension},
