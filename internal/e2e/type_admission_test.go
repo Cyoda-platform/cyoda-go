@@ -320,7 +320,7 @@ func TestTypeAdmission_Search(t *testing.T) {
 		}
 	})
 
-	t.Run("NOT_EQUAL -0.0 does not match a stored 0", func(t *testing.T) {
+	t.Run("NOT_EQUAL -0.0 does not match a stored 0; EQUALS 0.000 does", func(t *testing.T) {
 		const model = "e2e-typeadm-search-negzero"
 		setupModelSampleWithWorkflow(t, model, `{"amount":10.5}`, noProcessorTypeAdmissionWorkflow("typeadm-negzero-wf"))
 		createEntityE2E(t, model, 1, `{"amount":0}`)
@@ -328,6 +328,21 @@ func TestTypeAdmission_Search(t *testing.T) {
 		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"NOT_EQUAL","value":-0.0}`)
 		if len(hits) != 0 {
 			t.Errorf("NOT_EQUAL -0.0 must not match a stored 0; got %d hits", len(hits))
+		}
+		_, hits = directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":0.000}`)
+		if len(hits) != 1 {
+			t.Errorf("EQUALS 0.000 must match a stored 0; got %d hits", len(hits))
+		}
+	})
+
+	t.Run("EQUALS 12.5 still finds nothing on INTEGER", func(t *testing.T) {
+		const model = "e2e-typeadm-search-int-frac"
+		setupModelSampleWithWorkflow(t, model, `{"amount":10}`, noProcessorTypeAdmissionWorkflow("typeadm-int-frac-wf"))
+		createEntityE2E(t, model, 1, `{"amount":13}`)
+
+		_, hits := directSearch(t, model, 1, `{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":12.5}`)
+		if len(hits) != 0 {
+			t.Errorf("no integer equals 12.5; got %d hits", len(hits))
 		}
 	})
 

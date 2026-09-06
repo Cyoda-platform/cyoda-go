@@ -141,6 +141,18 @@ func RunTypeAdmissionHeldThenFound(t *testing.T, fixture BackendFixture) {
 		if len(hits) != 1 {
 			t.Errorf("2147483648 was held by DOUBLE; it must be findable; got %d hits", len(hits))
 		}
+
+		// The out-of-range NotNull residual (§7(i)): the stored-value filter
+		// must judge 2147483648 the same way admission did, or a comparison
+		// that should match it silently drops the row.
+		residual, err := c.SyncSearch(t, modelName, modelVersion,
+			`{"type":"simple","jsonPath":"$.amount","operatorType":"LESS_THAN","value":1e300}`)
+		if err != nil {
+			t.Fatalf("SyncSearch LESS_THAN: %v", err)
+		}
+		if len(residual) != 1 {
+			t.Errorf("[DOUBLE] < 1e300 must find the stored 2147483648; got %d hits", len(residual))
+		}
 	})
 
 	t.Run("BIG_DECIMAL high scale", func(t *testing.T) {
