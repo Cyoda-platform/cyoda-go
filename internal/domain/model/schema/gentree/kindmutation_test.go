@@ -1,10 +1,10 @@
 package gentree_test
 
 import (
+	"errors"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
@@ -24,13 +24,15 @@ func TestGenExtensionPair_ProducesKindConflicts(t *testing.T) {
 		old := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
 		v := gentree.GenExtensionPair(r, old, spi.ChangeLevelStructural, cfg)
 
-		node, err := importer.Walk(v)
+		extended, err := schema.Extend(old, v, spi.ChangeLevelStructural)
 		if err != nil {
-			continue
-		}
-		extended, err := schema.Extend(old, node, spi.ChangeLevelStructural)
-		if err != nil {
-			t.Fatalf("seed %d: STRUCTURAL refuses nothing a walk can produce; got: %v", seed, err)
+			if errors.Is(err, schema.ErrInvalidFieldName) {
+				// The generator occasionally proposes a field name the wire
+				// jsonPath grammar cannot address; skip it, same carve-out the
+				// old importer.Walk pre-filter gave this property.
+				continue
+			}
+			t.Fatalf("seed %d: STRUCTURAL refuses nothing a well-formed document can produce; got: %v", seed, err)
 		}
 		delta, err := schema.Diff(old, extended)
 		if err != nil {
