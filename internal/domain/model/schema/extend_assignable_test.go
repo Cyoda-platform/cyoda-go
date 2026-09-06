@@ -24,10 +24,9 @@ func TestExtend_AssignableScalar_IsNotATypeChange(t *testing.T) {
 		t.Run(string(level), func(t *testing.T) {
 			existing := schema.NewObjectNode()
 			existing.SetChild("amount", schema.NewLeafNode(schema.Double))
-			incoming := schema.NewObjectNode()
-			incoming.SetChild("amount", schema.NewLeafNode(schema.Integer))
+			doc := map[string]any{"amount": num("42")}
 
-			result, err := schema.Extend(existing, incoming, level)
+			result, err := schema.Extend(existing, doc, level)
 			if err != nil {
 				t.Fatalf("a whole number is assignable to a DOUBLE leaf, it must not need permission: %v", err)
 			}
@@ -39,18 +38,18 @@ func TestExtend_AssignableScalar_IsNotATypeChange(t *testing.T) {
 	}
 }
 
-// The converse must keep costing what it costs: DOUBLE is not assignable to
-// an INTEGER-declared leaf, so it is a genuine type change and stays gated.
+// The converse must keep costing what it costs: a value with a fractional
+// part is not assignable to an INTEGER-declared leaf, so it is a genuine
+// type change and stays gated.
 func TestExtend_NonAssignableScalar_StillRequiresTypeLevel(t *testing.T) {
 	existing := schema.NewObjectNode()
 	existing.SetChild("count", schema.NewLeafNode(schema.Integer))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("count", schema.NewLeafNode(schema.Double))
+	doc := map[string]any{"count": num("1.5")}
 
-	if _, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength); err == nil {
-		t.Fatal("DOUBLE into an INTEGER leaf widens the declared set; it must stay a gated type change")
+	if _, err := schema.Extend(existing, doc, spi.ChangeLevelArrayLength); err == nil {
+		t.Fatal("a fractional value into an INTEGER leaf widens the declared set; it must stay a gated type change")
 	}
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelType)
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelType)
 	if err != nil {
 		t.Fatalf("TYPE level permits the widening: %v", err)
 	}
@@ -66,10 +65,9 @@ func TestExtend_NonAssignableScalar_StillRequiresTypeLevel(t *testing.T) {
 func TestExtend_AssignableArrayElement_IsNotATypeChange(t *testing.T) {
 	existing := schema.NewObjectNode()
 	existing.SetChild("amounts", schema.NewArrayNode(schema.NewLeafNode(schema.Double)))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("amounts", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
+	doc := map[string]any{"amounts": []any{num("42")}}
 
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("a whole number is assignable to a DOUBLE element: %v", err)
 	}
@@ -80,19 +78,18 @@ func TestExtend_AssignableArrayElement_IsNotATypeChange(t *testing.T) {
 }
 
 // A guard, not a regression probe: this passed before the gate changed and
-// must keep passing. A null-only observation is the NULLABLE MARKER — it
-// declares no kind at all, so it never reaches the leaf gate, and the type
-// sets the gate compares can never carry NULL beside a concrete type
-// (TypeSet.Add drops it). The path a reader might expect — NULL compared
-// against DOUBLE inside the leaf branch — is unreachable, and null costs
-// nothing for that reason rather than through assignability.
+// must keep passing. A JSON null against a leaf that already declares a
+// scalar admits it directly (Admit's null case: model.Scalar() != nil) and
+// records no change at all, so it never reaches the leaf gate, and the level
+// comparison the old test's incoming-Null-leaf label implied is unreachable
+// under the new rule for exactly this reason — null costs nothing here
+// because the branch is never entered, not through assignability.
 func TestExtend_NullIntoDeclaredScalar_CostsNothing(t *testing.T) {
 	existing := schema.NewObjectNode()
 	existing.SetChild("amount", schema.NewLeafNode(schema.Double))
-	incoming := schema.NewObjectNode()
-	incoming.SetChild("amount", schema.NewLeafNode(schema.Null))
+	doc := map[string]any{"amount": nil}
 
-	result, err := schema.Extend(existing, incoming, spi.ChangeLevelArrayLength)
+	result, err := schema.Extend(existing, doc, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("null is assignable to any declared type: %v", err)
 	}
