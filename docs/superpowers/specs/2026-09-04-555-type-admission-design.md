@@ -335,10 +335,12 @@ against, and §11 budgets for it:
   whole parity suite, so this is load-bearing, not incidental.
 - `e2e/parity/schema_extension_property.go`, which runs through that oracle.
 
-### Open question: the fold becomes order-dependent
+### The fold becomes order-dependent, and that is accepted
 
-**This needs a ruling before implementation; it is the one thing in this design
-that is not settled.**
+**Settled. The order-dependence is accepted and the convergence invariant is
+restated to what actually holds.** What follows is the reasoning, kept because
+the invariant it retires was pinned with "do not loosen the assertion" and a
+future reader is owed the argument.
 
 Today the gate skips a value only when its label is already absorbed by the
 declared set, and `Merge`/`CollapseNumeric` is commutative over the label
@@ -382,13 +384,22 @@ the same defect, since a held value would still have to contribute its label.
 Judging by label, as today, is the status quo and is the defect. Order
 dependence appears to be intrinsic to "held ⟹ the model does not change".
 
-The recommendation is therefore to accept it and say so precisely: keep the
-byte-identity invariant for structural extension, where it still holds, and
-carve out numeric- and temporal-leaf widening with the weaker property that
-actually holds — every fold is monotone and admits every written value. That
-carve-out has to be written into
-`RunSchemaExtensionConcurrentConvergence`'s contract, and a scenario added that
-exercises the numeric case rather than leaving it uncovered.
+**The decision.** Accept the order-dependence and say so precisely:
+
+- **Byte-identical convergence remains the contract for structural extension** —
+  new fields, new kinds, array width, the nullable marker. It still holds there,
+  and `RunSchemaExtensionConcurrentConvergence` keeps asserting it for the
+  shapes it already exercises.
+- **Numeric- and temporal-leaf widening is carved out**, with the weaker
+  property that actually holds: every reachable fold is monotone, and every
+  reachable fold admits every value that was written. That is the property the
+  carve-out must assert — it is not "anything goes", and a fold that lost a
+  written value would still be a defect.
+
+Both halves have to be written into that scenario's doc comment, which currently
+says the opposite, and the carve-out needs its own parity scenario exercising
+the numeric case. Leaving the numeric case uncovered would let the suite keep
+passing while saying nothing, which is how this got missed in the first place.
 
 ### Registration folds in — against an empty model, per document
 
@@ -727,8 +738,11 @@ touches `schema.Extend` or `ValidateOrExtend`.
 3. Registration becomes the same traversal against an empty model, keeping the
    per-document and per-element merge discipline (§6, §8).
 4. §4's admission test, calling §5's shared SPI predicate.
-5. Resolve §6's open question, and write whichever answer is chosen into
-   `e2e/parity/schema_concurrent_convergence.go`'s contract.
+5. Restate the convergence contract per §6: keep byte-identity for structural
+   extension in `e2e/parity/schema_concurrent_convergence.go`, rewrite its doc
+   comment to carve out numeric- and temporal-leaf widening, and add a parity
+   scenario asserting the carve-out's property — monotone, and admits every
+   written value.
 6. Update the three inverting assertions (§10), rewriting the unit test's doc
    comment to §5's reasoning.
 7. Register every new parity scenario in `e2e/parity/registry.go` **and** bump
