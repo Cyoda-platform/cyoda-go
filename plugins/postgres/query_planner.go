@@ -661,6 +661,18 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		// as a numeric-looking string (e.g. "30") coerces and matches — intentional, matching
 		// sqlite's type-coercing comparison and the S4 numeric-equality intent; string operands
 		// use plain text comparison.
+		//
+		// No COLLATE "C" needed here (unlike orderingOp/BETWEEN below): "="/"!="
+		// don't order, they test identity, and every collation this plugin can
+		// produce — including one created with LOCALE_PROVIDER 'icu' — is
+		// DETERMINISTIC (Postgres's default; nondeterministic collations, which
+		// can equate byte-distinct strings, require opting in with `deterministic
+		// = false` at CREATE COLLATION/DATABASE time, which nothing here does). A
+		// deterministic collation still tie-breaks on codepoint identity, so its
+		// notion of "equal" is exactly byte equality — the same one the kernel's
+		// Go `==` uses. Only the ordering operators (Gt/Lt/Gte/Lte, BETWEEN) are
+		// collation-sensitive, because ICU orders letters differently from byte
+		// value even where it still calls two byte-distinct strings unequal.
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
 			p := nextPlaceholder(counter)
@@ -670,6 +682,8 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		p := nextPlaceholder(counter)
 		return fmt.Sprintf("(%s IS NOT NULL AND %s = %s)", col, col, p), []any{textArg(f.Value)}
 	case spi.FilterNe:
+		// See FilterEq above: no COLLATE "C" needed — "!=" is equality's
+		// negation, not an ordering comparison.
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
 			p := nextPlaceholder(counter)
@@ -725,6 +739,11 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		// (FilterBetween) the inclusive SQL is a strict superset (kernel re-check
 		// enforces the open bounds). float8 rounding is monotonic, so a value the
 		// kernel matches always falls within the float8 [lo,hi] the SQL tests.
+		//
+		// BETWEEN is an ordering comparison (col >= lo AND col <= hi under the
+		// hood), so the text branch needs COLLATE "C" for the same reason
+		// orderingOp does: byte order, matching the kernel's strings.Compare and
+		// orderByFieldExpr's ORDER BY collation (searcher.go).
 		if len(f.Values) >= 2 {
 			numeric := isNumericValue(f.Values[0]) && isNumericValue(f.Values[1])
 			col := orderExpr(f, numeric)
@@ -734,7 +753,7 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 				return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s::float8 AND %s::float8)",
 					col, col, p1, p2), []any{numericArg(f.Values[0]), numericArg(f.Values[1])}
 			}
-			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s AND %s)",
+			return fmt.Sprintf("(%s IS NOT NULL AND (%s) COLLATE \"C\" BETWEEN %s AND %s)",
 				col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
 		}
 		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
