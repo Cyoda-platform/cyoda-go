@@ -135,7 +135,7 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 		// A body that is neither a document nor a collection of documents is
 		// the same class of violation: it parsed, and the remedy is to send a
 		// different shape.
-		if errors.Is(err, importer.ErrInvalidFieldName) || errors.Is(err, importer.ErrNonDocumentSampleData) {
+		if errors.Is(err, schema.ErrInvalidFieldName) || errors.Is(err, importer.ErrNonDocumentSampleData) {
 			appErr := common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 			appErr.Props = map[string]any{
 				"entityName":    input.EntityName,

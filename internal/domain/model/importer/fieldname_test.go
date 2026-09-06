@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
@@ -73,7 +74,7 @@ func TestWalk_RejectsUnaddressableFieldName(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Walk(%s) must reject an unaddressable field name", c.doc)
 			}
-			if !errors.Is(err, importer.ErrInvalidFieldName) {
+			if !errors.Is(err, schema.ErrInvalidFieldName) {
 				t.Fatalf("Walk(%s) error must wrap ErrInvalidFieldName, got %v", c.doc, err)
 			}
 			for _, want := range c.wantIn {

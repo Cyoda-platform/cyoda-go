@@ -2,6 +2,8 @@ package schema_test
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -530,9 +532,12 @@ func TestAdmit_WrongKindContainerDescribesTheValue(t *testing.T) {
 // An empty container is still an observation of its kind. importer.Walk has
 // always recorded an empty object/array as declaring that kind with no
 // content (walkObject's bare NewObjectNode(), walkArray's
-// NewArrayNode(NewLeafNode(Null))); describe must agree, or a brand-new field
-// whose only observed value is {} or [] would silently vanish from the
-// derived model instead of declaring an (empty) branch.
+// NewArrayNode(NewLeafNode(Null))); Describe must produce the identical
+// shape, or a brand-new field whose only observed value is {} or [] would
+// either vanish from the derived model or persist as bytes that differ from
+// what importer.Walk would have written for the same document — breaking the
+// parity oracle's byte-identity and dropping the $.tags[*] descriptor
+// (Types: [NULL], IsArray: true) that {"tags":[]} produces today.
 func TestAdmit_EmptyContainerFieldStillDeclaresItsKind(t *testing.T) {
 	t.Run("empty object", func(t *testing.T) {
 		overlay, changes, err := schema.Admit(schema.NewObjectNode(), map[string]any{"a": map[string]any{}})
@@ -560,5 +565,105 @@ func TestAdmit_EmptyContainerFieldStillDeclaresItsKind(t *testing.T) {
 		if child == nil || child.Array() == nil {
 			t.Fatalf("field %q must declare an (empty) array branch, got %v", "a", child)
 		}
+		// Not just "an array branch" — the SAME element walkArray gives an
+		// empty array: a non-nil, Nullable leaf declaring exactly [NULL].
+		// NewArrayNode(nil) (a declared-but-unobserved element) is a
+		// different wire shape and drops the $.a[*] field descriptor.
+		elem := child.Array().Element()
+		if elem == nil {
+			t.Fatal("empty array's element must be NewLeafNode(Null), not nil")
+		}
+		if !elem.Nullable() {
+			t.Error("empty array's element must be Nullable")
+		}
+		if got := elem.DeclaredTypes(); len(got) != 1 || got[0] != schema.Null {
+			t.Errorf("empty array's element DeclaredTypes = %v, want [NULL]", got)
+		}
 	})
+}
+
+// The array traversal Admit itself runs (not Describe's fresh-field
+// shortcut) must charge the same promotion checkBranch always did: incoming
+// arrays from importer.Walk always carry a non-nil element — walkArray gives
+// even [] a NewLeafNode(Null) element — so an array observed but never with
+// content (a nil element) always learns SOMETHING at ARRAY_ELEMENTS when the
+// document holds an array at that path, whether or not that array is empty.
+func TestAdmit_EmptyArrayAgainstUnlearnedElementChargesArrayElements(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("tags", schema.NewArrayNode(nil))
+
+	overlay, changes, err := schema.Admit(model, map[string]any{"tags": []any{}})
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change, got %d: %+v", len(changes), changes)
+	}
+	if changes[0].Reason != schema.ReasonArrayElement {
+		t.Errorf("Reason = %v, want ReasonArrayElement", changes[0].Reason)
+	}
+	if changes[0].Required != spi.ChangeLevelArrayElements {
+		t.Errorf("Required = %v, want ARRAY_ELEMENTS", changes[0].Required)
+	}
+
+	elem := overlay.Object().Child("tags").Array().Element()
+	if elem == nil {
+		t.Fatal("the learned element must be NewLeafNode(Null), not nil")
+	}
+	if !elem.Nullable() {
+		t.Error("the learned element must be Nullable")
+	}
+	if got := elem.DeclaredTypes(); len(got) != 1 || got[0] != schema.Null {
+		t.Errorf("learned element DeclaredTypes = %v, want [NULL]", got)
+	}
+}
+
+// Describe's own recursion (a brand-new field's contents are ALL new, so
+// object/array re-enter Describe for every level) must be bounded by the same
+// MaxValidationDepth guard node enforces, or a document nested deeper than
+// the limit under a brand-new field would recurse unbounded instead of
+// failing closed with a clean error.
+func TestAdmit_DescribeRespectsMaxValidationDepth(t *testing.T) {
+	var doc any = "leaf"
+	for i := 0; i < schema.MaxValidationDepth+5; i++ {
+		doc = map[string]any{"nested": doc}
+	}
+	root := map[string]any{"a": doc}
+
+	_, _, err := schema.Admit(schema.NewObjectNode(), root)
+	if err == nil {
+		t.Fatal("want a validation-depth-exceeded error")
+	}
+	if !strings.Contains(err.Error(), "validation depth exceeded") {
+		t.Errorf("error = %v, want a validation-depth-exceeded error", err)
+	}
+}
+
+// A brand-new field's own name must pass the same jsonPath-segment check as
+// any other field name — ValidateFieldName is not skipped just because the
+// field is new.
+func TestAdmit_NewFieldInvalidNameIsRejected(t *testing.T) {
+	_, _, err := schema.Admit(schema.NewObjectNode(), map[string]any{"bad name": num("1")})
+	if err == nil {
+		t.Fatal("want an error for an unaddressable field name")
+	}
+	if !errors.Is(err, schema.ErrInvalidFieldName) {
+		t.Errorf("error = %v, want errors.Is(err, schema.ErrInvalidFieldName)", err)
+	}
+}
+
+// The same check must fire from inside Describe when it is reached through
+// wrongKind's container branch — a container value against a node lacking
+// that branch, itself holding a field name the query grammar cannot
+// address — so the error has to propagate out of wrongKind's new error
+// return, not just out of object's direct callers.
+func TestAdmit_NestedInvalidFieldNamePropagatesThroughWrongKind(t *testing.T) {
+	leaf := schema.NewLeafNode(schema.String)
+	_, _, err := schema.Admit(leaf, []any{map[string]any{"bad name": num("1")}})
+	if err == nil {
+		t.Fatal("want an error for an unaddressable field name nested inside a container mismatch")
+	}
+	if !errors.Is(err, schema.ErrInvalidFieldName) {
+		t.Errorf("error = %v, want errors.Is(err, schema.ErrInvalidFieldName)", err)
+	}
 }

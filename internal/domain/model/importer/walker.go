@@ -67,7 +67,7 @@ func (w *walker) walkObject(m map[string]any, path string) (*schema.ModelNode, e
 		// Refuse the key before it can become a schema field. This is the one
 		// point both field-set-establishing ingresses share, so enforcing here
 		// covers the explicit model import and the ChangeLevel-driven
-		// extension on an entity write alike — see ErrInvalidFieldName.
+		// extension on an entity write alike — see schema.ErrInvalidFieldName.
 		if err := validateFieldName(path, k); err != nil {
 			return nil, err
 		}
