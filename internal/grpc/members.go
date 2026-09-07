@@ -17,9 +17,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// TagChangeFunc is called when the set of connected members changes,
-// with the computed aggregate tags (tenantID → deduplicated tag list).
-type TagChangeFunc func(tags map[string][]string)
+// TagChangeFunc is called when the set of connected members changes, with the
+// computed aggregate tags (tenantID → deduplicated tag list). A non-nil error
+// means the tags were not published; the registry does not count that version
+// as published, so the next change republishes.
+type TagChangeFunc func(tags map[string][]string) error
 
 // SendFunc is a function that sends a CloudEvent to a connected member's stream.
 type SendFunc func(ce *cepb.CloudEvent) error
@@ -341,6 +343,13 @@ type MemberRegistry struct {
 	mu       sync.RWMutex
 	members  map[string]*Member
 	onChange TagChangeFunc
+	// tagsVersion increments under mu on every membership change. Publishes
+	// carry the version of the snapshot they took; publishMu serialises them
+	// and publishedVersion records the newest one that succeeded, so a slow
+	// goroutine holding an older snapshot can never overwrite a newer one.
+	tagsVersion      uint64
+	publishMu        sync.Mutex
+	publishedVersion uint64
 }
 
 // NewMemberRegistry creates a new, empty MemberRegistry.
@@ -376,6 +385,7 @@ func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags [
 		defer r.mu.Unlock()
 		old := r.members[memberID]
 		r.members[memberID] = m
+		r.tagsVersion++
 		return old
 	}()
 	if displaced != nil {
@@ -395,6 +405,7 @@ func (r *MemberRegistry) Unregister(memberID string) {
 		if ok {
 			delete(r.members, memberID)
 		}
+		r.tagsVersion++
 		return m
 	}()
 	if m != nil {
@@ -435,18 +446,17 @@ func (r *MemberRegistry) FindByTags(tenantID spi.TenantID, tagsCSV string) *Memb
 	return nil
 }
 
-// notifyChange fires the onChange callback (if set) in a goroutine with the
-// current aggregate tags.
+// notifyChange publishes the current aggregate tags in a goroutine. The
+// snapshot and its version are taken under one read lock so they agree.
 func (r *MemberRegistry) notifyChange() {
-	fn := func() TagChangeFunc {
+	fn, version, tags := func() (TagChangeFunc, uint64, map[string][]string) {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
-		return r.onChange
+		return r.onChange, r.tagsVersion, r.computeTagsLocked()
 	}()
 	if fn == nil {
 		return
 	}
-	tags := r.computeTags()
 	go func() {
 		defer func() {
 			if rv := recover(); rv != nil {
@@ -456,16 +466,26 @@ func (r *MemberRegistry) notifyChange() {
 				)
 			}
 		}()
-		fn(tags)
+		r.publishMu.Lock()
+		defer r.publishMu.Unlock()
+		if version <= r.publishedVersion {
+			return // a newer snapshot has already been published
+		}
+		if err := fn(tags); err != nil {
+			slog.Error("failed to publish member tags",
+				"pkg", "grpc/members",
+				"version", version,
+				"err", err,
+			)
+			return
+		}
+		r.publishedVersion = version
 	}()
 }
 
-// computeTags builds an aggregate map of tenantID → deduplicated tags from all
-// currently connected members.
-func (r *MemberRegistry) computeTags() map[string][]string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
+// computeTagsLocked builds an aggregate map of tenantID → deduplicated tags
+// from all currently connected members. Caller holds r.mu (read or write).
+func (r *MemberRegistry) computeTagsLocked() map[string][]string {
 	// Use a set per tenant for deduplication.
 	sets := make(map[string]map[string]struct{})
 	for _, m := range r.members {

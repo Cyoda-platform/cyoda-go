@@ -551,12 +551,15 @@ func New(cfg Config) *App {
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
-		a.memberRegistry.SetOnChange(func(tags map[string][]string) {
-			if gossipReg, ok := a.nodeRegistry.(*registry.Gossip); ok {
-				if err := gossipReg.UpdateTags(tags); err != nil {
-					slog.Error("failed to update gossip tags", "pkg", "cluster", "err", err)
-				}
+		a.memberRegistry.SetOnChange(func(tags map[string][]string) error {
+			gossipReg, ok := a.nodeRegistry.(*registry.Gossip)
+			if !ok {
+				return nil
 			}
+			if err := gossipReg.UpdateTags(tags); err != nil {
+				return fmt.Errorf("update gossip tags: %w", err)
+			}
+			return nil
 		})
 	}
 
