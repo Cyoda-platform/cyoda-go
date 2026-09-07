@@ -1169,7 +1169,7 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, member *Memb
 
 Change the three `handle*Response(memberID string, …)` functions to take `member *Member` and drop their `s.registry.Get(memberID)` block. Add `"github.com/google/uuid"` to imports.
 
-**TDD waiver, recorded:** the keep-alive loop's own recover (`keepAliveLoop`) has no reachable trigger without a test hook (its body only ticks, reads two timestamps and calls `TrySend`). It is the same three-line pattern as `receiveLoop` and `writeLoop`, which are both tested; it is reviewed, not unit-tested.
+The keep-alive loop's own recover (`keepAliveLoop`) is covered by `TestStreaming_KeepAliveLoopPanic_IsContained` (`internal/grpc/streaming_eviction_test.go`), which drives it with a zero keep-alive interval that panics `time.NewTicker` inside the loop.
 
 - [ ] **Step 4: Run the package tests**
 

@@ -234,9 +234,12 @@ per-request server streams from a single goroutine and are out of scope.
 | `CYODA_HTTP_READ_HEADER_TIMEOUT` | `10s` | Time allowed to receive the request headers. |
 | `CYODA_HTTP_READ_TIMEOUT` | `5m` | Time allowed to receive the whole request, body included. |
 | `CYODA_HTTP_WRITE_TIMEOUT` | `0` (disabled) | Time from end of headers to end of response. Bounds handler execution; off by policy (#475). |
-| `CYODA_HTTP_IDLE_TIMEOUT` | `120s` | Keep-alive connection idle time between requests. |
+| `CYODA_HTTP_IDLE_TIMEOUT` | `2m` (renders `120s`) | Keep-alive connection idle time between requests. |
 
-`0` disables any of them (Go semantics). Validation rejects negatives.
+`0` disables `ReadTimeout` and `WriteTimeout` outright. For
+`ReadHeaderTimeout` and `IdleTimeout`, `0` instead means "use `ReadTimeout`"
+— Go's own `net/http.Server` fallback — so those two are off only when
+`ReadTimeout` is also `0`. Validation rejects negatives.
 
 `ReadTimeout` default rationale: request bodies are capped at 10 MiB by the
 entity, search and grouped-stats handlers, so `5m` admits any client
@@ -356,7 +359,7 @@ error codes.
 | Greet is the first event on the wire even with a dispatch racing `Register` | `internal/grpc` (`overlapDetectingStream` reuse) | — | — | — |
 | `-race`: dispatch + keep-alive + greet, exactly one goroutine calls the raw send | `internal/grpc` | — | — | — |
 | Writer panic (raw send panics): process survives, member evicted, ticket in status, flag **not** latched | `internal/grpc` | — | — | — |
-| Keep-alive loop panic: same recover pattern as the writer and receive goroutine; no reachable trigger without a test hook — reviewed, not tested (waiver recorded in the plan) | — | — | — | — |
+| Keep-alive loop panic: same recover pattern as the writer and receive goroutine; a zero keep-alive interval panics `time.NewTicker` inside the loop, giving a reachable trigger without a test hook | `internal/grpc` (`TestStreaming_KeepAliveLoopPanic_IsContained`) | — | — | — |
 | Receive goroutine panic: same | `internal/grpc` | — | — | ✓ |
 | Clean client disconnect unregisters promptly (existing regression test kept) | `internal/grpc` | — | — | — |
 | Member unregistered between lookup and track → immediate `DISCONNECTED`; after `Evict` but before `Unregister` → same | `internal/grpc` | — | — | — |
