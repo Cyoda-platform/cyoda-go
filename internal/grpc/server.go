@@ -7,6 +7,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -36,6 +37,17 @@ type Server struct {
 	service    *CloudEventsServiceImpl
 }
 
+// KeepAliveConfig governs both keep-alive layers on the member stream: the
+// application-level CloudEvent ping and eviction (Interval between pings,
+// Timeout of inbound silence or write stall before eviction) and grpc-go's
+// transport keepalive (an HTTP/2 PING after Interval of idleness, the
+// connection closed if unacknowledged within Timeout), which catches a peer
+// whose TCP is alive but whose process is gone.
+type KeepAliveConfig struct {
+	Interval time.Duration
+	Timeout  time.Duration
+}
+
 // NewServer creates a new gRPC server with auth interceptors and the
 // CloudEventsService registered. When otelEnabled is true, OTel tracing
 // is added via a stats handler before the auth interceptors.
@@ -61,6 +73,7 @@ func NewServer(
 	localGRPCPort int,
 	allowLoopback bool,
 	healthFlag *atomic.Bool,
+	keepAlive KeepAliveConfig,
 ) *Server {
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
@@ -83,18 +96,25 @@ func NewServer(
 			txRoute.stream(),
 		),
 	)
+	// Transport keepalive. MaxConnectionIdle/Age stay infinite: an age
+	// would GOAWAY healthy compute nodes on a timer and fail their in-flight
+	// dispatches. The enforcement policy is deliberately permissive —
+	// grpc-go's default (MinTime 5m) would GOAWAY an external compute node
+	// that pings more often than every five minutes.
+	opts = append(opts,
+		googlegrpc.KeepaliveParams(keepalive.ServerParameters{Time: keepAlive.Interval, Timeout: keepAlive.Timeout}),
+		googlegrpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 5 * time.Second, PermitWithoutStream: true}),
+	)
 	grpcServer := googlegrpc.NewServer(opts...)
 	svc := &CloudEventsServiceImpl{
-		registry:      registry,
-		authSvc:       authSvc,
-		txMgr:         txMgr,
-		entityHandler: entityHandler,
-		modelHandler:  modelHandler,
-		searchService: searchService,
-		// Interim literals: the keep-alive interval and timeout move to
-		// configuration, passed in by the caller.
-		keepAliveInterval: 10 * time.Second,
-		keepAliveTimeout:  30 * time.Second,
+		registry:          registry,
+		authSvc:           authSvc,
+		txMgr:             txMgr,
+		entityHandler:     entityHandler,
+		modelHandler:      modelHandler,
+		searchService:     searchService,
+		keepAliveInterval: keepAlive.Interval,
+		keepAliveTimeout:  keepAlive.Timeout,
 	}
 	cyodapb.RegisterCloudEventsServiceServer(grpcServer, svc)
 	return &Server{grpcServer: grpcServer, service: svc}
@@ -113,4 +133,10 @@ func (s *Server) GracefulStop() {
 // GRPCServer returns the underlying grpc.Server for testing.
 func (s *Server) GRPCServer() *googlegrpc.Server {
 	return s.grpcServer
+}
+
+// KeepAlive returns the keep-alive configuration the server was constructed
+// with, for tests that assert config wiring reaches the server.
+func (s *Server) KeepAlive() KeepAliveConfig {
+	return KeepAliveConfig{Interval: s.service.keepAliveInterval, Timeout: s.service.keepAliveTimeout}
 }

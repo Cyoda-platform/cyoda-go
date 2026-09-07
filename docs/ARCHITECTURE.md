@@ -1187,7 +1187,7 @@ join --> greet --> keep-alive --> dispatch/response --> leave
 
 1. **Join:** Client sends `CalculationMemberJoinEvent` as first message. Server registers member in `MemberRegistry`, extracts tags and tenant from payload. Returns `CalculationMemberGreetEvent` with assigned member ID.
 
-2. **Keep-alive:** Server sends `CalculationMemberKeepAliveEvent` at configurable interval (default 10s). Client must respond with a keep-alive within the timeout (default 30s). If not, the server considers the member dead and unregisters it.
+2. **Keep-alive:** Server sends `CalculationMemberKeepAliveEvent` at configurable interval (default 10s). A processor response, criteria response, function response, `EventAckResponse`, or keep-alive echo all count as activity; if none is seen within the timeout (default 30s), or one outbound write stalls that long, the server evicts the member. The same interval/timeout also drive grpc-go's transport keepalive (HTTP/2 PING and ack deadline), which catches a peer whose TCP is alive but whose process is gone.
 
 3. **Dispatch/Response:** Server sends `EntityProcessorCalculationRequest` or `EntityCriteriaCalculationRequest`. Client processes and returns the corresponding `Response` type. Correlation is by `requestID` field in the CloudEvent payload.
 
@@ -1555,8 +1555,8 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_GRPC_PORT` | `9090` | gRPC server listen port |
-| `CYODA_KEEPALIVE_INTERVAL` | `10` | Keep-alive ping interval (seconds) |
-| `CYODA_KEEPALIVE_TIMEOUT` | `30` | Keep-alive timeout before eviction (seconds) |
+| `CYODA_KEEPALIVE_INTERVAL` | `10` | Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time |
+| `CYODA_KEEPALIVE_TIMEOUT` | `30` | Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout |
 
 ### Cluster
 

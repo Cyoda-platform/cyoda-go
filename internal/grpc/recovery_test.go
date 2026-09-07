@@ -487,7 +487,7 @@ func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTes
 
 	srv := NewServer(authSvc, NewMemberRegistry(), tracker, entityHandler, modelHandler, searchSvc,
 		tokenSigner, nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
-		false, 0, true, healthFlag)
+		false, 0, true, healthFlag, KeepAliveConfig{Interval: 10 * time.Second, Timeout: 30 * time.Second})
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -404,8 +404,8 @@ func (r *MemberRegistry) Unregister(memberID string) {
 		m, ok := r.members[memberID]
 		if ok {
 			delete(r.members, memberID)
+			r.tagsVersion++
 		}
-		r.tagsVersion++
 		return m
 	}()
 	if m != nil {

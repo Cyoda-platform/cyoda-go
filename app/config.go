@@ -685,6 +685,9 @@ func isASCII(s string) bool {
 // name the offending setting; it exits before New is ever reached, so the
 // same error is never reported twice.
 func (c Config) Validate() error {
+	if err := ValidateGRPCKeepAlive(c.GRPC); err != nil {
+		return err
+	}
 	if err := ValidateSearchAsync(c.SearchAsync); err != nil {
 		return err
 	}
@@ -692,6 +695,20 @@ func (c Config) Validate() error {
 		return err
 	}
 	return ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval)
+}
+
+// ValidateGRPCKeepAlive rejects a keep-alive interval or timeout that is not
+// positive. Both drive tickers and transport deadlines; zero or negative would
+// panic the ticker or disable eviction, neither of which is a configuration
+// anyone means. Config is a QA'd artefact: an invalid value is a startup error.
+func ValidateGRPCKeepAlive(c GRPCConfig) error {
+	if c.KeepAliveInterval <= 0 {
+		return fmt.Errorf("CYODA_KEEPALIVE_INTERVAL must be >= 1 (seconds), got %d", c.KeepAliveInterval)
+	}
+	if c.KeepAliveTimeout <= 0 {
+		return fmt.Errorf("CYODA_KEEPALIVE_TIMEOUT must be >= 1 (seconds), got %d", c.KeepAliveTimeout)
+	}
+	return nil
 }
 
 // ValidateSearchAsync enforces startup-time correctness for the

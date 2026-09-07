@@ -73,8 +73,6 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long the dispatcher polls gossip for a compute member with matching tags."},
 	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "HTTP timeout for the cross-node forwarding call."},
 	{Name: "CYODA_TX_TOKEN_TTL", Topic: "cluster", Type: "duration", Default: "1m30s", Description: "TTL of the signed transaction routing token minted on processor/criteria dispatch."},
-	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "cluster", Type: "int", Default: "10", Description: "Keep-alive send interval in seconds."},
-	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "cluster", Type: "int", Default: "30", Description: "Keep-alive timeout in seconds."},
 
 	// --- auth ---
 	{Name: "CYODA_IAM_MODE", Topic: "auth", Type: "string", Default: "mock", Description: "Authentication mode: mock or jwt."},
@@ -111,6 +109,8 @@ var rootConfigVars = []ConfigVar{
 
 	// --- grpc ---
 	{Name: "CYODA_GRPC_PORT", Topic: "grpc", Type: "int", Default: "9090", Description: "gRPC listen port."},
+	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "grpc", Type: "int", Default: "10", Description: "Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time."},
+	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "grpc", Type: "int", Default: "30", Description: "Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout."},
 	{Name: "CYODA_COMPUTE_GRPC_ENDPOINT", Topic: "grpc", Type: "string", Default: "", Description: "gRPC endpoint for a compute node to connect to (compute-client side)."},
 	{Name: "CYODA_COMPUTE_TOKEN", Topic: "grpc", Type: "string", Default: "", Description: "Bearer token for compute-node authentication (compute-client side)."},
 	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node calls back into (compute-client side)."},
