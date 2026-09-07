@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
@@ -64,8 +65,14 @@ func TestWalk_RejectsUnaddressableFieldName(t *testing.T) {
 		{"gjson literal bang", `{"!true": 1}`, []string{`"!true"`}},
 		{"gjson escape backslash", `{"a\\b": 1}`, []string{`a\\b`}},
 		{"nested object", `{"ok": {"bad name": 1}}`, []string{`"bad name"`, `"$.ok"`}},
-		{"inside array element", `{"arr": [{"bad name": 1}]}`, []string{`"bad name"`, `"$.arr[*]"`}},
-		{"deep nesting", `{"a": {"b": [[{"c d": 1}]]}}`, []string{`"c d"`, `"$.a.b[*][*]"`}},
+		// The array hop is spelled "[]" here, not the FieldsMap wildcard
+		// "[*]": this diagnostic now comes from the same traversal Admit
+		// runs (schema.Describe, delegated to by Walk), and "[]" is the one
+		// array-hop spelling that traversal has always used in a Change.Path
+		// (see admit.go's array(), and validate.go's wirePath doc comment,
+		// which already surfaces it in ValidationError.Path today).
+		{"inside array element", `{"arr": [{"bad name": 1}]}`, []string{`"bad name"`, `"$.arr[]"`}},
+		{"deep nesting", `{"a": {"b": [[{"c d": 1}]]}}`, []string{`"c d"`, `"$.a.b[][]"`}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -73,7 +80,7 @@ func TestWalk_RejectsUnaddressableFieldName(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Walk(%s) must reject an unaddressable field name", c.doc)
 			}
-			if !errors.Is(err, importer.ErrInvalidFieldName) {
+			if !errors.Is(err, schema.ErrInvalidFieldName) {
 				t.Fatalf("Walk(%s) error must wrap ErrInvalidFieldName, got %v", c.doc, err)
 			}
 			for _, want := range c.wantIn {

@@ -21,12 +21,11 @@ func TestExtend_IncomingLeafNull_AgainstExistingArray_IsNullableMarker(t *testin
 	existing := NewObjectNode()
 	existing.SetChild("custom_permissions", NewArrayNode(NewLeafNode(String)))
 
-	incoming := NewObjectNode()
-	incoming.SetChild("custom_permissions", NewLeafNode(Null))
+	doc := map[string]any{"custom_permissions": nil}
 
-	got, err := Extend(existing, incoming, spi.ChangeLevelType)
+	got, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err != nil {
-		t.Fatalf("Extend with LEAF[NULL] against ARRAY must succeed (nullable marker); got: %v", err)
+		t.Fatalf("Extend with a JSON null against ARRAY must succeed (nullable marker); got: %v", err)
 	}
 	child := got.Object().Child("custom_permissions")
 	if child == nil {
@@ -55,12 +54,11 @@ func TestExtend_IncomingLeafNull_AgainstExistingObject_IsNullableMarker(t *testi
 	existing := NewObjectNode()
 	existing.SetChild("roles_and_permissions", existingChild)
 
-	incoming := NewObjectNode()
-	incoming.SetChild("roles_and_permissions", NewLeafNode(Null))
+	doc := map[string]any{"roles_and_permissions": nil}
 
-	got, err := Extend(existing, incoming, spi.ChangeLevelType)
+	got, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err != nil {
-		t.Fatalf("Extend with LEAF[NULL] against OBJECT must succeed (nullable marker); got: %v", err)
+		t.Fatalf("Extend with a JSON null against OBJECT must succeed (nullable marker); got: %v", err)
 	}
 	child := got.Object().Child("roles_and_permissions")
 	if child.Object() == nil {
@@ -86,12 +84,11 @@ func TestExtend_ExistingLeafNull_AgainstIncomingArray_PromotesToArray(t *testing
 	existing := NewObjectNode()
 	existing.SetChild("tags", NewLeafNode(Null))
 
-	incoming := NewObjectNode()
-	incoming.SetChild("tags", NewArrayNode(NewLeafNode(String)))
+	doc := map[string]any{"tags": []any{"a"}}
 
-	got, err := Extend(existing, incoming, spi.ChangeLevelType)
+	got, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err != nil {
-		t.Fatalf("Extend with ARRAY against LEAF[NULL] must succeed (nullable promoted); got: %v", err)
+		t.Fatalf("Extend with a real array against LEAF[NULL] must succeed (nullable promoted); got: %v", err)
 	}
 	child := got.Object().Child("tags")
 	if child.Array() == nil {
@@ -106,41 +103,40 @@ func TestExtend_GenuineKindMismatch_StillRejected(t *testing.T) {
 	cases := []struct {
 		name     string
 		existing *ModelNode
-		incoming *ModelNode
+		docValue any
 	}{
 		{
 			name:     "ARRAY vs OBJECT",
 			existing: NewArrayNode(NewLeafNode(String)),
-			incoming: NewObjectNode(),
+			docValue: map[string]any{},
 		},
 		{
 			name:     "OBJECT vs ARRAY",
 			existing: NewObjectNode(),
-			incoming: NewArrayNode(NewLeafNode(String)),
+			docValue: []any{"a"},
 		},
 		{
 			name:     "LEAF[String] vs OBJECT",
 			existing: NewLeafNode(String),
-			incoming: NewObjectNode(),
+			docValue: map[string]any{},
 		},
 		{
 			name:     "LEAF[String] vs ARRAY",
 			existing: NewLeafNode(String),
-			incoming: NewArrayNode(NewLeafNode(String)),
+			docValue: []any{"a"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			existing := NewObjectNode()
 			existing.SetChild("f", tc.existing)
-			incoming := NewObjectNode()
-			incoming.SetChild("f", tc.incoming)
+			doc := map[string]any{"f": tc.docValue}
 
 			// A concrete kind meeting another concrete kind is a new branch:
 			// refused below STRUCTURAL, and the message names that level.
 			// This is what separates it from the nullable marker above, which
 			// adds no kind and stays a TYPE-level change.
-			_, err := Extend(existing, incoming, spi.ChangeLevelType)
+			_, err := Extend(existing, doc, spi.ChangeLevelType)
 			if err == nil {
 				t.Fatal("adding a kind must still be refused at TYPE, unlike the nullable marker")
 			}
@@ -179,10 +175,9 @@ func TestExtend_NullableMarker_AtLowerChangeLevel_RejectedAsLevelViolation(t *te
 			existing := NewObjectNode()
 			existing.SetChild("custom_permissions", NewArrayNode(NewLeafNode(String)))
 
-			incoming := NewObjectNode()
-			incoming.SetChild("custom_permissions", NewLeafNode(Null))
+			doc := map[string]any{"custom_permissions": nil}
 
-			_, err := Extend(existing, incoming, tc.level)
+			_, err := Extend(existing, doc, tc.level)
 			if err == nil {
 				t.Fatal("nullable marker below TYPE level must reject")
 			}

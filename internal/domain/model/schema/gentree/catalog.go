@@ -16,7 +16,7 @@ import (
 type Fixture struct {
 	Name          string
 	Old           *schema.ModelNode
-	Incoming      any // fed through importer.Walk
+	Incoming      any // fed directly to schema.Extend as the document
 	Level         spi.ChangeLevel
 	ExpectedKinds []schema.SchemaOpKind // nil = don't assert
 	ExpectError   bool
@@ -166,9 +166,14 @@ var Catalog = []Fixture{
 		Level:    spi.ChangeLevelType,
 	},
 	{
-		Name:          "DecimalBoundaryExceedsBigDecimal", // 20 fractional digits
+		// BigDecimal's admission (numeric_admit.go) is magnitude-only, not
+		// scale/precision-bound — more fractional digits alone stay held (a
+		// value the leaf already admits is not a type change). What actually
+		// exceeds it is magnitude past int128Max/1e18 (~1.7014118e20), which
+		// is what this value's integer part does.
+		Name:          "DecimalBoundaryExceedsBigDecimal", // magnitude beyond BigDecimal's range
 		Old:           leaf(schema.BigDecimal),
-		Incoming:      json.Number("1.23456789012345678901"),
+		Incoming:      json.Number("170141183460469231732.1"),
 		Level:         spi.ChangeLevelType,
 		ExpectedKinds: []schema.SchemaOpKind{schema.KindBroadenType},
 	},

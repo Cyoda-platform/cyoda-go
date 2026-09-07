@@ -32,6 +32,10 @@ Both funnel through one walker, so the two doors cannot diverge. That is the
 load-bearing design point for an implementer: the rule belongs at the single
 point where a field set is *established*, not replicated at each entry point.
 
+An array hop inside the offending path — "in object at ..." — is spelled `[]`,
+the change-level gate's `Change.Path` convention, not the FieldsMap key
+spelling `[*]`; both doors emit `[]`, since both now run the one traversal.
+
 Strict validation — a model with no ChangeLevel, and PATCH — does not establish
 fields, so the rule does not apply there: it validates against the stored
 schema, which rejects unknown fields outright.

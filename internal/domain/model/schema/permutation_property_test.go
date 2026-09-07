@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
@@ -21,19 +20,23 @@ func TestPermutationInvariance(t *testing.T) {
 	// existed when it was written.
 	cfg.KindMutationRate = 0.3
 	const N = 200
+	var ran, skipped int
 	for i := 0; i < N; i++ {
 		seed := int64(i + 60_000)
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			defer func() {
+				if t.Skipped() {
+					skipped++
+				} else {
+					ran++
+				}
+			}()
 			r := gentree.NewRNG(seed)
 			base := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
 			deltas := make([]spi.SchemaDelta, 0, 3)
 			for k := 0; k < 3; k++ {
 				d := gentree.GenExtensionPair(r, base, cfg.TargetLevel, cfg)
-				node, err := importer.Walk(d)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ext, err := schema.Extend(base, node, cfg.TargetLevel)
+				ext, err := schema.Extend(base, d, cfg.TargetLevel)
 				if err != nil {
 					t.Skip(err)
 				}
@@ -64,4 +67,5 @@ func TestPermutationInvariance(t *testing.T) {
 			}
 		})
 	}
+	assertSkipRatio(t, ran, skipped, "TestPermutationInvariance")
 }

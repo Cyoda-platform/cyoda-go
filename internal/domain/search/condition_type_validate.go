@@ -90,6 +90,28 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 	}
 }
 
+// maxTruncatedOperandRunes bounds how much of a rejected operand this
+// package's error paths echo back to the caller, mirroring the SPI kernel's
+// own truncateOperand convention (spi.ExpandLeaf, eval_leaf.go): search
+// request bodies are capped far larger than this, so echoing a mismatched
+// operand verbatim would let a single oversized-but-otherwise-ordinary
+// request inflate a 400 body (and the WARN log line that repeats it) to
+// request size.
+const maxTruncatedOperandRunes = 64
+
+// truncateOperand renders v for inclusion in a client-facing error message,
+// capped to maxTruncatedOperandRunes runes with a trailing "…" marker so a
+// reader can tell truncation happened rather than mistaking the cut string
+// for the operand in full.
+func truncateOperand(v any) string {
+	s := fmt.Sprintf("%v", v)
+	r := []rune(s)
+	if len(r) <= maxTruncatedOperandRunes {
+		return s
+	}
+	return string(r[:maxTruncatedOperandRunes]) + "…"
+}
+
 func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predicate.SimpleCondition) error {
 	// FieldsMap keys carry the "$." prefix and spell every array hop "[*]"; a
 	// condition may legitimately omit the prefix, and may address one array
@@ -154,15 +176,15 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 				continue
 			}
 			if !operandParsesDeclared(fd.Types, elem) {
-				return fmt.Errorf("value[%d] %v parses into none of field %q's declared types %v: %w",
-					i, elem, c.JsonPath, fd.Types, errConditionTypeMismatch)
+				return fmt.Errorf("value[%d] %s parses into none of field %q's declared types %v: %w",
+					i, truncateOperand(elem), c.JsonPath, fd.Types, errConditionTypeMismatch)
 			}
 		}
 		return nil
 	default:
 		if !operandParsesDeclared(fd.Types, v) {
-			return fmt.Errorf("operand %v parses into none of field %q's declared types %v: %w",
-				v, c.JsonPath, fd.Types, errConditionTypeMismatch)
+			return fmt.Errorf("operand %s parses into none of field %q's declared types %v: %w",
+				truncateOperand(v), c.JsonPath, fd.Types, errConditionTypeMismatch)
 		}
 		return nil
 	}
@@ -333,8 +355,8 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 			continue
 		}
 		if !operandParsesDeclared(metaTemporalDeclared, elem) {
-			return fmt.Errorf("operand[%d] %v parses into no temporal type for field %q: %w",
-				i, elem, c.Field, errConditionTypeMismatch)
+			return fmt.Errorf("operand[%d] %s parses into no temporal type for field %q: %w",
+				i, truncateOperand(elem), c.Field, errConditionTypeMismatch)
 		}
 	}
 	return nil

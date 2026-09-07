@@ -2,6 +2,7 @@ package schema_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -246,5 +247,247 @@ func TestValidate_PolymorphicArrayElement_AcceptsParticipatingType(t *testing.T)
 	}
 	if errs := schema.Validate(root, bothBranch); len(errs) != 0 {
 		t.Errorf("both branches: expected no errors, got %v", errs)
+	}
+}
+
+// Strict validation and the change-level gate answer the same question, so a
+// value a field holds passes strict validation too — including the case no
+// changeLevel could work around.
+func TestValidate_HeldValuesPassStrict(t *testing.T) {
+	cases := []struct {
+		name     string
+		declared schema.DataType
+		value    any
+	}{
+		{"a date-shaped string in a STRING field", schema.String, "2026-03-01"},
+		{"a whole number past 2^31 in a DOUBLE field", schema.Double, num("2147483648")},
+		{"an ordinary string", schema.String, "hello"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := schema.NewObjectNode()
+			model.SetChild("f", schema.NewLeafNode(tc.declared))
+			if errs := schema.Validate(model, map[string]any{"f": tc.value}); len(errs) != 0 {
+				t.Errorf("want no errors, got %v", errs)
+			}
+		})
+	}
+}
+
+// A value the field does not hold keeps its code and its Props.
+func TestValidate_UnheldValueKeepsIncompatibleType(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("f", schema.NewLeafNode(schema.String))
+
+	errs := schema.Validate(model, map[string]any{"f": num("5")})
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %v", errs)
+	}
+	if errs[0].Kind != schema.ErrKindIncompatibleType {
+		t.Errorf("Kind = %v, want ErrKindIncompatibleType", errs[0].Kind)
+	}
+	if errs[0].ActualType != schema.Integer {
+		t.Errorf("ActualType = %v, want INTEGER", errs[0].ActualType)
+	}
+	if len(errs[0].ExpectedTypes) != 1 || errs[0].ExpectedTypes[0] != schema.String {
+		t.Errorf("ExpectedTypes = %v, want [STRING]", errs[0].ExpectedTypes)
+	}
+}
+
+// An unknown field is still the stale-schema signal handlers branch on.
+func TestValidate_UnknownFieldKeepsItsKind(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("known", schema.NewLeafNode(schema.String))
+
+	errs := schema.Validate(model, map[string]any{"known": "x", "surprise": "y"})
+	if len(errs) != 1 || errs[0].Kind != schema.ErrKindUnknownElement {
+		t.Fatalf("want one ErrKindUnknownElement, got %v", errs)
+	}
+	if !schema.HasUnknownSchemaElement(errs) {
+		t.Error("HasUnknownSchemaElement must still recognise it")
+	}
+}
+
+// Ruling 21 (final review I1): strict validation does not establish fields
+// (docs/cloud-parity/model-field-name-grammar.md: "Strict validation ...
+// does not establish fields, so the rule does not apply there"), so an
+// unspellable field name must render as the ordinary unknown-field error —
+// the stale-schema refresh-and-retry signal handlers already key on — not
+// as ErrKindGeneric via ErrInvalidFieldName. That sentinel's 400 belongs
+// only to the doors that DO establish a field set: Admit's ChangeLevel-
+// driven extension, and importer.Walk.
+func TestValidate_UnspellableFieldNameIsUnknownElement(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("known", schema.NewLeafNode(schema.String))
+
+	errs := schema.Validate(model, map[string]any{"known": "x", "bad name": num("1")})
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %v", errs)
+	}
+	if errs[0].Kind != schema.ErrKindUnknownElement {
+		t.Errorf("Kind = %v, want ErrKindUnknownElement", errs[0].Kind)
+	}
+	if errs[0].Path != "bad name" {
+		t.Errorf("Path = %q, want %q", errs[0].Path, "bad name")
+	}
+	if errs[0].Message != "unexpected field not present in model" {
+		t.Errorf("Message = %q, want the ordinary unknown-field message", errs[0].Message)
+	}
+}
+
+// Admit aborts its traversal at the first unspellable field name it finds
+// (the write door must still refuse the whole write); strict validation must
+// not inherit that abort — a document with two bad names gets two errors,
+// not one.
+func TestValidate_TwoUnspellableFieldNamesBothReported(t *testing.T) {
+	model := schema.NewObjectNode()
+
+	errs := schema.Validate(model, map[string]any{"bad name": num("1"), "bad name 2": num("2")})
+	if len(errs) != 2 {
+		t.Fatalf("want 2 errors, got %v", errs)
+	}
+	gotPaths := map[string]bool{}
+	for _, e := range errs {
+		if e.Kind != schema.ErrKindUnknownElement {
+			t.Errorf("Kind = %v, want ErrKindUnknownElement for %q", e.Kind, e.Path)
+		}
+		gotPaths[e.Path] = true
+	}
+	if !gotPaths["bad name"] || !gotPaths["bad name 2"] {
+		t.Errorf("want both bad field names reported, got %v", errs)
+	}
+}
+
+// A width change is a genuine count mismatch, not a kind mismatch: the
+// element type is fine, the document just carries more elements than the
+// model has ever observed at this path. Naming both counts is the accurate
+// statement — Validate never checked width at all before Task 8, so there
+// is no prior wording to preserve.
+func TestValidate_ArrayWiderThanObservedNamesBothCounts(t *testing.T) {
+	arr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
+	arr.ObserveArrayWidth(2)
+	model := schema.NewObjectNode()
+	model.SetChild("a", arr)
+
+	errs := schema.Validate(model, map[string]any{"a": []any{"x", "y", "z"}})
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %v", errs)
+	}
+	if errs[0].Path != "a" {
+		t.Errorf("Path = %q, want %q", errs[0].Path, "a")
+	}
+	wantMsg := "array wider than observed: 3 elements, model has seen at most 2"
+	if errs[0].Message != wantMsg {
+		t.Errorf("Message = %q, want %q", errs[0].Message, wantMsg)
+	}
+	if errs[0].Kind != schema.ErrKindGeneric {
+		t.Errorf("Kind = %v, want ErrKindGeneric", errs[0].Kind)
+	}
+}
+
+// Final review M4: Validate's catch-all used to echo the raw Go error
+// (including a %T-formatted type name) straight into ValidationError.Message
+// — a caller-side contract violation (json.UseNumber not used, or a value
+// the decoder never produces) leaking Go internals into a client-facing
+// field. It must render a fixed message and, when the traversal knows one,
+// the offending path — never the Go type.
+func TestValidate_UnsupportedGoValueDoesNotLeakType(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("f", schema.NewLeafNode(schema.String))
+
+	// A raw float64, not json.Number — the shape json.UseNumber is meant to
+	// prevent, and the one caller-contract violation reachable through the
+	// public API's own decoding path.
+	errs := schema.Validate(model, map[string]any{"f": 3.14})
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %v", errs)
+	}
+	if strings.Contains(errs[0].Message, "float64") {
+		t.Errorf("Message = %q, must not leak the Go type", errs[0].Message)
+	}
+	if errs[0].Path != "f" {
+		t.Errorf("Path = %q, want %q", errs[0].Path, "f")
+	}
+}
+
+// countUnknownElement returns how many errs carry {Kind: ErrKindUnknownElement,
+// Path: path}, so a test can assert "exactly one" without caring how many
+// OTHER errors (a different Kind, or a different Path) the document also
+// produces.
+func countUnknownElement(errs []schema.ValidationError, path string) int {
+	n := 0
+	for _, e := range errs {
+		if e.Kind == schema.ErrKindUnknownElement && e.Path == path {
+			n++
+		}
+	}
+	return n
+}
+
+// Re-review finding #2: describeAt built its own admitter from scratch
+// (`&admitter{}`), so re-entering it from object's new-field branch,
+// wrongKind's container branch, or array's element-learning branch lost
+// Validate's continueOnInvalidName flag — an unspellable name ANYWHERE
+// under a brand-new subtree still hard-aborted the whole traversal with
+// ErrInvalidFieldName, which M4's catch-all then rendered as
+// ErrKindGeneric/"unsupported value" with an empty Path: worse than
+// before this fix wave. All three shapes must instead report the nested
+// bad name as the ordinary ErrKindUnknownElement at its own path, AND
+// keep reporting a sibling unknown field elsewhere in the same document
+// (the abort must be gone here too, not just at the top level ruling 21
+// already covers).
+
+// Shape 1: object's new-field branch (admit.go's object(), the describeAt
+// call for a field the model does not declare at all).
+func TestValidate_UnspellableNameNestedUnderNewField(t *testing.T) {
+	model := schema.NewObjectNode() // declares nothing
+
+	errs := schema.Validate(model, map[string]any{
+		"newfield": map[string]any{"bad name": num("1")},
+		"sibling":  "x",
+	})
+	if got := countUnknownElement(errs, "newfield.bad name"); got != 1 {
+		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "newfield.bad name", got, errs)
+	}
+	if got := countUnknownElement(errs, "sibling"); got != 1 {
+		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
+	}
+}
+
+// Shape 2: wrongKind's container branch (a declared scalar receiving an
+// object — the describeAt call wrongKind makes to derive the overlay for
+// the mismatched container).
+func TestValidate_UnspellableNameNestedUnderWrongKindContainer(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.String)) // scalar only, no object branch
+
+	errs := schema.Validate(model, map[string]any{
+		"x":       map[string]any{"bad name": num("1")},
+		"sibling": "y",
+	})
+	if got := countUnknownElement(errs, "x.bad name"); got != 1 {
+		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "x.bad name", got, errs)
+	}
+	if got := countUnknownElement(errs, "sibling"); got != 1 {
+		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
+	}
+}
+
+// Shape 3: array's element-learning branch (an array whose element was
+// never observed — the describeAt call array() makes per element while
+// learning one).
+func TestValidate_UnspellableNameNestedUnderArrayElementLearning(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("a", schema.NewArrayNode(nil)) // array, element never observed
+
+	errs := schema.Validate(model, map[string]any{
+		"a":       []any{map[string]any{"bad name": num("1")}},
+		"sibling": "z",
+	})
+	if got := countUnknownElement(errs, "a[0].bad name"); got != 1 {
+		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "a[0].bad name", got, errs)
+	}
+	if got := countUnknownElement(errs, "sibling"); got != 1 {
+		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
 	}
 }

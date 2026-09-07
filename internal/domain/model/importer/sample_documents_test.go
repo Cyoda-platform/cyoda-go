@@ -96,6 +96,49 @@ func TestImport_EmptyArrayDerivesEmptyObjectModel(t *testing.T) {
 	}
 }
 
+// Registration discovers types; ingestion checks against them. These give
+// different declared sets for the same value, and that is the design: a field
+// registered from both a word and a date supports temporal predicates, while
+// a field locked as text and then written a date stays text.
+func TestImport_DiscoversTemporalTypesAcrossDocuments(t *testing.T) {
+	node, err := importJSON(t, `[{"note":"hello"},{"note":"2026-03-01"}]`)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	got := node.Object().Child("note").DeclaredTypes()
+	if len(got) != 2 {
+		t.Fatalf("note = %v, want {STRING, LOCAL_DATE}", got)
+	}
+	var hasString, hasDate bool
+	for _, dt := range got {
+		hasString = hasString || dt == schema.String
+		hasDate = hasDate || dt == schema.LocalDate
+	}
+	if !hasString || !hasDate {
+		t.Errorf("note = %v, want both STRING and LOCAL_DATE", got)
+	}
+}
+
+// The same within one document, across array elements.
+func TestImport_FusesArrayElements(t *testing.T) {
+	node, err := importJSON(t, `{"tags":["hello","2026-03-01"]}`)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	got := node.Object().Child("tags").Array().Element().DeclaredTypes()
+	if len(got) != 2 {
+		t.Fatalf("element = %v, want {STRING, LOCAL_DATE}", got)
+	}
+	var hasString, hasDate bool
+	for _, dt := range got {
+		hasString = hasString || dt == schema.String
+		hasDate = hasDate || dt == schema.LocalDate
+	}
+	if !hasString || !hasDate {
+		t.Errorf("element = %v, want both STRING and LOCAL_DATE", got)
+	}
+}
+
 // Anything that is not a document, or a collection of documents, has no
 // reading that yields a usable model — so it is refused at the boundary
 // instead of registering one that rejects everything.

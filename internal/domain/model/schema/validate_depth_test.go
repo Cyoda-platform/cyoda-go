@@ -1,6 +1,7 @@
 package schema_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -56,14 +57,32 @@ func TestValidateRejectsExcessivelyDeepDocument(t *testing.T) {
 	}
 
 	found := false
+	var depthErr schema.ValidationError
 	for _, e := range errs {
 		if strings.Contains(e.Error(), "validation depth exceeded") {
 			found = true
+			depthErr = e
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected at least one error mentioning 'validation depth exceeded', got: %v", errs)
+		t.Fatalf("expected at least one error mentioning 'validation depth exceeded', got: %v", errs)
+	}
+
+	// The failure must render as a structured ValidationError — a populated
+	// Path and a Message equal to the shared constant, not the path folded
+	// into Message text (which errors.As gives Validate for free; a
+	// degraded {Message: err.Error()} fallback would leave Path empty and
+	// double the path into Error()'s own "%s: %s" rendering).
+	if depthErr.Path == "" {
+		t.Errorf("depth-exceeded ValidationError.Path is empty, want the path where recursion was cut off: %+v", depthErr)
+	}
+	wantMessage := fmt.Sprintf("validation depth exceeded (max %d)", schema.MaxValidationDepth)
+	if depthErr.Message != wantMessage {
+		t.Errorf("depth-exceeded ValidationError.Message = %q, want %q", depthErr.Message, wantMessage)
+	}
+	if depthErr.Kind != schema.ErrKindGeneric {
+		t.Errorf("depth-exceeded ValidationError.Kind = %v, want ErrKindGeneric", depthErr.Kind)
 	}
 }
 

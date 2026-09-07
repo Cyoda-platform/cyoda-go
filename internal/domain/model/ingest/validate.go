@@ -18,7 +18,6 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -78,23 +77,39 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 		return nil
 	}
 
-	incomingModel, err := importer.Walk(parsedData)
+	extended, err := schema.Extend(modelNode, parsedData, desc.ChangeLevel)
 	if err != nil {
-		// A field name the wire jsonPath grammar cannot address is a client
-		// contract violation with a concrete remedy — rename the key — so it
-		// gets the same 400 VALIDATION_FAILED the explicit model import
-		// answers, pre-classified here because this door is shared by the
-		// entity handler, the collection writer and the processor-output
-		// ingress and none of them should have to re-derive it. Everything
-		// else the walker rejects keeps the generic wrap.
-		if errors.Is(err, importer.ErrInvalidFieldName) {
+		if errors.Is(err, schema.ErrInvalidFieldName) {
+			// A field name the wire jsonPath grammar cannot address is a
+			// client contract violation with a concrete remedy — rename the
+			// key — so it gets the same 400 VALIDATION_FAILED the explicit
+			// model import answers.
 			return common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 		}
-		return fmt.Errorf("failed to walk data: %w", err)
-	}
-	extended, err := schema.Extend(modelNode, incomingModel, desc.ChangeLevel)
-	if err != nil {
-		return fmt.Errorf("change level violation: %w", err)
+		var levelErr *schema.ChangeLevelError
+		if errors.As(err, &levelErr) {
+			// Only a genuine changeLevelError refusal wears this label — its
+			// remedy (raise the configured changeLevel) is specific to it.
+			return fmt.Errorf("change level violation: %w", err)
+		}
+		var unsupportedErr *schema.UnsupportedValueError
+		if errors.As(err, &unsupportedErr) {
+			// A value schema.Admit's traversal cannot classify at all is a
+			// caller-side contract violation (a raw float64 leaking through
+			// without json.UseNumber decoding, or a Go type node never
+			// produces), not a tenant-contract one — its own text names a Go
+			// decoding instruction or a %T-formatted Go type, neither of
+			// which belongs in a 4xx body. Every production ingress decodes
+			// with json.UseNumber, so this is unreachable today; marking it
+			// here is what keeps it unreachable in the response too, should
+			// that ever change (security review L1).
+			return fmt.Errorf("%w: schema admission failed: %w", ErrInternalSchema, err)
+		}
+		// Anything else (validation depth exceeded, an internal admit
+		// error) is a different failure with a different remedy; wrapping
+		// it as a "change level violation" would be dishonest about what
+		// went wrong (final review M4).
+		return fmt.Errorf("schema admission failed: %w", err)
 	}
 
 	// Guard: if any unique key field would become non-scalar in the extended
@@ -162,6 +177,19 @@ func ValidateDescriptor(desc *spi.ModelDescriptor, data any) []schema.Validation
 	return schema.Validate(node, data)
 }
 
+// maxRenderedValidationErrors bounds how many ValidationError entries
+// ValidationErrorsToError renders verbatim into the joined message. Validate
+// emits one entry per offending path with no cap of its own — a 10 MiB body
+// of undeclared one-character fields can carry hundreds of thousands of them
+// — so joining every entry into one string made the 400 response body
+// proportional to the attacker's request size rather than bounded. Entries
+// past the cap are summarized as "... and N more" instead of dropped
+// silently, so the response still says how big the mismatch was. This bounds
+// only the RENDERED STRING: HasUnknownSchemaElement and FirstIncompatibleType
+// (see their own doc comments) read the full errs slice directly and are
+// unaffected by where the string truncates.
+const maxRenderedValidationErrors = 32
+
 // ValidationErrorsToError converts a []ValidationError to a single error,
 // preserving the concatenation style used by validateOrExtend.
 //
@@ -173,11 +201,20 @@ func ValidateDescriptor(desc *spi.ModelDescriptor, data any) []schema.Validation
 // to the generic "validation failed: ..." wrap, classified as
 // BAD_REQUEST downstream.
 func ValidationErrorsToError(errs []schema.ValidationError) error {
-	msgs := make([]string, len(errs))
-	for i, e := range errs {
+	rendered := errs
+	truncated := false
+	if len(rendered) > maxRenderedValidationErrors {
+		rendered = rendered[:maxRenderedValidationErrors]
+		truncated = true
+	}
+	msgs := make([]string, len(rendered))
+	for i, e := range rendered {
 		msgs[i] = e.Error()
 	}
 	joined := fmt.Sprintf("validation failed: %s", strings.Join(msgs, "; "))
+	if truncated {
+		joined = fmt.Sprintf("%s; ... and %d more", joined, len(errs)-maxRenderedValidationErrors)
+	}
 	if first := schema.FirstIncompatibleType(errs); first != nil {
 		return &IncompatibleTypeError{
 			Path:          first.Path,

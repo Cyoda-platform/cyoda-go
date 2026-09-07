@@ -294,13 +294,27 @@ func isComparisonOp(op spi.FilterOp) bool {
 
 // isLeafPushable is the LEAF-LEVEL pushability decision: it layers a
 // type-family check on top of the op-level isPushable. A comparison leaf
-// (isComparisonOp) whose DECLARED type set is polymorphic (len > 1, i.e. its
-// stored values may span different type families / SQLite storage classes) is
-// NOT pushable on sqlite: json_extract preserves each stored scalar's native
+// (isComparisonOp) whose DECLARED type set is polymorphic (len > 1) is NOT
+// pushable on sqlite: json_extract preserves each stored scalar's native
 // storage class and SQLite never equates different classes (30 = '30' is
 // false), so no single-storage-class-bound SQL predicate can be a SUPERSET of
 // every kernel branch. Such leaves are routed to the residual, where the
 // kernel (spi.Prepare/PreparedFilter.Match) evaluates all branches correctly.
+//
+// This is NOT a guard against a monomorphic leaf spanning SQLite storage
+// classes on its own: a single-Declared `[DOUBLE]` leaf routinely holds both
+// INTEGER-class (30) and REAL-class (30.5) stored scalars, and pushing that
+// is fine — SQLite compares INTEGER and REAL numerically (both convert to
+// REAL for the comparison), the same total order the kernel's float64
+// compare gives. The real danger the gate guards against is TEXT landing in
+// the same predicate as a numeric comparison: SQLite's storage-class
+// ordering (NULL < INTEGER/REAL < TEXT < BLOB) would then override the
+// kernel's type-directed compare and silently diverge from it. That never
+// happens within a single Declared type — the JSON-kind admission rule keeps
+// a value that would classify as STRING out of any field declared numeric,
+// and vice versa — so `len(f.Declared) > 1` (more than one JSON kind
+// observed for the field) is exactly the condition where a TEXT/numeric mix
+// becomes possible, which is what this check catches.
 //
 // DELIBERATE MIRROR DIVERGENCE from postgres: postgres's `->>` extraction
 // stringifies every stored scalar to text, so a single text bind IS already a

@@ -42,6 +42,11 @@ func TestValidate_ObjectOrArrayUnionValidatesTheSelectedBranch(t *testing.T) {
 	model.SetChild("both", objectOrArray())
 
 	cases := []struct{ doc, want string }{
+		// Admit's schema-op path names every element "both[]" — Extend's
+		// checkBranch never had per-element indices, since it compared
+		// models, not documents — but a document-facing ValidationError
+		// renders Change.DocPath, the concrete index the document held
+		// (ruling 23, final review I3).
 		{`{"both":["x"]}`, "both[0]: value of type STRING is not compatible with [INTEGER]"},
 		{`{"both":{"k":1}}`, "both.k: value of type INTEGER is not compatible with [STRING]"},
 		{`{"both":{"nope":"v"}}`, "both.nope: unexpected field not present in model"},
@@ -168,16 +173,36 @@ func TestValidate_NullFollowsTheDeclaration(t *testing.T) {
 }
 
 // An ARRAY node whose element was never observed — the empty-array seed the
-// codec preserves — still declares "array" and nothing else.
+// codec preserves — still declares "array" and nothing else (a kind mismatch
+// still names it, not "no value"). Content, though, is now judged the same
+// way Extend has always judged it (Task 8: Validate shares Admit's gate with
+// Extend): an array that has never been observed with real content has never
+// had its element type recorded, so admitting one is schema learning —
+// ARRAY_ELEMENTS — which strict validation (no ChangeLevel at all) always
+// refuses. Before Task 8, Validate had no concept of "was this ever
+// observed" and accepted array content silently whenever the declared
+// element was nil; that silent acceptance is exactly the asymmetry with
+// Extend the unification closes.
+//
+// Width is a different story: a fixture built like this one — no
+// ObserveArrayWidth call, so MaxWidth is 0 — never records a ReasonArrayWidth
+// change at all (see admit.go's array(), which only compares against an
+// OBSERVED width): a width of 0 means the branch has never actually seen an
+// array, which is what every model loaded from storage looks like (the wire
+// form does not carry MaxWidth), not a real constraint of "no more than
+// zero elements".
 func TestValidate_UnobservedElementArrayStillDeclaresArray(t *testing.T) {
 	model := NewObjectNode()
 	model.SetChild("a", NewArrayNode(nil))
 
-	if errs := Validate(model, decodeJSON(t, `{"a":["x"]}`)); len(errs) != 0 {
-		t.Errorf("Validate({\"a\":[\"x\"]}) = %v, want no errors", errs)
+	wantMsg := "a: array element type has never been observed; the document supplies array"
+	errs := Validate(model, decodeJSON(t, `{"a":["x"]}`))
+	if len(errs) != 1 || errs[0].Error() != wantMsg {
+		t.Errorf("Validate({\"a\":[\"x\"]}) = %v, want a single %q", errs, wantMsg)
 	}
-	errs := Validate(model, decodeJSON(t, `{"a":"x"}`))
-	if len(errs) != 1 || errs[0].Error() != "a: expected array, got string" {
-		t.Errorf("got %v, want a single \"a: expected array, got string\"", errs)
+
+	kindMismatch := Validate(model, decodeJSON(t, `{"a":"x"}`))
+	if len(kindMismatch) != 1 || kindMismatch[0].Error() != "a: expected array, got string" {
+		t.Errorf("got %v, want a single \"a: expected array, got string\"", kindMismatch)
 	}
 }
