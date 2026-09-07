@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +38,18 @@ type dispatcher struct {
 	cat      *catalog
 	conn     *grpc.ClientConn
 	memberID string
+
+	// sendMu serialises every write to the stream: the request loop and the
+	// keep-alive ticker both send, and grpc-go forbids concurrent SendMsg on
+	// one stream. Compute-node implementations must do the same.
+	sendMu sync.Mutex
+}
+
+// send is the only place this client writes to its stream.
+func (d *dispatcher) send(stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent], ce *cepb.CloudEvent) error {
+	d.sendMu.Lock()
+	defer d.sendMu.Unlock()
+	return stream.Send(ce)
 }
 
 // newDispatcher creates a dispatcher targeting the given cyoda gRPC endpoint.
@@ -82,7 +95,7 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create join event: %w", err)
 	}
-	if err := stream.Send(joinCE); err != nil {
+	if err := d.send(stream, joinCE); err != nil {
 		return nil, fmt.Errorf("failed to send join event: %w", err)
 	}
 	slog.Info("join event sent", "pkg", "compute-test-client")
@@ -153,7 +166,7 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 				slog.Error("processor dispatch failed", "pkg", "compute-test-client", "error", err)
 				continue
 			}
-			if err := stream.Send(resp); err != nil {
+			if err := d.send(stream, resp); err != nil {
 				slog.Error("failed to send processor response", "pkg", "compute-test-client", "error", err)
 			}
 
@@ -163,7 +176,7 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 				slog.Error("criteria dispatch failed", "pkg", "compute-test-client", "error", err)
 				continue
 			}
-			if err := stream.Send(resp); err != nil {
+			if err := d.send(stream, resp); err != nil {
 				slog.Error("failed to send criteria response", "pkg", "compute-test-client", "error", err)
 			}
 
@@ -173,7 +186,7 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 				slog.Error("function dispatch failed", "pkg", "compute-test-client", "error", err)
 				continue
 			}
-			if err := stream.Send(resp); err != nil {
+			if err := d.send(stream, resp); err != nil {
 				slog.Error("failed to send function response", "pkg", "compute-test-client", "error", err)
 			}
 
@@ -213,7 +226,7 @@ func (d *dispatcher) keepAliveLoop(ctx context.Context, stream grpc.BidiStreamin
 				slog.Error("failed to create keep-alive event", "pkg", "compute-test-client", "error", err)
 				continue
 			}
-			if err := stream.Send(ce); err != nil {
+			if err := d.send(stream, ce); err != nil {
 				slog.Error("failed to send keep-alive", "pkg", "compute-test-client", "error", err)
 				return
 			}
