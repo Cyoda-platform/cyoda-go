@@ -132,7 +132,6 @@ func isolateBranch(n *ModelNode, k NodeKind) *ModelNode {
 		if a.Element() != nil {
 			out.SetElement(a.Element())
 		}
-		out.ObserveArrayWidth(a.MaxWidth())
 	}
 	return out
 }

@@ -18,8 +18,6 @@ const (
 	ReasonNewField
 	// ReasonNewKind — a path does not declare the value's JSON kind.
 	ReasonNewKind
-	// ReasonArrayWidth — an array is wider than any observed so far.
-	ReasonArrayWidth
 	// ReasonArrayElement — an array observed without content learns its
 	// element type.
 	ReasonArrayElement
@@ -70,11 +68,6 @@ type Change struct {
 	// error rendering never has to reach back to the node.
 	DeclaredKinds string
 	Value         any // the value that forced the change, for error rendering
-	// ObservedWidth is the array branch's MaxWidth at the moment a
-	// ReasonArrayWidth change was recorded — the widest count the model has
-	// actually seen — so Validate can name it without reaching back into the
-	// node. Zero and unused for every other Reason.
-	ObservedWidth int
 }
 
 // DepthExceededError marks a document that nested deeper than
@@ -401,7 +394,6 @@ func (a *admitter) array(model *ModelNode, arr []any, path, docPath string, dept
 	elemPath := path + "[]"
 
 	var elemOverlay *ModelNode
-	widened := false
 
 	if exArr.Element() == nil {
 		// The array was observed, but never with content, so it declares no
@@ -461,37 +453,13 @@ func (a *admitter) array(model *ModelNode, arr []any, path, docPath string, dept
 		}
 	}
 
-	// A width of 0 means the array branch has never actually observed a
-	// width, not that it is pinned at zero — every model this function is
-	// handed after a real load starts here, because the wire form has never
-	// carried MaxWidth (Diff and Apply both leave it out of the persisted
-	// delta/schema, and neither reads it back on replay). Comparing len(arr)
-	// against an unobserved baseline would charge ARRAY_LENGTH for an array
-	// of any length at all, including one identical to what originally
-	// defined the field — exactly a value the model already admits. Once a
-	// width HAS been observed (above 0), growing past it is a genuine,
-	// meaningful change.
-	widthChanged := exArr.MaxWidth() > 0 && len(arr) > exArr.MaxWidth()
-	if widthChanged {
-		a.record(Change{
-			Path: path, DocPath: docPath, Reason: ReasonArrayWidth,
-			Required: spi.ChangeLevelArrayLength, DeclaredKinds: declaredKindNames(model),
-			Value: arr, ObservedWidth: exArr.MaxWidth(),
-		})
-		widened = true
-	}
-
-	if elemOverlay == nil && !widened {
+	// An array's length is not part of the model: the branch declares its
+	// element, and a list of any length is held by that element. Only the
+	// element can change.
+	if elemOverlay == nil {
 		return nil, nil
 	}
-	overlay := NewArrayNode(elemOverlay)
-	// Record the overlay's own width whenever one is returned, regardless of
-	// which branch above produced it — an element-learning or element-type
-	// overlay must still describe an array of THIS length, or Describe's
-	// in-memory derivation would disagree with walkArray (which always calls
-	// ObserveArrayWidth(len(arr)), empty arrays included).
-	overlay.ObserveArrayWidth(len(arr))
-	return overlay, nil
+	return NewArrayNode(elemOverlay), nil
 }
 
 // Describe derives the model fragment a value implies, with no stored model

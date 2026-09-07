@@ -55,21 +55,15 @@ func Merge(a, b *ModelNode) *ModelNode {
 	if aa, ba := a.Array(), b.Array(); aa != nil || ba != nil {
 		result.DeclareKind(KindArray)
 		var elem *ModelNode
-		width := 0
 		if aa != nil {
 			elem = aa.Element()
-			width = aa.MaxWidth()
 		}
 		if ba != nil {
 			elem = Merge(elem, ba.Element())
-			if w := ba.MaxWidth(); w > width {
-				width = w
-			}
 		}
 		if elem != nil {
 			result.SetElement(elem)
 		}
-		result.ObserveArrayWidth(width)
 	}
 
 	// A concrete scalar observation on either side collapses the marker, which

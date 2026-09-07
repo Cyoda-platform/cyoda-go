@@ -213,16 +213,3 @@ func TestFieldsMap(t *testing.T) {
 		t.Error("missing $.n.b")
 	}
 }
-
-func TestFieldsArrayMaxWidth(t *testing.T) {
-	root := NewObjectNode()
-	arrNode := NewArrayNode(NewLeafNode(Integer))
-	arrNode.ObserveArrayWidth(5)
-	root.SetChild("nums", arrNode)
-
-	m := root.FieldsMap()
-	f := m["$.nums[*]"]
-	if f.MaxWidth != 5 {
-		t.Errorf("expected MaxWidth 5, got %d", f.MaxWidth)
-	}
-}

@@ -51,22 +51,3 @@ func TestObjectNodeAddChild(t *testing.T) {
 		t.Errorf("expected the scalar branch, got %v", got.Kinds())
 	}
 }
-
-func TestArrayBranchTracksWidth(t *testing.T) {
-	node := schema.NewArrayNode(schema.NewLeafNode(schema.Integer))
-	if node.Array().MaxWidth() != 0 {
-		t.Errorf("a fresh array branch has observed no width, got %d", node.Array().MaxWidth())
-	}
-	node.ObserveArrayWidth(3)
-	if got := node.Array().MaxWidth(); got != 3 {
-		t.Errorf("expected max width 3, got %d", got)
-	}
-	node.ObserveArrayWidth(5)
-	if got := node.Array().MaxWidth(); got != 5 {
-		t.Errorf("expected max width 5, got %d", got)
-	}
-	node.ObserveArrayWidth(2)
-	if got := node.Array().MaxWidth(); got != 5 {
-		t.Errorf("the widest observed wins, got %d", got)
-	}
-}

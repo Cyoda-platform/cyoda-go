@@ -2,7 +2,6 @@ package exporter
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -113,14 +112,13 @@ func (e *SimpleViewExporter) describeElements(
 ) {
 	elem := arr.Array().Element()
 	if elem.Object() == nil && elem.Array() == nil {
-		// The width is this array's: it is the one these elements belong to.
-		desc["."+name+suffix] = widthDescriptor(typeNames(elem.DeclaredTypes()), arr)
+		desc["."+name+suffix] = typeNames(elem.DeclaredTypes())
 		return
 	}
 
 	// Scalar branch of elements observed as both a scalar and a container.
 	if sc := elem.Scalar(); sc != nil && len(sc.Types()) > 0 {
-		desc["."+name+suffix] = widthDescriptor(typeNames(sc.Types()), arr)
+		desc["."+name+suffix] = typeNames(sc.Types())
 	}
 
 	if elem.Object() != nil {
@@ -158,15 +156,6 @@ func typeNames(types []schema.DataType) string {
 		names[i] = dt.String()
 	}
 	return "[" + strings.Join(names, ", ") + "]"
-}
-
-// widthDescriptor decorates an element type descriptor with the widest array
-// observed at that level, when one was recorded.
-func widthDescriptor(td string, arr *schema.ModelNode) string {
-	if a := arr.Array(); a != nil && a.MaxWidth() > 0 {
-		return fmt.Sprintf("(%s x %d)", td, a.MaxWidth())
-	}
-	return td
 }
 
 // sortedModel returns an ordered map representation for deterministic JSON output.

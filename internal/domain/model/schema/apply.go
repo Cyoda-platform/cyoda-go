@@ -13,9 +13,7 @@ import (
 // commutativity and validation-monotonicity.
 //
 // Apply does not mutate base — a fresh tree is produced via the
-// codec's Marshal/Unmarshal round-trip. Note that this round-trip
-// drops the observed array widths, which the persistence format does
-// not carry.
+// codec's Marshal/Unmarshal round-trip.
 //
 // base must be non-nil. An empty delta yields a clean clone of base.
 func Apply(base *ModelNode, delta spi.SchemaDelta) (*ModelNode, error) {
@@ -180,7 +178,6 @@ func applyAddKindBranch(root *ModelNode, op SchemaOp) error {
 		if a.Element() != nil {
 			target.SetElement(Merge(target.Array().Element(), a.Element()))
 		}
-		target.ObserveArrayWidth(a.MaxWidth())
 	}
 	return nil
 }
@@ -226,8 +223,7 @@ func resolvePath(root *ModelNode, path string) (*ModelNode, error) {
 }
 
 // cloneNode produces an independent copy of node via the codec
-// round-trip. Observed array widths are not preserved (mirrors the
-// persistence format).
+// round-trip.
 func cloneNode(node *ModelNode) (*ModelNode, error) {
 	raw, err := Marshal(node)
 	if err != nil {
