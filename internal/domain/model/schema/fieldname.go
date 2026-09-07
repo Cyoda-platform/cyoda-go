@@ -23,6 +23,28 @@ import (
 // door, with a diagnostic naming the key to rename.
 var ErrInvalidFieldName = errors.New("invalid field name")
 
+// InvalidFieldNameError is ValidateFieldName's typed failure. Unwrap keeps
+// errors.Is(err, ErrInvalidFieldName) true for every existing caller — the
+// sentinel is still the classification signal handlers key on — while Path
+// gives a caller that only holds the raw error (Validate's backstop, when a
+// bad name bubbles up as a hard abort rather than a Change) enough to
+// render a ValidationError without parsing the message string apart. Path
+// is Admit's own path convention (leading dot, no "$" prefix): parent + "."
+// + name.
+type InvalidFieldNameError struct {
+	Path   string
+	Parent string
+	Name   string
+}
+
+func (e *InvalidFieldNameError) Error() string {
+	return fmt.Sprintf("%s: %q in object at %q — a field name must be addressable as a jsonPath segment: "+
+		"ASCII letters, digits, %q and %q only, and not empty; rename the field",
+		ErrInvalidFieldName, e.Name, renderParentForMessage(e.Parent), "_", "-")
+}
+
+func (e *InvalidFieldNameError) Unwrap() error { return ErrInvalidFieldName }
+
 // ValidateFieldName reports whether name is usable as a single jsonPath
 // segment, i.e. whether a query could ever address the field. parent is the
 // canonical path of the object that declares it, carried only so the
@@ -37,9 +59,7 @@ func ValidateFieldName(parent, name string) error {
 	if IsSegmentName(name) {
 		return nil
 	}
-	return fmt.Errorf("%w: %q in object at %q — a field name must be addressable as a jsonPath segment: "+
-		"ASCII letters, digits, %q and %q only, and not empty; rename the field",
-		ErrInvalidFieldName, name, renderParentForMessage(parent), "_", "-")
+	return &InvalidFieldNameError{Path: parent + "." + name, Parent: parent, Name: name}
 }
 
 // renderParentForMessage normalises parent onto the "$"-rooted spelling both

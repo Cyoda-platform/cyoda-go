@@ -119,6 +119,9 @@ func Validate(model *ModelNode, data any) []ValidationError {
 		if ve, ok := depthExceededValidationError(err); ok {
 			return []ValidationError{ve}
 		}
+		if ve, ok := invalidFieldNameValidationError(err); ok {
+			return []ValidationError{ve}
+		}
 		if ve, ok := unsupportedValueValidationError(err); ok {
 			return []ValidationError{ve}
 		}
@@ -152,6 +155,30 @@ func depthExceededValidationError(err error) (ValidationError, bool) {
 		Path:    wirePath(de.Path),
 		Message: depthExceededMessage,
 		Kind:    ErrKindGeneric,
+	}, true
+}
+
+// invalidFieldNameValidationError recognises *InvalidFieldNameError as a
+// backstop (re-review finding #2): under continueOnInvalidName, an
+// unspellable nested name is ordinarily captured as a ReasonInvalidFieldName
+// Change and never reaches here as a raw error — describeAt escalates it
+// from its own throwaway admitter up the call chain. This exists for
+// whatever path does not go through that escalation (a future call site
+// that forgets it, or a caller that reaches node/object/array directly with
+// continueOnInvalidName unset while still wanting Validate's rendering): a
+// bad name is not a Go-internals leak the generic "unsupported value"
+// fallback is for, it is exactly the unknown-field/stale-schema signal
+// strict validation renders it as everywhere else — so it gets that
+// rendering here too, not a worse one.
+func invalidFieldNameValidationError(err error) (ValidationError, bool) {
+	var fe *InvalidFieldNameError
+	if !errors.As(err, &fe) {
+		return ValidationError{}, false
+	}
+	return ValidationError{
+		Path:    wirePath(fe.Path),
+		Message: "unexpected field not present in model",
+		Kind:    ErrKindUnknownElement,
 	}, true
 }
 

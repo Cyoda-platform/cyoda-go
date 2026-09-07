@@ -409,3 +409,85 @@ func TestValidate_UnsupportedGoValueDoesNotLeakType(t *testing.T) {
 		t.Errorf("Path = %q, want %q", errs[0].Path, "f")
 	}
 }
+
+// countUnknownElement returns how many errs carry {Kind: ErrKindUnknownElement,
+// Path: path}, so a test can assert "exactly one" without caring how many
+// OTHER errors (a different Kind, or a different Path) the document also
+// produces.
+func countUnknownElement(errs []schema.ValidationError, path string) int {
+	n := 0
+	for _, e := range errs {
+		if e.Kind == schema.ErrKindUnknownElement && e.Path == path {
+			n++
+		}
+	}
+	return n
+}
+
+// Re-review finding #2: describeAt built its own admitter from scratch
+// (`&admitter{}`), so re-entering it from object's new-field branch,
+// wrongKind's container branch, or array's element-learning branch lost
+// Validate's continueOnInvalidName flag — an unspellable name ANYWHERE
+// under a brand-new subtree still hard-aborted the whole traversal with
+// ErrInvalidFieldName, which M4's catch-all then rendered as
+// ErrKindGeneric/"unsupported value" with an empty Path: worse than
+// before this fix wave. All three shapes must instead report the nested
+// bad name as the ordinary ErrKindUnknownElement at its own path, AND
+// keep reporting a sibling unknown field elsewhere in the same document
+// (the abort must be gone here too, not just at the top level ruling 21
+// already covers).
+
+// Shape 1: object's new-field branch (admit.go's object(), the describeAt
+// call for a field the model does not declare at all).
+func TestValidate_UnspellableNameNestedUnderNewField(t *testing.T) {
+	model := schema.NewObjectNode() // declares nothing
+
+	errs := schema.Validate(model, map[string]any{
+		"newfield": map[string]any{"bad name": num("1")},
+		"sibling":  "x",
+	})
+	if got := countUnknownElement(errs, "newfield.bad name"); got != 1 {
+		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "newfield.bad name", got, errs)
+	}
+	if got := countUnknownElement(errs, "sibling"); got != 1 {
+		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
+	}
+}
+
+// Shape 2: wrongKind's container branch (a declared scalar receiving an
+// object — the describeAt call wrongKind makes to derive the overlay for
+// the mismatched container).
+func TestValidate_UnspellableNameNestedUnderWrongKindContainer(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("x", schema.NewLeafNode(schema.String)) // scalar only, no object branch
+
+	errs := schema.Validate(model, map[string]any{
+		"x":       map[string]any{"bad name": num("1")},
+		"sibling": "y",
+	})
+	if got := countUnknownElement(errs, "x.bad name"); got != 1 {
+		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "x.bad name", got, errs)
+	}
+	if got := countUnknownElement(errs, "sibling"); got != 1 {
+		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
+	}
+}
+
+// Shape 3: array's element-learning branch (an array whose element was
+// never observed — the describeAt call array() makes per element while
+// learning one).
+func TestValidate_UnspellableNameNestedUnderArrayElementLearning(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("a", schema.NewArrayNode(nil)) // array, element never observed
+
+	errs := schema.Validate(model, map[string]any{
+		"a":       []any{map[string]any{"bad name": num("1")}},
+		"sibling": "z",
+	})
+	if got := countUnknownElement(errs, "a[0].bad name"); got != 1 {
+		t.Errorf("want exactly 1 ErrKindUnknownElement at %q, got %d in %v", "a[0].bad name", got, errs)
+	}
+	if got := countUnknownElement(errs, "sibling"); got != 1 {
+		t.Errorf("sibling unknown field must also be reported, got %d in %v", got, errs)
+	}
+}

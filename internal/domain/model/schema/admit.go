@@ -308,7 +308,7 @@ func (a *admitter) wrongKind(model *ModelNode, data any, path, docPath string, d
 	})
 	switch data.(type) {
 	case map[string]any, []any:
-		return describeAt(data, path, docPath, depth)
+		return a.describeAt(data, path, docPath, depth)
 	default:
 		return NewLeafNode(observed), nil
 	}
@@ -364,7 +364,7 @@ func (a *admitter) object(model *ModelNode, m map[string]any, path, docPath stri
 				Path: childPath, DocPath: childDocPath, Reason: ReasonNewField,
 				Required: spi.ChangeLevelStructural, DeclaredKinds: declaredKindNames(model), Value: val,
 			})
-			derived, err := describeAt(val, childPath, childDocPath, depth+1)
+			derived, err := a.describeAt(val, childPath, childDocPath, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -430,7 +430,7 @@ func (a *admitter) array(model *ModelNode, arr []any, path, docPath string, dept
 		} else {
 			for i, item := range arr {
 				itemDocPath := fmt.Sprintf("%s[%d]", docPath, i)
-				derived, err := describeAt(item, elemPath, itemDocPath, depth+1)
+				derived, err := a.describeAt(item, elemPath, itemDocPath, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -499,7 +499,8 @@ func (a *admitter) array(model *ModelNode, arr []any, path, docPath string, dept
 // the depth-0 entry point into describeAt; see that doc comment for the
 // mechanics.
 func Describe(v any, path string) (*ModelNode, error) {
-	return describeAt(v, path, path, 0)
+	a := &admitter{}
+	return a.describeAt(v, path, path, 0)
 }
 
 // describeAt is Describe's recursive form, carrying the depth a brand-new
@@ -512,8 +513,24 @@ func Describe(v any, path string) (*ModelNode, error) {
 // unbounded instead of failing closed: node's own guard is never reached,
 // because none of these calls go through node.
 //
-// It runs in a throwaway admitter whose recorded changes are discarded: only
-// the overlay's content is wanted here, never a verdict.
+// It is a method on the CALLING admitter — not a free function building its
+// own from scratch — specifically so a.continueOnInvalidName reaches the
+// inner traversal: re-review finding #2 was that a bare &admitter{} here
+// silently reverted to the abort-on-first-bad-name behaviour for anything
+// nested inside a brand-new subtree, which strict validation had already
+// turned off at the top level. It still runs that inner traversal in its
+// own throwaway admitter (`inner`), not `a` itself, and still discards
+// `inner.changes` wholesale EXCEPT for ReasonInvalidFieldName entries: the
+// caller already recorded its own single Change for whatever triggered this
+// describeAt call (a new field, a wrong-kind container, a learned array
+// element), so echoing every ordinary field/type/kind change from inside a
+// brand-new subtree would be redundant — but an unspellable nested name is
+// not redundant, it is the ONE thing this subtree can still fail on under
+// continueOnInvalidName, and it must reach Validate's real changes list or
+// it is silently dropped with no diagnostic at all. Multi-level nesting
+// (a new field inside a new field inside a new field) still surfaces: each
+// describeAt call escalates from its own `inner` to its own `a`, chaining
+// all the way up to the outermost admitter Validate built.
 //
 // A container value dispatches straight into object/array against a node
 // that already declares the container's kind but has no children, rather
@@ -533,26 +550,33 @@ func Describe(v any, path string) (*ModelNode, error) {
 // unconditionally charges and sets an element — including NewLeafNode(Null)
 // for an empty array, matching walkArray's NewArrayNode(NewLeafNode(Null))
 // — so array never returns nil when called from here.
-func describeAt(v any, path, docPath string, depth int) (*ModelNode, error) {
+func (a *admitter) describeAt(v any, path, docPath string, depth int) (*ModelNode, error) {
 	if depth >= MaxValidationDepth {
 		return nil, &DepthExceededError{Path: path}
 	}
-	a := &admitter{}
+	inner := &admitter{continueOnInvalidName: a.continueOnInvalidName}
+	var overlay *ModelNode
+	var err error
 	switch val := v.(type) {
 	case map[string]any:
-		overlay, err := a.object(NewObjectNode(), val, path, docPath, depth, spi.ChangeLevelType)
-		if err != nil {
-			return nil, err
-		}
-		if overlay == nil {
+		overlay, err = inner.object(NewObjectNode(), val, path, docPath, depth, spi.ChangeLevelType)
+		if overlay == nil && err == nil {
 			overlay = NewObjectNode()
 		}
-		return overlay, nil
 	case []any:
-		return a.array(NewArrayNode(nil), val, path, docPath, depth, spi.ChangeLevelType)
+		overlay, err = inner.array(NewArrayNode(nil), val, path, docPath, depth, spi.ChangeLevelType)
 	default:
-		return a.node(emptyNode(), v, path, docPath, depth, spi.ChangeLevelType)
+		overlay, err = inner.node(emptyNode(), v, path, docPath, depth, spi.ChangeLevelType)
 	}
+	for _, c := range inner.changes {
+		if c.Reason == ReasonInvalidFieldName {
+			a.record(c)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return overlay, nil
 }
 
 // emptyNode is a node declaring nothing: every value is a change against it.
