@@ -129,8 +129,8 @@ Set or update the change level on a model. Meaningful for locked models; unlocke
 
 Change levels are hierarchical (most restrictive to most permissive):
 
-- `ARRAY_LENGTH` — permits only increases in uni-type array width
-- `ARRAY_ELEMENTS` — allows multi-type array changes without adding new types
+- `ARRAY_LENGTH` — permits no schema change at all: the floor of the ladder. An array's length is not part of the model, so a longer array is held here exactly as at every other level
+- `ARRAY_ELEMENTS` — allows an array's element to learn its first scalar type, or to widen the one it declares; nothing outside an array may change
 - `TYPE` — permits modifications to existing types
 - `STRUCTURAL` — allows fundamental model changes: new fields, and giving a path a kind it does not yet declare
 

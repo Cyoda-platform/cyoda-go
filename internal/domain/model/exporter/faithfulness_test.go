@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -50,12 +51,6 @@ func derive(t *testing.T, doc string) *schema.ModelNode {
 // the field paths and the search surface use ($.m[*][*]). Rendering it as
 // `.m[*]: NULL` said the elements have no type at all, when what has no type of
 // its own is the intermediate array.
-//
-// The "(T x N)" width decoration these tests see comes from ArrayInfo, which is
-// carried on the in-memory tree only — the schema codec does not persist it —
-// so an export served from the store shows the bare type. The e2e tests assert
-// that form; the width assertions here pin the descriptor's composition, not a
-// guarantee to callers.
 func TestSimpleView_NestedArrayOfPrimitives(t *testing.T) {
 	root := exportSimpleView(t, derive(t, `{"m":[["A"],["B","C"],["D"]]}`))
 	rootBucket := bucket(t, root, "$")
@@ -63,7 +58,7 @@ func TestSimpleView_NestedArrayOfPrimitives(t *testing.T) {
 	if _, stale := rootBucket[".m[*]"]; stale {
 		t.Errorf(".m[*] must not describe an array of arrays: %v", rootBucket)
 	}
-	if got, want := rootBucket[".m[*][*]"], "(STRING x 2)"; got != want {
+	if got, want := rootBucket[".m[*][*]"], "STRING"; got != want {
 		t.Errorf(".m[*][*] = %v, want %v", got, want)
 	}
 }
@@ -90,7 +85,7 @@ func TestSimpleView_NestedArrayOfObjects(t *testing.T) {
 func TestSimpleView_NestedArrayInsideArrayElement(t *testing.T) {
 	model := exportSimpleView(t, derive(t, `{"items":[{"m":[["A"]]}]}`))
 	elem := bucket(t, model, "$.items[*]")
-	if got, want := elem[".m[*][*]"], "(STRING x 1)"; got != want {
+	if got, want := elem[".m[*][*]"], "STRING"; got != want {
 		t.Errorf(".m[*][*] = %v, want %v", got, want)
 	}
 }
@@ -106,7 +101,7 @@ func TestSimpleView_KindUnionShowsBothBranches(t *testing.T) {
 	if got, want := rootBucket[".poly"], "STRING"; got != want {
 		t.Errorf(".poly = %v, want %v (the scalar branch)", got, want)
 	}
-	if got, want := rootBucket[".poly[*]"], "(STRING x 2)"; got != want {
+	if got, want := rootBucket[".poly[*]"], "STRING"; got != want {
 		t.Errorf(".poly[*] = %v, want %v (the array branch)", got, want)
 	}
 }
@@ -163,7 +158,7 @@ func TestSimpleView_ArrayElementUnionShowsBothBranches(t *testing.T) {
 	model := exportSimpleView(t, union)
 	rootBucket := bucket(t, model, "$")
 
-	if got, want := rootBucket[".m[*]"], "(STRING x 1)"; got != want {
+	if got, want := rootBucket[".m[*]"], "STRING"; got != want {
 		t.Errorf(".m[*] = %v, want %v (the scalar-element branch)", got, want)
 	}
 	if got := rootBucket["#.m"]; got != "OBJECT" {
@@ -204,5 +199,34 @@ func TestJSONSchema_KindUnionShowsBothBranches(t *testing.T) {
 	}
 	if !kinds["array"] || !kinds["string"] {
 		t.Errorf("poly branches = %v, want both array and string; body: %s", branches, data)
+	}
+}
+
+// An export describes the model, not the route the model took into memory:
+// the tree Describe derived and the same tree after a storage round trip
+// render byte-identically. Anything the wire form does not carry has no
+// business in the export.
+func TestSimpleView_ExportIsIndependentOfPersistence(t *testing.T) {
+	derived := derive(t, `{"m":[["A"],["B","C"]],"tags":["x","y","z"],"items":[{"sku":"A","n":[1,2]}]}`)
+	encoded, err := spi.MarshalModelNode(derived)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	reloaded, err := spi.UnmarshalModelNode(encoded)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	exp := exporter.NewSimpleViewExporter("LOCKED")
+	fromMemory, err := exp.Export(derived)
+	if err != nil {
+		t.Fatalf("export derived: %v", err)
+	}
+	fromStore, err := exp.Export(reloaded)
+	if err != nil {
+		t.Fatalf("export reloaded: %v", err)
+	}
+	if string(fromMemory) != string(fromStore) {
+		t.Errorf("export depends on how the model reached memory:\n memory %s\n store  %s", fromMemory, fromStore)
 	}
 }

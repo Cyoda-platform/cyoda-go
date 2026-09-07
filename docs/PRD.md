@@ -191,7 +191,7 @@ UNLOCKED ──lock──► LOCKED ──unlock──► UNLOCKED
 | `STRUCTURAL` | New fields added to schema |
 | `TYPE` | Leaf type widening (e.g., int to float) |
 | `ARRAY_ELEMENTS` | Array element type widening |
-| `ARRAY_LENGTH` | Array width changes only |
+| `ARRAY_LENGTH` | Nothing — the floor of the ladder; an array's length is not part of the model |
 
 **Export Formats:** `JSON_SCHEMA` (standard JSON Schema) and `SIMPLE_VIEW` (lossless internal representation).
 

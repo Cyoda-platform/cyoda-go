@@ -344,7 +344,6 @@ func TestAdmit_OverlayTouchesOnlyTheChangedPath(t *testing.T) {
 func TestAdmit_MixedKindArrayJudgedElementByElement(t *testing.T) {
 	model := schema.NewObjectNode()
 	model.SetChild("tags", schema.NewArrayNode(schema.NewLeafNode(schema.Double)))
-	model.Object().Child("tags").ObserveArrayWidth(2)
 
 	doc := map[string]any{"tags": []any{num("2147483648"), "hello"}}
 
@@ -387,25 +386,9 @@ func TestAdmit_ContainerRules(t *testing.T) {
 			wantRequired: spi.ChangeLevelStructural,
 		},
 		{
-			name: "a wider array is ARRAY_LENGTH, against an observed width",
-			model: func() *schema.ModelNode {
-				m := schema.NewObjectNode()
-				arr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-				arr.ObserveArrayWidth(2)
-				m.SetChild("a", arr)
-				return m
-			},
-			doc:          map[string]any{"a": []any{"x", "y", "z"}},
-			wantChanges:  1,
-			wantRequired: spi.ChangeLevelArrayLength,
-		},
-		{
-			// A width of 0 is what every array branch reloaded from storage
-			// has (the wire form never carries MaxWidth), not a real "no
-			// more than zero elements" constraint — an array of any length
-			// against it is not a width change. Element type still matches
-			// (String), so this document is fully admitted.
-			name: "an unobserved width (0) is not a constraint: no change",
+			// An array's length is not part of the model; the element type
+			// matches (String), so this document is fully admitted.
+			name: "a longer array is not a change",
 			model: func() *schema.ModelNode {
 				m := schema.NewObjectNode()
 				m.SetChild("a", schema.NewArrayNode(schema.NewLeafNode(schema.String)))
@@ -419,7 +402,6 @@ func TestAdmit_ContainerRules(t *testing.T) {
 			model: func() *schema.ModelNode {
 				m := schema.NewObjectNode()
 				arr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-				arr.ObserveArrayWidth(2)
 				m.SetChild("a", arr)
 				return m
 			},
@@ -433,7 +415,6 @@ func TestAdmit_ContainerRules(t *testing.T) {
 				inner := schema.NewObjectNode()
 				inner.SetChild("k", schema.NewLeafNode(schema.String))
 				arr := schema.NewArrayNode(inner)
-				arr.ObserveArrayWidth(1)
 				m := schema.NewObjectNode()
 				m.SetChild("a", arr)
 				return m
@@ -545,11 +526,11 @@ func TestAdmit_WrongKindContainerDescribesTheValue(t *testing.T) {
 	}
 }
 
-// An empty container is still an observation of its kind. importer.Walk has
-// always recorded an empty object/array as declaring that kind with no
-// content (walkObject's bare NewObjectNode(), walkArray's
-// NewArrayNode(NewLeafNode(Null))); Describe must produce the identical
-// shape, or a brand-new field whose only observed value is {} or [] would
+// An empty container is still an observation of its kind. A derived model
+// has always recorded an empty object/array as declaring that kind with no
+// content (a bare NewObjectNode(), a NewArrayNode(NewLeafNode(Null)));
+// Describe must produce the identical shape, or a brand-new field whose
+// only observed value is {} or [] would
 // either vanish from the derived model or persist as bytes that differ from
 // what importer.Walk would have written for the same document — breaking the
 // parity oracle's byte-identity and dropping the $.tags[*] descriptor
@@ -581,7 +562,7 @@ func TestAdmit_EmptyContainerFieldStillDeclaresItsKind(t *testing.T) {
 		if child == nil || child.Array() == nil {
 			t.Fatalf("field %q must declare an (empty) array branch, got %v", "a", child)
 		}
-		// Not just "an array branch" — the SAME element walkArray gives an
+		// Not just "an array branch" — the SAME element Describe gives an
 		// empty array: a non-nil, Nullable leaf declaring exactly [NULL].
 		// NewArrayNode(nil) (a declared-but-unobserved element) is a
 		// different wire shape and drops the $.a[*] field descriptor.
@@ -600,7 +581,7 @@ func TestAdmit_EmptyContainerFieldStillDeclaresItsKind(t *testing.T) {
 
 // The array traversal Admit itself runs (not Describe's fresh-field
 // shortcut) must charge the same promotion checkBranch always did: incoming
-// arrays from importer.Walk always carry a non-nil element — walkArray gives
+// arrays from importer.Walk always carry a non-nil element — Describe gives
 // even [] a NewLeafNode(Null) element — so an array observed but never with
 // content (a nil element) always learns SOMETHING at ARRAY_ELEMENTS when the
 // document holds an array at that path, whether or not that array is empty.
@@ -708,5 +689,49 @@ func TestAdmit_NestedInvalidFieldNamePropagatesThroughWrongKind(t *testing.T) {
 	}
 	if !errors.Is(err, schema.ErrInvalidFieldName) {
 		t.Errorf("error = %v, want errors.Is(err, schema.ErrInvalidFieldName)", err)
+	}
+}
+
+// An array's length is not part of the model. The array declares its
+// element, and a homogeneous list of any length is held by that element —
+// so a longer array proposes no change, at any level, even against the
+// very tree Describe derived from a shorter one. The three doors agree:
+// Admit records nothing, Validate reports nothing, and Extend at the
+// strictest level returns the model unchanged.
+func TestAdmit_ArrayLengthIsNotASchemaChange(t *testing.T) {
+	model, err := schema.Describe(map[string]any{"a": []any{"x", "y"}}, "")
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	doc := map[string]any{"a": []any{"x", "y", "z"}}
+
+	overlay, changes, err := schema.Admit(model, doc)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("a longer array is not a change; got %+v", changes)
+	}
+	if overlay != nil {
+		t.Errorf("no change means no overlay; got %v", overlay)
+	}
+	if errs := schema.Validate(model, doc); len(errs) != 0 {
+		t.Errorf("Validate must hold a longer array; got %v", errs)
+	}
+
+	before, err := spi.MarshalModelNode(model)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	extended, err := schema.Extend(model, doc, spi.ChangeLevelArrayLength)
+	if err != nil {
+		t.Fatalf("Extend at ARRAY_LENGTH: %v", err)
+	}
+	after, err := spi.MarshalModelNode(extended)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("Extend must leave the model byte-identical:\n before %s\n after  %s", before, after)
 	}
 }

@@ -85,7 +85,7 @@ same test, or it reproduces the defect this rule exists to close.
 - **Numeric- and temporal-leaf model folding is order-dependent under
   concurrent extension, and Cloud should expect this rather than treat it
   as a bug.** Byte-identical convergence remains the contract for
-  structural extension (new fields, new kinds, array width, the nullable
+  structural extension (new fields, new kinds, the nullable
   marker). For numeric- and temporal-leaf widening specifically, the
   property that holds instead is: **every reachable fold is monotone and
   admits every value that was written.** Two nodes applying the same two

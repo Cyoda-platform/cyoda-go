@@ -81,9 +81,6 @@ func changeLevelError(c Change, level spi.ChangeLevel) error {
 	case ReasonNewKind:
 		msg = fmt.Sprintf("new %s branch at %s requires %s level, but level is %q",
 			kindNameFor(c.Value), displayPath(c.Path), c.Required, level)
-	case ReasonArrayWidth:
-		msg = fmt.Sprintf("array width change at %s requires %s level, but level is %q",
-			displayPath(c.Path), c.Required, level)
 	case ReasonArrayElement:
 		msg = fmt.Sprintf("array element type at %s requires ARRAY_ELEMENTS level, but level is %q",
 			displayPath(c.Path), level)

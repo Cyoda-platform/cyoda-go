@@ -79,21 +79,19 @@ func TestExtendArrayElementsRejectsLeafTypeWidening(t *testing.T) {
 	}
 }
 
-// The array already declares a String element and has an OBSERVED width of
-// 3 (ObserveArrayWidth); the document supplies 5 held Strings, so the only
-// change is the width, matching the old test's intent exactly.
-func TestExtendArrayLengthAllowsWidthChange(t *testing.T) {
-	existingArr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-	existingArr.ObserveArrayWidth(3)
+// ARRAY_LENGTH is the floor of the ladder: it permits no schema change at
+// all, and a longer array is not one. The array declares a String element;
+// five held Strings leave it exactly as it was.
+func TestExtendArrayLengthHoldsALongerArray(t *testing.T) {
 	existing := schema.NewObjectNode()
-	existing.SetChild("tags", existingArr)
+	existing.SetChild("tags", schema.NewArrayNode(schema.NewLeafNode(schema.String)))
 	doc := map[string]any{"tags": []any{"a", "b", "c", "d", "e"}}
 	result, err := schema.Extend(existing, doc, spi.ChangeLevelArrayLength)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Object().Child("tags").Array().MaxWidth() != 5 {
-		t.Error("expected width 5")
+	if result != existing {
+		t.Error("no change means Extend returns the existing model itself")
 	}
 }
 

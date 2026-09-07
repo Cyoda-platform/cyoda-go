@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 269 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 270 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -235,6 +235,7 @@ var allTests = []NamedTest{
 	{"TypeAdmissionSearchEqualsTrailingZeros", RunTypeAdmissionSearchEqualsTrailingZeros},
 	{"TypeAdmissionRegistrationYieldsStringLocalDate", RunTypeAdmissionRegistrationYieldsStringLocalDate},
 	{"TypeAdmissionStrictNeverMorePermissiveThanArrayLength", RunTypeAdmissionStrictNeverMorePermissiveThanArrayLength},
+	{"TypeAdmissionLongerArrayHeldAtEveryLevel", RunTypeAdmissionLongerArrayHeldAtEveryLevel},
 
 	{"ModelFieldNameRejected", RunModelFieldNameRejected},
 	{"ModelKindEnforcementRejected", RunModelKindEnforcementRejected},

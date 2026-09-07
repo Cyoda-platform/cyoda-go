@@ -28,7 +28,9 @@ func exportModelE2E(t *testing.T, entityName string, modelVersion int) map[strin
 		t.Fatalf("exportModel %s/%d: expected 200, got %d: %s", entityName, modelVersion, resp.StatusCode, body)
 	}
 	var result map[string]any
-	json.Unmarshal([]byte(body), &result)
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatalf("exportModel %s/%d: body is not JSON: %v: %s", entityName, modelVersion, err, body)
+	}
 	return result
 }
 
@@ -106,25 +108,44 @@ func TestModelExtension_ArrayElements(t *testing.T) {
 	}
 }
 
-// --- Test 9.4: ARRAY_LENGTH changeLevel — only length changes ---
+// --- Test 9.4: a longer array is not a schema change ---
 
+// An array's length is not part of the model, so a longer array is held by
+// the array that declared its element — at ARRAY_LENGTH, the floor of the
+// ladder that permits no schema change, and under strict validation with no
+// changeLevel at all. The model is byte-identical afterwards in both cases.
 func TestModelExtension_ArrayLength(t *testing.T) {
-	const model = "e2e-ext-4"
+	for _, tc := range []struct{ name, model, level string }{
+		{"ARRAY_LENGTH", "e2e-ext-4", "ARRAY_LENGTH"},
+		{"strict", "e2e-ext-4-strict", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Import model from sample with a 2-element array.
+			path := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/1", tc.model)
+			resp := doAuth(t, http.MethodPost, path, `{"name":"Test","items":[1,2],"amount":10,"status":"new"}`)
+			readBody(t, resp)
+			lockModelE2E(t, tc.model, 1)
+			if tc.level != "" {
+				setChangeLevelE2E(t, tc.model, 1, tc.level)
+			}
+			before := exportModelE2E(t, tc.model, 1)
+			if m, _ := before["model"].(map[string]any); len(m) == 0 {
+				t.Fatalf("export carries no model to compare: %v", before)
+			}
 
-	// Import model from sample with a 2-element array.
-	path := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/1", model)
-	resp := doAuth(t, http.MethodPost, path, `{"name":"Test","items":[1,2],"amount":10,"status":"new"}`)
-	readBody(t, resp)
-	lockModelE2E(t, model, 1)
-	setChangeLevelE2E(t, model, 1, "ARRAY_LENGTH")
+			// Create entity with a longer array.
+			entityID := createEntityE2E(t, tc.model, 1, `{"name":"Test","items":[1,2,3,4,5],"amount":10,"status":"new"}`)
 
-	// Create entity with a longer array.
-	entityID := createEntityE2E(t, model, 1, `{"name":"Test","items":[1,2,3,4,5],"amount":10,"status":"new"}`)
-
-	data := getEntityData(t, entityID, "")
-	items, _ := data["items"].([]any)
-	if len(items) != 5 {
-		t.Errorf("expected 5 items, got %d", len(items))
+			data := getEntityData(t, entityID, "")
+			items, _ := data["items"].([]any)
+			if len(items) != 5 {
+				t.Errorf("expected 5 items, got %d", len(items))
+			}
+			after := exportModelE2E(t, tc.model, 1)
+			if fmt.Sprint(before["model"]) != fmt.Sprint(after["model"]) {
+				t.Errorf("a longer array must not move the model\n before: %v\n after:  %v", before["model"], after["model"])
+			}
+		})
 	}
 }
 

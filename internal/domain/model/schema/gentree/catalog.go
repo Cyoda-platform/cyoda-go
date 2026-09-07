@@ -226,12 +226,14 @@ var Catalog = []Fixture{
 		Level:    spi.ChangeLevelStructural,
 	},
 
-	// 3. Array length at ArrayLength level — same element type, just more items.
+	// 3. ArrayLength is the floor: it permits no schema change at all, so an
+	// element widening (Integer -> Double, an ARRAY_ELEMENTS change) is refused.
 	{
-		Name:     "ArrayLengthRejectsElementChangeAtArrayLength",
-		Old:      schema.NewArrayNode(leaf(schema.Integer)),
-		Incoming: []any{json.Number("10"), json.Number("20"), json.Number("30"), json.Number("40")},
-		Level:    spi.ChangeLevelArrayLength,
+		Name:        "ArrayLengthFloorRefusesElementWidening",
+		Old:         schema.NewArrayNode(leaf(schema.Integer)),
+		Incoming:    []any{json.Number("1.5")},
+		Level:       spi.ChangeLevelArrayLength,
+		ExpectError: true,
 	},
 
 	// 4. Array element broaden at ArrayElements level — incoming element type requires broaden.

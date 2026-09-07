@@ -43,9 +43,9 @@ info:
 
     Models support hierarchical change levels (from least to most impactful):
 
-    - ARRAY_LENGTH: Only allows UniTypeArray width increases
+    - ARRAY_LENGTH: Permits no schema change at all — the floor of the ladder (an array's length is not part of the model)
 
-    - ARRAY_ELEMENTS: Permits MultiTypeArray changes without new types
+    - ARRAY_ELEMENTS: Allows an array's element to learn or widen its scalar type
 
     - TYPE: Allows type modifications
 
@@ -248,9 +248,9 @@ tags:
 
       Models support hierarchical change levels (from least to most impactful):
 
-      - ARRAY_LENGTH: Only allows UniTypeArray width increases
+      - ARRAY_LENGTH: Permits no schema change at all — the floor of the ladder (an array's length is not part of the model)
 
-      - ARRAY_ELEMENTS: Permits MultiTypeArray changes without new types
+      - ARRAY_ELEMENTS: Allows an array's element to learn or widen its scalar type
 
       - TYPE: Allows type modifications
 
@@ -4501,9 +4501,9 @@ paths:
         Change levels are hierarchical - allowing a specific level automatically
         allows all less impactful levels:
 
-        1. ARRAY_LENGTH: Only permits increases in UniTypeArray width
+        1. ARRAY_LENGTH: Permits no schema change at all — the floor of the ladder (an array's length is not part of the model)
 
-        2. ARRAY_ELEMENTS: Allows MultiTypeArray changes without new types
+        2. ARRAY_ELEMENTS: Allows an array's element to learn or widen its scalar type
 
         3. TYPE: Permits modifications to existing types
 
