@@ -102,9 +102,9 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260907195430-eaf5de0c1e65
-	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260907195430-eaf5de0c1e65
-	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260907195430-eaf5de0c1e65
+	github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260907200427-93fc9fbbecb3
+	github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260907200427-93fc9fbbecb3
+	github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260907200427-93fc9fbbecb3
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
