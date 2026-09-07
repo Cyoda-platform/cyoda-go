@@ -1,6 +1,6 @@
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
-github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260907195322-f4279e58aab2 h1:s4BqULSn+viLiJjLaGnlDrgxwsEbUyZNZy6WUSPYX6I=
-github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260907195322-f4279e58aab2/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
+github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260907200354-033726fe3e52 h1:u5pZbGnUJi/fA8d7EcH2EPk9mSODs3PiwCkE4rPL9Hw=
+github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260907200354-033726fe3e52/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
