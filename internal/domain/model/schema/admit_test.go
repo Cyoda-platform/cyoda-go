@@ -526,11 +526,11 @@ func TestAdmit_WrongKindContainerDescribesTheValue(t *testing.T) {
 	}
 }
 
-// An empty container is still an observation of its kind. importer.Walk has
-// always recorded an empty object/array as declaring that kind with no
-// content (walkObject's bare NewObjectNode(), walkArray's
-// NewArrayNode(NewLeafNode(Null))); Describe must produce the identical
-// shape, or a brand-new field whose only observed value is {} or [] would
+// An empty container is still an observation of its kind. A derived model
+// has always recorded an empty object/array as declaring that kind with no
+// content (a bare NewObjectNode(), a NewArrayNode(NewLeafNode(Null)));
+// Describe must produce the identical shape, or a brand-new field whose
+// only observed value is {} or [] would
 // either vanish from the derived model or persist as bytes that differ from
 // what importer.Walk would have written for the same document — breaking the
 // parity oracle's byte-identity and dropping the $.tags[*] descriptor
@@ -562,7 +562,7 @@ func TestAdmit_EmptyContainerFieldStillDeclaresItsKind(t *testing.T) {
 		if child == nil || child.Array() == nil {
 			t.Fatalf("field %q must declare an (empty) array branch, got %v", "a", child)
 		}
-		// Not just "an array branch" — the SAME element walkArray gives an
+		// Not just "an array branch" — the SAME element Describe gives an
 		// empty array: a non-nil, Nullable leaf declaring exactly [NULL].
 		// NewArrayNode(nil) (a declared-but-unobserved element) is a
 		// different wire shape and drops the $.a[*] field descriptor.
@@ -581,7 +581,7 @@ func TestAdmit_EmptyContainerFieldStillDeclaresItsKind(t *testing.T) {
 
 // The array traversal Admit itself runs (not Describe's fresh-field
 // shortcut) must charge the same promotion checkBranch always did: incoming
-// arrays from importer.Walk always carry a non-nil element — walkArray gives
+// arrays from importer.Walk always carry a non-nil element — Describe gives
 // even [] a NewLeafNode(Null) element — so an array observed but never with
 // content (a nil element) always learns SOMETHING at ARRAY_ELEMENTS when the
 // document holds an array at that path, whether or not that array is empty.
