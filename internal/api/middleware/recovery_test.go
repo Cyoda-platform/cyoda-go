@@ -177,3 +177,26 @@ func TestRecoveryMiddleware_PanicLogCarriesTheClientTicket(t *testing.T) {
 		t.Errorf("the ticketed line carries no stack, so joining it buys nothing: %v", panicLine["stack"])
 	}
 }
+
+// net/http uses http.ErrAbortHandler as a sentinel: a handler (notably
+// httputil.ReverseProxy when the client hangs up mid-body) panics with it to
+// abort the response silently. Recovery must re-raise it, not treat it as a
+// defect: no log, no 500, no health latch.
+func TestRecoveryMiddlewareReRaisesErrAbortHandler(t *testing.T) {
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+	handler := middleware.Recovery(healthFlag)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	srv := httptest.NewServer(handler) // a real server: net/http swallows the sentinel
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/x")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("expected the connection to be aborted, got status %d", resp.StatusCode)
+	}
+	if !healthFlag.Load() {
+		t.Fatal("ErrAbortHandler must not latch the health flag")
+	}
+}

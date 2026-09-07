@@ -29,6 +29,13 @@ func Recovery(healthFlag *atomic.Bool) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
+					// net/http's own abort sentinel: a handler (ReverseProxy on a
+					// client hang-up mid-body, for one) panics with it to end the
+					// response silently. Re-raise so the server handles it as
+					// designed; it is not a defect and must not latch the node.
+					if rec == http.ErrAbortHandler {
+						panic(rec)
+					}
 					stack := string(debug.Stack())
 					err := fmt.Errorf("panic: %v", rec)
 					// Minted here, not left to WriteError, so the ONLY line
