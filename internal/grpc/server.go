@@ -28,13 +28,6 @@ type CloudEventsServiceImpl struct {
 	searchService     *search.SearchService
 	keepAliveInterval time.Duration
 	keepAliveTimeout  time.Duration
-	// healthFlag is the node health latch the recovery interceptors set on a
-	// panic raised while serving an RPC. The service carries it so a path that
-	// recovers a panic itself can make the same latch decision; the streaming
-	// goroutines deliberately do not latch — they do no engine or store work,
-	// so they contain the panic by evicting the member and the node stays
-	// healthy.
-	healthFlag *atomic.Bool
 }
 
 // Server wraps the gRPC server.
@@ -98,7 +91,6 @@ func NewServer(
 		entityHandler: entityHandler,
 		modelHandler:  modelHandler,
 		searchService: searchService,
-		healthFlag:    healthFlag,
 		// Interim literals: the keep-alive interval and timeout move to
 		// configuration, passed in by the caller.
 		keepAliveInterval: 10 * time.Second,

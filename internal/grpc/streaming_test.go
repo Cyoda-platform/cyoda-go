@@ -126,7 +126,8 @@ func makeKeepAliveEvent() *cepb.CloudEvent {
 
 // tryEnqueue is enqueue that drops the event when the buffer is full: once the
 // member is evicted nobody drains recvCh, and a blocking send would leak the
-// feeding goroutine.
+// feeding goroutine. It writes to the same channel closeRecv closes, so a test
+// that does both must stop its feeder before closing.
 func (m *mockBidiStream) tryEnqueue(ce *cepb.CloudEvent) {
 	select {
 	case m.recvCh <- ce:

@@ -124,13 +124,13 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 				member.UpdateLastSeen()
 			case EntityProcessorCalculationResponse:
 				member.UpdateLastSeen()
-				s.handleProcessorResponse(member, evtPayload)
+				handleProcessorResponse(member, evtPayload)
 			case EntityCriteriaCalculationResponse:
 				member.UpdateLastSeen()
-				s.handleCriteriaResponse(member, evtPayload)
+				handleCriteriaResponse(member, evtPayload)
 			case EntityFunctionCalculationResponse:
 				member.UpdateLastSeen()
-				s.handleFunctionResponse(member, evtPayload)
+				handleFunctionResponse(member, evtPayload)
 			case EventAckResponse:
 				member.UpdateLastSeen()
 			default:
@@ -214,7 +214,7 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, member *Memb
 
 // handleProcessorResponse routes a processor calculation response to the
 // pending request on the given member.
-func (s *CloudEventsServiceImpl) handleProcessorResponse(member *Member, payload json.RawMessage) {
+func handleProcessorResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
@@ -247,7 +247,7 @@ func (s *CloudEventsServiceImpl) handleProcessorResponse(member *Member, payload
 
 // handleCriteriaResponse routes a criteria calculation response to the
 // pending request on the given member.
-func (s *CloudEventsServiceImpl) handleCriteriaResponse(member *Member, payload json.RawMessage) {
+func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
@@ -283,7 +283,7 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(member *Member, payload 
 
 // handleFunctionResponse routes a function calculation response to the
 // pending request on the given member.
-func (s *CloudEventsServiceImpl) handleFunctionResponse(member *Member, payload json.RawMessage) {
+func handleFunctionResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID  string           `json:"requestId"`
 		Success    bool             `json:"success"`
