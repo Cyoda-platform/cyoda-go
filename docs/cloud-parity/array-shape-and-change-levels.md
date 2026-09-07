@@ -37,7 +37,7 @@ Levels are hierarchical; each permits everything below it.
 | Level | Permits |
 |---|---|
 | `ARRAY_LENGTH` | **No schema change at all.** This is the floor of the ladder: a locked model at this level accepts exactly the documents the model already holds, a longer array included, and refuses every write that would move the model. |
-| `ARRAY_ELEMENTS` | An array's element learning its first scalar type (an array only ever observed empty), or widening the scalar type it declares. Nothing outside an array may change. An object inside an array is a fresh scope: its fields cost `TYPE`. |
+| `ARRAY_ELEMENTS` | An array's element learning its first scalar type (an array branch that declares no element yet), or widening the scalar type it declares; the level keeps applying through nested array levels. Nothing outside an array may change. An object inside an array is a fresh scope: its fields cost `TYPE`. |
 | `TYPE` | A leaf anywhere widening its declared scalar type. |
 | `STRUCTURAL` | A new field, or a path gaining a kind it does not declare. |
 
@@ -111,5 +111,8 @@ starts from this contract.
   a longer array is accepted over HTTP at `ARRAY_LENGTH` and under strict
   validation, and the exported model does not move.
 - `e2e/parity/type_admission.go` —
+  `RunTypeAdmissionLongerArrayHeldAtEveryLevel`: on every backend, a longer
+  array is accepted at `ARRAY_LENGTH` and under strict validation and the
+  exported model is byte-identical afterwards;
   `RunTypeAdmissionStrictNeverMorePermissiveThanArrayLength`: the floor grants
-  no permission a `TYPE`-level change needs, on every backend.
+  no permission a `TYPE`-level change needs.

@@ -486,3 +486,53 @@ func RunTypeAdmissionStrictNeverMorePermissiveThanArrayLength(t *testing.T, fixt
 		})
 	}
 }
+
+// RunTypeAdmissionLongerArrayHeldAtEveryLevel asserts that an array's length
+// is not part of the model: a longer array is held by the array that
+// declared its element, at ARRAY_LENGTH — the floor of the ladder, which
+// permits no schema change at all — and under strict validation with no
+// changeLevel set, and the exported model is byte-identical afterwards on
+// every backend.
+func RunTypeAdmissionLongerArrayHeldAtEveryLevel(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	for _, tc := range []struct{ name, level string }{
+		{"ARRAY_LENGTH", "ARRAY_LENGTH"},
+		{"strict", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			modelName := "typeadm-longer-array-" + strings.ToLower(tc.name)
+			const modelVersion = 1
+			if err := c.ImportModel(t, modelName, modelVersion, `{"tags":["a","b"]}`); err != nil {
+				t.Fatalf("ImportModel: %v", err)
+			}
+			if err := c.LockModel(t, modelName, modelVersion); err != nil {
+				t.Fatalf("LockModel: %v", err)
+			}
+			if tc.level != "" {
+				if err := c.SetChangeLevel(t, modelName, modelVersion, tc.level); err != nil {
+					t.Fatalf("SetChangeLevel: %v", err)
+				}
+			}
+			before, err := c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+			if err != nil {
+				t.Fatalf("ExportModel before: %v", err)
+			}
+			status, body, err := c.CreateEntityRaw(t, modelName, modelVersion, `{"tags":["a","b","c","d","e"]}`)
+			if err != nil {
+				t.Fatalf("CreateEntityRaw: %v", err)
+			}
+			if status != http.StatusOK {
+				t.Fatalf("a longer array must be held at %q; got %d: %s", tc.name, status, body)
+			}
+			after, err := c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+			if err != nil {
+				t.Fatalf("ExportModel after: %v", err)
+			}
+			if string(before) != string(after) {
+				t.Errorf("a longer array must not move the model\n  before: %s\n  after:  %s", before, after)
+			}
+		})
+	}
+}

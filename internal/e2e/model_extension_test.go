@@ -28,7 +28,9 @@ func exportModelE2E(t *testing.T, entityName string, modelVersion int) map[strin
 		t.Fatalf("exportModel %s/%d: expected 200, got %d: %s", entityName, modelVersion, resp.StatusCode, body)
 	}
 	var result map[string]any
-	json.Unmarshal([]byte(body), &result)
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatalf("exportModel %s/%d: body is not JSON: %v: %s", entityName, modelVersion, err, body)
+	}
 	return result
 }
 
@@ -127,6 +129,9 @@ func TestModelExtension_ArrayLength(t *testing.T) {
 				setChangeLevelE2E(t, tc.model, 1, tc.level)
 			}
 			before := exportModelE2E(t, tc.model, 1)
+			if m, _ := before["model"].(map[string]any); len(m) == 0 {
+				t.Fatalf("export carries no model to compare: %v", before)
+			}
 
 			// Create entity with a longer array.
 			entityID := createEntityE2E(t, tc.model, 1, `{"name":"Test","items":[1,2,3,4,5],"amount":10,"status":"new"}`)
