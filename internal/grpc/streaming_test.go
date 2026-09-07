@@ -117,17 +117,35 @@ func makeJoinEvent(t *testing.T, tenantID string, tags []string) *cepb.CloudEven
 
 func makeKeepAliveEvent(t *testing.T) *cepb.CloudEvent {
 	t.Helper()
-	ce, err := NewCloudEvent(CalculationMemberKeepAliveEvent, map[string]any{"success": true})
-	if err != nil {
-		t.Fatalf("failed to create keep alive event: %v", err)
-	}
+	return makeKeepAliveEventNoT()
+}
+
+// makeKeepAliveEventNoT is makeKeepAliveEvent for goroutines that may outlive
+// the test body, where calling t is not allowed. Marshalling a one-field map
+// cannot fail, so there is nothing to report.
+func makeKeepAliveEventNoT() *cepb.CloudEvent {
+	ce, _ := NewCloudEvent(CalculationMemberKeepAliveEvent, map[string]any{"success": true})
 	return ce
 }
 
-func newServiceForTest() *CloudEventsServiceImpl {
-	return &CloudEventsServiceImpl{
-		registry: NewMemberRegistry(),
+// tryEnqueue is enqueue that drops the event when the buffer is full: once the
+// member is evicted nobody drains recvCh, and a blocking send would leak the
+// feeding goroutine.
+func (m *mockBidiStream) tryEnqueue(ce *cepb.CloudEvent) {
+	select {
+	case m.recvCh <- ce:
+	default:
 	}
+}
+
+func newServiceForTest() *CloudEventsServiceImpl {
+	return newServiceWithKeepAlive(10*time.Second, 30*time.Second)
+}
+
+// newServiceWithKeepAlive builds a streaming-capable service. The keep-alive
+// interval and timeout have no defaults: every service that streams sets them.
+func newServiceWithKeepAlive(interval, timeout time.Duration) *CloudEventsServiceImpl {
+	return &CloudEventsServiceImpl{registry: NewMemberRegistry(), keepAliveInterval: interval, keepAliveTimeout: timeout}
 }
 
 func m2mContext(tenantID spi.TenantID) context.Context {
@@ -250,10 +268,9 @@ func TestStreaming_MemberRegisteredAndUnregistered(t *testing.T) {
 // unbounded ping-pong storm that pins both processes at 100% CPU. Each side
 // must ping only on its own ticker (see TestStreaming_ServerSendsKeepAliveOnTicker).
 func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
-	svc := newServiceForTest()
 	// Long ticker interval so the server's own keep-alive ticker cannot fire
 	// during the test window and be mistaken for an echo.
-	svc.SetKeepAliveConfig(time.Hour, 2*time.Hour)
+	svc := newServiceWithKeepAlive(time.Hour, 2*time.Hour)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
@@ -310,10 +327,9 @@ func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
 // fresh (via the client echoing on its own schedule) now that the server no
 // longer echoes inbound keep-alives.
 func TestStreaming_ServerSendsKeepAliveOnTicker(t *testing.T) {
-	svc := newServiceForTest()
 	// Short interval so the ticker fires quickly; large timeout so the member
 	// is never reaped during the test.
-	svc.SetKeepAliveConfig(30*time.Millisecond, time.Hour)
+	svc := newServiceWithKeepAlive(30*time.Millisecond, time.Hour)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
@@ -351,9 +367,8 @@ func TestStreaming_ServerSendsKeepAliveOnTicker(t *testing.T) {
 // capped at roughly one keep-alive per ticker interval regardless of how
 // eagerly the client echoes.
 func TestStreaming_EchoingClientDoesNotStorm(t *testing.T) {
-	svc := newServiceForTest()
 	const interval = 20 * time.Millisecond
-	svc.SetKeepAliveConfig(interval, time.Hour)
+	svc := newServiceWithKeepAlive(interval, time.Hour)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
@@ -997,9 +1012,8 @@ func TestStreaming_FunctionResponse_PropagatesError(t *testing.T) {
 }
 
 func TestStreaming_KeepAliveTimeout(t *testing.T) {
-	svc := newServiceForTest()
 	// Set very short keep-alive for testing.
-	svc.SetKeepAliveConfig(50*time.Millisecond, 100*time.Millisecond)
+	svc := newServiceWithKeepAlive(50*time.Millisecond, 100*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
