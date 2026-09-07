@@ -1,6 +1,6 @@
 ---
 topic: cli.health
-title: "cyoda health — liveness probe"
+title: "cyoda health — readiness probe"
 stability: stable
 see_also:
   - telemetry
