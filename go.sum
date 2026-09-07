@@ -77,10 +77,16 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260907011727-8214aefa0dfc h1:7
 github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260907011727-8214aefa0dfc/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260907010634-7106d5a92c8e h1:ox7JHWtKlwW2C9jwhgxelzt9WboDGnkgBO3XL1nDh9s=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260907010634-7106d5a92c8e/go.mod h1:UXY8RH9Gh3Q2p+4hot3rWIkifBkVyBPW3bkmiL+k/iY=
+github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260907011915-c5a2311a0ac4 h1:3rJDX4ORteYxsRgczlYA6JW3cMG823vbKO7T1RGdSr8=
+github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.4-0.20260907011915-c5a2311a0ac4/go.mod h1:JMI3jp39W6qnqXa5dTZMoOl26A1ixShY9poOpxUpJGE=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260907010634-7106d5a92c8e h1:s/GxVzdYIXFlo8M46V5jDqYGNDvVdCaCtQ06YHzM+W4=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260907010634-7106d5a92c8e/go.mod h1:mwbZYBAf6JrvFbHbIoKHjXXigPTvvkNfEbcvOpAJLLE=
+github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260907011915-c5a2311a0ac4 h1:vCYC7oPIwK+vSahGkZC4dizpjPvBgiIgP3zg7GZX8mU=
+github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.4-0.20260907011915-c5a2311a0ac4/go.mod h1:qGboIofJaLmz413wNATrqFr0bCd0B4QzsPq9Qw6BTtI=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260907010634-7106d5a92c8e h1:SxZHYmQE0IxjS3nHTDDSSVaWXBuPAEEA2Op0x7wHH4E=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260907010634-7106d5a92c8e/go.mod h1:sKQPCxyMoHazQYd7ulc+vIgZ6X4f79MbXpLeGwMBkdw=
+github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260907011915-c5a2311a0ac4 h1:g8iLtCGP+bZiOyX6MuWoASHa1JCY7LO+kRR0VsI8F4Y=
+github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.4-0.20260907011915-c5a2311a0ac4/go.mod h1:9Hm5k0A0MPUl8UNWnHQIuW0Z3s+CKcg2V0vWTOMXjQs=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
