@@ -90,6 +90,20 @@ Metrics are exported via `otlpmetrichttp` with a periodic reader. The following 
 
 OIDC subsystem metrics (`oidc_*`) are exposed at `/metrics` whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`.
 
+Postgres connection-pool metrics (`cyoda_storage_pool_*`) are Postgres-only — exposed
+whenever the Postgres storage plugin is active — and always on, regardless of
+`CYODA_OTEL_ENABLED`: pool saturation is the dominant outage mode this instrumentation
+guards against, so it does not wait on OTLP push. Every data point carries a `backend`
+attribute (`postgres`):
+
+- `cyoda.storage.pool.connections` — `Int64ObservableGauge` — pool connections by state; labeled by `backend` and `state` (`acquired`, `idle`, `constructing`)
+- `cyoda.storage.pool.max_connections` — `Int64ObservableGauge` — configured maximum pool size; labeled by `backend`
+- `cyoda.storage.pool.acquires` — `Int64ObservableCounter` — successful connection acquires; labeled by `backend`
+- `cyoda.storage.pool.empty_acquires` — `Int64ObservableCounter` — acquires that found the pool empty and had to wait; labeled by `backend`
+- `cyoda.storage.pool.canceled_acquires` — `Int64ObservableCounter` — acquires cancelled by their context before a connection was available; labeled by `backend`
+- `cyoda.storage.pool.acquire_duration` — `Float64ObservableCounter`, unit `s` — cumulative time spent in acquire, all acquires; labeled by `backend`
+- `cyoda.storage.pool.empty_acquire_wait` — `Float64ObservableCounter`, unit `s` — cumulative time callers waited because the pool was empty; labeled by `backend`
+
 **Logs**
 
 cyoda-go uses `log/slog` for structured logging. OTel log emission (OTLP log exporter) is not currently wired. Logs are written to stderr only.

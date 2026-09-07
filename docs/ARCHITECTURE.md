@@ -1661,9 +1661,16 @@ OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal
 
 **Plugin-level instrumentation:** plugins are free to add their own
 spans and metrics under a plugin-specific namespace. The `memory`
-and `postgres` plugins do not emit custom plugin-level telemetry;
-their behaviour is fully captured by the core transaction /
-workflow / dispatch spans listed above. Other plugins may add
+plugin does not emit custom plugin-level telemetry; its behaviour is
+fully captured by the core transaction / workflow / dispatch spans
+listed above. The `postgres` plugin registers seven
+`cyoda.storage.pool.*` instruments (connections by state, max
+connections, acquires, empty acquires, canceled acquires, acquire
+duration, empty-acquire wait — all labeled `backend="postgres"`) from
+`pgxpool.Stat()`, unconditionally at `NewFactory` — pool saturation is
+the dominant outage mode this instrumentation guards against, so
+these are always on regardless of `CYODA_OTEL_ENABLED`, unlike the
+core transaction/dispatch metrics above. Other plugins may add
 detailed instrumentation scoped to their own namespace as their
 hot-path semantics warrant.
 
