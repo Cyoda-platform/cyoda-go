@@ -186,13 +186,13 @@ func RunSchemaExtensionsSequentialFoldAcrossRequests(t *testing.T, fixture Backe
 // exactly representable; it was refused only by association with values
 // that are not.
 //
-// Admission judges the value: a DOUBLE leaf holds a number inside DOUBLE's
-// range that needs at most 15 significant digits, so 2147483648 is held
-// under ARRAY_LENGTH with the model unmoved. Every integer above 2^53 needs
-// at least 16 significant digits, so the mantissa boundary is exactly where
-// it was — every backend must still fail closed there, and this scenario
-// asserts both halves so a later "any whole number is fine" simplification
-// still cannot pass.
+// Admission judges the value: a decimal of at most 15 significant digits
+// round-trips uniquely through a binary64 double, which is what DOUBLE's
+// findability and the lossless float8 pushdown need, so 2147483648 (ten
+// digits) is held under ARRAY_LENGTH with the model unmoved, while
+// 9007199254740993 (sixteen) is not — every backend must still fail closed
+// there, and this scenario asserts both halves so a later "any whole number
+// is fine" simplification still cannot pass.
 func RunNumericClassificationDoubleSchemaAcceptsWholeNumber(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

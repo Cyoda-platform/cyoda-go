@@ -54,11 +54,33 @@ func TestValidate_ArrayElementLeafRejectsNonScalarKinds(t *testing.T) {
 	if len(errs) != 1 {
 		t.Fatalf("got %d errors %v, want exactly 1", len(errs), errs)
 	}
-	// Admit judges every array element against one shared element path
-	// ("a[]"), not a per-index path — Extend's checkBranch never had
-	// per-element indices either, since it compared models, not documents.
-	if want := "a[]: expected scalar, got object"; errs[0].Error() != want {
+	// Admit's schema-op path names every element "a[]" — Extend's
+	// checkBranch never had per-element indices, since it compared models,
+	// not documents — but a document-facing ValidationError renders
+	// Change.DocPath, the concrete index the document held (ruling 23,
+	// final review I3).
+	if want := "a[0]: expected scalar, got object"; errs[0].Error() != want {
 		t.Errorf("message = %q, want %q", errs[0].Error(), want)
+	}
+}
+
+// Ruling 23 (final review I3): two bad elements in the same array must be
+// distinguishable — each gets the document's own index, not the schema-op
+// path every element of the array shares.
+func TestValidate_TwoBadArrayElementsGetDistinctPaths(t *testing.T) {
+	model := NewObjectNode()
+	model.SetChild("a", NewArrayNode(NewLeafNode(String)))
+
+	errs := Validate(model, decodeJSON(t, `{"a":[{"k":"v"},{"k":"w"}]}`))
+	if len(errs) != 2 {
+		t.Fatalf("got %d errors %v, want exactly 2", len(errs), errs)
+	}
+	gotPaths := map[string]bool{}
+	for _, e := range errs {
+		gotPaths[e.Path] = true
+	}
+	if !gotPaths["a[0]"] || !gotPaths["a[1]"] {
+		t.Errorf("want distinct paths a[0] and a[1], got %v", errs)
 	}
 }
 

@@ -58,13 +58,13 @@ func TestModelExtension_WholeNumberIntoDoubleLeaf(t *testing.T) {
 // exactly representable, and it was refused only by association with values
 // that are not.
 //
-// Admission judges the value: a DOUBLE leaf holds a number inside DOUBLE's
-// range that needs at most 15 significant digits, so 2147483648 is held at
-// the most restrictive level with no model change. Every integer above 2^53
-// needs at least 16 significant digits, so the mantissa boundary is exactly
-// where it was — 9007199254740993 is still a genuine type change: refused
-// below TYPE with the level named, and at TYPE it widens the leaf rather
-// than slipping in silently.
+// Admission judges the value: a decimal of at most 15 significant digits
+// round-trips uniquely through a binary64 double, which is what DOUBLE's
+// findability and the lossless float8 pushdown need, so 2147483648 (ten
+// digits) is held at the most restrictive level with no model change, while
+// 9007199254740993 (sixteen) is not — it is still a genuine type change:
+// refused below TYPE with the level named, and at TYPE it widens the leaf
+// rather than slipping in silently.
 func TestModelExtension_WholeNumberPastIntegerRangeIntoDoubleLeaf(t *testing.T) {
 	const model = "e2e-double-long"
 	importModelSampleE2E(t, model, 1, `{"amount":10.5}`)

@@ -42,10 +42,12 @@ func TestValidate_ObjectOrArrayUnionValidatesTheSelectedBranch(t *testing.T) {
 	model.SetChild("both", objectOrArray())
 
 	cases := []struct{ doc, want string }{
-		// Admit judges every array element against one shared element path
-		// ("both[]"), not a per-index path — Extend's checkBranch never had
-		// per-element indices either, since it compared models, not documents.
-		{`{"both":["x"]}`, "both[]: value of type STRING is not compatible with [INTEGER]"},
+		// Admit's schema-op path names every element "both[]" — Extend's
+		// checkBranch never had per-element indices, since it compared
+		// models, not documents — but a document-facing ValidationError
+		// renders Change.DocPath, the concrete index the document held
+		// (ruling 23, final review I3).
+		{`{"both":["x"]}`, "both[0]: value of type STRING is not compatible with [INTEGER]"},
 		{`{"both":{"k":1}}`, "both.k: value of type INTEGER is not compatible with [STRING]"},
 		{`{"both":{"nope":"v"}}`, "both.nope: unexpected field not present in model"},
 	}

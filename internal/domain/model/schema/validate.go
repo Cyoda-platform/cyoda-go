@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // MaxValidationDepth caps recursion in Validate to defend against stack
@@ -99,16 +101,28 @@ func FirstIncompatibleType(errs []ValidationError) *ValidationError {
 // It returns a slice of validation errors; an empty slice means the data is
 // valid.
 //
-// This asks Admit the same question Extend asks and renders every change as
-// a refusal, so strict validation and the change-level gate cannot disagree
-// about what a field accepts.
+// This asks Admit's own traversal the same question Extend asks and renders
+// every change as a refusal, so strict validation and the change-level gate
+// cannot disagree about what a field accepts. It builds the admitter
+// directly (rather than calling the public Admit) with continueOnInvalidName
+// set: strict validation never establishes a field
+// (docs/cloud-parity/model-field-name-grammar.md), so an unspellable field
+// name is not the grammar-violation Admit/Extend refuse outright — it is
+// just another field the stored model does not declare, ReasonNewField's
+// ordinary unknown-field case renders identically — and, unlike Extend,
+// finding one must not abort the rest of the document.
 func Validate(model *ModelNode, data any) []ValidationError {
-	_, changes, err := Admit(model, data)
+	a := &admitter{continueOnInvalidName: true}
+	_, err := a.node(model, data, "", "", 0, spi.ChangeLevelType)
+	changes := a.changes
 	if err != nil {
 		if ve, ok := depthExceededValidationError(err); ok {
 			return []ValidationError{ve}
 		}
-		return []ValidationError{{Message: err.Error(), Kind: ErrKindGeneric}}
+		if ve, ok := unsupportedValueValidationError(err); ok {
+			return []ValidationError{ve}
+		}
+		return []ValidationError{{Message: "unsupported value", Kind: ErrKindGeneric}}
 	}
 	errs := make([]ValidationError, 0, len(changes))
 	for _, c := range changes {
@@ -141,6 +155,24 @@ func depthExceededValidationError(err error) (ValidationError, bool) {
 	}, true
 }
 
+// unsupportedValueValidationError recognises Admit's *UnsupportedValueError
+// (final review M4) and renders it with a fixed, client-safe message: the
+// case is a caller-side contract violation (a raw float64 leaking through
+// without json.UseNumber decoding, or a Go type node never produces at all),
+// and its Kind field exists for logs/callers, not for echoing a %T-formatted
+// Go type name into a client-facing ValidationError.Message.
+func unsupportedValueValidationError(err error) (ValidationError, bool) {
+	var ue *UnsupportedValueError
+	if !errors.As(err, &ue) {
+		return ValidationError{}, false
+	}
+	return ValidationError{
+		Path:    wirePath(ue.Path),
+		Message: "unsupported value",
+		Kind:    ErrKindGeneric,
+	}, true
+}
+
 // wirePath adapts Admit's path convention onto the wire shape Validate's
 // ValidationError.Path has always used.
 //
@@ -164,15 +196,21 @@ func validationErrorFor(c Change) ValidationError {
 		expected := make([]DataType, len(c.Declared))
 		copy(expected, c.Declared)
 		return ValidationError{
-			Path:          wirePath(c.Path),
+			Path:          wirePath(c.DocPath),
 			Message:       fmt.Sprintf("value of type %s is not compatible with %v", c.Observed, c.Declared),
 			Kind:          ErrKindIncompatibleType,
 			ExpectedTypes: expected,
 			ActualType:    c.Observed,
 		}
-	case ReasonNewField:
+	case ReasonNewField, ReasonInvalidFieldName:
+		// Strict validation never establishes a field
+		// (docs/cloud-parity/model-field-name-grammar.md), so an
+		// unspellable name here is not the grammar violation Admit/Extend
+		// refuse outright — it renders exactly like any other field the
+		// stored model does not declare: the stale-schema refresh-and-retry
+		// signal.
 		return ValidationError{
-			Path:    wirePath(c.Path),
+			Path:    wirePath(c.DocPath),
 			Message: "unexpected field not present in model",
 			Kind:    ErrKindUnknownElement,
 		}
@@ -191,7 +229,7 @@ func validationErrorFor(c Change) ValidationError {
 			n = len(arr)
 		}
 		return ValidationError{
-			Path:    wirePath(c.Path),
+			Path:    wirePath(c.DocPath),
 			Message: fmt.Sprintf("array wider than observed: %d elements, model has seen at most %d", n, c.ObservedWidth),
 			Kind:    ErrKindGeneric,
 		}
@@ -207,13 +245,13 @@ func validationErrorFor(c Change) ValidationError {
 		// schema learning, and c.Value (the array itself) confirms what the
 		// document supplied rather than what the model failed to find.
 		return ValidationError{
-			Path:    wirePath(c.Path),
+			Path:    wirePath(c.DocPath),
 			Message: "array element type has never been observed; the document supplies " + JSONKindName(c.Value),
 			Kind:    ErrKindGeneric,
 		}
 	default:
 		return ValidationError{
-			Path:    wirePath(c.Path),
+			Path:    wirePath(c.DocPath),
 			Message: "expected " + c.DeclaredKinds + ", got " + JSONKindName(c.Value),
 			Kind:    ErrKindGeneric,
 		}
@@ -241,7 +279,7 @@ func validationErrorForNewKind(c Change) ValidationError {
 			expected := make([]DataType, len(c.Declared))
 			copy(expected, c.Declared)
 			return ValidationError{
-				Path:          wirePath(c.Path),
+				Path:          wirePath(c.DocPath),
 				Message:       fmt.Sprintf("value of type %s is not compatible with %v", c.Observed, c.Declared),
 				Kind:          ErrKindIncompatibleType,
 				ExpectedTypes: expected,
@@ -251,14 +289,14 @@ func validationErrorForNewKind(c Change) ValidationError {
 	case map[string]any, []any:
 		if !declaresContainer {
 			return ValidationError{
-				Path:    wirePath(c.Path),
+				Path:    wirePath(c.DocPath),
 				Message: "expected scalar, got " + JSONKindName(c.Value),
 				Kind:    ErrKindGeneric,
 			}
 		}
 	}
 	return ValidationError{
-		Path:    wirePath(c.Path),
+		Path:    wirePath(c.DocPath),
 		Message: "expected " + c.DeclaredKinds + ", got " + JSONKindName(c.Value),
 		Kind:    ErrKindGeneric,
 	}

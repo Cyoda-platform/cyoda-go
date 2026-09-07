@@ -2,6 +2,7 @@ package schema_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -307,6 +308,56 @@ func TestValidate_UnknownFieldKeepsItsKind(t *testing.T) {
 	}
 }
 
+// Ruling 21 (final review I1): strict validation does not establish fields
+// (docs/cloud-parity/model-field-name-grammar.md: "Strict validation ...
+// does not establish fields, so the rule does not apply there"), so an
+// unspellable field name must render as the ordinary unknown-field error —
+// the stale-schema refresh-and-retry signal handlers already key on — not
+// as ErrKindGeneric via ErrInvalidFieldName. That sentinel's 400 belongs
+// only to the doors that DO establish a field set: Admit's ChangeLevel-
+// driven extension, and importer.Walk.
+func TestValidate_UnspellableFieldNameIsUnknownElement(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("known", schema.NewLeafNode(schema.String))
+
+	errs := schema.Validate(model, map[string]any{"known": "x", "bad name": num("1")})
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %v", errs)
+	}
+	if errs[0].Kind != schema.ErrKindUnknownElement {
+		t.Errorf("Kind = %v, want ErrKindUnknownElement", errs[0].Kind)
+	}
+	if errs[0].Path != "bad name" {
+		t.Errorf("Path = %q, want %q", errs[0].Path, "bad name")
+	}
+	if errs[0].Message != "unexpected field not present in model" {
+		t.Errorf("Message = %q, want the ordinary unknown-field message", errs[0].Message)
+	}
+}
+
+// Admit aborts its traversal at the first unspellable field name it finds
+// (the write door must still refuse the whole write); strict validation must
+// not inherit that abort — a document with two bad names gets two errors,
+// not one.
+func TestValidate_TwoUnspellableFieldNamesBothReported(t *testing.T) {
+	model := schema.NewObjectNode()
+
+	errs := schema.Validate(model, map[string]any{"bad name": num("1"), "bad name 2": num("2")})
+	if len(errs) != 2 {
+		t.Fatalf("want 2 errors, got %v", errs)
+	}
+	gotPaths := map[string]bool{}
+	for _, e := range errs {
+		if e.Kind != schema.ErrKindUnknownElement {
+			t.Errorf("Kind = %v, want ErrKindUnknownElement for %q", e.Kind, e.Path)
+		}
+		gotPaths[e.Path] = true
+	}
+	if !gotPaths["bad name"] || !gotPaths["bad name 2"] {
+		t.Errorf("want both bad field names reported, got %v", errs)
+	}
+}
+
 // A width change is a genuine count mismatch, not a kind mismatch: the
 // element type is fine, the document just carries more elements than the
 // model has ever observed at this path. Naming both counts is the accurate
@@ -331,5 +382,30 @@ func TestValidate_ArrayWiderThanObservedNamesBothCounts(t *testing.T) {
 	}
 	if errs[0].Kind != schema.ErrKindGeneric {
 		t.Errorf("Kind = %v, want ErrKindGeneric", errs[0].Kind)
+	}
+}
+
+// Final review M4: Validate's catch-all used to echo the raw Go error
+// (including a %T-formatted type name) straight into ValidationError.Message
+// — a caller-side contract violation (json.UseNumber not used, or a value
+// the decoder never produces) leaking Go internals into a client-facing
+// field. It must render a fixed message and, when the traversal knows one,
+// the offending path — never the Go type.
+func TestValidate_UnsupportedGoValueDoesNotLeakType(t *testing.T) {
+	model := schema.NewObjectNode()
+	model.SetChild("f", schema.NewLeafNode(schema.String))
+
+	// A raw float64, not json.Number — the shape json.UseNumber is meant to
+	// prevent, and the one caller-contract violation reachable through the
+	// public API's own decoding path.
+	errs := schema.Validate(model, map[string]any{"f": 3.14})
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %v", errs)
+	}
+	if strings.Contains(errs[0].Message, "float64") {
+		t.Errorf("Message = %q, must not leak the Go type", errs[0].Message)
+	}
+	if errs[0].Path != "f" {
+		t.Errorf("Path = %q, want %q", errs[0].Path, "f")
 	}
 }

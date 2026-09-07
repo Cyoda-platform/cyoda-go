@@ -3,6 +3,7 @@ package schema
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrInvalidFieldName marks a field name that the wire jsonPath grammar cannot
@@ -38,5 +39,24 @@ func ValidateFieldName(parent, name string) error {
 	}
 	return fmt.Errorf("%w: %q in object at %q — a field name must be addressable as a jsonPath segment: "+
 		"ASCII letters, digits, %q and %q only, and not empty; rename the field",
-		ErrInvalidFieldName, name, parent, "_", "-")
+		ErrInvalidFieldName, name, renderParentForMessage(parent), "_", "-")
+}
+
+// renderParentForMessage normalises parent onto the "$"-rooted spelling both
+// doors' diagnostics use, without changing what callers pass in. Admit names
+// the root "" and a nested object ".outer" — its Change.Path convention,
+// which changeLevelError and other callers still render unprefixed — while
+// Describe (and importer.Walk, which is Describe's only caller) already
+// starts from "$". Normalising here, at the one place the string reaches the
+// user, is what keeps the two doors' diagnostics identical
+// (docs/cloud-parity/model-field-name-grammar.md) without threading a "$"
+// prefix through Admit's own path convention.
+func renderParentForMessage(parent string) string {
+	if parent == "" {
+		return "$"
+	}
+	if !strings.HasPrefix(parent, "$") {
+		return "$" + parent
+	}
+	return parent
 }

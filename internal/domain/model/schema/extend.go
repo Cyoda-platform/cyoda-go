@@ -53,31 +53,48 @@ func Extend(existing *ModelNode, data any, level spi.ChangeLevel) (*ModelNode, e
 	return Merge(existing, overlay), nil
 }
 
+// ChangeLevelError marks a change that costs more than the configured
+// change level permits — the "requires X level" refusals changeLevelError
+// renders. Extend can fail for other reasons too (an invalid field name,
+// validation depth exceeded, an internal admit error), and callers that
+// need to tell a genuine level refusal apart from those (final review M4:
+// ValidateOrExtend's "change level violation" wrap must not mislabel a
+// non-level failure) use errors.As against this type rather than string
+// matching the message.
+type ChangeLevelError struct{ msg string }
+
+// Error returns the wording the API has always used for the failure. The
+// message shape is asserted by the e2e suites; do not reword it.
+func (e *ChangeLevelError) Error() string { return e.msg }
+
 // changeLevelError renders a refused change in the wording the API has always
 // used. The message shape is asserted by the e2e suites; do not reword it.
 func changeLevelError(c Change, level spi.ChangeLevel) error {
+	var msg string
 	switch c.Reason {
 	case ReasonLeafType:
-		return fmt.Errorf("type change at %s requires %s level, but level is %q",
+		msg = fmt.Sprintf("type change at %s requires %s level, but level is %q",
 			displayPath(c.Path), c.Required, level)
 	case ReasonNewField:
-		return fmt.Errorf("new field %q at %s requires STRUCTURAL level, but level is %q",
+		msg = fmt.Sprintf("new field %q at %s requires STRUCTURAL level, but level is %q",
 			lastSegment(c.Path), displayPath(c.Path), level)
 	case ReasonNewKind:
-		return fmt.Errorf("new %s branch at %s requires %s level, but level is %q",
+		msg = fmt.Sprintf("new %s branch at %s requires %s level, but level is %q",
 			kindNameFor(c.Value), displayPath(c.Path), c.Required, level)
 	case ReasonArrayWidth:
-		return fmt.Errorf("array width change at %s requires %s level, but level is %q",
+		msg = fmt.Sprintf("array width change at %s requires %s level, but level is %q",
 			displayPath(c.Path), c.Required, level)
 	case ReasonArrayElement:
-		return fmt.Errorf("array element type at %s requires ARRAY_ELEMENTS level, but level is %q",
+		msg = fmt.Sprintf("array element type at %s requires ARRAY_ELEMENTS level, but level is %q",
 			displayPath(c.Path), level)
 	case ReasonNullable:
-		return fmt.Errorf("nullable marker at %s requires %s level, but level is %q",
+		msg = fmt.Sprintf("nullable marker at %s requires %s level, but level is %q",
+			displayPath(c.Path), c.Required, level)
+	default:
+		msg = fmt.Sprintf("schema change at %s requires %s level, but level is %q",
 			displayPath(c.Path), c.Required, level)
 	}
-	return fmt.Errorf("schema change at %s requires %s level, but level is %q",
-		displayPath(c.Path), c.Required, level)
+	return &ChangeLevelError{msg: msg}
 }
 
 // lastSegment returns the final path component — the field name a

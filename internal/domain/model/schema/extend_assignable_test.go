@@ -106,10 +106,10 @@ func TestExtend_NullIntoDeclaredScalar_CostsNothing(t *testing.T) {
 // exactly representable, and it was refused only by association with values
 // that are not.
 //
-// Admission judges the value: a DOUBLE leaf holds a number inside DOUBLE's
-// range that needs at most 15 significant digits. Every integer above 2^53
-// needs at least 16, so the mantissa boundary is exactly where it was —
-// 9007199254740993 is still a type change, and is asserted below so a later
+// Admission judges the value: a decimal of at most 15 significant digits
+// round-trips uniquely through a binary64 double, which is what DOUBLE's
+// findability and the lossless float8 pushdown need. 9007199254740993 needs
+// sixteen, so it is still a type change, and is asserted below so a later
 // "any whole number is fine" simplification still cannot pass.
 func TestExtend_WholeNumberInDoubleRangeIsHeld(t *testing.T) {
 	build := func() *schema.ModelNode {

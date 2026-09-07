@@ -86,7 +86,17 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 			// model import answers.
 			return common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
 		}
-		return fmt.Errorf("change level violation: %w", err)
+		var levelErr *schema.ChangeLevelError
+		if errors.As(err, &levelErr) {
+			// Only a genuine changeLevelError refusal wears this label — its
+			// remedy (raise the configured changeLevel) is specific to it.
+			return fmt.Errorf("change level violation: %w", err)
+		}
+		// Anything else (validation depth exceeded, an internal admit
+		// error) is a different failure with a different remedy; wrapping
+		// it as a "change level violation" would be dishonest about what
+		// went wrong (final review M4).
+		return fmt.Errorf("schema admission failed: %w", err)
 	}
 
 	// Guard: if any unique key field would become non-scalar in the extended

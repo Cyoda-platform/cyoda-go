@@ -25,6 +25,17 @@ const (
 	ReasonArrayElement
 	// ReasonNullable — a node declaring no scalar is observed as null.
 	ReasonNullable
+	// ReasonInvalidFieldName — a new field's name fails ValidateFieldName.
+	// Only ever recorded when the admitter is built with
+	// continueOnInvalidName set (Validate's own traversal): the ordinary
+	// top-level Admit (and therefore Extend) still aborts the whole
+	// traversal with the ValidateFieldName error itself rather than
+	// recording this as a Change — establishing a field is the one thing
+	// Extend must still refuse outright, unconditionally, regardless of
+	// change level. Strict validation does not establish fields at all, so
+	// it renders this exactly like ReasonNewField: the ordinary
+	// unknown-field/stale-schema signal, not a 400 naming the grammar.
+	ReasonInvalidFieldName
 )
 
 // Change is one observation the stored model does not admit, together with
@@ -32,7 +43,17 @@ const (
 // exceeds the configured level; Validate renders every change as a
 // ValidationError.
 type Change struct {
-	Path     string
+	Path string
+	// DocPath is the document-instance path this change was found at:
+	// ".tags[1]" for the second element of an array named "tags", carrying
+	// the concrete index the document actually held — as opposed to Path,
+	// the schema-op path (".tags[]") every element of an array shares,
+	// because Extend's change-level gate compares models, not documents,
+	// and has never had per-element indices to report. validationErrorFor
+	// renders DocPath (a document error names the exact element a client
+	// sent); changeLevelError keeps rendering Path (a schema-op refusal
+	// names the array's element slot, not one instance of it).
+	DocPath  string
 	Reason   ChangeReason
 	Required spi.ChangeLevel
 	Observed DataType // ReasonLeafType, and ReasonNewKind for a scalar value; zero otherwise
@@ -77,6 +98,24 @@ func (e *DepthExceededError) Error() string {
 	return fmt.Sprintf("%s: %s", displayPath(e.Path), depthExceededMessage)
 }
 
+// UnsupportedValueError marks a value node's traversal cannot classify at
+// all: a caller-side contract violation, not a client-contract one — a raw
+// float64 leaking through without json.UseNumber decoding, or (per node's
+// own doc comment) a Go type node never produces at all. Kind carries the
+// detail for logs and Admit/Extend callers; it is deliberately NOT what
+// Validate renders into a client-facing ValidationError.Message, which
+// would otherwise echo a %T-formatted Go type name at the API boundary.
+type UnsupportedValueError struct {
+	Path string
+	Kind string
+}
+
+// Error keeps the wording node has always produced for these two cases, so
+// nothing that only looks at err.Error() needs to change alongside the type.
+func (e *UnsupportedValueError) Error() string {
+	return fmt.Sprintf("%s: %s", displayPath(e.Path), e.Kind)
+}
+
 // Admit walks data against model, one value at a time, and reports what the
 // model would have to become to hold it.
 //
@@ -95,7 +134,7 @@ func (e *DepthExceededError) Error() string {
 // A nil overlay with no changes means the model already admits the document.
 func Admit(model *ModelNode, data any) (*ModelNode, []Change, error) {
 	a := &admitter{}
-	overlay, err := a.node(model, data, "", 0, spi.ChangeLevelType)
+	overlay, err := a.node(model, data, "", "", 0, spi.ChangeLevelType)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -104,6 +143,14 @@ func Admit(model *ModelNode, data any) (*ModelNode, []Change, error) {
 
 type admitter struct {
 	changes []Change
+	// continueOnInvalidName, when set, makes object()'s new-field branch
+	// record an unspellable name as a Change (ReasonInvalidFieldName) and
+	// keep walking the rest of the document, instead of aborting the whole
+	// traversal with ValidateFieldName's error. Only Validate's own
+	// traversal (validate.go) sets this — the public Admit entry point
+	// (and therefore Extend) always leaves it false, so every existing
+	// caller of Admit keeps seeing the abort-with-error behaviour.
+	continueOnInvalidName bool
 }
 
 func (a *admitter) record(c Change) { a.changes = append(a.changes, c) }
@@ -115,30 +162,30 @@ func (a *admitter) record(c Change) { a.changes = append(a.changes, c) }
 // element. It is preserved through nested array levels and reset when
 // descending into an object's children, which is exactly where the element
 // rules stop applying.
-func (a *admitter) node(model *ModelNode, data any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
+func (a *admitter) node(model *ModelNode, data any, path, docPath string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	if depth >= MaxValidationDepth {
 		return nil, &DepthExceededError{Path: path}
 	}
 
 	switch v := data.(type) {
 	case nil:
-		return a.null(model, path, scalarLevel), nil
+		return a.null(model, path, docPath, scalarLevel), nil
 	case map[string]any:
 		if model.Object() == nil {
-			return a.wrongKind(model, data, path, depth, scalarLevel)
+			return a.wrongKind(model, data, path, docPath, depth, scalarLevel)
 		}
-		return a.object(model, v, path, depth, scalarLevel)
+		return a.object(model, v, path, docPath, depth, scalarLevel)
 	case []any:
 		if model.Array() == nil {
-			return a.wrongKind(model, data, path, depth, scalarLevel)
+			return a.wrongKind(model, data, path, docPath, depth, scalarLevel)
 		}
-		return a.array(model, v, path, depth, scalarLevel)
+		return a.array(model, v, path, docPath, depth, scalarLevel)
 	case float64:
-		return nil, fmt.Errorf("%s: received float64 value; callers must use json.UseNumber() decoding", displayPath(path))
+		return nil, &UnsupportedValueError{Path: path, Kind: "received float64 value; callers must use json.UseNumber() decoding"}
 	case json.Number, string, bool:
-		return a.scalar(model, data, path, depth, scalarLevel)
+		return a.scalar(model, data, path, docPath, depth, scalarLevel)
 	default:
-		return nil, fmt.Errorf("%s: unsupported type: %T", displayPath(path), data)
+		return nil, &UnsupportedValueError{Path: path, Kind: fmt.Sprintf("unsupported type: %T", data)}
 	}
 }
 
@@ -147,10 +194,10 @@ func (a *admitter) node(model *ModelNode, data any, path string, depth int, scal
 // all is the same "path gains a kind it does not declare" case a container
 // value hits against a node lacking that branch — wrongKind is the single
 // site of that policy.
-func (a *admitter) scalar(model *ModelNode, data any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
+func (a *admitter) scalar(model *ModelNode, data any, path, docPath string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	s := model.Scalar()
 	if s == nil {
-		return a.wrongKind(model, data, path, depth, scalarLevel)
+		return a.wrongKind(model, data, path, docPath, depth, scalarLevel)
 	}
 	if holdsScalar(s.Types(), data) {
 		return nil, nil
@@ -159,7 +206,7 @@ func (a *admitter) scalar(model *ModelNode, data any, path string, depth int, sc
 	// complaint, its type is.
 	observed := inferDataType(data)
 	a.record(Change{
-		Path: path, Reason: ReasonLeafType, Required: scalarLevel,
+		Path: path, DocPath: docPath, Reason: ReasonLeafType, Required: scalarLevel,
 		Observed: observed, Declared: s.Types(), DeclaredKinds: declaredKindNames(model), Value: data,
 	})
 	return NewLeafNode(observed), nil
@@ -212,12 +259,12 @@ func holdsScalar(declared []DataType, data any) bool {
 
 // null is the nullable marker. A node that already declares a scalar admits
 // null and records nothing; a node that declares none charges the promotion.
-func (a *admitter) null(model *ModelNode, path string, scalarLevel spi.ChangeLevel) *ModelNode {
+func (a *admitter) null(model *ModelNode, path, docPath string, scalarLevel spi.ChangeLevel) *ModelNode {
 	if model.Nullable() || model.Scalar() != nil {
 		return nil
 	}
 	a.record(Change{
-		Path: path, Reason: ReasonNullable, Required: scalarLevel,
+		Path: path, DocPath: docPath, Reason: ReasonNullable, Required: scalarLevel,
 		Observed: Null, Declared: model.DeclaredTypes(), DeclaredKinds: declaredKindNames(model),
 	})
 	overlay := NewLeafNode(Null)
@@ -245,7 +292,7 @@ func (a *admitter) null(model *ModelNode, path string, scalarLevel spi.ChangeLev
 // MaxValidationDepth, or an object inside it can carry a field name the query
 // grammar cannot address — so wrongKind reports that failure rather than
 // swallowing it.
-func (a *admitter) wrongKind(model *ModelNode, data any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
+func (a *admitter) wrongKind(model *ModelNode, data any, path, docPath string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	required := spi.ChangeLevelStructural
 	if len(model.Kinds()) == 0 {
 		required = scalarLevel
@@ -256,12 +303,12 @@ func (a *admitter) wrongKind(model *ModelNode, data any, path string, depth int,
 		observed = inferDataType(data)
 	}
 	a.record(Change{
-		Path: path, Reason: ReasonNewKind, Required: required,
+		Path: path, DocPath: docPath, Reason: ReasonNewKind, Required: required,
 		Observed: observed, Declared: model.DeclaredTypes(), DeclaredKinds: declaredKindNames(model), Value: data,
 	})
 	switch data.(type) {
 	case map[string]any, []any:
-		return describeAt(data, path, depth)
+		return describeAt(data, path, docPath, depth)
 	default:
 		return NewLeafNode(observed), nil
 	}
@@ -277,7 +324,7 @@ func (a *admitter) wrongKind(model *ModelNode, data any, path string, depth int,
 // array's contents carry never reach through a nested object. Do not thread
 // the parameter through in its place — that would restore whatever level was
 // in force above the object, defeating the reset.
-func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
+func (a *admitter) object(model *ModelNode, m map[string]any, path, docPath string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	var overlay *ModelNode
 	ensure := func() *ModelNode {
 		if overlay == nil {
@@ -289,6 +336,7 @@ func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth
 	obj := model.Object()
 	for name, val := range m {
 		childPath := path + "." + name
+		childDocPath := docPath + "." + name
 		child := obj.Child(name)
 
 		if child == nil {
@@ -296,13 +344,27 @@ func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth
 			// can become a schema field — this is the one point both
 			// field-set-establishing ingresses share.
 			if err := ValidateFieldName(path, name); err != nil {
-				return nil, err
+				if !a.continueOnInvalidName {
+					return nil, err
+				}
+				// Validate's traversal: this path never establishes a
+				// field (docs/cloud-parity/model-field-name-grammar.md),
+				// so an unspellable name is not a grammar violation here —
+				// it is simply a field the stored model does not declare,
+				// the ordinary unknown-field signal. Record it as such and
+				// keep walking the rest of the document: unlike Extend,
+				// strict validation must not abort at the first offender.
+				a.record(Change{
+					Path: childPath, DocPath: childDocPath, Reason: ReasonInvalidFieldName,
+					Required: spi.ChangeLevelStructural, DeclaredKinds: declaredKindNames(model), Value: val,
+				})
+				continue
 			}
 			a.record(Change{
-				Path: childPath, Reason: ReasonNewField,
+				Path: childPath, DocPath: childDocPath, Reason: ReasonNewField,
 				Required: spi.ChangeLevelStructural, DeclaredKinds: declaredKindNames(model), Value: val,
 			})
-			derived, err := describeAt(val, childPath, depth+1)
+			derived, err := describeAt(val, childPath, childDocPath, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -310,7 +372,7 @@ func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth
 			continue
 		}
 
-		childOverlay, err := a.node(child, val, childPath, depth+1, spi.ChangeLevelType)
+		childOverlay, err := a.node(child, val, childPath, childDocPath, depth+1, spi.ChangeLevelType)
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +396,7 @@ func (a *admitter) object(model *ModelNode, m map[string]any, path string, depth
 // re-assertion of the level an array's own contents always cost, not a
 // value threaded down from above. Do not thread the parameter through in
 // its place.
-func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
+func (a *admitter) array(model *ModelNode, arr []any, path, docPath string, depth int, scalarLevel spi.ChangeLevel) (*ModelNode, error) {
 	exArr := model.Array()
 	elemPath := path + "[]"
 
@@ -360,14 +422,15 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 		// name the array and describe that situation directly rather than
 		// reaching for a value they'd have to pick one element out of.
 		a.record(Change{
-			Path: path, Reason: ReasonArrayElement,
+			Path: path, DocPath: docPath, Reason: ReasonArrayElement,
 			Required: spi.ChangeLevelArrayElements, DeclaredKinds: declaredKindNames(model), Value: arr,
 		})
 		if len(arr) == 0 {
 			elemOverlay = NewLeafNode(Null)
 		} else {
-			for _, item := range arr {
-				derived, err := describeAt(item, elemPath, depth+1)
+			for i, item := range arr {
+				itemDocPath := fmt.Sprintf("%s[%d]", docPath, i)
+				derived, err := describeAt(item, elemPath, itemDocPath, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -381,8 +444,9 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 	} else {
 		// ARRAY_ELEMENTS applies at an array's element and keeps applying
 		// through further array levels.
-		for _, item := range arr {
-			itemOverlay, err := a.node(exArr.Element(), item, elemPath, depth+1, spi.ChangeLevelArrayElements)
+		for i, item := range arr {
+			itemDocPath := fmt.Sprintf("%s[%d]", docPath, i)
+			itemOverlay, err := a.node(exArr.Element(), item, elemPath, itemDocPath, depth+1, spi.ChangeLevelArrayElements)
 			if err != nil {
 				return nil, err
 			}
@@ -410,7 +474,7 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 	widthChanged := exArr.MaxWidth() > 0 && len(arr) > exArr.MaxWidth()
 	if widthChanged {
 		a.record(Change{
-			Path: path, Reason: ReasonArrayWidth,
+			Path: path, DocPath: docPath, Reason: ReasonArrayWidth,
 			Required: spi.ChangeLevelArrayLength, DeclaredKinds: declaredKindNames(model),
 			Value: arr, ObservedWidth: exArr.MaxWidth(),
 		})
@@ -435,7 +499,7 @@ func (a *admitter) array(model *ModelNode, arr []any, path string, depth int, sc
 // the depth-0 entry point into describeAt; see that doc comment for the
 // mechanics.
 func Describe(v any, path string) (*ModelNode, error) {
-	return describeAt(v, path, 0)
+	return describeAt(v, path, path, 0)
 }
 
 // describeAt is Describe's recursive form, carrying the depth a brand-new
@@ -469,14 +533,14 @@ func Describe(v any, path string) (*ModelNode, error) {
 // unconditionally charges and sets an element — including NewLeafNode(Null)
 // for an empty array, matching walkArray's NewArrayNode(NewLeafNode(Null))
 // — so array never returns nil when called from here.
-func describeAt(v any, path string, depth int) (*ModelNode, error) {
+func describeAt(v any, path, docPath string, depth int) (*ModelNode, error) {
 	if depth >= MaxValidationDepth {
 		return nil, &DepthExceededError{Path: path}
 	}
 	a := &admitter{}
 	switch val := v.(type) {
 	case map[string]any:
-		overlay, err := a.object(NewObjectNode(), val, path, depth, spi.ChangeLevelType)
+		overlay, err := a.object(NewObjectNode(), val, path, docPath, depth, spi.ChangeLevelType)
 		if err != nil {
 			return nil, err
 		}
@@ -485,9 +549,9 @@ func describeAt(v any, path string, depth int) (*ModelNode, error) {
 		}
 		return overlay, nil
 	case []any:
-		return a.array(NewArrayNode(nil), val, path, depth, spi.ChangeLevelType)
+		return a.array(NewArrayNode(nil), val, path, docPath, depth, spi.ChangeLevelType)
 	default:
-		return a.node(emptyNode(), v, path, depth, spi.ChangeLevelType)
+		return a.node(emptyNode(), v, path, docPath, depth, spi.ChangeLevelType)
 	}
 }
 

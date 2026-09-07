@@ -170,9 +170,15 @@ judged "imprecise" and silently dropped from the comparison.
   for structural extension, across every backend wired into the parity
   suite; its doc comment defers the numeric-leaf carve-out to the next item.
 - `e2e/parity/schema_numeric_fold_carveout.go`
-  (`RunSchemaNumericFoldCarveout`) — the carve-out property itself: every
-  reachable fold is monotone and admits every value that was written, for
-  concurrent numeric- and temporal-leaf extension.
+  (`RunSchemaNumericFoldCarveout`) — the carve-out property itself, exercised
+  SEQUENTIALLY: two orders, each against its own tenant, writing the same two
+  numeric values in reverse order and asserting each order's leaf declares
+  the type that order's widening reaches, with every value still findable.
+  Numeric-only — no temporal value appears in either order. §3's broader
+  claim (the property holds under genuinely concurrent writes, numeric or
+  temporal) is argued from the widening lattice being admission-monotone,
+  not demonstrated by a test: nothing in the parity suite exercises
+  concurrent numeric-leaf extension.
 - `e2e/parity/type_admission.go` — the design's backend-agnostic scenarios:
   held values leave the model byte-identical, a held value is findable
   afterward, the `DOUBLE`-ceiling gated boundary, mixed-kind arrays judged

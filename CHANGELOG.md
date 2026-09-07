@@ -418,6 +418,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   address only this charset, so a document could establish a field that nothing
   could ever search. Ingestion that previously succeeded will now fail.
 
+  Strict validation (no `changeLevel`, and `PATCH`) never establishes a field,
+  so an unspellable key there answers the ordinary unknown-field
+  `ErrKindUnknownElement` — the same stale-schema signal any other undeclared
+  field gets — not the grammar-violation `400`, which stays with the two doors
+  above. And the two doors that DO establish a field set now name the same
+  root location in their diagnostic (`at "$"`) regardless of which one
+  rejected the key.
+
   No migration is provided: rename the key in the source data and re-establish
   the model. See `docs/cloud-parity/model-field-name-grammar.md`.
 
@@ -1807,6 +1815,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   grouped stats records nothing in a transaction, matching sqlite and postgres.
   `GetAll` and `GetPage` also refuse a committed transaction's context, the
   guard sqlite already carried on every in-transaction entry point.
+- **postgres: text comparisons (`<`, `>`, `<=`, `>=`, `BETWEEN`,
+  `BETWEEN_INCLUSIVE`) now compare with `COLLATE "C"`, matching the ordering
+  the search kernel and `ORDER BY` already use.** On a database whose default
+  collation is not byte order (an ICU or non-`C` locale collation), a text
+  range query can now return a different — correct — set of rows than before:
+  the comparison and the ordering agree on what "between" means.
 
 ### Known limitations
 

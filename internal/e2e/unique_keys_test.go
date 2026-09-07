@@ -301,11 +301,17 @@ func TestUniqueKeys_PartialKeyCreate(t *testing.T) {
 // (UNBOUND_INTEGER ← UNBOUND_INTEGER) but ComputeClaims rejects it
 // (over-bound exponent → ErrPartialUniqueKey → 422 INVALID_UNIQUE_KEY).
 //
-// NOTE: using 1e1000000000 directly would cause the schema validator to hang
-// because inferDataType computes 10^1000000000 (a big.Int with ~415 MB) before
-// the unique-key check runs. That is a pre-existing server-side bug outside the
-// scope of this task. 1e6145 (10^6145 ≈ 2.5 KB big.Int) is fast and safe, and
-// still exercises the ComputeClaims over-bound rejection path end-to-end.
+// NOTE: 1e6145, not a far larger exponent, is deliberate for a narrower
+// reason than avoiding a hang. inferDataType (internal/domain/model/schema/
+// validate.go) guards the huge-negative-scale case: it computes the decimal
+// digit count from Precision()/Scale() alone and returns UnboundInteger
+// directly, without materialising a big.Int, once that count passes
+// int128MaxDigits — so a value like 1e1000000000 is fast here too, not a
+// hang; the walker's own copy of that same guard was consolidated away when
+// Walk moved onto Describe/inferDataType. 1e6145 is chosen because it sits
+// just past ComputeClaims' own maxNumExp=6144 boundary, which is what this
+// test actually exercises: schema validation must accept it (UNBOUND_INTEGER
+// ← UNBOUND_INTEGER) while ComputeClaims rejects it on the exponent alone.
 func TestUniqueKeys_OverBoundNumeric(t *testing.T) {
 	const model = "e2e-uk-overbound"
 

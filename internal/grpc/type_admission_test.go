@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -13,13 +14,90 @@ import (
 // Error.Code) per .claude/rules/test-coverage.md. See
 // docs/superpowers/specs/2026-09-04-555-type-admission-design.md.
 //
-// model_double_whole_number_test.go already covers "held whole number into a
-// DOUBLE leaf, level below TYPE" for EntityCreateRequest — that scenario is
-// NOT repeated here. Everything below uses a different declared type (STRING)
-// or a different value (past DOUBLE's precision boundary) so nothing
-// duplicates it.
+// model_double_whole_number_test.go's TestRPC_EntityCreate_WholeNumberIntoDoubleLeafNeedsNoLevel
+// covers only the trivial case (1000, at ARRAY_LENGTH) — it does NOT cover
+// DOUBLE's mantissa boundary (2147483648, the largest ten-significant-digit
+// whole number) or strict validation (no changeLevel at all), so
+// TestRPC_EntityCreate_DoubleMantissaBoundary_StrictAndBelowType_Succeeds
+// below covers those specifically. Everything else uses a different
+// declared type (STRING) or a different value (past DOUBLE's precision
+// boundary) so nothing else duplicates it.
 
 // --- EntityCreateRequest ---
+
+// Final review I6: DOUBLE's mantissa boundary (2147483648 — ten significant
+// digits, exactly representable) must be held with no model change under
+// BOTH strict validation (no changeLevel: Validate, not Extend) and the most
+// restrictive changeLevel (ARRAY_LENGTH: Extend, but no permission needed
+// for a value the leaf already admits) — the same property
+// model_double_whole_number_test.go's HTTP twin
+// (TestModelExtension_WholeNumberPastIntegerRangeIntoDoubleLeaf) asserts,
+// but gRPC is a separate entry point and gets its own coverage.
+func TestRPC_EntityCreate_DoubleMantissaBoundary_StrictAndBelowType_Succeeds(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		changeLevel string // "" means strict validation: no SetChangeLevel call at all.
+	}{
+		{"strict", ""},
+		{"array_length", "ARRAY_LENGTH"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, ctx := newTestEnv(t)
+			model := "typeadm-create-double-boundary-" + tc.name
+			importAndLockModel(t, svc, ctx, model, "1", map[string]any{"amount": 10.5})
+			if tc.changeLevel != "" {
+				if err := svc.modelHandler.SetChangeLevel(ctx, model, "1", tc.changeLevel); err != nil {
+					t.Fatalf("SetChangeLevel(%s): %v", tc.changeLevel, err)
+				}
+			}
+
+			ce := makeCE(EntityCreateRequest, map[string]any{
+				"id":         "test",
+				"dataFormat": "JSON",
+				"payload": map[string]any{
+					"model": map[string]any{"name": model, "version": 1},
+					"data":  map[string]any{"amount": 2147483648},
+				},
+			})
+			resp, err := svc.EntityManage(ctx, ce)
+			if err != nil {
+				t.Fatalf("unexpected transport error: %v", err)
+			}
+			var typed events.EntityTransactionResponseJson
+			validateResponse(t, resp, &typed)
+			if !typed.Success {
+				t.Fatalf("2147483648 needs 10 significant digits, DOUBLE holds it; expected success=true, got error %+v", typed.Error)
+			}
+
+			// The model's declared types are unchanged: still DOUBLE, not
+			// widened by a value the leaf already admitted.
+			exportCE := makeCE(EntityModelExportRequest, map[string]any{
+				"id":        "test",
+				"model":     map[string]any{"name": model, "version": 1},
+				"converter": "SIMPLE_VIEW",
+			})
+			exportResp, err := svc.EntityModelManage(ctx, exportCE)
+			if err != nil {
+				t.Fatalf("unexpected transport error on export: %v", err)
+			}
+			var exported events.EntityModelExportResponseJson
+			validateResponse(t, exportResp, &exported)
+			if !exported.Success {
+				t.Fatalf("export failed: %+v", exported.Error)
+			}
+			payload, err := json.Marshal(exported.Payload)
+			if err != nil {
+				t.Fatalf("marshal exported payload: %v", err)
+			}
+			if !strings.Contains(string(payload), "DOUBLE") {
+				t.Errorf("model must still declare DOUBLE; payload: %s", payload)
+			}
+			if strings.Contains(string(payload), "UNBOUND_DECIMAL") || strings.Contains(string(payload), "LONG") {
+				t.Errorf("model must not have widened away from DOUBLE; payload: %s", payload)
+			}
+		})
+	}
+}
 
 func TestRPC_EntityCreate_HeldValueStrict_Succeeds(t *testing.T) {
 	svc, ctx := newTestEnv(t)

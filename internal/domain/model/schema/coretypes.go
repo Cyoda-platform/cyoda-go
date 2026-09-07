@@ -111,7 +111,6 @@ var (
 	IsNumeric       = spi.IsNumeric
 	ClassifyInteger = spi.ClassifyInteger
 	ClassifyDecimal = spi.ClassifyDecimal
-	IsAssignableTo  = spi.IsAssignableTo
 	CollapseNumeric = spi.CollapseNumeric
 )
 

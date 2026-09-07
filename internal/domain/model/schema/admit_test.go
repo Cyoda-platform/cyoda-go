@@ -8,6 +8,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -664,6 +665,33 @@ func TestAdmit_NewFieldInvalidNameIsRejected(t *testing.T) {
 	}
 	if !errors.Is(err, schema.ErrInvalidFieldName) {
 		t.Errorf("error = %v, want errors.Is(err, schema.ErrInvalidFieldName)", err)
+	}
+}
+
+// Ruling 22 (final review I2): the two doors that establish a model's field
+// set — Admit (an entity write) and importer.Walk (sample-data import) —
+// must spell the diagnostic's parent identically, or a client sees a
+// different string for the same root-level bad key depending on which door
+// rejected it. Admit's own path convention names the root "" and Walk's
+// names it "$" (docs/cloud-parity/model-field-name-grammar.md); the message
+// normalises both onto "$".
+func TestValidateFieldName_BothDoorsSpellRootParentTheSame(t *testing.T) {
+	_, _, admitErr := schema.Admit(schema.NewObjectNode(), map[string]any{"bad name": num("1")})
+	if admitErr == nil || !errors.Is(admitErr, schema.ErrInvalidFieldName) {
+		t.Fatalf("Admit error = %v, want errors.Is(err, ErrInvalidFieldName)", admitErr)
+	}
+
+	_, walkErr := importer.Walk(map[string]any{"bad name": num("1")})
+	if walkErr == nil || !errors.Is(walkErr, schema.ErrInvalidFieldName) {
+		t.Fatalf("Walk error = %v, want errors.Is(err, ErrInvalidFieldName)", walkErr)
+	}
+
+	if admitErr.Error() != walkErr.Error() {
+		t.Errorf("Admit and Walk render different messages for the same root-level bad key:\nAdmit: %s\nWalk:  %s",
+			admitErr.Error(), walkErr.Error())
+	}
+	if !strings.Contains(admitErr.Error(), `at "$"`) {
+		t.Errorf("Admit error = %q, want it to say at \"$\"", admitErr.Error())
 	}
 }
 
