@@ -186,3 +186,25 @@ func TestMember_WriterPanicIsContained(t *testing.T) {
 		t.Fatalf("EvictErr = %v, want Internal with ticket", m.EvictErr())
 	}
 }
+
+// Re-registering an ID displaces the member holding it: the old one is
+// evicted, so its writer exits and its waiters are released instead of being
+// stranded behind a registry entry nobody can reach any more.
+func TestMember_ReRegisteredIDEvictsTheDisplacedMember(t *testing.T) {
+	reg := NewMemberRegistry()
+	first := reg.Register("m1", "tenant-1", nil, noopSend, nil)
+	defer reg.Unregister("m1")
+
+	reg.Register("m1", "tenant-1", nil, noopSend, nil)
+
+	select {
+	case <-first.Evicted():
+	case <-time.After(time.Second):
+		t.Fatal("the displaced member was not evicted")
+	}
+	select {
+	case <-first.WriterDone():
+	case <-time.After(time.Second):
+		t.Fatal("the displaced member's writer did not exit")
+	}
+}

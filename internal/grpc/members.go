@@ -233,8 +233,8 @@ func (m *Member) writeLoop(first *cepb.CloudEvent) {
 // keep-alive loop can see a stall. A failed send evicts the member.
 func (m *Member) write(ce *cepb.CloudEvent) bool {
 	m.writeStartedAt.Store(time.Now().UnixNano())
+	defer m.writeStartedAt.Store(0)
 	err := m.send(ce)
-	m.writeStartedAt.Store(0)
 	if err != nil {
 		m.Evict(status.Error(codes.Unavailable, "send failed: "+err.Error()))
 		return false
@@ -325,8 +325,8 @@ func (m *Member) failAllPending(errMsg string) {
 // UpdateLastSeen sets lastSeen to the current time.
 func (m *Member) UpdateLastSeen() {
 	m.lastSeenMu.Lock()
+	defer m.lastSeenMu.Unlock()
 	m.lastSeen = time.Now()
-	m.lastSeenMu.Unlock()
 }
 
 // LastSeen returns the time the member was last seen.
@@ -355,20 +355,32 @@ func NewMemberRegistry() *MemberRegistry {
 // tags computed from all current members.
 func (r *MemberRegistry) SetOnChange(fn TagChangeFunc) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.onChange = fn
-	r.mu.Unlock()
 }
 
 // Register creates the member, starts its writer with greet as the first
 // event on the wire, and only then publishes the member to the registry. A
 // dispatch routed the instant the member becomes visible therefore queues
 // behind the greet. greet may be nil (test fixtures).
+//
+// Re-registering an ID that is already present displaces the old member, whose
+// writer would otherwise run forever and whose pending requests would wait out
+// their timeouts with nobody left to answer them: it is evicted, which stops
+// its writer and fails its waiters at once.
 func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags []string, send SendFunc, greet *cepb.CloudEvent) *Member {
 	m := newMember(memberID, tenantID, tags, send)
 	go m.writeLoop(greet)
-	r.mu.Lock()
-	r.members[memberID] = m
-	r.mu.Unlock()
+	displaced := func() *Member {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		old := r.members[memberID]
+		r.members[memberID] = m
+		return old
+	}()
+	if displaced != nil {
+		displaced.Evict(status.Error(codes.Unavailable, "member id re-registered"))
+	}
 	r.notifyChange()
 	return m
 }
@@ -376,13 +388,16 @@ func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags [
 // Unregister removes the member with the given ID and evicts it, which fails
 // all its pending requests and stops its writer.
 func (r *MemberRegistry) Unregister(memberID string) {
-	r.mu.Lock()
-	m, ok := r.members[memberID]
-	if ok {
-		delete(r.members, memberID)
-	}
-	r.mu.Unlock()
-	if ok {
+	m := func() *Member {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		m, ok := r.members[memberID]
+		if ok {
+			delete(r.members, memberID)
+		}
+		return m
+	}()
+	if m != nil {
 		m.Evict(status.Error(codes.Unavailable, "member unregistered"))
 	}
 	r.notifyChange()
@@ -423,9 +438,11 @@ func (r *MemberRegistry) FindByTags(tenantID spi.TenantID, tagsCSV string) *Memb
 // notifyChange fires the onChange callback (if set) in a goroutine with the
 // current aggregate tags.
 func (r *MemberRegistry) notifyChange() {
-	r.mu.RLock()
-	fn := r.onChange
-	r.mu.RUnlock()
+	fn := func() TagChangeFunc {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		return r.onChange
+	}()
 	if fn == nil {
 		return
 	}
