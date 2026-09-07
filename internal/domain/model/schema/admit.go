@@ -399,9 +399,9 @@ func (a *admitter) array(model *ModelNode, arr []any, path, docPath string, dept
 		// The array was observed, but never with content, so it declares no
 		// element type. Learning one is the same promotion a node declaring
 		// no kind undergoes, at the level an array element's changes cost —
-		// and an EMPTY array still triggers it: importer.Walk has always
-		// represented [] as an array whose element is Null (walkArray's
-		// NewLeafNode(Null)), so an incoming array from that walk always has
+		// and an EMPTY array still triggers it: Describe has always
+		// represented [] as an array whose element is Null (the
+		// NewLeafNode(Null) below), so a derived array always has
 		// a non-nil element, empty or not — charging ARRAY_ELEMENTS whenever
 		// the existing element is nil and the document supplies an array at
 		// all, with no separate case for an empty one, means charging it
@@ -509,15 +509,15 @@ func Describe(v any, path string) (*ModelNode, error) {
 // object's empty-object case ({}) still needs an explicit non-nil fallback:
 // object returns nil for "no change" when its input map has no keys, which
 // is indistinguishable at that call site from "nothing new here" — but
-// importer.Walk has always recorded an empty object as declaring KindObject
-// with no children (walkObject's bare NewObjectNode()), and describeAt must
+// a derived model has always recorded an empty object as declaring
+// KindObject with no children (a bare NewObjectNode()), and describeAt must
 // produce the same shape or a field whose only observed value is {} would
 // vanish from the derived model instead of declaring an (empty) branch.
 // array needs no equivalent fallback: it is seeded with a nil element here,
 // so it always takes the "array declares no element yet" branch below, which
 // unconditionally charges and sets an element — including NewLeafNode(Null)
-// for an empty array, matching walkArray's NewArrayNode(NewLeafNode(Null))
-// — so array never returns nil when called from here.
+// for an empty array, so [] derives as NewArrayNode(NewLeafNode(Null)) — so
+// array never returns nil when called from here.
 func (a *admitter) describeAt(v any, path, docPath string, depth int) (*ModelNode, error) {
 	if depth >= MaxValidationDepth {
 		return nil, &DepthExceededError{Path: path}

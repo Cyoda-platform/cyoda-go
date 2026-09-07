@@ -235,6 +235,7 @@ var allTests = []NamedTest{
 	{"TypeAdmissionSearchEqualsTrailingZeros", RunTypeAdmissionSearchEqualsTrailingZeros},
 	{"TypeAdmissionRegistrationYieldsStringLocalDate", RunTypeAdmissionRegistrationYieldsStringLocalDate},
 	{"TypeAdmissionStrictNeverMorePermissiveThanArrayLength", RunTypeAdmissionStrictNeverMorePermissiveThanArrayLength},
+	{"TypeAdmissionLongerArrayHeldAtEveryLevel", RunTypeAdmissionLongerArrayHeldAtEveryLevel},
 
 	{"ModelFieldNameRejected", RunModelFieldNameRejected},
 	{"ModelKindEnforcementRejected", RunModelKindEnforcementRejected},

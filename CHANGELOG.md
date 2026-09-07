@@ -6,6 +6,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **An array's length is not part of the model.** A model's array branch
+  declares its element and nothing else: a homogeneous list of any length is
+  held by the array that declared it, at every `changeLevel` and under strict
+  validation alike, and the model is byte-identical afterwards. The
+  discovery-time "widest array seen" statistic that lived on the in-memory
+  tree is gone with everything that read it — the width comparison in the
+  write path, the `array width change ... requires ARRAY_LENGTH level`
+  refusal it could only produce for a model that had never been stored, and
+  the `(T x N)` decoration `SIMPLE_VIEW` rendered from an in-memory tree
+  but never from a persisted one, so an export now describes the model
+  rather than the route the model took into memory. `ARRAY_LENGTH` keeps its
+  place as the floor of the ladder — the level that permits no schema change
+  at all — and is documented as that. The array model is now stated as a
+  Cloud-facing contract: see `docs/cloud-parity/array-shape-and-change-levels.md`.
+  `cyoda-go-spi` drops `FieldDescriptor.MaxWidth`, `ArrayBranch.MaxWidth`
+  and `ModelNode.ObserveArrayWidth`.
+
 - **The `POLYMORPHIC_SLOT` error code is retired.** It meant "raising
   `changeLevel` will not help you". Giving a path a kind it does not declare is
   a `STRUCTURAL` change now, so raising the level is exactly what resolves it,
@@ -981,23 +998,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   metadata.
 
 ### Changed
-
-- **An array's length is not part of the model.** A model's array branch
-  declares its element and nothing else: a homogeneous list of any length is
-  held by the array that declared it, at every `changeLevel` and under strict
-  validation alike, and the model is byte-identical afterwards. The
-  discovery-time "widest array seen" statistic that lived on the in-memory
-  tree is gone with everything that read it — the width comparison in the
-  write path, the `array width change ... requires ARRAY_LENGTH level`
-  refusal it could only produce for a model that had never been stored, and
-  the `(TYPE x N)` decoration `SIMPLE_VIEW` rendered from an in-memory tree
-  but never from a persisted one, so an export now describes the model
-  rather than the route the model took into memory. `ARRAY_LENGTH` keeps its
-  place as the floor of the ladder — the level that permits no schema change
-  at all — and is documented as that. The array model is now stated as a
-  Cloud-facing contract: see `docs/cloud-parity/array-shape-and-change-levels.md`.
-  `cyoda-go-spi` drops `FieldDescriptor.MaxWidth`, `ArrayBranch.MaxWidth`
-  and `ModelNode.ObserveArrayWidth`.
 
 - **Async search translates the condition before it persists the job.**
   `SubmitAsync` validated a condition's structure, paths, patterns and types
