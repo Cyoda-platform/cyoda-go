@@ -88,10 +88,12 @@ not move.
 
 **The Trino schema generator is the one Cloud consumer of positions.** It
 flattens a `MultiTypeArray` into one scalar column per index, and does the
-same for arrays of `ZONED_DATE_TIME`. The Trino connector itself needs
-neither: it builds `ARRAY(T)` from one element type per array field, and
-derives an array's length at read time from the `path[i]` keys the data
-carries. Under the list model every array is emitted as a single `ARRAY(T)`
+same for arrays of `ZONED_DATE_TIME`. The second case is a workaround for a
+tracked Cloud-side defect in how a zoned timestamp reaches the connector
+(the zone is lost on the way), not a connector limitation. The Trino
+connector itself needs neither: it builds `ARRAY(T)` from one element type
+per array field, temporal element types included, and derives an array's
+length at read time from the `path[i]` keys the data carries. Under the list model every array is emitted as a single `ARRAY(T)`
 column, `T` being the element's collapsed type; a heterogeneous element is
 emitted as `ARRAY(JSON)`. An integration between cyoda-go and the connector
 starts from this contract.
