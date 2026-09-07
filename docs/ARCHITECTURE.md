@@ -371,7 +371,7 @@ contract.
 
 Two further recovery sites deliberately do **not** latch, because they wrap notification callbacks rather than domain work: the member-registry `onChange` fan-out (`internal/grpc/members.go`) and the OIDC broadcast handler with its dispatch goroutines (`internal/auth/oidc/broadcast.go`, which counts panics on its own metric). Neither holds a transaction, and both self-heal on the next event.
 
-Nothing resets the flag: `GET /health` on the API listener reports `503 DOWN` from then on, and the admin listener's `/readyz` (§7.5) reports `503` for the same reason. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked.
+Nothing resets the flag: `GET /health` on the API listener mirrors it directly — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` from the first recovered panic on — and the admin listener's `/readyz` (§7.5) reports `503` for the same reason. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked. Read the ticket in the log, then replace the node — nothing re-arms the flag. `/health` and `/readyz` read the same flag but serve different audiences: `/readyz` (with `/livez`, unconditional) is the deployment probe on the admin listener; `/health` is a plain summary for humans and simple scripts.
 
 What the flag actually stops, and what it does not:
 
@@ -1309,7 +1309,11 @@ Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC str
 
 The admin listener (`/livez`, `/readyz`, `/metrics` on
 `CYODA_ADMIN_PORT`, default `9091`) is served separately from the
-main API listener and has its own authentication policy:
+main API listener and has its own authentication policy. This is
+where the deployment probes live — `GET /health` on the main API
+listener (§3.4) mirrors the same readiness flag as `/readyz` but is
+a plain summary for humans and simple scripts, not the orchestrator
+contract:
 
 - **`/livez` and `/readyz`** are always unauthenticated. Kubelet
   probes carry no bearer token; authenticating these endpoints

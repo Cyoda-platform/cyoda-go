@@ -269,7 +269,7 @@ Signal handling is established in `main()` before the listeners start. The signa
 
 ## HEALTH PROBES
 
-Both probes are served on `CYODA_ADMIN_PORT` (default `9091`) at `CYODA_ADMIN_BIND_ADDRESS` (default `127.0.0.1`). Both endpoints are unauthenticated — authentication is not applied to `/livez` or `/readyz` regardless of `CYODA_METRICS_BEARER` or `CYODA_METRICS_REQUIRE_AUTH`.
+Both probes are served on `CYODA_ADMIN_PORT` (default `9091`) at `CYODA_ADMIN_BIND_ADDRESS` (default `127.0.0.1`). Both endpoints are unauthenticated — authentication is not applied to `/livez` or `/readyz` regardless of `CYODA_METRICS_BEARER` or `CYODA_METRICS_REQUIRE_AUTH`. These are the deployment probes. `GET /health` on the API listener mirrors the same readiness flag as `/readyz` — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after any recovered panic, latched until the node is replaced — but it is for humans and simple scripts, not orchestrators.
 
 - `GET /livez` — liveness probe. Returns `200 OK` with body `ok` when the admin server is accepting connections. No business logic check is performed, so a node that has recovered a panic still passes it. Nothing restarts such a node: it stops receiving new client connections through the Service, keeps handling established ones and any work peers forward to it, and waits for an operator to replace it.
 - `GET /readyz` — readiness probe. Returns `200 OK` with body `ready`. Returns `503` permanently once the node has recovered a panic — its state is then unverified, so it stops receiving client traffic. The reason is in the server log; the response body stays generic. The admin listener only starts after storage is open and migrations have run, so during startup the probe is refused rather than answered `503`.
@@ -294,9 +294,9 @@ In Kubernetes, the pod `terminationGracePeriodSeconds` (default 30s) must be gre
 
 All ports are configurable via environment variables. The defaults:
 
-- **HTTP REST API** — port `8080`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_HTTP_PORT`. All entity, model, workflow, search, and auth endpoints. Context path prefix: `CYODA_CONTEXT_PATH` (default `/api`).
+- **HTTP REST API** — port `8080`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_HTTP_PORT`. All entity, model, workflow, search, and auth endpoints, plus `GET /health` (a health summary for humans and simple scripts — not the deployment probe; see HEALTH PROBES above). Context path prefix: `CYODA_CONTEXT_PATH` (default `/api`).
 - **gRPC** — port `9090`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_GRPC_PORT`. Externalized-processor streaming (processor and criteria dispatch). The bind expression is `fmt.Sprintf(":%d", cfg.GRPC.Port)` — all interfaces, not loopback.
-- **Admin** — port `9091`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_ADMIN_PORT` and `CYODA_ADMIN_BIND_ADDRESS`. Hosts `/livez`, `/readyz`, and `/metrics`. Set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` in Docker/Kubernetes to make probes reachable.
+- **Admin** — port `9091`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_ADMIN_PORT` and `CYODA_ADMIN_BIND_ADDRESS`. Hosts `/livez`, `/readyz`, and `/metrics` — the deployment probes. Set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` in Docker/Kubernetes to make probes reachable.
 - **Gossip (cluster mode only)** — port `7946` TCP+UDP. Controlled by `CYODA_GOSSIP_ADDR` (default `:7946`). Used by the memberlist gossip protocol for cluster membership and SWIM health checking. Active only when `CYODA_CLUSTER_ENABLED=true`.
 
 ## EXAMPLES

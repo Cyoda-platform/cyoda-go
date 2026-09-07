@@ -683,7 +683,7 @@ In a multi-node cluster, a calculation member's gRPC stream terminates at one no
 
 | Area | Endpoints | Description |
 |------|-----------|-------------|
-| **Health** | `GET /health` | Readiness probe |
+| **Health** | `GET /health` | Health summary; readiness is `/readyz` on the admin listener |
 | **Entity CRUD** | `POST/GET/PUT/DELETE /entity/...` | Create, read, update, delete (single and batch) |
 | **Entity Stats** | `GET /entity/stats/...` | Count, state distribution per model |
 | **Model Management** | `POST/GET/DELETE /model/...` | Import, export, lock, unlock, delete, validate, changeLevel |
