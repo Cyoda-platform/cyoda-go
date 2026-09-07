@@ -350,12 +350,13 @@ error codes.
 |----------|------|---------------------|--------|---------------|
 | Writer wedged on a never-returning send: evicted within keep-alive timeout by the write-progress rule; concurrent dispatchers return `DISPATCH_TIMEOUT` "member not draining" by their own deadline; none wedge | `internal/grpc` (blocking `SendFunc`) | — | — | ✓ client dialled with `WithInitialWindowSize`/`WithInitialConnWindowSize` 64 KiB that stops reading; one dispatch carrying a ~256 KiB entity fills the window |
 | Member that keeps pinging inbound but never reads → evicted within timeout | `internal/grpc` | — | — | ✓ (same fixture, client keeps pinging) |
-| Transport keepalive tears down a black-holed connection within `Time + Timeout`; `StartStreaming` returns; member unregistered | — | — | — | ✓ pausable in-test TCP proxy between client and server |
+| Transport keepalive tears down a black-holed connection within `Time + Timeout`: member unregistered and `GracefulStop` returns (it waits for every connection to close, so a lingering dead one would hang it) | — | — | — | ✓ pausable in-test TCP proxy between client and server |
 | Enforcement tolerates a client pinging every 5s (no GOAWAY) | — | — | — | ✓ |
-| `Send` honours ctx deadline while the writer is busy; a queued item whose ctx is done is skipped by the writer | `internal/grpc` | — | — | — |
+| `Send` honours ctx deadline while the writer is busy; a sender that gives up is released and nothing it queued is written (the writer's own ctx check on a received item is reviewed, not tested: with an unbuffered handoff it is not separately observable) | `internal/grpc` | — | — | — |
 | Greet is the first event on the wire even with a dispatch racing `Register` | `internal/grpc` (`overlapDetectingStream` reuse) | — | — | — |
 | `-race`: dispatch + keep-alive + greet, exactly one goroutine calls the raw send | `internal/grpc` | — | — | — |
-| Keep-alive loop panic: process survives, member evicted, ticket in status, flag **not** latched | `internal/grpc` | — | — | ✓ |
+| Writer panic (raw send panics): process survives, member evicted, ticket in status, flag **not** latched | `internal/grpc` | — | — | — |
+| Keep-alive loop panic: same recover pattern as the writer and receive goroutine; no reachable trigger without a test hook — reviewed, not tested (waiver recorded in the plan) | — | — | — | — |
 | Receive goroutine panic: same | `internal/grpc` | — | — | ✓ |
 | Clean client disconnect unregisters promptly (existing regression test kept) | `internal/grpc` | — | — | — |
 | Member unregistered between lookup and track → immediate `DISCONNECTED`; after `Evict` but before `Unregister` → same | `internal/grpc` | — | — | — |
