@@ -358,33 +358,6 @@ func TestValidate_TwoUnspellableFieldNamesBothReported(t *testing.T) {
 	}
 }
 
-// A width change is a genuine count mismatch, not a kind mismatch: the
-// element type is fine, the document just carries more elements than the
-// model has ever observed at this path. Naming both counts is the accurate
-// statement — Validate never checked width at all before Task 8, so there
-// is no prior wording to preserve.
-func TestValidate_ArrayWiderThanObservedNamesBothCounts(t *testing.T) {
-	arr := schema.NewArrayNode(schema.NewLeafNode(schema.String))
-	arr.ObserveArrayWidth(2)
-	model := schema.NewObjectNode()
-	model.SetChild("a", arr)
-
-	errs := schema.Validate(model, map[string]any{"a": []any{"x", "y", "z"}})
-	if len(errs) != 1 {
-		t.Fatalf("want 1 error, got %v", errs)
-	}
-	if errs[0].Path != "a" {
-		t.Errorf("Path = %q, want %q", errs[0].Path, "a")
-	}
-	wantMsg := "array wider than observed: 3 elements, model has seen at most 2"
-	if errs[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", errs[0].Message, wantMsg)
-	}
-	if errs[0].Kind != schema.ErrKindGeneric {
-		t.Errorf("Kind = %v, want ErrKindGeneric", errs[0].Kind)
-	}
-}
-
 // Final review M4: Validate's catch-all used to echo the raw Go error
 // (including a %T-formatted type name) straight into ValidationError.Message
 // — a caller-side contract violation (json.UseNumber not used, or a value

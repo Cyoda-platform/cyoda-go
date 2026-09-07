@@ -114,22 +114,6 @@ func TestMergeKindConflict(t *testing.T) {
 	}
 }
 
-func TestMergeKeepsTheWidestObservedWidth(t *testing.T) {
-	a := schema.NewArrayNode(schema.NewLeafNode(schema.Integer))
-	a.ObserveArrayWidth(3)
-
-	b := schema.NewArrayNode(schema.NewLeafNode(schema.Integer))
-	b.ObserveArrayWidth(5)
-
-	merged := schema.Merge(a, b)
-	if merged.Array() == nil {
-		t.Fatal("the merged node declares the array branch")
-	}
-	if got := merged.Array().MaxWidth(); got != 5 {
-		t.Errorf("expected maxWidth 5, got %d", got)
-	}
-}
-
 func TestMergeNilInputs(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("x", schema.NewLeafNode(schema.String))

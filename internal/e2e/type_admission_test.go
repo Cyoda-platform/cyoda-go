@@ -16,9 +16,9 @@ package e2e_test
 //     (model_kind_enforcement_test.go's TestModelKindEnforcement_*Rejects*
 //     and model_kind_branch_extension_test.go's
 //     TestModelKindBranch_KeyedPathCannotGainAContainer);
-//   - homogeneous array-element growth at ARRAY_ELEMENTS and array-width
-//     growth at ARRAY_LENGTH, both pre-existing and mechanism-level rather
-//     than value-admission-specific (model_extension_test.go).
+//   - homogeneous array-element growth at ARRAY_ELEMENTS and a longer
+//     array held at ARRAY_LENGTH, both pre-existing and mechanism-level
+//     rather than value-admission-specific (model_extension_test.go).
 
 import (
 	"encoding/json"
@@ -603,17 +603,9 @@ func TestTypeAdmission_MixedKindArray_ElementsJudgedIndividually(t *testing.T) {
 // ARRAY_LENGTH. ARRAY_LENGTH is the lowest active rank, one above strict's
 // "nothing" — so it must grant no permission a TYPE-level change needs: a
 // value requiring TYPE (9007199254740993 into DOUBLE, past the mantissa
-// boundary) is refused identically at strict and at ARRAY_LENGTH.
-//
-// (An array-width-growing write, the other candidate for this row, turns out
-// NOT to discriminate the two: schema.ModelNode's observed MaxWidth is not
-// persisted across a storage round-trip (Diff/Apply both drop it, and every
-// model this package's HTTP handlers load has been through at least one —
-// see admit.go's "the wire form has never carried MaxWidth" comment), so a
-// width-growing write is ungated at every level once the model has been
-// persisted once — a pre-existing quirk unrelated to this design, confirmed
-// empirically and left unfixed here per the brief's "do not touch production
-// code".) ---
+// boundary) is refused identically at strict and at ARRAY_LENGTH. A longer
+// array cannot serve this row: an array's length is not part of the model,
+// so it is held at every level, strict included. ---
 
 func TestTypeAdmission_StrictNeverMorePermissiveThanArrayLength(t *testing.T) {
 	for _, tc := range []struct{ name, level string }{

@@ -451,16 +451,9 @@ func RunTypeAdmissionRegistrationYieldsStringLocalDate(t *testing.T, fixture Bac
 // the lowest active rank, one above strict's "nothing", so it must grant no
 // permission a TYPE-level change needs. 9007199254740993 into DOUBLE (past
 // the mantissa boundary, requiring TYPE) is refused identically at strict
-// and at ARRAY_LENGTH.
-//
-// An array-width-growing write, the other candidate for this row, turns out
-// NOT to discriminate the two: schema.ModelNode's observed MaxWidth is not
-// persisted across a storage round-trip (cyoda-go's Diff/Apply both drop
-// it, and every model an HTTP request loads has been through at least
-// one), so a width-growing write is ungated at every level once the model
-// has been persisted once — a pre-existing quirk unrelated to this design,
-// confirmed empirically against this suite's backends and left unfixed
-// here, out of scope for a coverage task.
+// and at ARRAY_LENGTH. A longer array cannot serve this row: an array's
+// length is not part of the model, so it is held at every level, strict
+// included.
 func RunTypeAdmissionStrictNeverMorePermissiveThanArrayLength(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

@@ -29,7 +29,7 @@ For **product context** — value proposition, target use cases, scale envelope,
   - `STRUCTURAL` — new fields allowed
   - `TYPE` — leaf types can widen
   - `ARRAY_ELEMENTS` — array element types can widen
-  - `ARRAY_LENGTH` — only array widths change
+  - `ARRAY_LENGTH` — no schema change at all (the floor; an array's length is not part of the model)
 - Validation against locked schema
 
 ### Workflow Engine

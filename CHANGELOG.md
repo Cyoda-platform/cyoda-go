@@ -982,6 +982,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **An array's length is not part of the model.** A model's array branch
+  declares its element and nothing else: a homogeneous list of any length is
+  held by the array that declared it, at every `changeLevel` and under strict
+  validation alike, and the model is byte-identical afterwards. The
+  discovery-time "widest array seen" statistic that lived on the in-memory
+  tree is gone with everything that read it — the width comparison in the
+  write path, the `array width change ... requires ARRAY_LENGTH level`
+  refusal it could only produce for a model that had never been stored, and
+  the `(TYPE x N)` decoration `SIMPLE_VIEW` rendered from an in-memory tree
+  but never from a persisted one, so an export now describes the model
+  rather than the route the model took into memory. `ARRAY_LENGTH` keeps its
+  place as the floor of the ladder — the level that permits no schema change
+  at all — and is documented as that. The array model is now stated as a
+  Cloud-facing contract: see `docs/cloud-parity/array-shape-and-change-levels.md`.
+  `cyoda-go-spi` drops `FieldDescriptor.MaxWidth`, `ArrayBranch.MaxWidth`
+  and `ModelNode.ObserveArrayWidth`.
+
 - **Async search translates the condition before it persists the job.**
   `SubmitAsync` validated a condition's structure, paths, patterns and types
   but never translated it, so a condition no backend could execute was accepted
@@ -1839,16 +1856,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   collation is not byte order (an ICU or non-`C` locale collation), a text
   range query can now return a different — correct — set of rows than before:
   the comparison and the ordering agree on what "between" means.
-
-### Known limitations
-
-- **`ARRAY_LENGTH` is not enforceable end to end.** An array width change is
-  only ever recorded against a stored array whose observed width is greater
-  than zero, and the wire form a loaded model is built from carries no
-  width — so every model reconstructed from storage has `MaxWidth() == 0` on
-  every array branch, and an `ARRAY_LENGTH`-gated width increase is never
-  actually charged. Whether to persist observed widths, or to retire the
-  `ARRAY_LENGTH` level, is an open decision and not part of this change.
 
 ## [0.8.3] — 2026-07-27
 

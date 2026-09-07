@@ -183,14 +183,6 @@ func TestValidate_NullFollowsTheDeclaration(t *testing.T) {
 // observed" and accepted array content silently whenever the declared
 // element was nil; that silent acceptance is exactly the asymmetry with
 // Extend the unification closes.
-//
-// Width is a different story: a fixture built like this one — no
-// ObserveArrayWidth call, so MaxWidth is 0 — never records a ReasonArrayWidth
-// change at all (see admit.go's array(), which only compares against an
-// OBSERVED width): a width of 0 means the branch has never actually seen an
-// array, which is what every model loaded from storage looks like (the wire
-// form does not carry MaxWidth), not a real constraint of "no more than
-// zero elements".
 func TestValidate_UnobservedElementArrayStillDeclaresArray(t *testing.T) {
 	model := NewObjectNode()
 	model.SetChild("a", NewArrayNode(nil))

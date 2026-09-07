@@ -243,23 +243,6 @@ func validationErrorFor(c Change) ValidationError {
 		}
 	case ReasonNewKind:
 		return validationErrorForNewKind(c)
-	case ReasonArrayWidth:
-		// The array's element type is fine — the document simply carries
-		// more elements than the model has ever seen at this path. Naming
-		// both counts is the accurate statement; the generic "expected X,
-		// got Y" template would have described the array's own JSON kind
-		// (which the document DID supply correctly, same defect as
-		// ReasonArrayElement's old default-case rendering) instead of the
-		// actual mismatch, which is a count, not a kind.
-		n := 0
-		if arr, ok := c.Value.([]any); ok {
-			n = len(arr)
-		}
-		return ValidationError{
-			Path:    wirePath(c.DocPath),
-			Message: fmt.Sprintf("array wider than observed: %d elements, model has seen at most %d", n, c.ObservedWidth),
-			Kind:    ErrKindGeneric,
-		}
 	case ReasonArrayElement:
 		// The array's element was never observed at all — there is no
 		// declared element type to compare the document's content against,

@@ -74,7 +74,6 @@ func TestSimpleViewNestedObject(t *testing.T) {
 func TestSimpleViewArrayOfPrimitives(t *testing.T) {
 	elem := schema.NewLeafNode(schema.String)
 	arr := schema.NewArrayNode(elem)
-	arr.ObserveArrayWidth(3)
 
 	node := schema.NewObjectNode()
 	node.SetChild("tags", arr)
@@ -87,12 +86,11 @@ func TestSimpleViewArrayOfPrimitives(t *testing.T) {
 	model := sv["model"].(map[string]any)
 	root := model["$"].(map[string]any)
 
-	// tags should be UniTypeArray: "(STRING x 3)"
 	tagsVal, ok := root[".tags[*]"]
 	if !ok {
 		t.Fatal("expected '.tags[*]' in root")
 	}
-	expected := "(STRING x 3)"
+	expected := "STRING"
 	if tagsVal != expected {
 		t.Errorf("expected %q, got %v", expected, tagsVal)
 	}
