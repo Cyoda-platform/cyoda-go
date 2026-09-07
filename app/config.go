@@ -88,7 +88,10 @@ type Config struct {
 // kept; none of them limits how long a handler runs (Go clears the read
 // deadline once the body is drained). WriteTimeout does limit handler
 // execution and ships disabled: the server imposes no time budget on work.
-// Zero disables a timeout.
+// Zero disables ReadTimeout and WriteTimeout outright. For ReadHeaderTimeout
+// and IdleTimeout, zero instead means "use ReadTimeout" — Go's own
+// net/http.Server fallback — so those two are off only when ReadTimeout is
+// also zero.
 type HTTPConfig struct {
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
