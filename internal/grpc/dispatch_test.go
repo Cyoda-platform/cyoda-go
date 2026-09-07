@@ -22,14 +22,14 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 	t.Helper()
 	registry := NewMemberRegistry()
 	sentCh := make(chan *cepb.CloudEvent, 10)
-	memberID := registry.Register(testTenantID, []string{"python"}, func(ce *cepb.CloudEvent) error {
+	member := registry.Register("member-test", testTenantID, []string{"python"}, func(ce *cepb.CloudEvent) error {
 		sentCh <- ce
 		return nil
-	})
+	}, nil)
 	uuids := common.NewTestUUIDGenerator()
 	signer, _ := token.NewSigner(make32(t))
 	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
-	return dispatcher, registry, memberID, sentCh
+	return dispatcher, registry, member.ID, sentCh
 }
 
 func testContext() context.Context {
@@ -697,7 +697,7 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 }
 
 // TestDispatchCalloutToMember_MemberDisconnects guards that a member
-// disconnecting mid-request (FailAllPending, e.g. on stream drop/Unregister)
+// disconnecting mid-request (evicted, e.g. on stream drop/Unregister)
 // surfaces a distinguishable 503 COMPUTE_MEMBER_DISCONNECTED to the waiting
 // dispatch, not a generic failure that maps to 400.
 func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
@@ -706,11 +706,11 @@ func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
 	member := registry.Get(memberID)
 
 	// Simulate the stream dropping mid-flight: once the request is sent
-	// (and therefore tracked), fail all pending requests as Unregister does
-	// on disconnect, instead of ever completing the request normally.
+	// (and therefore tracked), evict the member as Unregister does on
+	// disconnect, instead of ever completing the request normally.
 	go func() {
 		<-sentCh
-		member.FailAllPending("compute member disconnected")
+		member.Evict(errors.New("compute member disconnected"))
 	}()
 
 	req := map[string]any{"requestId": "req-disconnect"}
@@ -1084,13 +1084,12 @@ func TestDispatchCalloutToMember_AbandonOnTimeout(t *testing.T) {
 // must still have its (pre-registered) tracking entry cleared.
 func TestDispatchCalloutToMember_AbandonOnSendFailure(t *testing.T) {
 	registry := NewMemberRegistry()
-	memberID := registry.Register(testTenantID, []string{"python"}, func(_ *cepb.CloudEvent) error {
+	member := registry.Register("member-send-fail", testTenantID, []string{"python"}, func(_ *cepb.CloudEvent) error {
 		return fmt.Errorf("send boom")
-	})
+	}, nil)
 	uuids := common.NewTestUUIDGenerator()
 	signer, _ := token.NewSigner(make32(t))
 	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
-	member := registry.Get(memberID)
 	ctx := testContext()
 
 	req := map[string]any{"requestId": "req-send-fail"}
@@ -1110,10 +1109,12 @@ func TestDispatchCalloutToMember_AbandonOnSendFailure(t *testing.T) {
 // the now-unread channel the abandoned caller is no longer waiting on.
 func TestMember_LateResponseAfterAbandon_NoOp(t *testing.T) {
 	reg := NewMemberRegistry()
-	id := reg.Register("tenant-1", []string{"a"}, noopSend)
-	m := reg.Get(id)
+	m := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
 
-	ch := m.TrackRequest("req-1")
+	ch, err := m.TrackRequest("req-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 	m.AbandonRequest("req-1")
 
 	if got := m.PendingCount(); got != 0 {

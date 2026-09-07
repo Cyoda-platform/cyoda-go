@@ -100,7 +100,7 @@ func TestStreaming_GreetIsSerialisedWithConcurrentDispatch(t *testing.T) {
 
 	sent := make(chan struct{})
 	go func() {
-		_ = member.Send(kaCE)
+		_ = member.Send(context.Background(), kaCE)
 		close(sent)
 	}()
 

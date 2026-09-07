@@ -57,10 +57,9 @@ func StreamRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.StreamServerI
 	}
 }
 
-// recoverPanic logs the full panic detail (value plus stack) at ERROR under a
-// freshly minted ticket UUID, marks healthFlag unhealthy (nil-safe: some test
-// constructors do not wire one), and returns a sanitized gRPC status error —
-// the panic value and stack never reach the client, only a generic message
+// panicStatus logs the full panic detail (value plus stack) at ERROR under a
+// freshly minted ticket UUID and returns a sanitized gRPC status error — the
+// panic value and stack never reach the client, only a generic message
 // carrying the same ticket, so an operator handed the client-visible ticket
 // can grep the server log for the matching ERROR line.
 //
@@ -71,14 +70,28 @@ func StreamRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.StreamServerI
 // *common.AppError, which grpc-go falls back to codes.Unknown for) so
 // monitoring and retry dispatch see the same precision every other RPC-level
 // failure in this package already returns.
-func recoverPanic(rec any, method string, healthFlag *atomic.Bool) error {
+//
+// It does NOT touch the health flag: whether a recovered panic latches the
+// node unhealthy depends on what the code was doing (engine or store work on
+// the application's behalf latches; a goroutine that only ticks, enqueues or
+// reads the wire and self-heals by evicting its member does not), so the
+// latch is the caller's decision, made in recoverPanic.
+func panicStatus(rec any, method string) error {
 	panicErr := fmt.Errorf("panic: %v", rec)
 	ticket := uuid.New().String()
 	slog.Error("panic recovered", "pkg", "grpc", "method", method,
 		"ticket", ticket, "err", panicErr, "stack", string(debug.Stack()))
+	message := fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
+	return status.Error(codes.Internal, message)
+}
+
+// recoverPanic is panicStatus plus the health-flag latch: the interceptors'
+// policy, for panics raised while serving an RPC (nil-safe: some test
+// constructors do not wire a flag).
+func recoverPanic(rec any, method string, healthFlag *atomic.Bool) error {
+	err := panicStatus(rec, method)
 	if healthFlag != nil {
 		healthFlag.Store(false)
 	}
-	message := fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
-	return status.Error(codes.Internal, message)
+	return err
 }

@@ -118,14 +118,14 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	ceData := ce.GetTextData()
 	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
 
-	ch := member.TrackRequest(requestID)
+	ch, _ := member.TrackRequest(requestID)
 	// Spec D11: every exit that does not consume the response must clear the
 	// tracking entry, or a late compute-node reply finds a dangling channel
 	// and the map entry leaks. The response arm's normal completion path
 	// already cleared it; clearing again is a no-op.
 	defer member.AbandonRequest(requestID)
 
-	if err := member.Send(ce); err != nil {
+	if err := member.Send(ctx, ce); err != nil {
 		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
 		return nil, fmt.Errorf("failed to send %s request: %w", label, err)
 	}

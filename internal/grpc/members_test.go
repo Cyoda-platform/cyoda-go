@@ -15,15 +15,15 @@ func TestMemberRegistry_RegisterAndList(t *testing.T) {
 	tenant := spi.TenantID("tenant-1")
 	tags := []string{"python", "default"}
 
-	id := reg.Register(tenant, tags, noopSend)
+	registered := reg.Register("m-1", tenant, tags, noopSend, nil)
 
 	members := reg.List()
 	if len(members) != 1 {
 		t.Fatalf("expected 1 member, got %d", len(members))
 	}
 	m := members[0]
-	if m.ID != id {
-		t.Errorf("expected ID %s, got %s", id, m.ID)
+	if m.ID != registered.ID {
+		t.Errorf("expected ID %s, got %s", registered.ID, m.ID)
 	}
 	if m.TenantID != tenant {
 		t.Errorf("expected tenant %s, got %s", tenant, m.TenantID)
@@ -38,9 +38,9 @@ func TestMemberRegistry_RegisterAndList(t *testing.T) {
 
 func TestMemberRegistry_RegisterAndUnregister(t *testing.T) {
 	reg := NewMemberRegistry()
-	id := reg.Register("tenant-1", []string{"a"}, noopSend)
+	m := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
 
-	reg.Unregister(id)
+	reg.Unregister(m.ID)
 
 	if len(reg.List()) != 0 {
 		t.Fatal("expected 0 members after unregister")
@@ -49,7 +49,7 @@ func TestMemberRegistry_RegisterAndUnregister(t *testing.T) {
 
 func TestMemberRegistry_FindByTags_MatchingTag(t *testing.T) {
 	reg := NewMemberRegistry()
-	reg.Register("tenant-1", []string{"python", "ml"}, noopSend)
+	reg.Register("m-1", "tenant-1", []string{"python", "ml"}, noopSend, nil)
 
 	m := reg.FindByTags("tenant-1", "ml")
 	if m == nil {
@@ -59,7 +59,7 @@ func TestMemberRegistry_FindByTags_MatchingTag(t *testing.T) {
 
 func TestMemberRegistry_FindByTags_NoMatchingTag(t *testing.T) {
 	reg := NewMemberRegistry()
-	reg.Register("tenant-1", []string{"python", "ml"}, noopSend)
+	reg.Register("m-1", "tenant-1", []string{"python", "ml"}, noopSend, nil)
 
 	m := reg.FindByTags("tenant-1", "java")
 	if m != nil {
@@ -69,7 +69,7 @@ func TestMemberRegistry_FindByTags_NoMatchingTag(t *testing.T) {
 
 func TestMemberRegistry_FindByTags_EmptyRequired(t *testing.T) {
 	reg := NewMemberRegistry()
-	reg.Register("tenant-1", []string{"python"}, noopSend)
+	reg.Register("m-1", "tenant-1", []string{"python"}, noopSend, nil)
 
 	m := reg.FindByTags("tenant-1", "")
 	if m == nil {
@@ -79,7 +79,7 @@ func TestMemberRegistry_FindByTags_EmptyRequired(t *testing.T) {
 
 func TestMemberRegistry_FindByTags_WrongTenant(t *testing.T) {
 	reg := NewMemberRegistry()
-	reg.Register("tenant-1", []string{"python"}, noopSend)
+	reg.Register("m-1", "tenant-1", []string{"python"}, noopSend, nil)
 
 	m := reg.FindByTags("tenant-2", "python")
 	if m != nil {
@@ -89,10 +89,12 @@ func TestMemberRegistry_FindByTags_WrongTenant(t *testing.T) {
 
 func TestMember_TrackAndCompleteRequest(t *testing.T) {
 	reg := NewMemberRegistry()
-	id := reg.Register("tenant-1", []string{"a"}, noopSend)
-	m := reg.Get(id)
+	m := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
 
-	ch := m.TrackRequest("req-1")
+	ch, err := m.TrackRequest("req-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	go func() {
 		m.CompleteRequest("req-1", &ProcessingResponse{
@@ -119,12 +121,14 @@ func TestMember_TrackAndCompleteRequest(t *testing.T) {
 
 func TestMemberRegistry_UnregisterFailsPending(t *testing.T) {
 	reg := NewMemberRegistry()
-	id := reg.Register("tenant-1", []string{"a"}, noopSend)
-	m := reg.Get(id)
+	m := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
 
-	ch := m.TrackRequest("req-1")
+	ch, err := m.TrackRequest("req-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
-	reg.Unregister(id)
+	reg.Unregister(m.ID)
 
 	select {
 	case resp := <-ch:
@@ -144,14 +148,14 @@ func TestMemberRegistry_UnregisterFailsPending(t *testing.T) {
 
 func TestMemberRegistry_GetExisting(t *testing.T) {
 	reg := NewMemberRegistry()
-	id := reg.Register("tenant-1", []string{"a"}, noopSend)
+	registered := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
 
-	m := reg.Get(id)
+	m := reg.Get(registered.ID)
 	if m == nil {
 		t.Fatal("expected non-nil member")
 	}
-	if m.ID != id {
-		t.Errorf("expected ID %s, got %s", id, m.ID)
+	if m.ID != registered.ID {
+		t.Errorf("expected ID %s, got %s", registered.ID, m.ID)
 	}
 }
 

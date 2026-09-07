@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -95,7 +96,8 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	sendFn := func(ce *cepb.CloudEvent) error {
 		return stream.Send(ce)
 	}
-	memberID := s.registry.Register(tenantID, joinEvent.Tags, sendFn)
+	member := s.registry.Register(uuid.NewString(), tenantID, joinEvent.Tags, sendFn, nil)
+	memberID := member.ID
 	defer s.registry.Unregister(memberID)
 	slog.Info("member joined", "pkg", "grpc", "memberId", memberID, "tenantId", string(tenantID), "tags", joinEvent.Tags)
 
@@ -113,15 +115,9 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	// Through Member.Send, never the raw stream: Register above has already
 	// published this member, so a dispatch can be routed to it before the greet
 	// lands. Two concurrent sends on one gRPC stream are unsupported and corrupt
-	// the HTTP/2 framing rather than failing cleanly. Member.Send's sendMu is
-	// what serialises them — the same reason the keep-alive goes through it.
-	member := s.registry.Get(memberID)
-	if member == nil {
-		// Unregistered between Register and here — the stream is already going
-		// away, so there is nothing to greet.
-		return status.Errorf(codes.Unavailable, "member %s disconnected before greet", memberID)
-	}
-	if err := member.Send(greetCE); err != nil {
+	// the HTTP/2 framing rather than failing cleanly. The member's single writer
+	// is what serialises them — the same reason the keep-alive goes through it.
+	if err := member.Send(ctx, greetCE); err != nil {
 		slog.Error("failed to send greet", "pkg", "grpc", "memberId", memberID, "error", err)
 		return err
 	}
@@ -238,7 +234,7 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, memberID str
 				slog.Error("failed to create keep-alive event", "pkg", "grpc", "memberId", memberID, "error", err)
 				continue
 			}
-			if err := member.Send(kaCE); err != nil {
+			if err := member.Send(ctx, kaCE); err != nil {
 				slog.Error("failed to send keep-alive", "pkg", "grpc", "memberId", memberID, "error", err)
 			} else {
 				slog.Debug("keep-alive sent", "pkg", "grpc", "memberId", memberID)

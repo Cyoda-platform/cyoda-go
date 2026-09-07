@@ -528,7 +528,10 @@ func TestStreaming_ProcessorResponse(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-123")
+	respCh, err := member.TrackRequest("req-123")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	// Send processor response from the "client".
 	respPayload := map[string]any{
@@ -585,7 +588,10 @@ func TestStreaming_CriteriaResponse(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-456")
+	respCh, err := member.TrackRequest("req-456")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	// Send criteria response.
 	respPayload := map[string]any{
@@ -637,7 +643,10 @@ func TestStreaming_CriteriaResponse_PropagatesReason(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-reason-1")
+	respCh, err := member.TrackRequest("req-reason-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	respPayload := map[string]any{
 		"requestId": "req-reason-1",
@@ -706,7 +715,10 @@ func newRetryableHarness(t *testing.T, requestID string) *retryableHarness {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest(requestID)
+	respCh, err := member.TrackRequest(requestID)
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 	return &retryableHarness{stream, done, respCh}
 }
 
@@ -907,7 +919,10 @@ func TestStreaming_FunctionResponse(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-fn-1")
+	respCh, err := member.TrackRequest("req-fn-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	respPayload := map[string]any{
 		"requestId":  "req-fn-1",
