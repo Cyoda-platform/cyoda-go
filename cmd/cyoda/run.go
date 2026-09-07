@@ -79,7 +79,7 @@ func runServers(
 
 	// HTTP server (the application surface).
 	httpAddr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	httpServer := &http.Server{Addr: httpAddr, Handler: a.Handler()}
+	httpServer := newHTTPServer(httpAddr, a.Handler(), cfg.HTTP)
 	g.Go(func() error {
 		slog.Info("HTTP server starting", "addr", httpAddr)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -99,10 +99,7 @@ func runServers(
 
 	// Admin server (/livez, /readyz, /metrics).
 	adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.BindAddress, cfg.Admin.Port)
-	adminServer := &http.Server{
-		Addr:    adminAddr,
-		Handler: newAdminHandler(a.ReadinessCheck, cfg.Admin.MetricsBearerToken, a.HealthFlag()),
-	}
+	adminServer := newHTTPServer(adminAddr, newAdminHandler(a.ReadinessCheck, cfg.Admin.MetricsBearerToken, a.HealthFlag()), cfg.HTTP)
 	g.Go(func() error {
 		slog.Info("admin server starting", "addr", adminAddr)
 		if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

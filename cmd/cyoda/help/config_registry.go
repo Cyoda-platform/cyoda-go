@@ -31,6 +31,10 @@ type ConfigVar struct {
 var rootConfigVars = []ConfigVar{
 	// --- server ---
 	{Name: "CYODA_HTTP_PORT", Topic: "server", Type: "int", Default: "8080", Description: "HTTP listen port."},
+	{Name: "CYODA_HTTP_READ_HEADER_TIMEOUT", Topic: "server", Type: "duration", Default: "10s", Description: "Time allowed to receive a request's headers on the API and admin servers. 0 disables."},
+	{Name: "CYODA_HTTP_READ_TIMEOUT", Topic: "server", Type: "duration", Default: "5m", Description: "Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables."},
+	{Name: "CYODA_HTTP_WRITE_TIMEOUT", Topic: "server", Type: "duration", Default: "0s", Description: "Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests."},
+	{Name: "CYODA_HTTP_IDLE_TIMEOUT", Topic: "server", Type: "duration", Default: "2m", Description: "How long an idle keep-alive connection is held open between requests. 0 disables."},
 	{Name: "CYODA_CONTEXT_PATH", Topic: "server", Type: "string", Default: "/api", Description: "URL prefix for all routes."},
 	{Name: "CYODA_ERROR_RESPONSE_MODE", Topic: "server", Type: "string", Default: "sanitized", Description: "Error detail level: sanitized (generic message + ticket UUID for 5xx) or verbose (internal detail included; development only)."},
 	{Name: "CYODA_LOG_LEVEL", Topic: "server", Type: "string", Default: "info", Description: "Log level: debug|info|warn|error."},

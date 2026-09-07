@@ -1444,6 +1444,10 @@ credentials from Secrets into the process without exposing them in
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_HTTP_PORT` | `8080` | HTTP server listen port |
+| `CYODA_HTTP_READ_HEADER_TIMEOUT` | `10s` | Time allowed to receive a request's headers on the API and admin servers. 0 disables. |
+| `CYODA_HTTP_READ_TIMEOUT` | `5m` | Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables. |
+| `CYODA_HTTP_WRITE_TIMEOUT` | `0s` | Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests. |
+| `CYODA_HTTP_IDLE_TIMEOUT` | `2m` | How long an idle keep-alive connection is held open between requests. 0 disables. |
 | `CYODA_CONTEXT_PATH` | `/api` | URL prefix for all API routes |
 | `CYODA_ERROR_RESPONSE_MODE` | `sanitized` | `sanitized` or `verbose` (dev only) |
 | `CYODA_MAX_STATE_VISITS` | `10` | Per-state visit limit for cascade loop protection |

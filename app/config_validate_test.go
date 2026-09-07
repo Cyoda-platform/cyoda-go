@@ -59,3 +59,12 @@ func TestValidateGRPCKeepAlive_RejectsNonPositive(t *testing.T) {
 		t.Errorf("valid config rejected: %v", err)
 	}
 }
+
+func TestValidateHTTP_RejectsNegative(t *testing.T) {
+	if err := ValidateHTTP(HTTPConfig{ReadTimeout: -1}); err == nil {
+		t.Fatal("negative timeout accepted")
+	}
+	if err := ValidateHTTP(HTTPConfig{}); err != nil {
+		t.Fatalf("all-zero (disabled) rejected: %v", err)
+	}
+}

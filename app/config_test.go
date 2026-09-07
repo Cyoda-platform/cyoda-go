@@ -343,3 +343,20 @@ func TestDefaultConfig_SchedulerEnvOverrides(t *testing.T) {
 		t.Errorf("Scheduler.ExpiryGrace = %v, want 250ms", c.Scheduler.ExpiryGrace)
 	}
 }
+
+func TestDefaultConfig_HTTPTimeouts(t *testing.T) {
+	cfg := DefaultConfig()
+	want := HTTPConfig{ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 0, IdleTimeout: 120 * time.Second}
+	if cfg.HTTP != want {
+		t.Fatalf("HTTP defaults = %+v, want %+v", cfg.HTTP, want)
+	}
+	t.Setenv("CYODA_HTTP_READ_HEADER_TIMEOUT", "3s")
+	t.Setenv("CYODA_HTTP_READ_TIMEOUT", "1m")
+	t.Setenv("CYODA_HTTP_WRITE_TIMEOUT", "45s")
+	t.Setenv("CYODA_HTTP_IDLE_TIMEOUT", "30s")
+	cfg = DefaultConfig()
+	want = HTTPConfig{ReadHeaderTimeout: 3 * time.Second, ReadTimeout: time.Minute, WriteTimeout: 45 * time.Second, IdleTimeout: 30 * time.Second}
+	if cfg.HTTP != want {
+		t.Fatalf("HTTP from env = %+v, want %+v", cfg.HTTP, want)
+	}
+}
