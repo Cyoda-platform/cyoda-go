@@ -30,6 +30,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -91,7 +92,12 @@ func freshICUDatabase(t *testing.T) string {
 
 	u, err := url.Parse(base)
 	if err != nil {
-		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
+		// *url.Error renders the raw URL (Op, URL, and Err); a malformed
+		// CYODA_TEST_DB_URL could carry an embedded credential, and that
+		// string would otherwise land in CI logs verbatim. Unwrap to just
+		// the underlying parse error — it names what's wrong without
+		// repeating the URL (security review L4).
+		t.Fatalf("parse CYODA_TEST_DB_URL: %v", errors.Unwrap(err))
 	}
 	u.Path = "/" + name
 	return u.String()

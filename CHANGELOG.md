@@ -1180,6 +1180,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A 4xx error body no longer scales with the size of a malicious request,
+  and a decoding-contract violation on a write now answers 5xx instead of
+  leaking internals into a 400.** Three response-body amplification paths are
+  now bounded: an entity write with hundreds of thousands of undeclared
+  fields renders the first 32 validation failures plus an "... and N more"
+  summary instead of every one of them; a search condition's rejected operand
+  (a data field, a `BETWEEN`-style array element, or a temporal meta field) is
+  truncated before it is echoed back, mirroring the search kernel's own
+  operand-truncation convention; and an unaddressable field name's diagnostic
+  bounds both the offending name and its parent path before rendering. Separately,
+  a value schema admission cannot classify at all — a caller-contract
+  violation such as a raw `float64` reaching the walker without
+  `json.UseNumber` decoding, unreachable through any production ingress today
+  — now routes to a `5xx` with a logged ticket on both doors that can reach
+  it (an entity write's schema extension, and sample-data model import)
+  instead of echoing an internal decoding instruction or a Go type name into
+  a `400` body.
+
 - **A whole number written to a leaf declared `DOUBLE` is no longer refused as
   a type change.** The change-level gate compared type labels: the walker
   classifies a value's type from the value alone, so `1000`, `1000.0` and `1e3`

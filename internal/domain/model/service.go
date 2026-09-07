@@ -30,6 +30,44 @@ func classifyGetErr(verb string, entityName string, ver int32, err error) *commo
 	return common.Internal(fmt.Sprintf("failed to %s", verb), err)
 }
 
+// classifyImportErr maps an importer.Walk (via SampleDataImporter.Import)
+// failure to an AppError for ImportModel.
+//
+// A field name outside the wire jsonPath grammar is a content-level contract
+// violation, not a parse failure: the document is well-formed and the remedy
+// is to rename the named key. It gets the same 400 VALIDATION_FAILED the
+// entity-write door (ingest.ValidateOrExtend) answers for the identical rule,
+// so one class of import rejection reads one way everywhere. A body that is
+// neither a document nor a collection of documents is the same class of
+// violation: it parsed, and the remedy is to send a different shape.
+//
+// A *schema.UnsupportedValueError is the opposite: a caller-side contract
+// violation on OUR side (a raw float64 leaking through without
+// json.UseNumber decoding, or a Go type schema.Describe's traversal never
+// produces), not the tenant's — its own text names a Go decoding instruction
+// or a %T-formatted Go type, neither of which belongs in a 4xx body. Every
+// production ingress into schema.Describe decodes with json.UseNumber (see
+// UnsupportedValueError's own doc comment), so this is unreachable today;
+// routing it to 5xx-with-ticket here mirrors ingest.ValidateOrExtend's
+// identical routing for the same error on the entity-write door, so the
+// classification cannot drift between the two doors that both funnel into
+// schema's admission traversal (security review L1).
+func classifyImportErr(err error, entityName string, ver int32) *common.AppError {
+	var unsupportedErr *schema.UnsupportedValueError
+	if errors.As(err, &unsupportedErr) {
+		return common.Internal("failed to process sample data", err)
+	}
+	if errors.Is(err, schema.ErrInvalidFieldName) || errors.Is(err, importer.ErrNonDocumentSampleData) {
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
+		appErr.Props = map[string]any{
+			"entityName":    entityName,
+			"entityVersion": ver,
+		}
+		return appErr
+	}
+	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
+}
+
 // ImportModelInput carries the parameters for importing a model.
 type ImportModelInput struct {
 	EntityName   string
@@ -127,23 +165,7 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	newNode, err := importer.NewSampleDataImporter().Import(
 		bytes.NewReader(input.Data), input.Format)
 	if err != nil {
-		// A field name outside the wire jsonPath grammar is a content-level
-		// contract violation, not a parse failure: the document is well-formed
-		// and the remedy is to rename the named key. It gets the same
-		// 400 VALIDATION_FAILED the workflow importer answers for its own
-		// content rules, so one class of import rejection reads one way.
-		// A body that is neither a document nor a collection of documents is
-		// the same class of violation: it parsed, and the remedy is to send a
-		// different shape.
-		if errors.Is(err, schema.ErrInvalidFieldName) || errors.Is(err, importer.ErrNonDocumentSampleData) {
-			appErr := common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error())
-			appErr.Props = map[string]any{
-				"entityName":    input.EntityName,
-				"entityVersion": ver,
-			}
-			return nil, appErr
-		}
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error())
+		return nil, classifyImportErr(err, input.EntityName, ver)
 	}
 
 	var finalNode *schema.ModelNode

@@ -37,10 +37,30 @@ type InvalidFieldNameError struct {
 	Name   string
 }
 
+// maxFieldNameDiagnosticRunes bounds how much of the offending name and
+// parent path this diagnostic echoes back to the caller. Both are
+// caller-supplied and unbounded in principle — a pathological field name or a
+// deeply-nested parent path would otherwise inflate a 400 VALIDATION_FAILED
+// body (both strings appear in the message, each further widened by %q's
+// escaping) to a multiple of the attacker-supplied size (security review L3).
+const maxFieldNameDiagnosticRunes = 128
+
+// truncateForDiagnostic caps s to maxFieldNameDiagnosticRunes runes with a
+// trailing "…" marker, for inclusion in this error's client-facing message
+// only — it does not touch InvalidFieldNameError's own Path/Parent/Name
+// fields, which callers use programmatically and must stay exact.
+func truncateForDiagnostic(s string) string {
+	r := []rune(s)
+	if len(r) <= maxFieldNameDiagnosticRunes {
+		return s
+	}
+	return string(r[:maxFieldNameDiagnosticRunes]) + "…"
+}
+
 func (e *InvalidFieldNameError) Error() string {
 	return fmt.Sprintf("%s: %q in object at %q — a field name must be addressable as a jsonPath segment: "+
 		"ASCII letters, digits, %q and %q only, and not empty; rename the field",
-		ErrInvalidFieldName, e.Name, renderParentForMessage(e.Parent), "_", "-")
+		ErrInvalidFieldName, truncateForDiagnostic(e.Name), renderParentForMessage(truncateForDiagnostic(e.Parent)), "_", "-")
 }
 
 func (e *InvalidFieldNameError) Unwrap() error { return ErrInvalidFieldName }
