@@ -83,7 +83,7 @@ func TestStreaming_PingingButNotReading_IsEvictedByWriteProgress(t *testing.T) {
 			case <-stop:
 				return
 			case <-tick.C:
-				stream.tryEnqueue(makeKeepAliveEventNoT())
+				stream.tryEnqueue(makeKeepAliveEvent())
 			}
 		}
 	}()
@@ -167,7 +167,7 @@ type panickingRecvStream struct {
 	armed atomic.Bool
 }
 
-func (s *panickingRecvStream) armPanic() { s.armed.Store(true); s.enqueue(makeKeepAliveEventNoT()) }
+func (s *panickingRecvStream) armPanic() { s.armed.Store(true); s.enqueue(makeKeepAliveEvent()) }
 func (s *panickingRecvStream) Recv() (*cepb.CloudEvent, error) {
 	ce, err := s.mockBidiStream.Recv()
 	if s.armed.Load() {

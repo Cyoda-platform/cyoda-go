@@ -210,7 +210,11 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 		Name: "my-proc",
 		Config: spi.ProcessorConfig{
 			CalculationNodesTags: "python",
-			ResponseTimeoutMs:    1, // 1ms timeout
+			// Long enough that the enqueue always succeeds and the response
+			// deadline is what fires: a 1ms budget can expire before the
+			// request reaches the writer, which reports "member not draining"
+			// instead and loses the race with the assertion below.
+			ResponseTimeoutMs: 50,
 		},
 	}
 
@@ -231,7 +235,7 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 	if !appErr.Retryable {
 		t.Error("expected timeout error to be retryable")
 	}
-	if got := appErr.Error(); got != "DISPATCH_TIMEOUT: processor dispatch timed out after 1ms: no response" {
+	if got := appErr.Error(); got != "DISPATCH_TIMEOUT: processor dispatch timed out after 50ms: no response" {
 		t.Errorf("unexpected message: %s", got)
 	}
 }
@@ -1062,8 +1066,8 @@ func TestDispatchCalloutToMember_AbandonOnCtxCancel(t *testing.T) {
 }
 
 // TestDispatchCalloutToMember_AbandonOnTimeout guards spec D11 for the
-// time.After arm: a dispatch that times out because nobody answers must not
-// leave the requestID behind in the member's pending map.
+// response-deadline arm: a dispatch that times out because nobody answers must
+// not leave the requestID behind in the member's pending map.
 func TestDispatchCalloutToMember_AbandonOnTimeout(t *testing.T) {
 	dispatcher, registry, memberID, _ := setupTestDispatcher(t)
 	member := registry.Get(memberID)
@@ -1181,17 +1185,7 @@ func TestDispatch_MemberGoneBeforeTrack_IsDisconnectedImmediately(t *testing.T) 
 // DISPATCH_TIMEOUT with the "member not draining" message, within the
 // dispatch's own timeout.
 func TestDispatch_EnqueueTimeout_IsDispatchTimeoutNotDraining(t *testing.T) {
-	registry := NewMemberRegistry()
-	release := make(chan struct{})
-	defer close(release)
-	member := registry.Register("m-wedged", testTenantID, []string{"python"},
-		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
-	defer registry.Unregister("m-wedged")
-	_ = member.Send(context.Background(), mustCE(t)) // wedge the writer
-
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher, member := newWedgedDispatcher(t)
 
 	start := time.Now()
 	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
@@ -1211,17 +1205,7 @@ func TestDispatch_EnqueueTimeout_IsDispatchTimeoutNotDraining(t *testing.T) {
 // A parent context cancelled during the enqueue wait is reported as the
 // caller's cancellation, never as a timeout.
 func TestDispatch_ParentCancelDuringEnqueue_IsCtxErr(t *testing.T) {
-	registry := NewMemberRegistry()
-	release := make(chan struct{})
-	defer close(release)
-	member := registry.Register("m-wedged", testTenantID, []string{"python"},
-		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
-	defer registry.Unregister("m-wedged")
-	_ = member.Send(context.Background(), mustCE(t))
-
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher, member := newWedgedDispatcher(t)
 
 	ctx, cancel := context.WithCancel(testContext())
 	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
@@ -1238,17 +1222,7 @@ func TestDispatch_ParentCancelDuringEnqueue_IsCtxErr(t *testing.T) {
 // TestDispatchCalloutToMember_AbandonOnWriterFailure where Send returns nil
 // before the writer's own failure evicts the member.
 func TestDispatch_MemberEvictedDuringEnqueue_IsDisconnectedPromptly(t *testing.T) {
-	registry := NewMemberRegistry()
-	release := make(chan struct{})
-	defer close(release)
-	member := registry.Register("m-wedged", testTenantID, []string{"python"},
-		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
-	defer registry.Unregister("m-wedged")
-	_ = member.Send(context.Background(), mustCE(t)) // wedge the writer
-
-	uuids := common.NewTestUUIDGenerator()
-	signer, _ := token.NewSigner(make32(t))
-	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	dispatcher, member := newWedgedDispatcher(t)
 
 	go func() {
 		time.Sleep(30 * time.Millisecond)
@@ -1265,6 +1239,22 @@ func TestDispatch_MemberEvictedDuringEnqueue_IsDisconnectedPromptly(t *testing.T
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("dispatcher blocked %v after eviction; should return promptly", d)
 	}
+}
+
+// newWedgedDispatcher builds a dispatcher over a member whose writer is parked
+// in a raw send that never returns, so the writer cannot take another event and
+// the next enqueue has nowhere to go. The parked send is released on cleanup.
+func newWedgedDispatcher(t *testing.T) (*ProcessorDispatcher, *Member) {
+	t.Helper()
+	registry := NewMemberRegistry()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	member := registry.Register("m-wedged", testTenantID, []string{"python"},
+		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
+	t.Cleanup(func() { registry.Unregister("m-wedged") })
+	_ = member.Send(context.Background(), mustCE(t)) // wedge the writer
+	signer, _ := token.NewSigner(make32(t))
+	return NewProcessorDispatcher(registry, common.NewTestUUIDGenerator(), signer, "node-test", time.Minute), member
 }
 
 func mustCE(t *testing.T) *cepb.CloudEvent {

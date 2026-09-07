@@ -400,8 +400,8 @@ func TestScheduledFunction_DispatchTimeout_Returns503(t *testing.T) {
 
 	h.RegisterFunction("calcSlow", func(rc *reqCtx) (string, map[string]any, error) {
 		// Comfortably past responseTimeoutMs so dispatchCalloutToMember's
-		// <-time.After(timeout) branch wins the select — DISPATCH_TIMEOUT,
-		// not a late-but-successful dispatch.
+		// response-deadline branch wins the select — DISPATCH_TIMEOUT, not a
+		// late-but-successful dispatch.
 		time.Sleep(600 * time.Millisecond)
 		return "Schedule", map[string]any{"fireAfterMs": int64(60_000)}, nil
 	})

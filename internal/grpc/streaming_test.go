@@ -115,15 +115,11 @@ func makeJoinEvent(t *testing.T, tenantID string, tags []string) *cepb.CloudEven
 	return ce
 }
 
-func makeKeepAliveEvent(t *testing.T) *cepb.CloudEvent {
-	t.Helper()
-	return makeKeepAliveEventNoT()
-}
-
-// makeKeepAliveEventNoT is makeKeepAliveEvent for goroutines that may outlive
-// the test body, where calling t is not allowed. Marshalling a one-field map
-// cannot fail, so there is nothing to report.
-func makeKeepAliveEventNoT() *cepb.CloudEvent {
+// makeKeepAliveEvent takes no *testing.T, unlike makeJoinEvent: goroutines that
+// may outlive the test body feed keep-alives, and calling t from one is not
+// allowed. Marshalling a one-field map cannot fail, so there is nothing to
+// report anyway.
+func makeKeepAliveEvent() *cepb.CloudEvent {
 	ce, _ := NewCloudEvent(CalculationMemberKeepAliveEvent, map[string]any{"success": true})
 	return ce
 }
@@ -294,7 +290,7 @@ func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
 	before := member.LastSeen()
 
 	// Send an inbound keep-alive from the "client".
-	stream.enqueue(makeKeepAliveEvent(t))
+	stream.enqueue(makeKeepAliveEvent())
 
 	// Liveness must be refreshed: poll until LastSeen advances past the
 	// registration timestamp (proves the keep-alive was processed).
@@ -385,7 +381,7 @@ func TestStreaming_EchoingClientDoesNotStorm(t *testing.T) {
 	// one back — the exact behavior that ignited the storm in the field. The
 	// echoed event is read-only to the server, so one instance is reused (and
 	// built here, not in the goroutine, to keep t.* off a non-test goroutine).
-	echo := makeKeepAliveEvent(t)
+	echo := makeKeepAliveEvent()
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -481,7 +477,7 @@ func TestStreaming_FirstMessageNotJoin_InvalidArgument(t *testing.T) {
 	stream := newMockBidiStream(ctx)
 
 	// Send a keep-alive as the first message instead of a join.
-	stream.enqueue(makeKeepAliveEvent(t))
+	stream.enqueue(makeKeepAliveEvent())
 
 	err := svc.StartStreaming(stream)
 	if err == nil {
