@@ -368,10 +368,15 @@ func (r *MemberRegistry) SetOnChange(fn TagChangeFunc) {
 	r.onChange = fn
 }
 
-// Register creates the member, starts its writer with greet as the first
-// event on the wire, and only then publishes the member to the registry. A
-// dispatch routed the instant the member becomes visible therefore queues
-// behind the greet. greet may be nil (test fixtures).
+// Register creates the member, publishes it to the registry, and only then
+// starts its writer with greet as the first event on the wire. The greet is
+// the member's "you are registered" signal, so the member must already be
+// visible when it goes out; starting the writer first let a fast writer send
+// the greet before the map insert, and a lookup at that instant found
+// nothing. A dispatch routed between publication and the writer's start
+// waits in the unbuffered outbox under its own deadline and is written after
+// the greet, because writeLoop writes greet before it drains the outbox.
+// greet may be nil (test fixtures).
 //
 // Re-registering an ID that is already present displaces the old member, whose
 // writer would otherwise run forever and whose pending requests would wait out
@@ -382,7 +387,6 @@ func (r *MemberRegistry) SetOnChange(fn TagChangeFunc) {
 // than deleting whatever now holds the ID.
 func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags []string, send SendFunc, greet *cepb.CloudEvent) *Member {
 	m := newMember(memberID, tenantID, tags, send)
-	go m.writeLoop(greet)
 	displaced := func() *Member {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -391,6 +395,7 @@ func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags [
 		r.tagsVersion++
 		return old
 	}()
+	go m.writeLoop(greet)
 	if displaced != nil {
 		displaced.Evict(status.Error(codes.Unavailable, "member id re-registered"))
 	}
