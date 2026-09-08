@@ -11,7 +11,7 @@ import (
 )
 
 // Tenant-isolation regression tests for the sqlite plugin's three savepoint
-// methods. PR-C1: pre-fix Savepoint, RollbackToSavepoint, and
+// methods. Before the tenant-strictness fix Savepoint, RollbackToSavepoint, and
 // ReleaseSavepoint took _ context.Context and never compared the caller's
 // tenant against tx.TenantID. A caller authenticated as tenant A who learned
 // a tenant B txID could record / rollback / release savepoints on tenant B's

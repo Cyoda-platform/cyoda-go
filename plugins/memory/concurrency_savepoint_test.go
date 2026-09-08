@@ -366,7 +366,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 // TestJoin_VsRollback_NoRace flags the missing tx.OpMu.RLock around Join's
 // reads of tx.RolledBack and tx.Closed.
 //
-// Surfaced by the memory-plugin tx-locking audit during PR-A: Join
+// Surfaced by the memory-plugin tx-locking audit: Join
 // reads tx.RolledBack and tx.Closed outside any lock at txmanager.go:117.
 // Rollback writes tx.RolledBack inside m.mu only, and Commit/Rollback both
 // write tx.Closed in their defer under tx.OpMu.Lock only — never under m.mu.

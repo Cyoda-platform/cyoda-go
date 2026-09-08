@@ -2682,7 +2682,7 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 	// engine pending the Task 12/13 handler refactor that wires the final
 	// commit. Once that lands, this test should be extended to assert that
 	// an independent reader sees both entities post-cascade.
-	// TODO(issue-27, Task 13): assert durability of e1 in S_post and e2
+	// TODO(handler-final-txpost-commit): assert durability of e1 in S_post and e2
 	// once the handler commits the engine's final TX_post.
 }
 

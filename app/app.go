@@ -487,8 +487,9 @@ func New(cfg Config) *App {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
 		// are already registered, so no messages are dropped.
-		// Use startupCtx so the gossip join honors CYODA_STARTUP_TIMEOUT
-		// (issue #9) instead of the legacy hard-coded 2-minute deadline.
+		// Use startupCtx so the gossip join honors the configured
+		// gossip-registration deadline (CYODA_STARTUP_TIMEOUT) instead of a
+		// hard-coded 2-minute one.
 		if err := gossipReg.Register(startupCtx, cfg.Cluster.NodeID, cfg.Cluster.NodeAddr); err != nil {
 			slog.Error("failed to register with gossip cluster", "pkg", "cluster", "err", err)
 			os.Exit(1)

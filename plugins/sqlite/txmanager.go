@@ -359,8 +359,8 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 	}
 
 	// Verify tenant matches. Strict — rejects nil UserContext to match
-	// Commit/Rollback's gate. Pre-PR-C2 this was
-	// permissive on nil UC, allowing any caller without a UserContext to
+	// Commit/Rollback's gate. Before the tenant-strictness fix this was
+	// permissive on a nil user context, allowing any caller without one to
 	// Join an arbitrary active tx.
 	uc := spi.GetUserContext(ctx)
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
@@ -837,7 +837,7 @@ func (m *transactionManager) CommittedLogLen() int {
 // Savepoint creates a named savepoint within the given transaction by
 // deep-copying the transaction's buffer maps.
 //
-// Locking discipline (mirrors memory plugin PR-A):
+// Locking discipline (mirrors the memory plugin):
 // Savepoint reads tx.Buffer / tx.ReadSet / tx.WriteSet / tx.Deletes — the
 // same fields Commit's flush phase iterates under tx.OpMu.Lock and that
 // other tx-path ops mutate under tx.OpMu.RLock. Savepoint must therefore

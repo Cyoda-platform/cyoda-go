@@ -398,8 +398,8 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 	}
 
 	// Verify tenant matches. Strict — rejects nil UserContext to match
-	// Commit/Rollback's gate. Pre-PR-C2 this was
-	// permissive on nil UC, allowing any caller without a UserContext to
+	// Commit/Rollback's gate. Before the tenant-strictness fix this was
+	// permissive on a nil user context, allowing any caller without one to
 	// Join an arbitrary active tx.
 	uc := spi.GetUserContext(ctx)
 	if uc == nil || uc.Tenant.ID != tx.TenantID {

@@ -543,7 +543,7 @@ func TestSavepoint_WrongTxIDRejected(t *testing.T) {
 
 // TestSavepoint_RejectsCrossTenant verifies that Savepoint refuses to operate
 // on a transaction belonging to a different tenant. Surfaced by the
-// tx-locking audit and PR-A code review: pre-fix, the three savepoint
+// tx-locking audit: before the fix, the three savepoint
 // methods discarded the caller's tenant context entirely (took _ context.Context),
 // allowing tenant A to manipulate tenant B's tx-state if the txID was known.
 // Mirrors Commit/Rollback's existing tenant-mismatch protection.

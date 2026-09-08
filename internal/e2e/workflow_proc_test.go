@@ -795,12 +795,12 @@ func TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten(t *testing
 // classification of 409 retryable is covered by the entity service unit
 // tests.
 //
-// TODO(issue-27, Task 18): build a concurrent-client harness that suppresses
+// TODO(concurrent-client-harness): build a concurrent-client harness that suppresses
 // the doAuth retry helper for this test only and uses a synchronisation
 // channel between client goroutines and the dispatch fake to enforce
 // overlap.
 func TestWorkflowProc_UpdateWithCBD_HotEntityConcurrent(t *testing.T) {
-	t.Skip("requires concurrent-client harness without doAuth retry-recovery; see Task 18 TODO")
+	t.Skip("requires concurrent-client harness without doAuth retry-recovery; see the concurrent-client-harness TODO above")
 }
 
 // --- Spec §16 case D (concurrent search across segment boundary) ---
@@ -1135,10 +1135,10 @@ func TestWorkflowProc_LoopbackWithCBD(t *testing.T) {
 // TX_post.Commit, TX_pre's state is durable by definition of the commit
 // boundary).
 //
-// TODO(issue-27, Task 23): if a fault-injection hook is added to the
+// TODO(engine-fault-injection-hook): if a fault-injection hook is added to the
 // engine in a future change, replace this skip with a real test that
 // triggers the hook between TX_pre.Commit and dispatch and asserts
 // durability via a fresh GET.
 func TestWorkflowProc_UpdateWithCBD_EngineCrashLeavesEntityInPreCalloutState(t *testing.T) {
-	t.Skip("requires engine-side fault-injection hook — pre-callout durability is structurally guaranteed by TX_pre commit boundary, covered at engine layer by TestEngine_CommitBeforeDispatch_AuditEventPlacement; see Task 23 TODO")
+	t.Skip("requires engine-side fault-injection hook — pre-callout durability is structurally guaranteed by TX_pre commit boundary, covered at engine layer by TestEngine_CommitBeforeDispatch_AuditEventPlacement; see the engine-fault-injection-hook TODO above")
 }

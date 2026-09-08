@@ -35,7 +35,7 @@ func init() {
 // propose upstream tightening.
 //
 // Note: this is the opposite direction from the case where cyoda-go's generic
-// CONFLICT was less specific than cloud's MODEL_ALREADY_LOCKED). The two
+// CONFLICT was less specific than cloud's MODEL_ALREADY_LOCKED. The two
 // codes are walking toward each other from opposite directions.
 func RunExternalAPI_12_01_CreateEntityOnUnlockedModel(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()

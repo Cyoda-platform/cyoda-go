@@ -457,7 +457,7 @@ func (c *Client) ListEntitiesByModelAt(t *testing.T, modelName string, modelVers
 // GetEntityAt issues GET /api/entity/{entityId}?pointInTime=<t>.
 // Returns the entity as it was at the given point in time.
 // Canonical: docs/cyoda/openapi.yml:1055 (getOneEntity with pointInTime query param).
-// This is the code path that exercises GetAsAt.
+// This is the code path where the GetAsAt regression lived.
 func (c *Client) GetEntityAt(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (EntityResult, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID.String(), pointInTime.Format(time.RFC3339Nano))

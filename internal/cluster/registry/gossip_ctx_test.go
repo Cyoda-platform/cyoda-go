@@ -10,9 +10,10 @@ import (
 )
 
 // TestGossipRegistry_RegisterHonorsContextDeadline is the regression test for
-// issue #9. Previously Register hardcoded a 2-minute retry deadline and
-// ignored the context entirely, so operators who set CYODA_STARTUP_TIMEOUT
-// could still hang for up to 2 minutes when seeds were unreachable.
+// Register honouring its caller's deadline. Previously Register hardcoded a
+// 2-minute retry deadline and ignored the context entirely, so operators who
+// set CYODA_STARTUP_TIMEOUT could still hang for up to 2 minutes when seeds
+// were unreachable.
 //
 // Register must abort with a context error once the caller's deadline elapses.
 func TestGossipRegistry_RegisterHonorsContextDeadline(t *testing.T) {

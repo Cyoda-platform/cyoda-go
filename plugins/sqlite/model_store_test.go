@@ -67,7 +67,8 @@ func TestModelStore_SQLite_UniqueKeysRoundTrip(t *testing.T) {
 }
 
 // TestModelStore_SQLite_UniqueKeysLockPreservation verifies that the sqlite Lock
-// read-modify-write does NOT strip UniqueKeys (#9 strip hazard).
+// read-modify-write does NOT strip UniqueKeys: Lock reads the descriptor,
+// mutates its state and writes it back, so any field the read drops is lost.
 // Sequence: Save(UniqueKeys) → Lock → Get → assert UniqueKeys intact.
 func TestModelStore_SQLite_UniqueKeysLockPreservation(t *testing.T) {
 	store, ctx := setupModelStore(t)

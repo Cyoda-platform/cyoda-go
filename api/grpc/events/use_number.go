@@ -8,7 +8,7 @@ import (
 // decodeWithUseNumber decodes JSON with UseNumber enabled so numeric
 // literals in freeform fields (map[string]interface{} / interface{}) are
 // preserved as json.Number instead of being coerced to float64 and losing
-// precision above 2^53 (issue #79).
+// precision above 2^53.
 //
 // This helper backs every generated UnmarshalJSON method in this package.
 // The generator emits `json.Unmarshal(value, ...)` by default; a post-
