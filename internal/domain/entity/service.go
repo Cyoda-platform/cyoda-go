@@ -1202,15 +1202,17 @@ func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.M
 }
 
 // DeleteEntitiesConditional deletes entities of a model. An empty condBody
-// deletes all (backward-compatible). A present condBody is parsed and only
-// matching entities (as-at pointInTime, when supplied) are deleted — reusing
-// the search condition primitive so no special engine rights are claimed
-// (design §6.1). Selection and deletion run inside one transaction; the
-// selection drains an Iterate iterator scoped to that SAME transaction
-// (txCtx), so buffered writes already made in it are visible to the
-// selection exactly as the removed search-service selection saw them — and,
-// per the SPI's no-interleave rule, the iterator is fully drained and closed
-// BEFORE the first delete, never interleaved with one.
+// selects every entity. A present condBody is parsed and only matching
+// entities are deleted. pointInTime, when supplied, selects the committed
+// state as at that instant (the ambient transaction is ignored, as on every
+// point-in-time read) and deletes the current rows; verbose lists every
+// attempted id. Selection reuses the search condition primitive so no
+// special engine rights are claimed (design §6.1). Selection and deletion
+// run inside one transaction; the selection drains an Iterate iterator
+// scoped to that SAME transaction (txCtx), so buffered writes already made
+// in it are visible to a non-point-in-time selection — and, per the SPI's
+// no-interleave rule, the iterator is fully drained and closed BEFORE the
+// first delete, never interleaved with one.
 //
 // batchSize<=0 keeps the single-tx behaviour above byte-for-byte. batchSize>0
 // switches to deleteBatched (spec D4): a read-only resolution tx selects the
@@ -1238,10 +1240,13 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName, mod
 		return h.deleteBatched(ctx, ref, cond, pointInTime, verbose, batchSize)
 	}
 
-	// Delete-all fast path preserves existing behaviour + response shape.
-	// IDs is always a non-nil empty slice: delete-all does not enumerate IDs even
-	// when verbose=true (enumerating a whole-model wipe is impractical at scale).
-	if cond == nil {
+	// Whole-model fast path: taken only when the request needs nothing per
+	// entity — no condition, no instant, no id listing. A pointInTime must
+	// select the committed state as at that instant (DeleteAll cannot), and
+	// verbose must list the attempted ids (DeleteAll enumerates nothing), so
+	// either routes through the per-entity path below with a nil condition,
+	// which the zero-value selection plan reads as "every entity".
+	if cond == nil && pointInTime == nil && !verbose {
 		all, err := h.DeleteAllEntities(ctx, entityName, modelVersion)
 		if err != nil {
 			return nil, err
