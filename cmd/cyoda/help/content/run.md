@@ -265,7 +265,9 @@ CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh
 - `SIGTERM` — same behavior as `SIGINT`. Kubernetes sends `SIGTERM` when a pod is evicted or deleted.
 - `SIGPIPE` — ignored. When the binary is piped through `tee` (e.g. `./bin/cyoda | tee log`) and Ctrl+C kills `tee` first, the broken pipe would cause the binary to exit immediately before the `SIGINT` handler runs. Ignoring `SIGPIPE` lets the write fail silently while the graceful shutdown proceeds. (Source: `cmd/cyoda/main.go`, `signal.Ignore(syscall.SIGPIPE)`.)
 
-Signal handling is established in `main()` before the listeners start. The signal channel has buffer size 1.
+A **second** `SIGINT` or `SIGTERM` delivered while the drain is still running forces an immediate exit with code `2`. This is the operator's recourse when a graceful shutdown hangs on a stuck in-flight request or a slow-closing storage pool; nothing is drained or flushed on that path. Only the first signal starts the graceful shutdown, and only a genuine second one forces the hard exit.
+
+Signal handling is established before the listeners start.
 
 ## HEALTH PROBES
 
