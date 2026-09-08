@@ -15,7 +15,7 @@ import (
 // ReleaseSavepoint took _ context.Context and never compared the caller's
 // tenant against tx.TenantID. A caller authenticated as tenant A who learned
 // a tenant B txID could record / rollback / release savepoints on tenant B's
-// tx-state. Mirrors the gap PR-A closed in the memory plugin.
+// tx-state. The memory plugin had the same gap and closed it the same way.
 
 func newTxMgrForTenantTest(t *testing.T) (*sqlite.StoreFactory, context.Context) {
 	t.Helper()

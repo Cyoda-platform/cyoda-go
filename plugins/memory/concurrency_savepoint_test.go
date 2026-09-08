@@ -13,7 +13,7 @@ import (
 // Join in plugins/memory/txmanager.go. The tx-locking audit surfaced that Savepoint
 // and RollbackToSavepoint mutate tx-state under m.mu only, never tx.OpMu —
 // so they race against Commit's flush phase, which iterates tx.Buffer /
-// tx.Deletes outside m.mu but under tx.OpMu.Lock. The PR-A audit also
+// tx.Deletes outside m.mu but under tx.OpMu.Lock. The same audit also
 // surfaced an unsynchronised flag-read in Join.
 //
 // Two classes of tests in this file:

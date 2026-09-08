@@ -23,9 +23,9 @@ import (
 //
 // All operations remained RLS-bound at the data layer (any DML inside the
 // pgxTx still ran with app.current_tenant=B, set at Begin), but the
-// lifecycle disruption is real. PR-C2 closes the gap by adding
-// application-layer tenant verification on every TM lifecycle method,
-// matching the memory and sqlite plugins.
+// lifecycle disruption is real. The gap is closed by application-layer
+// tenant verification on every TM lifecycle method, matching the memory and
+// sqlite plugins.
 //
 // These tests require Docker (testcontainers-go for PostgreSQL).
 
