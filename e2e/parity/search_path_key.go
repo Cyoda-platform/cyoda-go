@@ -245,12 +245,12 @@ func RunSearchPathTypeMismatch400(t *testing.T, fixture BackendFixture) {
 // the residual evaluator would still resolve a "_meta" path if one ever
 // reached it — as would the groupBy / ORDER BY / aggregate arms and the
 // IS_NULL / NOT_NULL operators, which compile straight to SQL with no kernel
-// re-check. Nesting the domain data rather than merging it (cyoda-go#489)
+// re-check. Nesting the domain data rather than merging it
 // removes the shared namespace outright. Until then the only thing standing
 // between a client and storage internals is the boundary check asserted below,
 // and a model that legitimately DECLARES a field named "_meta" would collide
 // with the storage block on PostgreSQL and reach the evaluator through a path
-// the model knows — the probe #489 should carry when it lands.
+// the model knows — a probe the nesting change should carry when it lands.
 //
 // Every path here carries the "$." leader. That is not cosmetic: without it
 // the request is rejected as malformed at the boundary and the probe would

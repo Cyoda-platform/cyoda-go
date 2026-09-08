@@ -2,10 +2,10 @@ package e2e_test
 
 // uncovered_ops_test.go — minimal happy-path E2E tests for operations that were
 // not covered by earlier tasks. Added by Task 10.1 of the OpenAPI conformance
-// plan (#21). Each test issues an authenticated request, asserts 2xx, and relies
+// plan. Each test issues an authenticated request, asserts 2xx, and relies
 // on the validator middleware to check the response shape against the spec.
 //
-// Stub ops covered by issue #194 (IAM, stream-data, schema ops) are deliberately
+// Stub ops (IAM, stream-data, schema ops) are deliberately
 // omitted — they return 501 Not Implemented, which the conformance report marks
 // as "uncovered" (no 2xx path exercised). That is acceptable per the A+C policy.
 

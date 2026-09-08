@@ -148,7 +148,7 @@ func (d *dispatcher) run(ctx context.Context, stream grpc.BidiStreamingClient[ce
 			continue
 		}
 
-		// The signed tx-token (feature #287) rides as a CloudEvent extension
+		// The signed tx-token rides as a CloudEvent extension
 		// attribute; it is echoed on joined callbacks. Empty when the dispatch
 		// carries no transaction context. Never logged (Gate 3).
 		txToken := txTokenFromCloudEvent(msg)
@@ -268,7 +268,7 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 		entity.Data = req.Payload.Data
 	}
 
-	// Callback-capable processors (feature #287) take precedence: they receive
+	// Callback-capable processors take precedence: they receive
 	// the tx-token and the callback client to issue joined callbacks.
 	if cbFn, ok := d.cat.callbackProcessor(name); ok {
 		cfg, err := parseCallbackConfig(req.Parameters)
@@ -349,7 +349,7 @@ func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.Raw
 		entity.Data = req.Payload.Data
 	}
 
-	// Callback-capable criteria (feature #287) take precedence.
+	// Callback-capable criteria take precedence.
 	if cbFn, ok := d.cat.callbackCriterion(name); ok {
 		cfg, err := parseCallbackConfig(req.Parameters)
 		if err != nil {
@@ -376,7 +376,7 @@ func (d *dispatcher) handleCriteriaRequest(ctx context.Context, payload json.Raw
 }
 
 // handleFunctionRequest dispatches a generic Function calculation request
-// (spi.ScheduleFunction — issue #419) to the catalog and returns the
+// (spi.ScheduleFunction) to the catalog and returns the
 // response CloudEvent.
 func (d *dispatcher) handleFunctionRequest(ctx context.Context, payload json.RawMessage, txToken string) (*cepb.CloudEvent, error) {
 	var req struct {

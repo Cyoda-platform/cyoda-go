@@ -16,8 +16,7 @@ import (
 // "one event = one log line" rule in .claude/rules/logging.md.
 //
 // On any auth failure the response is the uniform RFC 9457 problem-detail
-// body with HTTP 401 and code UNAUTHORIZED, carrying no enumeration signal
-// (issues #100, #68 item 12).
+// body with HTTP 401 and code UNAUTHORIZED, carrying no enumeration signal.
 func Auth(authService contract.AuthenticationService) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

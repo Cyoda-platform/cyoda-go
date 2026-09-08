@@ -14,7 +14,7 @@ import (
 // Every Authenticate failure path returns this sentinel verbatim — without
 // any per-branch suffix — so that err.Error() is always the exact same string
 // "authentication failed" and a probing client cannot distinguish "no token
-// sent" from "token is wrong" via the response body (issues #100, #68 item 12).
+// sent" from "token is wrong" via the response body.
 //
 // The specific failure mode is logged server-side via a single slog.Warn
 // record carrying a structured `reason` field (see Authenticate). This keeps

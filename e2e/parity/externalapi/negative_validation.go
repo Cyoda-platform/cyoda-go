@@ -34,8 +34,8 @@ func init() {
 // EntityModelWrongStateException. Our code is strictly more specific —
 // propose upstream tightening.
 //
-// Note: this is the opposite direction from #128 (where cyoda-go's generic
-// CONFLICT was less specific than cloud's MODEL_ALREADY_LOCKED). The two
+// Note: this is the opposite direction from the case where cyoda-go's generic
+// CONFLICT was less specific than cloud's MODEL_ALREADY_LOCKED. The two
 // codes are walking toward each other from opposite directions.
 func RunExternalAPI_12_01_CreateEntityOnUnlockedModel(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
@@ -57,7 +57,7 @@ func RunExternalAPI_12_01_CreateEntityOnUnlockedModel(t *testing.T, fixture pari
 
 // RunExternalAPI_12_02_CreateEntityWithIncompatibleType — dictionary 12/neg/02.
 // Dictionary expects HTTP 400 + FoundIncompatibleTypeWitEntityModelException.
-// equiv_or_better after #129: cyoda-go emits INCOMPATIBLE_TYPE @400 with
+// equiv_or_better: cyoda-go emits INCOMPATIBLE_TYPE @400 with
 // structured Props (fieldPath, expectedType, actualType, entityName,
 // entityVersion); same code path as scenario 02/03.
 func RunExternalAPI_12_02_CreateEntityWithIncompatibleType(t *testing.T, fixture parity.BackendFixture) {
@@ -91,7 +91,7 @@ func RunExternalAPI_12_02_CreateEntityWithIncompatibleType(t *testing.T, fixture
 
 // RunExternalAPI_12_03_SetChangeLevelInvalidEnum — dictionary 12/neg/03.
 // Dictionary expects HTTP 400, message contains "Invalid enum value".
-// cyoda-go emits HTTP 400 INVALID_CHANGE_LEVEL since #130 — the detail
+// cyoda-go emits HTTP 400 INVALID_CHANGE_LEVEL — the detail
 // string lists the accepted values, and the problem-detail body carries
 // `entityName`, `entityVersion`, `suppliedValue`, `validValues` properties
 // for programmatic branching.
@@ -189,10 +189,10 @@ func RunExternalAPI_12_06_GetChangesForMissingEntity(t *testing.T, fixture parit
 }
 
 // RunExternalAPI_12_07_DeleteByConditionTooManyMatches — dictionary 12/neg/07.
-// Skipped pending #124 — delete-by-condition surface entirely missing server-side.
+// Skipped pending server-side support — delete-by-condition surface entirely missing.
 func RunExternalAPI_12_07_DeleteByConditionTooManyMatches(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending #124 — DELETE /entity/{name}/{version} ignores both condition body and pointInTime; full delete-by-condition surface is a v0.7.0 server-side gap")
+	t.Skip("pending server-side support — DELETE /entity/{name}/{version} ignores both condition body and pointInTime; full delete-by-condition surface is a v0.7.0 server-side gap")
 }
 
 // RunExternalAPI_12_08_UpdateUnknownTransition — dictionary 12/neg/08.
@@ -254,7 +254,7 @@ func RunExternalAPI_12_09_GetModelAfterDelete(t *testing.T, fixture parity.Backe
 // RunExternalAPI_12_10_ImportWorkflowOnUnknownModel — dictionary 12/neg/10.
 // Dictionary expects HTTP 404 + (ModelNotFound|EntityModelNotFound).
 // equiv_or_better: cyoda-go now returns HTTP 404 + MODEL_NOT_FOUND for workflow
-// import on an unregistered model (resolved by #131).
+// import on an unregistered model.
 func RunExternalAPI_12_10_ImportWorkflowOnUnknownModel(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)

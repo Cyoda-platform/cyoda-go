@@ -9,7 +9,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
-// Tests for issue #68 item 11 — SQLite IN-clause parameterization.
+// Tests SQLite IN-clause parameterization.
 //
 // The state-filter IN-clause is composed entirely of `?` markers; state
 // values are bound as SQL parameters. To stay safely under SQLite's

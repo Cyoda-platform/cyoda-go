@@ -12,7 +12,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Temporal search filters (issue #423): creationDate / lastUpdateTime
+// Temporal search filters: creationDate / lastUpdateTime
 // chronological compare via LifecycleCondition, on a running Postgres
 // backend through the full HTTP stack.
 // ---------------------------------------------------------------------------

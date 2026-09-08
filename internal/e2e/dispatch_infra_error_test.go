@@ -160,8 +160,8 @@ func TestProcessorNoMember_Returns503(t *testing.T) {
 }
 
 // TestScheduledFunctionNoMember_Returns503 is TestProcessorNoMember_Returns503's
-// counterpart for a schedule.function Function callout (Task 9.2, issue
-// #419): a workflow whose sole automated transition carries a schedule.function
+// counterpart for a schedule.function Function callout (Task 9.2): a
+// workflow whose sole automated transition carries a schedule.function
 // with a calculationNodesTags value no connected compute member can ever
 // satisfy (no member connects at all in this harness — same empty
 // MemberRegistry as the processor case). Arming the transition at entity

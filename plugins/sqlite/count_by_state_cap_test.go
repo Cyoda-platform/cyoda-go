@@ -9,7 +9,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
-// Regression tests for issues #99 and #68 (item 11).
+// Regression tests for the CountByState state-filter cap.
 //
 // CountByState's IN-clause is built from `?` placeholder markers only;
 // state values are bound as SQL parameters (no interpolation). To stay

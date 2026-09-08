@@ -186,7 +186,7 @@ func TestDelegatingAuthenticator_NoToken(t *testing.T) {
 		t.Fatal("expected error for missing Authorization header")
 	}
 
-	// Per #68 item 12 the caller-facing message is uniform; the specific
+	// The caller-facing message is uniform; the specific
 	// reason ("missing-header") goes to the server log only.
 	if err.Error() != "authentication failed" {
 		t.Errorf("unexpected error message: %s", err.Error())
@@ -226,7 +226,7 @@ func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
 		t.Fatal("expected error for invalid token")
 	}
 
-	// Per #68 item 12 the caller-facing message is uniform.
+	// The caller-facing message is uniform.
 	if err.Error() != "authentication failed" {
 		t.Errorf("unexpected error message: %s", err.Error())
 	}
@@ -247,7 +247,7 @@ func TestDelegatingAuthenticator_NonBearerScheme(t *testing.T) {
 		t.Fatal("expected error for non-Bearer scheme")
 	}
 
-	// Per #68 item 12 the caller-facing message is uniform.
+	// The caller-facing message is uniform.
 	if err.Error() != "authentication failed" {
 		t.Errorf("unexpected error message: %s", err.Error())
 	}

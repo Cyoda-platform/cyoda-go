@@ -1031,7 +1031,7 @@ func TestIterateAsAtReturnsNoEntriesOnEmptyModel(t *testing.T) {
 	}
 }
 
-// --- Follow-on-action attribution (#430) ---
+// --- Follow-on-action attribution ---
 
 // TestSaveAndDelete_ExecutorRoundTrip verifies that Meta.ChangeUser/
 // ChangeUserKind/ChangeExecutor stamped by the caller before Save round-trip

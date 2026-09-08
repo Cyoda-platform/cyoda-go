@@ -470,7 +470,7 @@ func TestOperational_NotRetryableByDefault(t *testing.T) {
 	}
 }
 
-// TestOperational_AsRetryable_FlipsRetryableBit pins #140's contract:
+// TestOperational_AsRetryable_FlipsRetryableBit pins the contract:
 // the three axes (status, code, retryable) are independent and any
 // 4xx with any code can be flagged retryable via the fluent
 // AsRetryable() opt-in. A retryable conflict with a specific

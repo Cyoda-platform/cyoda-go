@@ -10,7 +10,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// callback_route.go — feature #287 CROSS-NODE callback routing scenarios.
+// callback_route.go — CROSS-NODE callback routing scenarios.
 //
 // These exercise the two cluster hops a compute-node callback can take when the
 // transaction owner, the compute member, and the callback's landing node are all

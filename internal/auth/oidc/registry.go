@@ -250,7 +250,7 @@ func (r *Registry) reconcileStale() bool {
 //
 // aud is the token's audience claim (single string or first element extracted
 // by the caller). It is used only in the multi-candidate disambiguation step
-// (Layer 1 of the Critical audit fix, #284): when multiple providers are
+// (Layer 1 of the Critical audit fix): when multiple providers are
 // simultaneously iss-eligible and sig-verifying, ExpectedAudiences is used
 // to route to the correct tenant. Pass an empty string when aud is absent.
 //
@@ -381,7 +381,7 @@ func (r *Registry) collectKeyEligibleRefs(candidates []providerRef, kid, iss str
 //     - Zero or multiple audMatched → ErrAmbiguousProvider (wraps
 //     ErrUnknownKID so the chain falls through). This prevents silent
 //     cross-tenant routing when two tenants share an IdP without setting
-//     distinct ExpectedAudiences (Critical audit fix, #284).
+//     distinct ExpectedAudiences (Critical audit fix).
 //
 // Return semantics:
 //   - success → KeyResolution with ProviderRef populated
@@ -462,7 +462,7 @@ func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss, aud str
 
 	default:
 		// Multiple key-eligible candidates across tenants. Disambiguate by aud.
-		// Layer 1 of Critical audit fix (#284): prevents non-deterministic
+		// Layer 1 of Critical audit fix: prevents non-deterministic
 		// cross-tenant routing when two tenants register the same IdP URL.
 		var audMatched []keyEligibleEntry
 		for _, e := range keyEligible {

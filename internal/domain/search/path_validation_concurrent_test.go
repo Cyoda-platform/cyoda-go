@@ -11,7 +11,7 @@ import (
 
 // TestPathValidationCache_ConcurrentMarkAbsentAndInvalidateRef stresses
 // the per-bucket invalidation path against the reviewer's TOCTOU
-// concern (#211 review feedback). Pre-fix, MarkAbsent acquired c.mu
+// concern. Pre-fix, MarkAbsent acquired c.mu
 // briefly (in bucketFor) to obtain a *otter.Cache pointer, released
 // the lock, then called bucket.Set without holding c.mu. A concurrent
 // InvalidateRef could delete(c.buckets, k) between those two steps

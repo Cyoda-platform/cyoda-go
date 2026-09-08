@@ -367,7 +367,7 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 // transaction. Callers must coordinate access to the transaction's Buffer,
 // ReadSet, WriteSet, and Deletes maps.
 //
-// Locking discipline (issue #199 audit): Rollback writes tx.RolledBack
+// Locking discipline: Rollback writes tx.RolledBack
 // inside m.mu only; Commit and Rollback both write tx.Closed in their
 // defer under tx.OpMu.Lock only. Reading those fields requires
 // tx.OpMu.RLock to be synchronised against the Closed-write — m.mu alone
@@ -398,8 +398,8 @@ func (m *TransactionManager) Join(ctx context.Context, txID string) (context.Con
 	}
 
 	// Verify tenant matches. Strict — rejects nil UserContext to match
-	// Commit/Rollback's gate (#199 PR-C2 review L-3). Pre-PR-C2 this was
-	// permissive on nil UC, allowing any caller without a UserContext to
+	// Commit/Rollback's gate. Before the tenant-strictness fix this was
+	// permissive on a nil user context, allowing any caller without one to
 	// Join an arbitrary active tx.
 	uc := spi.GetUserContext(ctx)
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
@@ -857,7 +857,7 @@ func (m *TransactionManager) CommittedLogLen() int {
 // paired 1:1 with Deletes) and recording the current length of the
 // transaction's staged scheduledTaskOps.
 //
-// Locking discipline (issue #199): Savepoint reads tx.Buffer / tx.ReadSet /
+// Locking discipline: Savepoint reads tx.Buffer / tx.ReadSet /
 // tx.WriteSet / tx.Deletes — the same fields Commit's flush phase iterates
 // under tx.OpMu.Lock and that other tx-path ops (Save, Get, Delete, ...)
 // mutate under tx.OpMu.RLock. Savepoint must therefore hold tx.OpMu.RLock
@@ -867,7 +867,7 @@ func (m *TransactionManager) CommittedLogLen() int {
 // len(m.scheduledTaskOps[txID]), since that map is m.mu-protected, not
 // tx.OpMu-protected.
 //
-// Tenant isolation (issue #199 PR-A review I-1): rejects callers whose
+// Tenant isolation: rejects callers whose
 // UserContext tenant does not match the transaction's tenant, mirroring
 // Commit/Rollback. Without this guard a caller authenticated as tenant A
 // who learned a tenant B txID could record a snapshot against tenant B's
@@ -958,7 +958,7 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 // scheduledTaskOps back to the length recorded at that savepoint, then
 // removes the snapshot.
 //
-// Locking discipline (issue #199): RollbackToSavepoint replaces tx.Buffer /
+// Locking discipline: RollbackToSavepoint replaces tx.Buffer /
 // tx.ReadSet / tx.WriteSet / tx.Deletes — exclusive against every other
 // tx-path op. Holds tx.OpMu.Lock (write) for the duration of the field
 // replacement. Lock interleaving with m.mu follows Commit's pattern. The
@@ -966,7 +966,7 @@ func (m *TransactionManager) Savepoint(ctx context.Context, txID string) (string
 // snapshot lookup, since that map is m.mu-protected (see
 // stageScheduledTaskOp), not tx.OpMu-protected.
 //
-// Tenant isolation (issue #199 PR-A review I-1): rejects cross-tenant
+// Tenant isolation: rejects cross-tenant
 // callers — RollbackToSavepoint is destructive on tx-state.
 func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	uc := spi.GetUserContext(ctx)
@@ -1048,12 +1048,12 @@ func (m *TransactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 // ReleaseSavepoint releases a savepoint. The work done since the savepoint is
 // already in the parent transaction's buffer, so this just removes the snapshot.
 //
-// Locking discipline (issue #199): ReleaseSavepoint does not read or write
+// Locking discipline: ReleaseSavepoint does not read or write
 // tx.Buffer / tx.ReadSet / tx.WriteSet / tx.Deletes — it only mutates
 // m.savepoints. Holds m.mu only; tx.OpMu is not required because there is
 // no tx-state field to coordinate against Commit/Rollback.
 //
-// Tenant isolation (issue #199 PR-A review I-1): rejects cross-tenant
+// Tenant isolation: rejects cross-tenant
 // callers — m.savepoints is tenant-scoped state.
 func (m *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	uc := spi.GetUserContext(ctx)

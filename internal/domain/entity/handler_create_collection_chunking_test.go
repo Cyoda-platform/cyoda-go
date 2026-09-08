@@ -9,7 +9,7 @@ import (
 )
 
 // Tests for the documented `transactionWindow` chunking contract on
-// CreateCollection (POST /api/entity/{format}). Issue #227.
+// CreateCollection (POST /api/entity/{format}).
 //
 // Contract (docs/cyoda/openapi.yml line 195-201, EntityCreateCollectionRequest
 // schema): the collection is committed in transactional batches of at most

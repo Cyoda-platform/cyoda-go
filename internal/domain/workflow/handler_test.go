@@ -468,7 +468,7 @@ func TestImportFullWorkflow(t *testing.T) {
 	}
 }
 
-// TestImport_UnknownModel_Returns404 covers issue #131: importing a workflow
+// TestImport_UnknownModel_Returns404: importing a workflow
 // targeting a model that does not exist must return HTTP 404 with the
 // MODEL_NOT_FOUND error code, rather than the legacy 200 {"success":true}.
 func TestImport_UnknownModel_Returns404(t *testing.T) {
@@ -498,7 +498,7 @@ func TestImport_UnknownModel_Returns404(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, common.ErrCodeModelNotFound)
 }
 
-// TestImport_ValidationFailures_Return400 covers issue #255: the
+// TestImport_ValidationFailures_Return400: the
 // structural validator must surface through the public import HTTP path
 // with a 400 Bad Request and the offending name/state/transition in
 // the error detail. One sub-test per H6 rule serves as a regression

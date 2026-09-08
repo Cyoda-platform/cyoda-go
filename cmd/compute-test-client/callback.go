@@ -13,7 +13,7 @@ import (
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
-// callback.go — feature #287 callback-capable processors/criteria for the
+// callback.go — callback-capable processors/criteria for the
 // compute-test-client. These read the signed cyodatxtoken the engine attaches
 // to a calc request and echo it as the X-Tx-Token HTTP header on a callback into
 // cyoda-go, exercising the transaction-join path (JoinFromToken → participate)
@@ -321,7 +321,7 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 		// Records the callback's raw status + body into the primary's data
 		// (rather than requiring res.Status==200 like cb-create-secondary) so
 		// the caller can assert the crossed-back 400 verbatim, including across
-		// a forwarded cluster hop (feature #287 / cross-node #379).
+		// a forwarded cluster hop.
 		"cb-tx-control-param-joined": func(ctx context.Context, entity *Entity, cfg cbConfig, token string, cb *callbackClient) (*Entity, error) {
 			if err := requireCB(cb); err != nil {
 				return nil, err

@@ -100,7 +100,7 @@ func (s *Server) GetEntityChangesMetadata(w http.ResponseWriter, r *http.Request
 // GetEntityTransitions and FetchEntityTransitions are routed directly in app/app.go
 // before the generated API mux — these delegation methods satisfy ServerInterface
 // but are never reached in production.
-// TODO(#21-future-cleanup, see ADR 0001 / Task 5.1): consolidate the
+// TODO(adr-0001-task-5.1): consolidate the
 // transitions handler with the generated ServerInterface dispatch.
 // Currently the real handlers are mounted directly via app.go's outer mux
 // (which routes BEFORE the generated dispatch fires); these stubs are

@@ -17,7 +17,7 @@ import (
 )
 
 // TestShutdown_SecondSignal_ForcesHardExit pins the second-signal escape
-// hatch (#10 follow-up): the first SIGINT/SIGTERM cancels rootCtx and
+// hatch: the first SIGINT/SIGTERM cancels rootCtx and
 // triggers graceful drain, but if the operator presses Ctrl+C again
 // because the drain is hanging, the process must hard-exit with code 2.
 //

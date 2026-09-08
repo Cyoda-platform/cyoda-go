@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-// TestGoreleaserHelpJSONHasVersionLdflags is a regression test for issue #101.
+// TestGoreleaserHelpJSONHasVersionLdflags pins the version ldflags on the
+// help-JSON before-hook.
 //
 // The .goreleaser.yaml before-hooks generate cyoda_help_<version>.json by
 // invoking `go run ./cmd/cyoda help --format=json`. `go run` does not apply

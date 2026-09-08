@@ -359,8 +359,8 @@ func (m *transactionManager) Join(ctx context.Context, txID string) (context.Con
 	}
 
 	// Verify tenant matches. Strict — rejects nil UserContext to match
-	// Commit/Rollback's gate (#199 PR-C2 review L-3). Pre-PR-C2 this was
-	// permissive on nil UC, allowing any caller without a UserContext to
+	// Commit/Rollback's gate. Before the tenant-strictness fix this was
+	// permissive on a nil user context, allowing any caller without one to
 	// Join an arbitrary active tx.
 	uc := spi.GetUserContext(ctx)
 	if uc == nil || uc.Tenant.ID != tx.TenantID {
@@ -837,7 +837,7 @@ func (m *transactionManager) CommittedLogLen() int {
 // Savepoint creates a named savepoint within the given transaction by
 // deep-copying the transaction's buffer maps.
 //
-// Locking discipline (issue #199 PR-C1, mirrors memory plugin PR-A):
+// Locking discipline (mirrors the memory plugin):
 // Savepoint reads tx.Buffer / tx.ReadSet / tx.WriteSet / tx.Deletes — the
 // same fields Commit's flush phase iterates under tx.OpMu.Lock and that
 // other tx-path ops mutate under tx.OpMu.RLock. Savepoint must therefore
@@ -930,7 +930,7 @@ func (m *transactionManager) Savepoint(ctx context.Context, txID string) (string
 // RollbackToSavepoint restores the transaction's buffer maps from the snapshot
 // captured when the savepoint was created, then removes the snapshot.
 //
-// Locking discipline (issue #199 PR-C1): replaces tx.Buffer / tx.ReadSet /
+// Locking discipline: replaces tx.Buffer / tx.ReadSet /
 // tx.WriteSet / tx.Deletes — exclusive against every other tx-path op.
 // Holds tx.OpMu.Lock (write) for the duration of the field replacement.
 //
@@ -1009,7 +1009,7 @@ func (m *transactionManager) RollbackToSavepoint(ctx context.Context, txID strin
 // ReleaseSavepoint releases a savepoint. The work done since the savepoint is
 // already in the parent transaction's buffer, so this just removes the snapshot.
 //
-// Locking discipline (issue #199 PR-C1): does not touch any field of
+// Locking discipline: does not touch any field of
 // TransactionState — only mutates m.savepoints. Holds m.mu only;
 // tx.OpMu is not required.
 //

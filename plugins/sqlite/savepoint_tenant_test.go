@@ -11,11 +11,11 @@ import (
 )
 
 // Tenant-isolation regression tests for the sqlite plugin's three savepoint
-// methods. Issue #199 PR-C1: pre-fix Savepoint, RollbackToSavepoint, and
+// methods. Before the tenant-strictness fix Savepoint, RollbackToSavepoint, and
 // ReleaseSavepoint took _ context.Context and never compared the caller's
 // tenant against tx.TenantID. A caller authenticated as tenant A who learned
 // a tenant B txID could record / rollback / release savepoints on tenant B's
-// tx-state. Mirrors the gap PR-A closed in the memory plugin.
+// tx-state. The memory plugin had the same gap and closed it the same way.
 
 func newTxMgrForTenantTest(t *testing.T) (*sqlite.StoreFactory, context.Context) {
 	t.Helper()
@@ -104,7 +104,7 @@ func TestSqliteReleaseSavepoint_RejectsCrossTenant(t *testing.T) {
 }
 
 // TestSqliteJoin_RejectsNilUserContext mirrors the memory plugin's
-// TestJoinRejectsNilUserContext (#199 PR-C2 review L-3). Sqlite's Join
+// TestJoinRejectsNilUserContext. Sqlite's Join
 // was permissive on nil UC pre-fix, allowing any caller without a
 // UserContext to Join an arbitrary active tx. Post-fix Join is uniformly
 // strict, matching Commit/Rollback.

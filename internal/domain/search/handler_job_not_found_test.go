@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Regression test for issue #93.
+// Regression test.
 //
 // All three async-search endpoints that lookup by job UUID must return
 // `errorCode: SEARCH_JOB_NOT_FOUND` with HTTP 404 when the job does not

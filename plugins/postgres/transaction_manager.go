@@ -179,7 +179,7 @@ func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Conte
 // or when the application-layer first-committer-wins validation detects a
 // stale read or write set.
 //
-// Tenant isolation (issue #199 PR-C2): rejects callers whose UserContext
+// Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
 // access (every DML is row-level filtered) but does not extend to
 // transaction-lifecycle commands (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/etc.) —
@@ -293,7 +293,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 
 // Rollback aborts the transaction.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 // See Commit's godoc for the design rationale.
 func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
@@ -321,7 +321,7 @@ func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 // Join attaches to an existing transaction, returning a context carrying its
 // TransactionState.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 // Returning a context for another tenant's tx would let the joining caller
 // drive arbitrary lifecycle operations on that tx — see Commit's godoc.
 func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
@@ -483,7 +483,7 @@ func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
 // Savepoint creates a named savepoint within the given PostgreSQL transaction
 // and pushes a snapshot of the current readSet/writeSet onto the txState stack.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -509,7 +509,7 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 // RollbackToSavepoint rolls back all work done since the named savepoint and
 // restores the txState readSet/writeSet to the snapshot captured at that savepoint.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers —
+// Tenant isolation: rejects mismatched-tenant callers —
 // destructive on tx-state.
 func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
@@ -545,7 +545,7 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 // ReleaseSavepoint releases a savepoint, merging its work into the parent transaction.
 // The txState snapshot for this savepoint is dropped; work done after the push is kept.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {

@@ -37,14 +37,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Optional HTTP base URL for feature #287 callback-join processors. When
+	// Optional HTTP base URL for callback-join processors. When
 	// unset, callback processors report a clear error rather than panicking;
 	// the non-callback catalog still serves. The M2M token doubles as the
 	// callback bearer (same tenant as dispatch).
 	httpBase := os.Getenv("CYODA_COMPUTE_HTTP_BASE")
 	cb := newCallbackClient(httpBase, token)
 
-	// gRPC EntityManage callback client (feature #287 cross-node gRPC callback).
+	// gRPC EntityManage callback client (cross-node gRPC callback).
 	// It dials the same gRPC endpoint the member streams from; when that node is a
 	// non-owner for a forwarded dispatch, the callback forwards B→A to the owner.
 	gcb, err := newGRPCCallbackClient(endpoint, token)

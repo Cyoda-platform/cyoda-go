@@ -952,7 +952,7 @@ const countByStateBaseParams = 3
 // parameters (no interpolation), but the bounded-input contract closes
 // the door on a caller accidentally passing a huge list and triggering a
 // driver-level "too many SQL variables" error rather than a clean
-// helper-boundary rejection. See issue #68 (item 11) and #99.
+// helper-boundary rejection.
 const MaxStateFilterSize = sqliteMaxVariableNumber - countByStateBaseParams
 
 // ErrStateFilterTooLarge is returned by CountByState when the caller

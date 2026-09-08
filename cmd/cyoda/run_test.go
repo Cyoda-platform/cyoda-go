@@ -25,7 +25,7 @@ func freePort(t *testing.T) int {
 }
 
 // TestRunServers_CtxCancelDrainsBothServers exercises the SIGTERM path
-// (#26) without spawning a subprocess: we cancel the root context the
+// without spawning a subprocess: we cancel the root context the
 // way signal.NotifyContext would on SIGTERM, and assert runServers
 // returns within the drain budget after stopping every listener.
 func TestRunServers_CtxCancelDrainsBothServers(t *testing.T) {

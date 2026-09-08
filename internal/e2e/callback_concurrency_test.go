@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// callback_concurrency_test.go — feature #287, ISOLATED single-backend concurrency
+// callback_concurrency_test.go — ISOLATED single-backend concurrency
 // and gate-invariant coverage. Per .claude/rules/test-coverage.md these MUST NOT
 // live in the shared parity suite (a goroutine storm on the shared backend
 // destabilises unrelated scenarios); they run as standalone e2e tests asserting

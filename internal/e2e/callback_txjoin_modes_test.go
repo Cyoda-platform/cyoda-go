@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// callback_txjoin_modes_test.go — feature #287 execution-mode matrix, rows 3-6.
+// callback_txjoin_modes_test.go — execution-mode matrix, rows 3-6.
 //
 // Covers the four remaining rows of the callback E2E matrix beyond the two
 // SYNC rows in callback_txjoin_test.go:

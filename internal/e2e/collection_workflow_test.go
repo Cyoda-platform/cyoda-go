@@ -1,6 +1,6 @@
 package e2e_test
 
-// Tests for issue #227 — CreateEntityCollection must route every item through
+// CreateEntityCollection must route every item through
 // the workflow engine, matching the per-item engine call discipline of single
 // CreateEntity and per-item Loopback/ManualTransition discipline of
 // UpdateEntityCollection. Pre-fix, the handler hard-coded State="CREATED" and

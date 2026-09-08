@@ -8,7 +8,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Workflow-criterion temporal coverage (issue #423, task 16): proves that a
+// Workflow-criterion temporal coverage (task 16): proves that a
 // transition gated by a LifecycleCondition on creationDate evaluates
 // chronologically at fire time through the full HTTP stack — the same
 // match.Prepare -> prepareLifecycle path already made temporal-correct for

@@ -10,7 +10,7 @@ import (
 
 // Tests for the documented `transactionWindow` chunking contract on the
 // single-create endpoint POST /api/entity/{format}/{entityName}/{modelVersion}
-// when the request body is a JSON array. Issue #227 (pass 3).
+// when the request body is a JSON array.
 //
 // Contract: when the body is a JSON array, the same chunking semantics that
 // apply to POST /api/entity/{format} (CreateCollection) must apply here —
@@ -299,7 +299,7 @@ func TestCreate_SingleObjectBody_Unaffected(t *testing.T) {
 // for a `json.Valid`-based check that strips whitespace before classifying,
 // this test will not detect it on its own — but the response shape is
 // asserted to match the single-object path (one element, one entityId)
-// rather than the chunked-array path. Issue #227 review pass 4.
+// rather than the chunked-array path.
 func TestCreate_SingleObjectBody_LeadingWhitespace_StillSingleObjectPath(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ArrCreateSingleWS", 1, `{"name":"Alice"}`)

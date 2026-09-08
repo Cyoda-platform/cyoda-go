@@ -153,7 +153,7 @@ func newTestFactory(t *testing.T) *postgres.StoreFactory {
 // from postgres. Against a testcontainer that is the Docker VM's clock, which
 // was measured lagging the macOS host by 10–13 ms under CPU load — far more
 // than the 5 ms AdvanceClock floor below, so a host-clock marker would resolve
-// temporal subtests to the wrong version. See issue #460.
+// temporal subtests to the wrong version.
 //
 // Total wall-clock sleep overhead is ~30–50 ms across all temporal subtests.
 func TestConformance(t *testing.T) {

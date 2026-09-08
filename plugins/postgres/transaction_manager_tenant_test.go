@@ -8,7 +8,7 @@ import (
 )
 
 // Tenant-isolation regression tests for the postgres plugin's TM lifecycle
-// methods. Issue #199 PR-C2: the postgres TM relied solely on PostgreSQL's
+// methods. Pre-fix the postgres TM relied solely on PostgreSQL's
 // row-level security (RLS) for tenant isolation. RLS is row-level and does
 // NOT extend to transaction-lifecycle commands (BEGIN/COMMIT/ROLLBACK/
 // SAVEPOINT/etc.) — those operate on connections and don't trigger any
@@ -23,9 +23,9 @@ import (
 //
 // All operations remained RLS-bound at the data layer (any DML inside the
 // pgxTx still ran with app.current_tenant=B, set at Begin), but the
-// lifecycle disruption is real. PR-C2 closes the gap by adding
-// application-layer tenant verification on every TM lifecycle method,
-// matching the memory and sqlite plugins.
+// lifecycle disruption is real. The gap is closed by application-layer
+// tenant verification on every TM lifecycle method, matching the memory and
+// sqlite plugins.
 //
 // These tests require Docker (testcontainers-go for PostgreSQL).
 

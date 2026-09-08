@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Regression tests for issue #98: async pagination parameters on
+// Regression tests: async pagination parameters on
 // GET /api/search/async/{jobId} must reject out-of-bound / overflow-prone
 // values the same way the sync path does. Validation must happen BEFORE
 // job lookup — confirmed by asserting the response body surfaces the
@@ -71,7 +71,7 @@ func TestGetAsyncResults_PageNumberTimesPageSizeOverflow_RejectedBeforeJobLookup
 // with the sync path's pageSize cap. With pageSize=10000 (the cap) and
 // pageNumber=MaxInt32 the product is ~2.1e13 which fits in int64, so the
 // overflow check alone would NOT reject — only an explicit pageNumber cap
-// catches this (issue #68 item 10).
+// catches this.
 func TestGetAsyncResults_PageNumberExceedsCap_RejectedBeforeJobLookup(t *testing.T) {
 	srv := newTestServer(t)
 	jobID := uuid.New().String()

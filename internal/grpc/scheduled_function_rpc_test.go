@@ -25,7 +25,7 @@ import (
 )
 
 // scheduled_function_rpc_test.go is Task 9.3's gRPC envelope coverage layer
-// for the scheduled-transition Function feature (issue #419): it proves the
+// for the scheduled-transition Function feature: it proves the
 // error classes tasks 9.1/9.2 already cover at the HTTP entrypoint
 // (internal/e2e/scheduled_function_test.go) surface with the SAME envelope
 // shape (Success=false, Error.Code, Error.Message) through the gRPC
@@ -217,7 +217,7 @@ func TestRPC_ScheduledFunction_Import_ValidationFailed(t *testing.T) {
 // compute member surfaces the Phase-2 uniform-503 NO_COMPUTE_MEMBER_FOR_TAG
 // classification through the gRPC EntityManage envelope — the same
 // classifyWorkflowError passthrough internal/e2e/dispatch_infra_error_test.go
-// proves over HTTP, reproduced here against the gRPC entrypoint (issue #419
+// proves over HTTP, reproduced here against the gRPC entrypoint (the
 // design's "G" coverage column: HTTP and gRPC are separate entry points).
 func TestRPC_ScheduledFunction_NoMember_Returns503Envelope(t *testing.T) {
 	const modelName = "grpc-schedfn-no-member"
@@ -379,7 +379,7 @@ func TestRPC_ScheduledFunction_ExplicitFire_ReturnsTransitionNotFound(t *testing
 }
 
 // --- Phase-2 uniform-503 reconciliation: processor/criterion no-member,
-// via the gRPC entrypoint (issue #419's Function inherits this
+// via the gRPC entrypoint (the Function inherits this
 // classification; these two pin the processor/criterion siblings it
 // inherited it FROM, at the entrypoint dispatch_test.go's unit seam and
 // internal/e2e's HTTP coverage don't reach). ---

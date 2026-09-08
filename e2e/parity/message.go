@@ -42,7 +42,7 @@ func RunMessageCreateAndGet(t *testing.T, fixture BackendFixture) {
 		t.Errorf("header.subject = %q, want %q", gotSubject, subject)
 	}
 
-	// 4. Verify content is an embedded JSON object (not a string — see #21 JSON-in-string defect).
+	// 4. Verify content is an embedded JSON object (not a string — the JSON-in-string defect).
 	content, ok := got["content"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected 'content' to be a JSON object in response, got: %T", got["content"])

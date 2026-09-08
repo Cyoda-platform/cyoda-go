@@ -1012,7 +1012,7 @@ func TestEntityResponseEnvelope(t *testing.T) {
 
 	// After creation without an explicit transition, transitionForLatestSave
 	// must be "loopback" — not the literal "workflow", which is not a valid
-	// value (issue #94).
+	// value.
 	if v, exists := meta["transitionForLatestSave"]; !exists || v != "loopback" {
 		t.Errorf("expected transitionForLatestSave=loopback after creation, got %v", meta["transitionForLatestSave"])
 	}
@@ -1415,8 +1415,8 @@ func TestGetEntityChangesMetadata(t *testing.T) {
 
 // TestGetEntityChangesMetadata_PointInTime asserts that the pointInTime
 // query parameter constrains the returned change history to entries whose
-// timeOfChange is at or before the supplied timestamp. Regression test
-// for issue #152: handler previously dropped the parameter silently.
+// timeOfChange is at or before the supplied timestamp. Regression test:
+// the handler previously dropped the parameter silently.
 func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
@@ -1494,7 +1494,7 @@ func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
 
 // TestGetEntityChangesMetadata_PointInTimeFuture asserts that a pointInTime
 // strictly after the latest change returns the full history — equivalent to
-// omitting the parameter. Boundary case for issue #152.
+// omitting the parameter. Boundary case.
 func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
@@ -1554,8 +1554,7 @@ func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 
 // TestGetEntityChangesMetadata_PointInTimeExactBoundary asserts that a
 // pointInTime exactly equal to a change's timestamp INCLUDES that change —
-// the filter is at-or-before (<=), not strictly-before. Boundary case for
-// issue #152.
+// the filter is at-or-before (<=), not strictly-before. Boundary case.
 func TestGetEntityChangesMetadata_PointInTimeExactBoundary(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPITExact", 1, `{"k":1}`)
@@ -2056,7 +2055,7 @@ func TestGetEntityPointInTimeBothParamsRejected(t *testing.T) {
 
 // TestGetEntityByTransactionID verifies that GET /entity/{id}?transactionId=<tx>
 // returns the entity envelope as it stood at that transaction — not the
-// latest version. Issue #150: the handler previously parsed
+// latest version: the handler previously parsed
 // params.TransactionId but never propagated it, so the query parameter was
 // silently dropped and the latest version was returned regardless.
 func TestGetEntityByTransactionID(t *testing.T) {
@@ -2117,7 +2116,7 @@ func TestGetEntityByTransactionID(t *testing.T) {
 
 // TestGetEntityByTransactionID_BogusReturns404 verifies that a transactionId
 // that doesn't appear in the entity's version history yields 404
-// ENTITY_NOT_FOUND. Issue #150 (dictionary 12/neg/05): cyoda-go previously
+// ENTITY_NOT_FOUND (dictionary 12/neg/05): cyoda-go previously
 // returned HTTP 200 with the latest entity because the query parameter was
 // dropped silently.
 func TestGetEntityByTransactionID_BogusReturns404(t *testing.T) {
@@ -2275,7 +2274,7 @@ func TestBatchDeleteTransaction(t *testing.T) {
 // `entityVersion`) when an entity payload's leaf value type is not
 // assignable to the schema's declared DataType.
 //
-// Closes #129. Cloud equivalent:
+// Cloud equivalent:
 // FoundIncompatibleTypeWithEntityModelException.
 func TestCreateEntity_IncompatibleType_ReturnsSpecificCode(t *testing.T) {
 	srv := newTestServer(t)

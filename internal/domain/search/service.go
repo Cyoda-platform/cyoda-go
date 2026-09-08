@@ -818,7 +818,7 @@ func ClassifyStoreQueryError(err error) *common.AppError {
 // SubmitAsync starts an asynchronous search job and returns the job ID.
 //
 // Pre-execution path validation runs synchronously before the job is
-// recorded (issue #77) — a request that names paths the model does not
+// recorded — a request that names paths the model does not
 // know about returns a 4xx without ever creating a job, sparing the
 // client a round-trip through the polling endpoint.
 func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions) (string, error) {
@@ -1531,9 +1531,8 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 	}
 
 	// Some paths are unknown to the cached schema. Refresh exactly once
-	// before declaring the request invalid — the bound is required by
-	// issue #77 to avoid amplifying a misconfigured client into a
-	// refresh storm.
+	// before declaring the request invalid — the bound is required to
+	// avoid amplifying a misconfigured client into a refresh storm.
 	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, modelRef)
 	if !refreshed {
 		// Store has no cache layer — the cached miss is authoritative.
@@ -1691,7 +1690,7 @@ func (s *SearchService) markPathsPresent(tenant string, ref spi.ModelRef, surfac
 //
 // A DATA sort key absent from the cached schema is refreshed exactly once
 // before it is refused — mirroring validateConditionPaths' bounded-refresh
-// contract (issue #77) for condition paths. Without this, a field a peer
+// contract for condition paths. Without this, a field a peer
 // node had just added sorted successfully on the node that already saw the
 // extension and 400'd on one still running the stale cache — the same field
 // answering two ways depending only on which node's cache happened to be

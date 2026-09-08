@@ -95,7 +95,7 @@ func (f *CachingStoreFactory) SupportsCompositeUniqueKeys() bool {
 // shared CachingModelStore. The handler receives (tenant, ref) for
 // every model invalidation — local mutations and gossip-received
 // events alike. Downstream caches use this to stay in lock step
-// regardless of cluster topology (issue #174).
+// regardless of cluster topology.
 func (f *CachingStoreFactory) SubscribeLocal(h func(tenant string, ref spi.ModelRef)) {
 	f.cache.SubscribeLocal(h)
 }

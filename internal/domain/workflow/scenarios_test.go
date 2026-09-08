@@ -508,7 +508,7 @@ func TestScenarioStaticLoopDetectionViaImport(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 
 	// Register the target model so the import handler reaches static
-	// validation (since #131, the handler returns 404 if the model is missing).
+	// validation (the handler returns 404 if the model is missing).
 	mstore, err := factory.ModelStore(ctx)
 	if err != nil {
 		t.Fatalf("ModelStore: %v", err)
@@ -665,7 +665,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 
 	// Register the target model so the import handler reaches static
-	// validation (otherwise it returns 404 MODEL_NOT_FOUND first, per #131).
+	// validation (otherwise it returns 404 MODEL_NOT_FOUND first).
 	mstore, err := factory.ModelStore(ctx)
 	if err != nil {
 		t.Fatalf("ModelStore: %v", err)

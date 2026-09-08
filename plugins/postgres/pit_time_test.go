@@ -20,7 +20,6 @@ import (
 // more than the few-millisecond sleeps these tests used as a guard, and the
 // skew direction (DB behind host) makes a later DB write compare as earlier
 // than a host instant, silently resolving an as-at read to the wrong version.
-// See issue #460.
 //
 // Call dbNow between writes to get "an instant after everything written so
 // far". Note EntityStore.Save takes a defensive copy of its argument

@@ -12,8 +12,8 @@ import (
 )
 
 // Locking-discipline race tests for the remaining six tx-path operations
-// in plugins/memory/entity_store.go. PR #153 (v0.6.3) fixed Save and
-// CompareAndSave; issue #176 covers Get, Search, Delete, DeleteAll,
+// in plugins/memory/entity_store.go. v0.6.3 fixed Save and
+// CompareAndSave; this covers Get, Search, Delete, DeleteAll,
 // Exists, and Count (Search's tx-path replaces the GetAll tx-path this
 // suite originally covered).
 //
@@ -27,7 +27,7 @@ import (
 // Each test runs many iterations to give the scheduler chances to
 // interleave the in-flight op with Rollback. Tolerated errors are the
 // legitimate outcomes of a tx that closed mid-op, recognised via
-// errors.Is against the SPI tx-state sentinels (issue #200):
+// errors.Is against the SPI tx-state sentinels:
 //   - spi.ErrTxTerminated      ("already completed" / "rolled back")
 //   - spi.ErrTxNotFound        ("not found")
 //   - spi.ErrTxCommitInProgress ("already being committed")
@@ -210,8 +210,8 @@ func TestCount_VsRollback_NoRace(t *testing.T) {
 }
 
 // TestGetAsAt_VsRollback_NoRace flags the missing tx.OpMu.RLock in
-// GetAsAt's tx-path. Surfaced by code review on PR #198 as the same
-// race-shape defect issue #176 fixes for the six core ops: GetAsAt
+// GetAsAt's tx-path. Surfaced by code review as the same
+// race-shape defect fixed for the six core ops: GetAsAt
 // reads tx.RolledBack and writes tx.ReadSet inside an entityMu.RLock
 // region without tx.OpMu.RLock, AND has an inverted lock order
 // (entityMu before tx.OpMu). The fix takes tx.OpMu.RLock first when a

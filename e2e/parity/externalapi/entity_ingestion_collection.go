@@ -10,7 +10,7 @@ import (
 )
 
 func init() {
-	// External API scenario suite — tranche 1 (issue #118)
+	// External API scenario suite — tranche 1
 	// 04-entity-ingestion-collection
 	parity.Register(
 		parity.NamedTest{Name: "ExternalAPI_04_01_FamilyAndPets", Fn: RunExternalAPI_04_01_FamilyAndPets},
@@ -136,8 +136,8 @@ func RunExternalAPI_04_02_UpdateCollectionAge(t *testing.T, fixture parity.Backe
 }
 
 // RunExternalAPI_04_04_TransactionWindow — dictionary 04/04.
-// Pins the documented `transactionWindow` chunking contract from issue
-// #227 against every backend: a POST of N items with a client-supplied
+// Pins the documented `transactionWindow` chunking contract against
+// every backend: a POST of N items with a client-supplied
 // window=W produces ceil(N/W) chunk elements, each with a non-empty
 // transactionId and a `entityIds` slice of the right length, and the
 // entities are subsequently retrievable via ListEntitiesByModel.

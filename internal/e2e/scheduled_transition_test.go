@@ -145,7 +145,7 @@ func awaitSMEventType(t *testing.T, entityID, wantType, wantState string, timeou
 
 // TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound exercises
 // the explicit-fire-of-a-scheduled-transition rejection path end-to-end through
-// the full HTTP stack (#259). The validator accepts the shape-coherent
+// the full HTTP stack. The validator accepts the shape-coherent
 // scheduled transition (Schedule.DelayMs > 0, manual=false), cascade silently
 // skips it on entity creation (no other automated exit), and a client-issued
 // PUT against the transition by name returns 400 TRANSITION_NOT_FOUND with a

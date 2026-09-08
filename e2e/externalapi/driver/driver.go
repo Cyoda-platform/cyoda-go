@@ -124,7 +124,7 @@ func (d *Driver) CreateEntitiesCollection(items []CollectionItem) ([]uuid.UUID, 
 // CreateEntitiesCollectionWithWindow issues POST /api/entity/JSON with the
 // given items and an optional `transactionWindow` query parameter.
 // window <= 0 omits the parameter (server uses its default). Used by
-// parity scenarios that exercise the chunking contract from issue #227.
+// parity scenarios that exercise the chunking contract.
 func (d *Driver) CreateEntitiesCollectionWithWindow(items []CollectionItem, window int) ([]uuid.UUID, error) {
 	converted := make([]parityclient.CollectionItem, 0, len(items))
 	for _, it := range items {
@@ -158,7 +158,7 @@ func (d *Driver) UpdateEntitiesCollection(items []UpdateCollectionItem) ([]byte,
 // UpdateEntitiesCollectionWithWindow issues PUT /api/entity/JSON with the
 // given items and an optional `transactionWindow` query parameter,
 // returning the raw response body. Items may carry per-item IfMatch
-// preconditions (issue #228). window <= 0 omits the query parameter.
+// preconditions. window <= 0 omits the query parameter.
 func (d *Driver) UpdateEntitiesCollectionWithWindow(items []UpdateCollectionItem, window int) ([]byte, error) {
 	converted := convertUpdateCollectionItems(items)
 	return d.client.UpdateCollectionWithWindow(d.t, converted, window)
@@ -305,7 +305,7 @@ func (d *Driver) UpdateEntityData(id uuid.UUID, body string) error {
 // (loopback) with an If-Match HTTP header carrying the supplied
 // ifMatch token. Returns (status, body, transport-err) without
 // raising on non-2xx — used by parity scenarios that pin the
-// stale-ifMatch single-PUT contract from issue #228.
+// stale-ifMatch single-PUT contract.
 func (d *Driver) UpdateEntityDataWithIfMatchRaw(id uuid.UUID, body, ifMatch string) (int, []byte, error) {
 	return d.client.UpdateEntityDataWithIfMatchRaw(d.t, id, body, ifMatch)
 }
@@ -344,8 +344,7 @@ func (d *Driver) GetEntityChanges(id uuid.UUID) ([]parityclient.EntityChangeMeta
 
 // GetAuditEvents issues GET /api/audit/entity/{entityId} and returns
 // the parsed audit-event response. Used by parity scenarios that pin
-// the audit-trail shape (e.g. TRANSITION_ABORTED pairing for issue
-// #228).
+// the audit-trail shape (e.g. TRANSITION_ABORTED pairing).
 func (d *Driver) GetAuditEvents(id uuid.UUID) (parityclient.EntityAuditEventsResponse, error) {
 	return d.client.GetAuditEvents(d.t, id)
 }
@@ -476,7 +475,7 @@ type CollectionItem struct {
 
 // UpdateCollectionItem mirrors parityclient.UpdateCollectionItem for the
 // same reason. IfMatch is the optional per-item optimistic-concurrency
-// precondition from issue #228; an empty string omits the precondition.
+// precondition; an empty string omits the precondition.
 type UpdateCollectionItem struct {
 	ID         uuid.UUID
 	Payload    string

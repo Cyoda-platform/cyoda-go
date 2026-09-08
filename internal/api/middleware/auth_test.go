@@ -26,8 +26,8 @@ func (s *stubAuthService) Authenticate(_ context.Context, _ *http.Request) (*spi
 	return nil, s.err
 }
 
-// TestAuthMiddleware_ResponseBodyIsGenericForEveryFailureMode pins issues
-// #100 / #68 item 12: regardless of which Authenticate failure mode the
+// TestAuthMiddleware_ResponseBodyIsGenericForEveryFailureMode pins the
+// uniform-401 contract: regardless of which Authenticate failure mode the
 // upstream auth service signalled, the HTTP response body must be the same
 // generic "authentication failed" RFC 9457 problem-detail. No per-branch
 // detail may leak into the body — that's the user-enumeration risk.

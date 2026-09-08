@@ -84,7 +84,7 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 				if entry, ok := lookupAction(parent.DottedPath(), actionName); ok {
 					return entry.Handler(out)
 				}
-				// Dynamic action resolvers (issue #111): the openapi
+				// Dynamic action resolvers: the openapi
 				// topic accepts any tag slug as an action, resolved at
 				// dispatch time. If a resolver matches, use it; if not,
 				// fall through to the unknown-action error which now

@@ -8,10 +8,9 @@ import (
 
 // TestApp_StopGRPC_OnlyDrainsOnce pins the invariant that the gRPC
 // graceful-stop dance runs at most once across the runServers + Close
-// teardown sequence (#68 follow-up). Prior to the fix, runServers' drain
-// watcher and App.Close both inlined a GracefulStop + deadline budget;
-// a stuck stream could therefore burn up to 2× the budget across the
-// two layers.
+// teardown sequence. Were runServers' drain watcher and App.Close each
+// to inline their own GracefulStop + deadline budget, a stuck stream
+// would burn up to 2× the budget across the two layers.
 //
 // The test serves a real gRPC server, calls StopGRPC twice, and asserts
 // the second call returns immediately — observable proof that the

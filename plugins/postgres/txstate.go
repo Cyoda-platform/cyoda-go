@@ -20,7 +20,7 @@ import (
 //
 // writeSet is maintained for the readSet-disjoint invariant (RecordRead skips
 // entities in writeSet, keeping readSet correct) and for future use with
-// advisory locks / non-entity stores (tracked as #35). writeSet is NOT
+// advisory locks / non-entity stores. writeSet is NOT
 // validated at commit time in the current implementation — PostgreSQL's
 // native tuple-level DML locks catch write-write conflicts.
 //

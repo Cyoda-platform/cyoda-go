@@ -129,7 +129,7 @@ func TestSearch_MalformedRegex_Nested_Rejected(t *testing.T) {
 
 // TestSubmitAsync_MalformedRegex_Rejected mirrors the sync-search case for
 // the async submit path: no job should ever be created for a malformed
-// pattern (issue #77's synchronous-validation contract extended to regex).
+// pattern (the synchronous-validation contract extended to regex).
 func TestSubmitAsync_MalformedRegex_Rejected(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "regex-model-async", ModelVersion: "1"}
 	svc, ctx := newPatternTestService(t, "tenant-regex-async", ref)

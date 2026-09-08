@@ -10,7 +10,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 )
 
-// TestSubscribeLocal_FiresOnLocalMutation pins issue #174's contract.
+// TestSubscribeLocal_FiresOnLocalMutation pins the contract.
 //
 // On a single-node deployment the broadcaster is nil — there is no
 // gossip channel to relay schema-change events. Downstream caches

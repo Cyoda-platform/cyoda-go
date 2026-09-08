@@ -445,11 +445,11 @@ func New(cfg Config) *App {
 	// to the descriptor cache via SubscribeLocal: every model
 	// invalidation (local mutation OR gossip-received event) drops
 	// the corresponding negative-cache bucket. This works on
-	// single-node and multi-node alike (issue #174 — pre-fix the
-	// cache subscribed to the broadcaster directly, so single-node
-	// deployments where the broadcaster is nil never received any
-	// invalidations). Per-(tenant, ref) bucketed otter caches isolate
-	// cross-tenant eviction (issue #175).
+	// single-node and multi-node alike: subscribing to the descriptor
+	// cache rather than to the broadcaster directly is what makes
+	// single-node deployments, where the broadcaster is nil, receive
+	// invalidations at all. Per-(tenant, ref) bucketed otter caches
+	// isolate cross-tenant eviction.
 	pathValidationCache := search.NewPathValidationCache()
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	// Bounded async-search worker pool, sized from config (validated by
@@ -487,8 +487,9 @@ func New(cfg Config) *App {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
 		// are already registered, so no messages are dropped.
-		// Use startupCtx so the gossip join honors CYODA_STARTUP_TIMEOUT
-		// (issue #9) instead of the legacy hard-coded 2-minute deadline.
+		// Use startupCtx so the gossip join honors the configured
+		// gossip-registration deadline (CYODA_STARTUP_TIMEOUT) instead of a
+		// hard-coded 2-minute one.
 		if err := gossipReg.Register(startupCtx, cfg.Cluster.NodeID, cfg.Cluster.NodeAddr); err != nil {
 			slog.Error("failed to register with gossip cluster", "pkg", "cluster", "err", err)
 			os.Exit(1)
@@ -663,7 +664,7 @@ func New(cfg Config) *App {
 	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
 
 	// Auth service route registration is split into two strict groups so
-	// nothing administrative leaks into the public surface (#34 item 1):
+	// nothing administrative leaks into the public surface:
 	//
 	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
 	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
@@ -928,7 +929,7 @@ const searchDrainBudget = 5 * time.Second
 // gRPC is stopped via GracefulStop bounded by gRPCGracefulStopBudget; if
 // the budget elapses without graceful completion (a stuck stream, a
 // non-cooperative client) we fall back to a hard Stop and emit a slog.Warn
-// so operators can see the budget was hit (#68 item 19).
+// so operators can see the budget was hit.
 func (a *App) Close() error {
 	slog.Info("shutting down")
 	var err error

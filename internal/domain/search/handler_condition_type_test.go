@@ -177,7 +177,7 @@ func TestSearch_ConditionType_IntegerFieldWithStringValue(t *testing.T) {
 // TestSearch_ConditionType_UnknownField_Rejected verifies that a search
 // condition referencing a field absent from the model schema is
 // rejected with HTTP 400 and errorCode INVALID_FIELD_PATH once
-// pre-execution path validation is in effect (issue #77). Type-checking
+// pre-execution path validation is in effect. Type-checking
 // still has no opinion on unknown paths, so the rejection comes from the
 // field-path validator and the response body explicitly names the
 // offending path so clients can correct their request without a

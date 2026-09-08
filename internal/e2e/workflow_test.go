@@ -190,8 +190,8 @@ func TestWorkflow_OverwriteWorkflow(t *testing.T) {
 }
 
 // TestWorkflow_ImportUnknownModel verifies that importing a workflow targeting
-// a model that does not exist returns 404 MODEL_NOT_FOUND. This covers issue
-// #131: previously the import silently succeeded with 200 {"success":true};
+// a model that does not exist returns 404 MODEL_NOT_FOUND. Previously the
+// import silently succeeded with 200 {"success":true};
 // cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND. See the workflow
 // handler unit test TestImport_UnknownModel_Returns404 for the canonical
 // assertion.

@@ -306,11 +306,11 @@ func TestEntityLifecycle_TemporalAsAt(t *testing.T) {
 	}
 }
 
-// --- Test 8.8b: Temporal GET by transactionId (issue #150) ---
+// --- Test 8.8b: Temporal GET by transactionId ---
 
 // TestEntityLifecycle_TemporalByTransactionID exercises GET /entity/{id}
-// ?transactionId=<tx> through the full HTTP stack. Issue #150 fixed the
-// silent-drop of the query param; this test pins the behavior end-to-end:
+// ?transactionId=<tx> through the full HTTP stack. The query param was once
+// dropped silently; this test pins the behavior end-to-end:
 //   - the create-time txID returns the create snapshot (status=v1) even after
 //     two updates,
 //   - a bogus txID returns 404 ENTITY_NOT_FOUND (dictionary 12/neg/05).

@@ -266,7 +266,7 @@ func (e *Engine) executeAsyncNewTx(ctx context.Context, entity *spi.Entity, proc
 }
 
 // executeCommitBeforeDispatch implements processor execution mode
-// COMMIT_BEFORE_DISPATCH (issue #27). The cascade's parent transaction
+// COMMIT_BEFORE_DISPATCH. The cascade's parent transaction
 // (txID == T_pre) is committed first; the processor is dispatched with no
 // transaction context (default) or with TX_post's token
 // (startNewTxOnDispatch=true); the result is applied via CompareAndSave
@@ -315,7 +315,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// since no segment was opened.
 		segCtx, segTxID = newCtx, newTxID
 		if err != nil {
-			// Reviewer S1 (#228): if the engine's first-segment flush rejected
+			// If the engine's first-segment flush rejected
 			// the caller's IfMatch precondition we have already recorded
 			// entry-side audit events (STATE_MACHINE_START, WORKFLOW_FOUND).
 			// Emit a compensating TRANSITION_ABORTED so the audit trail
@@ -348,7 +348,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 		// from Begin keeps both modes clean.
 		if fcErr := e.flushAndCommitSegment(ctx, entity, txID, expectedFirstFlushTxID, ifMatchConsumed); fcErr != nil {
 			// See the matching block in the startNewTx==true branch above
-			// for the rationale (#228 reviewer S1).
+			// for the rationale.
 			if ifMatchConsumed && errors.Is(fcErr, spi.ErrConflict) {
 				e.recordAbortForIfMatchConflict(ctx, auditStore, entity, entryTxID, transition, expectedFirstFlushTxID)
 			}

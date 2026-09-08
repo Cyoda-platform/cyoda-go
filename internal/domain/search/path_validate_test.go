@@ -116,7 +116,7 @@ func buildSearchDescriptor(t *testing.T, ref spi.ModelRef, fields ...string) *sp
 // TestSearch_StaleSchema_RefreshesOnceAndSucceeds verifies that a search
 // referencing a field absent from the cached schema but present in the
 // authoritative (post-RefreshAndGet) schema triggers exactly one refresh
-// and then succeeds. This is the issue-#77 contract.
+// and then succeeds. This is the refresh-once contract.
 func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()

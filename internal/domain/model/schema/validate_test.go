@@ -124,7 +124,7 @@ func TestValidateNullCompatible(t *testing.T) {
 }
 
 // TestValidateJSONNumberAgainstNumeric — XML and JSON importers both
-// produce json.Number for numeric leaves (after issue #24 PR-2).
+// produce json.Number for numeric leaves.
 // inferDataType must classify json.Number as numeric, otherwise
 // validation falsely rejects every numeric XML/JSON-imported field.
 func TestValidateJSONNumberAgainstNumeric(t *testing.T) {

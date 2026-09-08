@@ -60,7 +60,7 @@ func TestSearch_Sync_ValidRegex_Returns200(t *testing.T) {
 // TestSearch_AsyncSubmit_MalformedRegex_Returns400_InvalidCondition mirrors
 // the sync case for the async submit path: no job should ever be created
 // for a malformed pattern (the pre-execution validation contract already
-// established for field paths — issue #77 — extends to regex patterns).
+// established for field paths — extends to regex patterns).
 func TestSearch_AsyncSubmit_MalformedRegex_Returns400_InvalidCondition(t *testing.T) {
 	const model = "e2e-search-regex-invalid-async"
 	setupSearchModel(t, model)

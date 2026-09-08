@@ -7,7 +7,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
 )
 
-// Regression tests for issue #79.
+// Regression tests for precision loss above 2^53.
 //
 // Generated UnmarshalJSON methods on CloudEvent types use json.Unmarshal
 // internally. Without UseNumber, any numeric literal in a freeform field
@@ -43,7 +43,7 @@ func TestEntitySearchRequest_ConditionPreservesLargeInt(t *testing.T) {
 			t.Errorf("json.Number.String() = %q, want %q (precision loss)", typed.String(), bigInt)
 		}
 	case float64:
-		t.Errorf("value decoded as float64 (%v); UseNumber not active — generated UnmarshalJSON bypasses precision handling (issue #79)", typed)
+		t.Errorf("value decoded as float64 (%v); UseNumber not active — generated UnmarshalJSON bypasses precision handling", typed)
 	default:
 		t.Errorf("value has unexpected type %T: %v", v, v)
 	}

@@ -1,7 +1,7 @@
 package postgres_test
 
 // searcher_tx_test.go — in-transaction Search behaviour for the PostgreSQL
-// backend (issue #420, Task 10).
+// backend (Task 10).
 //
 // DESIGN NOTE — postgres has no in-process tx buffer.
 //
@@ -354,7 +354,7 @@ func TestSearchTx_NoTrackingReadRecordsNothing(t *testing.T) {
 }
 
 // TestSearchTxPIT_CommittedOnlyMatchesIterateAsAt is the RED driver for in-tx
-// point-in-time (PIT) Search (Task 11, issue #420): a Search issued INSIDE a
+// point-in-time (PIT) Search (Task 11): a Search issued INSIDE a
 // transaction with opts.PointInTime set must return the committed-as-at-PIT
 // snapshot — identical to a committed-only Iterate(pit) + spi.Prepare(filter).Match run through
 // the same tx-scoped store/ctx — never a buffered/overlaid current-state view.

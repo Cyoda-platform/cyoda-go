@@ -12,7 +12,7 @@ import (
 )
 
 // TestDelegatingAuthenticator_ErrorsAreWrappedAsAuthFailed is the regression
-// test for issues #100 and #68 item 12. All four Authenticate failure
+// test for the uniform-failure contract. All four Authenticate failure
 // branches must:
 //   - return the unwrapped sentinel `ErrAuthenticationFailed` so that
 //     err.Error() is exactly "authentication failed" — no per-branch suffix

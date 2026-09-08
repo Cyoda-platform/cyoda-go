@@ -48,7 +48,7 @@ type EntityTransactionResult struct {
 // rejects requests carrying both with HTTP 400 BAD_REQUEST. When
 // TransactionID is non-empty, GetEntity scans the entity's version
 // history and returns the version whose meta.TransactionID matches; if
-// no version matches, ENTITY_NOT_FOUND (404) is returned. Issue #150.
+// no version matches, ENTITY_NOT_FOUND (404) is returned.
 type GetOneEntityInput struct {
 	EntityID      string
 	PointInTime   *time.Time
@@ -128,7 +128,7 @@ type CollectionItem struct {
 // IfMatch is the optional cross-request optimistic-concurrency precondition
 // (the entity's meta.transactionId from the caller's last read). When
 // supplied, a per-item ENTITY_MODIFIED conflict is isolated within its chunk
-// rather than rolling the whole chunk back. Issue #228.
+// rather than rolling the whole chunk back.
 type UpdateCollectionItem struct {
 	EntityID   string
 	Payload    json.RawMessage
@@ -256,7 +256,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	}
 
 	// Begin a fresh transaction, or PARTICIPATE in a joined tx already on ctx
-	// (a routed compute-node callback — #287). A joined callback does not Begin
+	// (a routed compute-node callback). A joined callback does not Begin
 	// and does not commit; the owner does. Its whole body is one gated critical
 	// section on the shared tx buffer (acquired below).
 	scope, err := h.beginScope(ctx)
@@ -324,7 +324,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// The CREATE path runs the workflow engine without an explicit
 	// client-supplied transition name (Execute(..., "")). From the caller's
 	// viewpoint this is a save without a named transition — the canonical
-	// marker for that is "loopback", not the literal "workflow" (issue #94).
+	// marker for that is "loopback", not the literal "workflow".
 	if result.StopReason == "" {
 		entity.Meta.TransitionForLatestSave = "loopback"
 	}
@@ -393,7 +393,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 // doc comment). spi.ErrNotFound is returned both when the entity itself is
 // unknown to the store and when no version matches the supplied
 // transactionId — the caller maps both to ENTITY_NOT_FOUND (404), which
-// mirrors Cyoda Cloud's contract for issue #150 (and matches dictionary
+// mirrors Cyoda Cloud's contract (and matches dictionary
 // scenario 12/neg/05). The caller treats other errors as infrastructure
 // failures (5xx).
 func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entityID, txID string) (*spi.Entity, error) {
@@ -660,7 +660,7 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 // DeleteEntity deletes a single entity by ID within a transaction.
 // Returns the deleted entity's metadata for the response.
 func (h *Handler) DeleteEntity(ctx context.Context, entityID string) (*deleteEntityResult, error) {
-	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx (#287).
+	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
@@ -794,7 +794,7 @@ func (h *Handler) DeleteAllEntities(ctx context.Context, entityName string, mode
 		ModelVersion: modelVersion,
 	}
 
-	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx (#287).
+	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
 	scope, err := h.beginScope(ctx)
 	if err != nil {
 		return nil, classifyBeginErr(err)
@@ -2005,7 +2005,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		// Run workflow engine within the current segment's transaction
 		// context. Mirrors single CreateEntity's flow so initial-state
 		// derivation, automated cascade and state-machine audit events all
-		// apply per item. Issue #227.
+		// apply per item.
 		result, err := h.engine.Execute(currentCtx, entity, "")
 		if err != nil {
 			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
@@ -2030,7 +2030,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		}
 
 		// CREATE path runs without an explicit transition; canonical
-		// marker is "loopback" (issue #94), matching single CreateEntity.
+		// marker is "loopback", matching single CreateEntity.
 		if result.StopReason == "" {
 			entity.Meta.TransitionForLatestSave = "loopback"
 		}
@@ -2134,7 +2134,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, err
 	}
 
-	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx (#287).
+	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
 	// A joined callback does not Begin/commit; its whole body is one gated
 	// critical section on the shared tx buffer.
 	scope, err := h.beginScope(ctx)
@@ -2318,7 +2318,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		if input.IfMatch != "" && !segmented {
 			if _, err := finalEntityStore.CompareAndSave(finalCtx, updated, input.IfMatch); err != nil {
 				if errors.Is(err, spi.ErrConflict) {
-					// Reviewer S1 (#228): emit the compensating
+					// Emit the compensating
 					// TRANSITION_ABORTED into the same TX buffer as the
 					// entry-side audit events BEFORE rolling back, so on
 					// stores where audit is TX-bound the abort event rolls
@@ -2409,17 +2409,16 @@ func (h *Handler) PatchEntity(ctx context.Context, input PatchEntityInput) (*Ent
 
 // UpdateEntityCollection updates multiple entities in a single transaction
 // (PUT /api/entity/{format}). Loopback updates (empty Transition) and
-// named-transition updates may be mixed within the same batch. Issue #92.
+// named-transition updates may be mixed within the same batch.
 //
 // Per-item failure handling:
 //
 //   - Items WITHOUT IfMatch retain the documented all-or-nothing semantic:
 //     any failure (missing entity, validation, engine error) rolls the
-//     entire chunk back. Issue #92.
+//     entire chunk back.
 //   - Items WITH IfMatch isolate ENTITY_MODIFIED conflicts (spi.ErrConflict)
 //     to a per-chunk Failed slice; the chunk still commits its remaining
 //     successful items. Other per-item failures still roll the chunk back.
-//     Issue #228.
 //   - Isolation covers only a conflict raised while the chunk's transaction is
 //     still usable: a handler-side CompareAndSave, or a COMMIT_BEFORE_DISPATCH
 //     first-segment flush, which runs before TX_pre commits and before any
@@ -2596,7 +2595,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// dispatch fires (spec §4.1). For non-segmenting cascades the
 		// engine leaves IfMatch untouched and the handler's CompareAndSave
 		// below applies it post-engine. Mirrors single UpdateEntity's
-		// routing (issue #27 / #228).
+		// routing.
 		var engineResult *wfengine.EngineResult
 		var engineErr error
 		if item.transition == "" {
@@ -2609,7 +2608,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			// first-segment flush rejected the IfMatch precondition before
 			// committing TX_pre or firing any external dispatch. The engine
 			// has already emitted a compensating TRANSITION_ABORTED audit
-			// event before returning ErrConflict (#228 reviewer S1) so the
+			// event before returning ErrConflict so the
 			// audit trail for this item is paired (entry + abort) and lands
 			// alongside successful siblings on commit.
 			//
@@ -2672,7 +2671,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		// case the engine's first-segment flush already applied this item's
 		// IfMatch. For non-segmenting cascades the handler still owns the
 		// precondition — apply it via CompareAndSave below. Mirrors the
-		// single-UpdateEntity routing post-#27.
+		// single-UpdateEntity routing.
 		segmented := engineResult.Segmented
 
 		// A joined callback is a plain single-segment op; a participating batch
@@ -2720,7 +2719,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				if applyHandlerCAS && errors.Is(saveErr, spi.ErrConflict) {
 					slog.Info("collection update item precondition failed",
 						"source", "handler", "entityId", updated.Meta.ID, "itemIndex", i)
-					// Reviewer S1 (#228): emit a compensating TRANSITION_ABORTED
+					// Emit a compensating TRANSITION_ABORTED
 					// audit event so the entry-side audit events recorded by the
 					// engine for this item (STATE_MACHINE_START / WORKFLOW_FOUND
 					// / TRANSITION_MAKE) have a paired terminal event in the
