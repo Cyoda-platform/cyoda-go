@@ -22,7 +22,11 @@ import (
 // dispatcher queued behind that stalled write is released, and the writer
 // itself unwinds once the handler returns.
 func TestFrozenMember_IsEvictedAndDispatchersAreReleased(t *testing.T) {
-	ka := KeepAliveConfig{Interval: 100 * time.Millisecond, Timeout: 500 * time.Millisecond}
+	// Timeout is 1s against a 100ms interval: it governs three clocks at once
+	// (LastSeen freshness against the 100ms feeder below, the write-stall rule,
+	// and the transport's ping-ack deadline), and a margin that tight makes all
+	// three race each other on a loaded machine.
+	ka := KeepAliveConfig{Interval: 100 * time.Millisecond, Timeout: 1 * time.Second}
 	ts := startRecoveryTestServerWithKeepAlive(t, nil, ka)
 
 	conn, err := googlegrpc.NewClient(ts.addr,
@@ -54,10 +58,12 @@ func TestFrozenMember_IsEvictedAndDispatchersAreReleased(t *testing.T) {
 	if _, err := stream.Recv(); err != nil { // the greet
 		t.Fatalf("greet: %v", err)
 	}
-	// From here the client never calls Recv again: frozen. Its keep-alive
-	// goroutine keeps pinging, though — that is what a frozen compute node
-	// looks like, and it takes the inbound-silence rule out of play, so the
-	// only rule left that can evict this member is write progress.
+	// From here the client never calls Recv again: frozen. The test keeps
+	// feeding keep-alives on the client's behalf, standing in for the ping
+	// goroutine a real compute node runs independently of its application —
+	// which is what a frozen node looks like, and which takes the
+	// inbound-silence rule out of play, so the only rule left that can evict
+	// this member is write progress.
 	feederDone := make(chan struct{})
 	go func() {
 		defer close(feederDone)
@@ -118,12 +124,19 @@ func TestFrozenMember_IsEvictedAndDispatchersAreReleased(t *testing.T) {
 	t.Cleanup(func() { <-fillerDone })
 
 	// The writer must be stuck in a raw send, not merely idle: that stall is
-	// what the keep-alive loop reads.
+	// what the keep-alive loop reads. One non-zero sample is not enough — a
+	// keep-alive ping in flight shows up the same way — so the same start
+	// timestamp has to still be in flight 100ms later.
 	var wedgedAt time.Time
 	for i := 0; i < 500 && wedgedAt.IsZero(); i++ {
-		wedgedAt = member.WriteInFlightSince()
-		if wedgedAt.IsZero() {
+		first := member.WriteInFlightSince()
+		if first.IsZero() {
 			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		time.Sleep(100 * time.Millisecond)
+		if second := member.WriteInFlightSince(); second.Equal(first) {
+			wedgedAt = first
 		}
 	}
 	if wedgedAt.IsZero() {
@@ -157,9 +170,15 @@ func TestFrozenMember_IsEvictedAndDispatchersAreReleased(t *testing.T) {
 	if !ok || st.Code() != codes.DeadlineExceeded || st.Message() != "member not draining" {
 		t.Fatalf("expected eviction by the write-progress rule, got %v", member.EvictErr())
 	}
-	wg.Wait()
-	if released.Load() != 5 {
-		t.Fatalf("%d of 5 senders released", released.Load())
+	// Joined through a channel, not a bare wg.Wait(): a dispatcher that stays
+	// wedged does not come back at all, and waiting for it would hang the test
+	// until the package timeout instead of failing with a readable count.
+	allReleased := make(chan struct{})
+	go func() { wg.Wait(); close(allReleased) }()
+	select {
+	case <-allReleased:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("only %d of 5 senders released; the rest are still wedged", released.Load())
 	}
 	select {
 	case <-member.WriterDone():
@@ -169,7 +188,8 @@ func TestFrozenMember_IsEvictedAndDispatchersAreReleased(t *testing.T) {
 }
 
 // A connection whose bytes stop flowing in both directions (a pausable TCP
-// proxy) is torn down by the transport keepalive within Time+Timeout and the
+// proxy) is torn down by the transport keepalive within Time+Timeout, observed
+// on the socket itself — the proxy sees the server close its end — and the
 // member is unregistered, even though nothing at the application level ever
 // errors.
 func TestBlackholedConnection_IsTornDownByTransportKeepalive(t *testing.T) {
@@ -205,7 +225,22 @@ func TestBlackholedConnection_IsTornDownByTransportKeepalive(t *testing.T) {
 	}
 	proxy.pause() // both directions stop; TCP stays open.
 
-	deadline := time.Now().Add(10 * time.Second) // Time+Timeout is 2s; allow slack
+	// The transport itself, observed directly: the proxy's upstream socket
+	// only reports a close when the server closes its end, and while the
+	// server is serving normally nothing else can make it do that — the proxy
+	// holds both TCP connections open, the client is healthy, and no
+	// application-level error ever occurs. Time+Timeout is 2s; 5s is slack.
+	// It is deliberately not longer: grpc-go's graceful-stop path has its own
+	// 5s fallback that closes a stream-less connection, and only a bound below
+	// that (and taken before GracefulStop is called at all, as here) tells the
+	// keepalive apart from the drain.
+	select {
+	case <-proxy.upstreamClosed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never closed the black-holed connection: transport keepalive did not fire")
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
 	for len(ts.registry.List()) != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("black-holed member still registered")
@@ -213,27 +248,35 @@ func TestBlackholedConnection_IsTornDownByTransportKeepalive(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// The application keep-alive fires on the same clock, so the member being
-	// gone does not by itself prove the transport noticed. GracefulStop waits
-	// for every connection to close: with transport keepalive the dead one is
-	// torn down and Stop returns; without it, Stop would wait on a connection
-	// that never drains (grpc-go's default is a two-hour keepalive).
+	// And the server can then shut down: GracefulStop waits for every
+	// connection to close, and the dead one is already gone. The bound stays
+	// under grpc-go's 5s graceful-stop fallback — above it, a stop that only
+	// finished because of that fallback would look like a pass.
 	stopped := make(chan struct{})
 	go func() { ts.srv.GracefulStop(); close(stopped) }()
 	select {
 	case <-stopped:
-	case <-time.After(10 * time.Second):
-		t.Fatal("GracefulStop hung: the black-holed connection was never closed by transport keepalive")
+	case <-time.After(3 * time.Second):
+		t.Fatal("GracefulStop hung on the black-holed connection")
 	}
 }
 
 // pausableProxy forwards bytes between a client and target until pause() is
 // called, after which it silently drops everything while keeping both TCP
-// connections open.
+// connections open. It also reports when the target closed its end of the
+// upstream connection, which is how a test sees the server's transport act on
+// its own rather than inferring it from application-level state.
 type pausableProxy struct {
-	addr   string
-	paused atomic.Bool
+	addr     string
+	paused   atomic.Bool
+	upstream chan struct{} // closed when a read from the target's side ends
+	once     sync.Once
 }
+
+// upstreamClosed is closed once the target has closed the upstream connection.
+func (p *pausableProxy) upstreamClosed() <-chan struct{} { return p.upstream }
+
+func (p *pausableProxy) noteUpstreamClosed() { p.once.Do(func() { close(p.upstream) }) }
 
 func newPausableProxy(t *testing.T, target string) *pausableProxy {
 	t.Helper()
@@ -241,7 +284,7 @@ func newPausableProxy(t *testing.T, target string) *pausableProxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &pausableProxy{addr: lis.Addr().String()}
+	p := &pausableProxy{addr: lis.Addr().String(), upstream: make(chan struct{})}
 	t.Cleanup(func() { _ = lis.Close() })
 	go func() {
 		for {
@@ -254,7 +297,9 @@ func newPausableProxy(t *testing.T, target string) *pausableProxy {
 				_ = c.Close()
 				continue
 			}
-			pump := func(dst, src net.Conn) {
+			// srcIsTarget marks the direction whose source is the upstream
+			// connection: a read ending there is the server closing on us.
+			pump := func(dst, src net.Conn, srcIsTarget bool) {
 				defer func() { _ = dst.Close(); _ = src.Close() }()
 				buf := make([]byte, 32*1024)
 				for {
@@ -265,12 +310,15 @@ func newPausableProxy(t *testing.T, target string) *pausableProxy {
 						}
 					}
 					if err != nil {
+						if srcIsTarget {
+							p.noteUpstreamClosed()
+						}
 						return
 					}
 				}
 			}
-			go pump(up, c)
-			go pump(c, up)
+			go pump(up, c, false)
+			go pump(c, up, true)
 		}
 	}()
 	return p
