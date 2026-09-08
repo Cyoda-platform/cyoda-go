@@ -1048,9 +1048,6 @@ type EntityDeleteAllRequestJson struct {
 	// Information about the model.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
 
-	// Page size.
-	PageSize int `json:"pageSize,omitempty" yaml:"pageSize,omitempty" mapstructure:"pageSize,omitempty"`
-
 	// point in time, i.e. delete all that existed prior to this point in time
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
@@ -1118,9 +1115,6 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["pageSize"]; !ok || v == nil {
-		plain.PageSize = 10.0
-	}
 	if v, ok := raw["success"]; !ok || v == nil {
 		plain.Success = true
 	}
@@ -1132,7 +1126,8 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 }
 
 type EntityDeleteAllResponseJson struct {
-	// IDs of the removed entities.
+	// IDs the delete attempted, when verbose was requested; an id whose delete failed
+	// also appears in errorsById. Empty when verbose is false.
 	EntityIds []string `json:"entityIds" yaml:"entityIds" mapstructure:"entityIds"`
 
 	// Error details (if present).
