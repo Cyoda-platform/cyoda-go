@@ -234,7 +234,7 @@ per-request server streams from a single goroutine and are out of scope.
 | `CYODA_HTTP_READ_HEADER_TIMEOUT` | `10s` | Time allowed to receive the request headers. |
 | `CYODA_HTTP_READ_TIMEOUT` | `5m` | Time allowed to receive the whole request, body included. |
 | `CYODA_HTTP_WRITE_TIMEOUT` | `0` (disabled) | Time from end of headers to end of response. Bounds handler execution; off by policy (#475). |
-| `CYODA_HTTP_IDLE_TIMEOUT` | `2m` (renders `120s`) | Keep-alive connection idle time between requests. |
+| `CYODA_HTTP_IDLE_TIMEOUT` | `2m` (120 seconds) | Keep-alive connection idle time between requests. |
 
 `0` disables `ReadTimeout` and `WriteTimeout` outright. For
 `ReadHeaderTimeout` and `IdleTimeout`, `0` instead means "use `ReadTimeout`"
@@ -354,7 +354,7 @@ error codes.
 | Writer wedged on a never-returning send: evicted within keep-alive timeout by the write-progress rule; concurrent dispatchers return `DISPATCH_TIMEOUT` "member not draining" by their own deadline; none wedge | `internal/grpc` (blocking `SendFunc`) | — | — | ✓ client dialled with `WithInitialWindowSize`/`WithInitialConnWindowSize` 64 KiB that stops reading; one dispatch carrying a ~256 KiB entity fills the window |
 | Member that keeps pinging inbound but never reads → evicted within timeout | `internal/grpc` | — | — | ✓ (same fixture, client keeps pinging) |
 | Transport keepalive tears down a black-holed connection within `Time + Timeout`: member unregistered and `GracefulStop` returns (it waits for every connection to close, so a lingering dead one would hang it) | — | — | — | ✓ pausable in-test TCP proxy between client and server |
-| Enforcement tolerates a client pinging every 5s (no GOAWAY) | — | — | — | ✓ |
+| Enforcement tolerates a client pinging every 5s (no GOAWAY): the enforcement-policy constants (`MinTime: 5s`, `PermitWithoutStream: true`) are reviewed, not tested — a discriminating test needs ~20s of idle real-network time, so the test was deleted rather than kept flaky/slow | — | — | — | — |
 | `Send` honours ctx deadline while the writer is busy; a sender that gives up is released and nothing it queued is written (the writer's own ctx check on a received item is reviewed, not tested: with an unbuffered handoff it is not separately observable) | `internal/grpc` | — | — | — |
 | Greet is the first event on the wire even with a dispatch racing `Register` | `internal/grpc` (`overlapDetectingStream` reuse) | — | — | — |
 | `-race`: dispatch + keep-alive + greet, exactly one goroutine calls the raw send | `internal/grpc` | — | — | — |

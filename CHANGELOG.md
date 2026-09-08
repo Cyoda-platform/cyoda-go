@@ -1006,7 +1006,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   behaviour), so those two are off only when `CYODA_HTTP_READ_TIMEOUT` is also
   `0`. `CYODA_HTTP_WRITE_TIMEOUT` exists and ships disabled (`0`): the server
   imposes no time budget on work. A client that takes more than five minutes
-  to deliver a request body is now cut off. `cyoda help config server`.
+  to deliver a request body is now cut off. `cyoda help config`.
 
 - **Postgres pool saturation metrics.** `cyoda_storage_pool_connections{state}`,
   `cyoda_storage_pool_max_connections`, `cyoda_storage_pool_acquires_total`,

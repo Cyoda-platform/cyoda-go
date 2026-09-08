@@ -14,9 +14,11 @@ authoritative implementation.
   condition is what catches a member whose own keep-alive goroutine keeps
   pinging while the application behind it is stuck: inbound activity alone
   is not sufficient evidence of liveness.
-- Any inbound message counts as liveness: the join, a keep-alive ping, and a
-  processor, criteria or function response all refresh the member's
-  last-seen time.
+- The join is what registers the member and seeds its last-seen time. Once
+  registered, exactly five inbound message kinds refresh last-seen: a
+  keep-alive ping, an ack response, and a processor, criteria or function
+  response. An event type the server does not recognize is logged and does
+  **not** refresh last-seen — it is not evidence of liveness.
 - The greet event is always the first event a member receives on the stream
   — sent as part of registering the member, before the member is published
   and can be handed a dispatch, so a dispatch racing registration can never
@@ -68,10 +70,12 @@ covered by the existing dispatch-outcome documentation.
 
 For Cloud's gRPC server to stay aligned:
 
-1. Compute-member liveness must be tracked the same way: any inbound
-   message (join, keep-alive, or a calculation response) refreshes
-   last-seen, and eviction fires on either inbound silence or a stalled
-   outbound write reaching the timeout — not on inbound silence alone.
+1. Compute-member liveness must be tracked the same way: the join
+   registers the member and seeds last-seen; a keep-alive ping, an ack
+   response, or a processor/criteria/function response refreshes it; an
+   unrecognized event type does not. Eviction fires on either inbound
+   silence or a stalled outbound write reaching the timeout — not on
+   inbound silence alone.
 2. Writes to one member's stream must be serialised through a single
    writer so that a slow or stuck member wedges only its own writer, never
    a request-handling goroutine or the keep-alive loop.
