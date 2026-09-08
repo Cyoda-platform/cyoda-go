@@ -1,14 +1,16 @@
 package grpc
 
-// streaming_greet_send_test.go — every send to a member's stream must be
-// serialised by that member's sendMu.
+// streaming_greet_send_test.go — one goroutine, and only one, ever calls the
+// raw send on a member's stream.
 //
-// StartStreaming publishes the member to the registry (Register) BEFORE it
-// greets. From that instant a dispatch can be routed to it and call
-// Member.Send. If the greet writes to the stream directly instead of through
-// Member.Send, the two sends run concurrently on one gRPC stream — which
+// The greet is queued as the writer's first item, before Register publishes
+// the member, so it is written first and no dispatch can precede it. Every
+// later write goes through the same member outbox and so through the same
+// single writer goroutine. If the greet were instead written to the stream
+// directly, it would run concurrently with the first dispatch's write — which
 // grpc-go documents as unsupported, and whose failure mode is a corrupted
-// HTTP/2 frame, not a clean error.
+// HTTP/2 frame, not a clean error. This test parks the first raw send and
+// pushes a second write at the stream to prove the two never overlap.
 
 import (
 	"context"
@@ -79,8 +81,8 @@ func TestStreaming_GreetIsSerialisedWithConcurrentDispatch(t *testing.T) {
 		t.Fatal("the greet never reached the stream")
 	}
 
-	// The member is registered by now — that is the whole hazard. Dispatch to
-	// it while the greet is still in flight.
+	// The member is published by now, so a dispatch can reach it while the
+	// greet is still on the wire. That is the window this test drives.
 	var member *Member
 	for i := 0; i < 200 && member == nil; i++ {
 		if members := svc.registry.List(); len(members) == 1 {
@@ -125,7 +127,8 @@ func TestStreaming_GreetIsSerialisedWithConcurrentDispatch(t *testing.T) {
 	cancel()
 
 	if n := stream.overlaps.Load(); n != 0 {
-		t.Errorf("%d concurrent send(s) on one gRPC stream: the greet bypasses Member.Send, "+
-			"so a dispatch routed between Register and the greet writes interleaved HTTP/2 frames", n)
+		t.Errorf("%d concurrent send(s) on one gRPC stream: something writes the stream "+
+			"outside the member's single writer goroutine, so two writes interleave "+
+			"HTTP/2 frames", n)
 	}
 }
