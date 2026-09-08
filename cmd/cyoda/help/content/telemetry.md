@@ -104,6 +104,8 @@ attribute (`postgres`):
 - `cyoda.storage.pool.acquire_duration` — `Float64ObservableCounter`, unit `s` — cumulative time spent in acquire, all acquires; labeled by `backend`
 - `cyoda.storage.pool.empty_acquire_wait` — `Float64ObservableCounter`, unit `s` — cumulative time callers waited because the pool was empty; labeled by `backend`
 
+`cyoda.storage.pool.empty_acquire_wait` is the saturation signal to alarm on — it isolates the time callers spent waiting because the pool was empty; `cyoda.storage.pool.acquire_duration` includes instant acquires alongside it and so dilutes the signal.
+
 **Logs**
 
 cyoda-go uses `log/slog` for structured logging. OTel log emission (OTLP log exporter) is not currently wired. Logs are written to stderr only.
