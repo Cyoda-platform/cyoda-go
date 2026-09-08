@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Regression test for issue #90.
+// Regression test.
 //
 // Previously, unknown operator strings silently fell through to a regex
 // match path (via mapOperator's default branch) instead of being rejected.

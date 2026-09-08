@@ -662,7 +662,7 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	computeCmd.Env = append(os.Environ(),
 		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
 		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
-		// HTTP base for feature #287 callback-join processors (callbacks target
+		// HTTP base for callback-join processors (callbacks target
 		// the same single node that dispatched them).
 		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=%s", baseURL),
 	)
@@ -829,7 +829,7 @@ func LaunchCyodaClusterAndCompute(ks *JWTKeySet, n int, extraEnv []string, opts 
 // maintaining their own backend plugin (e.g. cyoda-go-cassandra) build
 // a cmd/cyoda-go binary that blank-imports their plugin, then drive the
 // shared parity scenario suite against that binary by passing its path
-// here. Issue #157 — symmetric to LaunchCyodaAndComputeWithBinaries.
+// here. Symmetric to LaunchCyodaAndComputeWithBinaries.
 //
 // cyodaBin and computeBin must be absolute paths to already-built
 // executables. All cluster-bootstrap logic (port allocation, gossip
@@ -1057,7 +1057,7 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	computeCmd.Env = append(os.Environ(),
 		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", grpcEndpoint),
 		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", m2mToken),
-		// HTTP base for feature #287 callback-join processors. Callbacks target
+		// HTTP base for callback-join processors. Callbacks target
 		// node 0 (where the compute client connects and dispatch originates);
 		// cross-node callback forwarding is covered separately, not here.
 		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=http://127.0.0.1:%d", httpPorts[0]),

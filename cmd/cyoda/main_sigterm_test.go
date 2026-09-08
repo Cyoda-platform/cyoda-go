@@ -29,7 +29,7 @@ func freePortIO(t *testing.T) int {
 // starts it, sends SIGTERM after a brief warm-up, and asserts the
 // process exits cleanly within the drain budget.
 //
-// This is the end-to-end pin for the #26 graceful-shutdown work: it
+// This is the end-to-end pin for the graceful-shutdown work: it
 // catches regressions where (a) the signal handler is not wired,
 // (b) servers fail to drain on signal, or (c) deferred OTel flush is
 // bypassed by os.Exit-from-goroutine.

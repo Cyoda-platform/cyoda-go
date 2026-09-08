@@ -121,7 +121,7 @@ func TestSearch_ORGroup(t *testing.T) {
 // errorCode (not the generic BAD_REQUEST) when a search condition references
 // a JSONPath that is absent from the model's locked schema. Programmatic
 // clients branch on this code to distinguish unknown-field errors from
-// other 400s (malformed JSON, type mismatch). See PR #162 / issue #77.
+// other 400s (malformed JSON, type mismatch).
 func TestSearch_UnknownFieldPath_Returns400_InvalidFieldPath(t *testing.T) {
 	const model = "e2e-search-invalid-field-path"
 	setupSearchModel(t, model)

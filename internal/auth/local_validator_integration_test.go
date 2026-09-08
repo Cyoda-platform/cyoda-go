@@ -15,8 +15,8 @@ import (
 // TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch proves the hardened
 // default wiring: validator built via NewValidatorFromSource + LocalKeySource
 // validates tokens minted by the same authSvc without making any HTTP call,
-// even if a JWKS endpoint is also exposed. This is the invariant #66 locks
-// in — there is no loopback fetch to MITM because there is no fetch at all.
+// even if a JWKS endpoint is also exposed. That is the invariant: there is
+// no loopback fetch to MITM because there is no fetch at all.
 func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 	svc, err := auth.NewAuthService(auth.AuthConfig{
 		SigningKeyPEM: generateTestPEM(t),

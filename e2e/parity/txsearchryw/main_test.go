@@ -1,5 +1,5 @@
 // Package txsearchryw holds the cross-backend parity acceptance test for
-// in-transaction read-your-own-writes (RYW) search (issue #420, Task 16).
+// in-transaction read-your-own-writes (RYW) search (Task 16).
 //
 // WHY A STORE-LEVEL PACKAGE (and not an entry in e2e/parity/registry.go).
 //

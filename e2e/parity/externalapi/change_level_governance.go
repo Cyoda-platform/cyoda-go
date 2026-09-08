@@ -65,7 +65,7 @@ func RunExternalAPI_02_02_StructuralNullFieldNoChangelog(t *testing.T, fixture p
 
 // RunExternalAPI_02_03_TypeWideningIntToFloat — dictionary 02/03 (NEGATIVE).
 // Dictionary expects HTTP 400 + FoundIncompatibleTypeWitEntityModelException.
-// equiv_or_better after #129: cyoda-go emits INCOMPATIBLE_TYPE @400 with
+// equiv_or_better: cyoda-go emits INCOMPATIBLE_TYPE @400 with
 // structured Props (fieldPath, expectedType, actualType).
 func RunExternalAPI_02_03_TypeWideningIntToFloat(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()

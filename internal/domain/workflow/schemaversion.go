@@ -16,9 +16,9 @@ import (
 // SupportedSchemaRanges; schemaversion_test.go asserts this.
 //
 // 1.0 → 1.1 in v0.8.0: the import contract tightened beyond what
-// release/v0.7.x's 1.0 accepted (strict-decoder #264, structural
-// validation #255, active semantics #256, asyncResult/crossover
-// rejection #261, retryPolicy enum #262, scheduled-transition shape).
+// release/v0.7.x's 1.0 accepted (strict-decoder, structural
+// validation, active semantics, asyncResult/crossover
+// rejection, retryPolicy enum, scheduled-transition shape).
 // Workflows authored against 1.0 may be rejected by v0.8.0's stricter
 // checks even though their MAJOR is unchanged; treating that as a
 // MINOR-additions story would understate the surface change. We

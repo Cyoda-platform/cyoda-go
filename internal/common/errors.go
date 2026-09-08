@@ -71,8 +71,8 @@ func (e *AppError) Unwrap() error { return e.Err }
 // — do NOT call on an aliased or shared *AppError, since the flip
 // is observable from every other reference to the same instance.
 //
-// Issue #140 — separates the (status, code, retryable) axes that
-// were previously bundled into specialized helpers (Conflict /
+// The (status, code, retryable) axes are separate; they were once
+// bundled into specialized helpers (Conflict /
 // RetryableConflict, removed). Retryable is now opt-in on top of
 // any (status, code) pair via Operational(...).AsRetryable().
 func (e *AppError) AsRetryable() *AppError {

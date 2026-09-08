@@ -457,7 +457,7 @@ func (c *Client) ListEntitiesByModelAt(t *testing.T, modelName string, modelVers
 // GetEntityAt issues GET /api/entity/{entityId}?pointInTime=<t>.
 // Returns the entity as it was at the given point in time.
 // Canonical: docs/cyoda/openapi.yml:1055 (getOneEntity with pointInTime query param).
-// This is the code path that exercised the GetAsAt bug (PR #173).
+// This is the code path that exercises GetAsAt.
 func (c *Client) GetEntityAt(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (EntityResult, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID.String(), pointInTime.Format(time.RFC3339Nano))
@@ -692,7 +692,7 @@ func (c *Client) CreateEntitiesCollection(t *testing.T, items []CollectionItem) 
 // parameter. window <= 0 omits the query parameter (server applies its
 // default). Returns the list of created entity IDs concatenated across
 // all chunk elements in commit order. Used by parity scenarios that pin
-// the chunking contract from issue #227.
+// the chunking contract.
 func (c *Client) CreateEntitiesCollectionWithWindow(t *testing.T, items []CollectionItem, window int) ([]uuid.UUID, error) {
 	t.Helper()
 	raw, err := c.CreateEntitiesCollectionRawWithWindow(t, items, window)
@@ -752,14 +752,14 @@ func (c *Client) CreateEntitiesCollectionRawWithWindow(t *testing.T, items []Col
 // UpdateCollectionItem is one entry in a PUT /api/entity/{format} body.
 // Payload is a JSON-encoded string (not a nested object) per the collection
 // update wire contract. IfMatch is the optional per-item optimistic-
-// concurrency precondition added by issue #228; when populated, the server
+// concurrency precondition; when populated, the server
 // rejects the item with ENTITY_MODIFIED if the entity's current
 // transactionId no longer matches.
 type UpdateCollectionItem struct {
 	ID         uuid.UUID
 	Payload    string
 	Transition string // optional; "" = loopback
-	IfMatch    string // optional per-item ifMatch (issue #228)
+	IfMatch    string // optional per-item ifMatch
 }
 
 // UpdateCollection issues PUT /api/entity/JSON with a batch of
@@ -823,7 +823,7 @@ func (c *Client) UpdateCollectionRawWithWindow(t *testing.T, items []UpdateColle
 
 // marshalUpdateCollectionItems renders the per-item update wire shape.
 // IfMatch is emitted with `omitempty` so existing scenarios that do not
-// supply it produce identical bytes to the pre-#228 wire format.
+// supply it produce identical bytes to the wire format that predates it.
 func marshalUpdateCollectionItems(items []UpdateCollectionItem) ([]byte, error) {
 	type rawItem struct {
 		ID         string `json:"id"`
@@ -852,7 +852,7 @@ func marshalUpdateCollectionItems(items []UpdateCollectionItem) ([]byte, error) 
 // assert per-chunk fields (transactionId, entityIds, failed[]) without
 // repeating the map[string]any decode dance. EntityIDs is decoded as a
 // concrete slice — the server emits `[]` (not `null`) on a chunk where
-// every item failed via per-item isolation (issue #228 I2).
+// every item failed via per-item isolation.
 type CollectionChunkResult struct {
 	TransactionID string                       `json:"transactionId,omitempty"`
 	EntityIDs     []string                     `json:"entityIds"`
@@ -871,7 +871,7 @@ type CollectionChunkError struct {
 
 // CollectionChunkItemFailure documents a single per-item failure that did
 // NOT roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
-// carrying an IfMatch precondition (issue #228).
+// carrying an IfMatch precondition.
 type CollectionChunkItemFailure struct {
 	EntityID string                 `json:"entityId"`
 	Error    CollectionChunkItemErr `json:"error"`

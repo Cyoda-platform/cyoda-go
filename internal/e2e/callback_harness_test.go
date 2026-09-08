@@ -30,7 +30,7 @@ import (
 )
 
 // callback_harness_test.go builds a callback-capable in-process compute member
-// for feature #287 (compute-node callbacks join the originating transaction).
+// for the callback-join contract (compute-node callbacks join the originating transaction).
 //
 // Unlike the localproc in-process ExternalProcessingService used by the other
 // workflow E2E tests, this harness stands up a SEPARATE full cyoda-go stack
@@ -123,13 +123,13 @@ type callbackCrit func(rc *reqCtx) (matches bool, err error)
 
 // callbackFunc is a generic Function callout implemented on the compute
 // member (spi.ScheduleFunction, e.g. a scheduled-transition arm-time timing
-// computation — issue #419). Returns the response's resultKind discriminator
+// computation). Returns the response's resultKind discriminator
 // and result payload (marshalled as the response's "result" object), or an
 // error to have the harness reply with a failed EntityFunctionCalculationResponse.
 type callbackFunc func(rc *reqCtx) (resultKind string, result map[string]any, err error)
 
 // callbackHarness is a full HTTP+gRPC cyoda-go stack (real Postgres) with a
-// connected gRPC compute member. Reused across the #287 callback E2E tests.
+// connected gRPC compute member. Reused across the callback E2E tests.
 type callbackHarness struct {
 	app     *app.App
 	baseURL string // e.g. http://127.0.0.1:PORT
@@ -273,7 +273,7 @@ func (h *callbackHarness) lookupCrit(name string) (callbackCrit, bool) {
 }
 
 // RegisterFunction registers a generic Function callout implementation on the
-// member (spi.ScheduleFunction — issue #419's scheduled-transition arm-time
+// member (spi.ScheduleFunction — the scheduled-transition arm-time
 // timing computation, and reusable by any future Function-typed callout).
 func (h *callbackHarness) RegisterFunction(name string, fn callbackFunc) {
 	h.mu.Lock()
@@ -627,7 +627,7 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 				}(ce, payload)
 			case internalgrpc.EntityFunctionCalculationRequest:
 				// Generic Function callout (e.g. scheduled-transition arm-time
-				// timing computation — issue #419). Dispatched concurrently for
+				// timing computation). Dispatched concurrently for
 				// the same reason as processors/criteria above.
 				m.handlers.Add(1)
 				go func(ce *cepb.CloudEvent, payload []byte) {
@@ -821,8 +821,8 @@ func (h *callbackHarness) handleCriteriaRequest(send func(*cepb.CloudEvent) erro
 // handleFunctionRequest runs the registered Function callback for an inbound
 // EntityFunctionCalculationRequest and replies with an
 // EntityFunctionCalculationResponse carrying resultKind/result (e.g.
-// resultKind:"Schedule" for a scheduled-transition arm-time computation —
-// issue #419). Dispatched on a per-request goroutine; send serialises the
+// resultKind:"Schedule" for a scheduled-transition arm-time computation).
+// Dispatched on a per-request goroutine; send serialises the
 // reply against other concurrent handlers and the receive loop's keep-alive
 // replies.
 func (h *callbackHarness) handleFunctionRequest(send func(*cepb.CloudEvent) error, ce *cepb.CloudEvent, payload []byte) {

@@ -53,7 +53,7 @@ func (f *postgresFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
 // postgres backend writes audit events into the same SQL transaction as
 // the entity writes, so a rolled-back entity-update transaction also
 // discards its paired STATE_MACHINE_START + TRANSITION_ABORTED events.
-// Audit-shape parity scenarios (issue #228) branch on this property.
+// Audit-shape parity scenarios branch on this property.
 func (f *postgresFixture) IsTxBoundAuditStore() bool { return true }
 
 // setup boots a Postgres testcontainer, builds binaries, launches

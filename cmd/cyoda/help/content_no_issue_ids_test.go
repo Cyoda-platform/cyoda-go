@@ -16,7 +16,7 @@ import (
 //     (alphanumeric immediately before "#") are NOT flagged; and
 //   - a "/issues/<n>" issue-tracker URL fragment.
 //
-// (?m) makes "^" match the start of each line so a "#123" at line start is caught.
+// (?m) makes "^" match the start of each line so a reference at line start is caught.
 var issueRefPattern = regexp.MustCompile(`(?m)(^|[^0-9A-Za-z_])#[0-9]+|/issues/[0-9]+`)
 
 // TestHelpContent_NoIssueIDs is a Gate-6 regression guard. Issue IDs (#NNN /

@@ -156,7 +156,7 @@ func depth2Chain(t *testing.T, tag, execMode string) {
 
 // TestCallback_Depth2NestedJoin_Deadlocks proves a depth-2 nested joined cascade
 // whose inner (secondary) processor is SYNC completes instead of deadlocking on
-// the per-tx gate. This is the issue #410 reproduction: it deadlocks at ~20s
+// the per-tx gate. This reproduces the deadlock: it hangs at ~20s
 // before the fix (the joined callback held the gate across engine.Execute) and
 // passes after.
 func TestCallback_Depth2NestedJoin_Deadlocks(t *testing.T) {

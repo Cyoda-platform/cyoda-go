@@ -445,11 +445,11 @@ func New(cfg Config) *App {
 	// to the descriptor cache via SubscribeLocal: every model
 	// invalidation (local mutation OR gossip-received event) drops
 	// the corresponding negative-cache bucket. This works on
-	// single-node and multi-node alike (issue #174 — pre-fix the
-	// cache subscribed to the broadcaster directly, so single-node
-	// deployments where the broadcaster is nil never received any
-	// invalidations). Per-(tenant, ref) bucketed otter caches isolate
-	// cross-tenant eviction (issue #175).
+	// single-node and multi-node alike: subscribing to the descriptor
+	// cache rather than to the broadcaster directly is what makes
+	// single-node deployments, where the broadcaster is nil, receive
+	// invalidations at all. Per-(tenant, ref) bucketed otter caches
+	// isolate cross-tenant eviction.
 	pathValidationCache := search.NewPathValidationCache()
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	// Bounded async-search worker pool, sized from config (validated by
@@ -663,7 +663,7 @@ func New(cfg Config) *App {
 	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
 
 	// Auth service route registration is split into two strict groups so
-	// nothing administrative leaks into the public surface (#34 item 1):
+	// nothing administrative leaks into the public surface:
 	//
 	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
 	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
@@ -928,7 +928,7 @@ const searchDrainBudget = 5 * time.Second
 // gRPC is stopped via GracefulStop bounded by gRPCGracefulStopBudget; if
 // the budget elapses without graceful completion (a stuck stream, a
 // non-cooperative client) we fall back to a hard Stop and emit a slog.Warn
-// so operators can see the budget was hit (#68 item 19).
+// so operators can see the budget was hit.
 func (a *App) Close() error {
 	slog.Info("shutting down")
 	var err error

@@ -94,7 +94,7 @@ func visibleOutsideTx(t *testing.T, h *Handler, entityID string) bool {
 	return false
 }
 
-// TestCreateEntity_ParticipatesInJoinedTx is the crux of #287: when ctx already
+// TestCreateEntity_ParticipatesInJoinedTx is the crux of the join contract: when ctx already
 // carries a joined tx (a routed compute-node callback), CreateEntity must NOT
 // open a new tx and must NOT commit — the write stays in the joined tx's buffer
 // for the OWNER to commit, and the reported txID is the owner's.
@@ -139,7 +139,7 @@ func TestCreateEntity_ParticipatesInJoinedTx(t *testing.T) {
 
 // TestCreateEntity_NormalPath_BeginsAndCommits is the regression guard: when
 // there is NO joined tx on ctx, CreateEntity Begins its own tx, commits it, and
-// the entity is immediately visible — unchanged pre-#287 behavior.
+// the entity is immediately visible — the unjoined behavior is unchanged.
 func TestCreateEntity_NormalPath_BeginsAndCommits(t *testing.T) {
 	h, _, _, base := newTxJoinTestHandler(t)
 

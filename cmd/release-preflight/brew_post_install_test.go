@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestGoreleaserBrewHasNoPostInstall is the regression test for issue #96.
+// TestGoreleaserBrewHasNoPostInstall pins the absence of a post_install hook.
 //
 // Homebrew sandboxes the post_install hook and denies writes to $HOME.
 // Our previous formula tried to invoke `cyoda init` from post_install,
@@ -27,6 +27,6 @@ func TestGoreleaserBrewHasNoPostInstall(t *testing.T) {
 	// entry, so any occurrence is the regression we're guarding.
 	postInstallRe := regexp.MustCompile(`(?m)^\s*post_install\s*:`)
 	if postInstallRe.MatchString(string(data)) {
-		t.Errorf("`.goreleaser.yaml` contains a post_install stanza — the Homebrew formula must not auto-invoke `cyoda init` (issue #96).")
+		t.Errorf("`.goreleaser.yaml` contains a post_install stanza — the Homebrew formula must not auto-invoke `cyoda init`.")
 	}
 }

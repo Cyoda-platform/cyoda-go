@@ -1,6 +1,6 @@
 package e2e_test
 
-// Tests for issue #228 — UpdateCollection (PUT /api/entity/{format}) must
+// UpdateCollection (PUT /api/entity/{format}) must
 // honor an optional per-item `ifMatch` field, providing the same cross-request
 // optimistic-concurrency precondition the single-item PUT endpoints already
 // support via the If-Match header. Per-item failures driven by stale ifMatch
@@ -160,7 +160,7 @@ func TestUpdateCollection_IfMatch_HappyPath(t *testing.T) {
 // commits item 2's update; item 1 surfaces in `failed` with code
 // ENTITY_MODIFIED and item 1's data on disk is unchanged.
 //
-// Audit-trail consistency (issue #228 reviewer S1): the failed item's audit
+// Audit-trail consistency: the failed item's audit
 // log must contain BOTH an entry event (STATE_MACHINE_START) AND a
 // compensating TRANSITION_ABORTED event with reason=ENTITY_MODIFIED so the
 // audit trail is self-consistent — no orphaned start without a matching
@@ -361,7 +361,7 @@ func TestUpdateCollection_IfMatch_AllStale(t *testing.T) {
 	if tx, _ := arr[0]["transactionId"].(string); tx == "" {
 		t.Errorf("expected transactionId on all-stale chunk (zero-write commit); body: %s", body)
 	}
-	// Issue #228 I2: entityIds MUST be present (key exists) and an empty
+	// entityIds MUST be present (key exists) and an empty
 	// JSON array on an all-stale zero-write chunk. Doc/wire parity:
 	// `json:"entityIds"` (no omitempty) plus non-nil construction means
 	// zero-success chunks emit `entityIds: []`, not omit it.
@@ -403,7 +403,7 @@ func TestUpdateCollection_IfMatch_AllStale(t *testing.T) {
 	}
 
 	// Audit-trail self-consistency: every failed item must have a paired
-	// STATE_MACHINE_START + TRANSITION_ABORTED sequence (issue #228 S1).
+	// STATE_MACHINE_START + TRANSITION_ABORTED sequence.
 	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
 	assertTransitionAbortedPaired(t, id2, stale, tx2Actual)
 }
@@ -490,7 +490,7 @@ func TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch(t *testing.T) {
 	// Audit-trail self-consistency: the engine-side abort happens at the CBD
 	// segment-flush BEFORE the external dispatch. The TRANSITION_ABORTED event
 	// must precede any dispatch attempt and pair with the entry-side
-	// STATE_MACHINE_START (issue #228 S1).
+	// STATE_MACHINE_START.
 	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
 }
 
@@ -603,7 +603,7 @@ func TestUpdateCollection_IfMatch_MultiChunkPerItemFailures(t *testing.T) {
 
 // --- Test 8: ifMatch absent — regression — non-IfMatch items still work ---
 //
-// All items omit ifMatch. The behavior must match the pre-#228 contract: a
+// All items omit ifMatch. The behavior must match the no-ifMatch contract: a
 // single chunk with transactionId + entityIds, no `failed` field, all updates
 // land. This pins the no-regression invariant.
 func TestUpdateCollection_IfMatch_AbsentRegression(t *testing.T) {

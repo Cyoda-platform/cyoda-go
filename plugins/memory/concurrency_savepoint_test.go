@@ -10,7 +10,7 @@ import (
 )
 
 // Locking-discipline race tests for Savepoint, RollbackToSavepoint, and
-// Join in plugins/memory/txmanager.go. Issue #199 surfaces that Savepoint
+// Join in plugins/memory/txmanager.go. The tx-locking audit surfaced that Savepoint
 // and RollbackToSavepoint mutate tx-state under m.mu only, never tx.OpMu —
 // so they race against Commit's flush phase, which iterates tx.Buffer /
 // tx.Deletes outside m.mu but under tx.OpMu.Lock. The PR-A audit also
@@ -366,7 +366,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 // TestJoin_VsRollback_NoRace flags the missing tx.OpMu.RLock around Join's
 // reads of tx.RolledBack and tx.Closed.
 //
-// Surfaced by the memory-plugin tx-locking audit during PR-A (#199): Join
+// Surfaced by the memory-plugin tx-locking audit during PR-A: Join
 // reads tx.RolledBack and tx.Closed outside any lock at txmanager.go:117.
 // Rollback writes tx.RolledBack inside m.mu only, and Commit/Rollback both
 // write tx.Closed in their defer under tx.OpMu.Lock only — never under m.mu.

@@ -42,7 +42,7 @@ func createMessageE2E(t *testing.T, subject string, payload string) string {
 
 // TestMessage_GetMessage_ContentIsEmbeddedJSON verifies that GetMessage returns the
 // message payload as an embedded JSON object in the "content" field, not as a
-// JSON-encoded string. This is the canonical #21 JSON-in-string defect for the
+// JSON-encoded string. This is the canonical JSON-in-string defect for the
 // messaging domain.
 func TestMessage_GetMessage_ContentIsEmbeddedJSON(t *testing.T) {
 	// Create a message with a JSON object payload.
@@ -67,7 +67,7 @@ func TestMessage_GetMessage_ContentIsEmbeddedJSON(t *testing.T) {
 	}
 	content, ok := msg["content"].(map[string]any)
 	if !ok {
-		t.Fatalf("content field is not a JSON object; type=%T value=%v\n(expected embedded JSON, not a string — see #21 JSON-in-string defect)", msg["content"], msg["content"])
+		t.Fatalf("content field is not a JSON object; type=%T value=%v\n(expected embedded JSON, not a string — the JSON-in-string defect)", msg["content"], msg["content"])
 	}
 	if content["sample"] != "value" {
 		t.Errorf("content.sample = %v, want \"value\"", content["sample"])
@@ -167,7 +167,7 @@ func TestMessage_GetMessage_404_ContentType(t *testing.T) {
 	}
 	ct := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "application/problem+json") {
-		t.Errorf("Content-Type = %q, want application/problem+json prefix (RFC 9457 — see #21)", ct)
+		t.Errorf("Content-Type = %q, want application/problem+json prefix (RFC 9457)", ct)
 	}
 }
 

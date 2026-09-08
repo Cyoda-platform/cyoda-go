@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// scheduled_function_concurrency_test.go — Task 9.3 (issue #419), ISOLATED
+// scheduled_function_concurrency_test.go — Task 9.3, ISOLATED
 // single-backend concurrency coverage. Per .claude/rules/test-coverage.md
 // ("Concurrency/race: isolated single-backend e2e, never the shared parity
 // suite. Assert consistency ... not a precise interleave.") this does NOT

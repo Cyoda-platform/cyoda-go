@@ -74,7 +74,7 @@ func (v *OIDCValidator) Validate(tokenString string) (*spi.UserContext, error) {
 
 	iss, _ := claims["iss"].(string)
 
-	// Extract aud for cross-tenant disambiguation (Layer 1, Critical audit fix #284).
+	// Extract aud for cross-tenant disambiguation (Layer 1, Critical audit fix).
 	// For the resolver we use the first audience string found (single string or
 	// first element of array). The full audience check at Step 8 uses matchAudience
 	// which handles the complete array form — this extract is only for routing.

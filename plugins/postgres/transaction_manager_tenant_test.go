@@ -8,7 +8,7 @@ import (
 )
 
 // Tenant-isolation regression tests for the postgres plugin's TM lifecycle
-// methods. Issue #199 PR-C2: the postgres TM relied solely on PostgreSQL's
+// methods. Pre-fix the postgres TM relied solely on PostgreSQL's
 // row-level security (RLS) for tenant isolation. RLS is row-level and does
 // NOT extend to transaction-lifecycle commands (BEGIN/COMMIT/ROLLBACK/
 // SAVEPOINT/etc.) — those operate on connections and don't trigger any

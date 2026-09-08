@@ -65,7 +65,7 @@ func runServers(
 		// Drain gRPC with the same deadline budget as HTTP/admin so total
 		// shutdown is predictable. The drain is gated by a sync.Once on
 		// App so the second invocation in a.Close() is a no-op rather
-		// than re-entering the deadline branch (#68 follow-up).
+		// than re-entering the deadline branch.
 		// Concrete sequence on signal:
 		//   1. ctx.Done fires (signal.NotifyContext)
 		//   2. http.Shutdown / admin.Shutdown drain in their own goroutines

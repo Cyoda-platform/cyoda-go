@@ -9,7 +9,7 @@ import (
 )
 
 // TestApp_Close_GRPCGracefulStopWithDeadline verifies the gRPC drain
-// behaviour added in #68 item 19. The test serves the gRPC server on a
+// behaviour. The test serves the gRPC server on a
 // local listener, then invokes Close() and asserts:
 //
 //  1. Close returns within the 10-second drain budget (no hang on a stuck

@@ -21,7 +21,7 @@ func bodyPreview(body []byte) string {
 }
 
 func init() {
-	// External API scenario suite — tranche 1 (issue #118)
+	// External API scenario suite — tranche 1
 	// 03-entity-ingestion-single
 	parity.Register(
 		parity.NamedTest{Name: "ExternalAPI_03_01_CreateEntitySuccess", Fn: RunExternalAPI_03_01_CreateEntitySuccess},

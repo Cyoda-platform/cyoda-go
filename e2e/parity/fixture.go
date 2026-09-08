@@ -51,7 +51,7 @@ type BackendFixture interface {
 // BackendFixture implementations may also satisfy to advertise whether
 // their audit store rolls back together with a failing entity-update
 // transaction. Scenarios that pin the TRANSITION_ABORTED audit-event
-// shape (issue #228) consult this via type-assertion to switch between
+// shape consult this via type-assertion to switch between
 // "audit log empty after rollback" (TX-bound) and "paired
 // STATE_MACHINE_START + TRANSITION_ABORTED preserved" (non-TX-bound)
 // assertions.

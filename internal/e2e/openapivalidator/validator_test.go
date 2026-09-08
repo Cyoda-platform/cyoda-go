@@ -139,7 +139,7 @@ func mkResp(status int, contentType, body string) *http.Response {
 }
 
 // Fixture #1 — POST returns array, spec says single object.
-// Mirrors #21 confirmed defect.
+// Mirrors a confirmed defect.
 func TestValidator_PostArrayShape(t *testing.T) {
 	v := newFixtureValidator(t)
 	req, _ := http.NewRequest("GET", "http://x/single", nil)

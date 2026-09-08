@@ -8,7 +8,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
 )
 
-// TestLaunchCyodaClusterAndComputeWithBinaries — issue #157.
+// TestLaunchCyodaClusterAndComputeWithBinaries.
 //
 // Out-of-tree consumers (plugins maintained in their own repos, e.g.
 // cyoda-go-cassandra) need to drive the shared parity scenario suite

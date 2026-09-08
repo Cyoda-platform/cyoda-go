@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Regression tests for PR #149 follow-up: GET /entity/{name}/{version} must
+// Regression tests: GET /entity/{name}/{version} must
 // reject out-of-bound pagination parameters with the same caps as the
 // search endpoints. Validation must happen BEFORE the storage lookup —
 // asserted by passing an unknown entity name (would otherwise be a 404)

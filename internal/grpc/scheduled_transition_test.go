@@ -83,8 +83,7 @@ func setupScheduledWorkflowRPCEnv(t *testing.T, svc *CloudEventsServiceImpl, wfH
 // than manually fireable. Mirrors
 // TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound
 // (internal/e2e/scheduled_transition_test.go) but proves the rejection also
-// flows through the gRPC surface, not just HTTP (design §10, §11 "G" column,
-// #251).
+// flows through the gRPC surface, not just HTTP (design §10, §11 "G" column).
 //
 // At the gRPC envelope layer, operational AppErrors are reported as
 // Error.Code == "CLIENT_ERROR" with the domain error code embedded as a

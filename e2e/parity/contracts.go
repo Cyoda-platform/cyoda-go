@@ -151,14 +151,14 @@ func RunConcurrentTransitionsDifferentEntities(t *testing.T, fixture BackendFixt
 
 // --- Deferred tests (Tasks 4b.11-13) ---
 
-// TODO(#172): RunProcessorDisconnectMidFlight — requires crash-on-receive
+// TODO(processor-fault-injection-harness): RunProcessorDisconnectMidFlight — requires crash-on-receive
 // catalog entry that kills the compute client process, plus fixture support
 // for RestartComputeClient. Deferred to v2.
 
-// TODO(#172): RunProcessorAsyncNewTxRollback — requires update-and-fail-async
+// TODO(processor-fault-injection-harness): RunProcessorAsyncNewTxRollback — requires update-and-fail-async
 // catalog entry AND ASYNC_NEW_TX workflow semantics (savepoint). The
 // ASYNC_NEW_TX semantics are not fully tested yet. Deferred to v2.
 
-// TODO(#172): RunProcessorTimeoutBoundary — requires slow-configurable with
+// TODO(processor-fault-injection-harness): RunProcessorTimeoutBoundary — requires slow-configurable with
 // duration close to the dispatch timeout, and per-workflow timeout
 // configuration. Timeout behavior may differ across backends. Deferred to v2.

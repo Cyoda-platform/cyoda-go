@@ -314,7 +314,7 @@ func TestKeysAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {
 // §3.2 #5 Reactivate fresh validTo — covered by TestReactivateJwtKeyPair_RequiresFreshValidTo.
 // §3.2 #6 negative gracePeriodSec — covered by TestInvalidateJwtKeyPair_NegativeGraceRejected.
 // §3.2 #7 gracePeriodSec default 0 — covered by TestInvalidateJwtKeyPair_GraceDefaultZero.
-// §3.2 #10 Non-RS256 rejected — covered by TestIssueJwtKeyPair_RejectsNonRS256 and
+// §3.2 Non-RS256 rejected — covered by TestIssueJwtKeyPair_RejectsNonRS256 and
 //
 //	the table in internal/auth/keypair_signing_test.go.
 //

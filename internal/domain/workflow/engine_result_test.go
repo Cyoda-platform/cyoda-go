@@ -21,7 +21,7 @@ import (
 // versus the engine having consumed it at first-segment flush (segmented
 // → handler does plain Save). Replaces the old `FinalTxID != entryTxID`
 // comparison-vs-entry-txID convention in single UpdateEntity and the
-// UpdateEntityCollection per-item loop (issue #228 N1).
+// UpdateEntityCollection per-item loop.
 func TestEngineResult_Segmented_FalseOnNonSegmentingCascade(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)

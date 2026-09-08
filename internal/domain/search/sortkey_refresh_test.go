@@ -63,7 +63,7 @@ func TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests(t *testing.T) {
 // TestResolveSortKeys_RefreshesOnceBeforeRefusing verifies that a sort key
 // naming a field absent from the cached schema but present in the
 // authoritative (post-RefreshAndGet) schema triggers exactly one bounded
-// refresh and then resolves — the same issue-#77 contract
+// refresh and then resolves — the same refresh-once contract
 // TestSearch_StaleSchema_RefreshesOnceAndSucceeds (path_validate_test.go)
 // pins for condition paths. Before this fix, resolveSortKeys read the
 // cached schema once and refused, so the same field sorted on one node

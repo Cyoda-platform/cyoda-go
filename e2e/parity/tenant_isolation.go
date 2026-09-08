@@ -155,7 +155,7 @@ func problemBodyHasErrorCode(t *testing.T, body []byte, want string) bool {
 // factory derives tenant from request context before any history scan).
 // This test pins the invariant so a future refactor that introduced an
 // existence oracle on the temporal path would fail loudly. Companion to
-// PR #165 (GetOneEntity honors transactionId).
+// GetOneEntity honouring transactionId.
 func RunTenantIsolationTransactionIDInvisible(t *testing.T, fixture BackendFixture) {
 	tenantA := fixture.NewTenant(t)
 	tenantB := fixture.NewTenant(t)
@@ -280,8 +280,8 @@ func RunTenantIsolationTransitionsTransactionIDRejected(t *testing.T, fixture Ba
 // and again at a clearly-bogus point in time before A created it. Both
 // responses must be byte-equal 404s.
 //
-// Companion to PR #161/#164 (parity helpers + propagated pointInTime in
-// GetEntityChangesMetadata).
+// Companion to the parity helpers and the propagated pointInTime in
+// GetEntityChangesMetadata.
 func RunTenantIsolationPointInTimeInvisible(t *testing.T, fixture BackendFixture) {
 	tenantA := fixture.NewTenant(t)
 	tenantB := fixture.NewTenant(t)
@@ -346,7 +346,7 @@ func RunTenantIsolationPointInTimeInvisible(t *testing.T, fixture BackendFixture
 // asks for its change history at a recent PIT and at a bogus PIT —
 // both must return byte-equal 404s.
 //
-// Companion to PR #164 (propagated pointInTime in GetEntityChangesMetadata).
+// Companion to the propagated pointInTime in GetEntityChangesMetadata.
 func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixture) {
 	tenantA := fixture.NewTenant(t)
 	tenantB := fixture.NewTenant(t)

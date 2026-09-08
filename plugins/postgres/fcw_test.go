@@ -42,11 +42,11 @@ func setupFCWTest(t *testing.T) (*postgres.StoreFactory, *postgres.TransactionMa
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: Regression — disjoint concurrent inserts must not conflict (#17)
+// Test 1: Regression — disjoint concurrent inserts must not conflict
 // ---------------------------------------------------------------------------
 
-// TestFCW_DisjointConcurrentInserts_NoFalseConflicts is a regression guard for
-// issue #17. Under SSI, page-level SIReadLocks caused serialization failures
+// TestFCW_DisjointConcurrentInserts_NoFalseConflicts is a regression guard.
+// Under SSI, page-level SIReadLocks caused serialization failures
 // (~40001) for concurrent inserts of distinct UUIDs into the same tenant after
 // the b-tree had ≥200 rows. Under SI + FCW, disjoint inserts must all commit.
 //
@@ -57,7 +57,7 @@ func TestFCW_DisjointConcurrentInserts_NoFalseConflicts(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-1")
 
-	// Seed 200 rows to fill the b-tree (mirrors #17 reproducer).
+	// Seed 200 rows to fill the b-tree (mirrors the reproducer).
 	seedStore, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore (seed): %v", err)
@@ -497,7 +497,7 @@ func TestFCW_PureReadSetConflict_NoWriteOverlap(t *testing.T) {
 		`UPDATE entities SET version=2 WHERE tenant_id='fcw-tenant-6' AND entity_id='prs-x'`); err != nil {
 		t.Fatalf("Tx B update prs-x: %v", err)
 	}
-	// Use ctx (which carries the test tenant) so the post-#199 PR-C2 tenant
+	// Use ctx (which carries the test tenant) so the tenant
 	// gate accepts this commit. context.Background() has no UserContext and
 	// would be rejected with a "tenant mismatch" error.
 	if err := tm.Commit(ctx, txB); err != nil {

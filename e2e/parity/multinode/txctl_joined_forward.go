@@ -8,8 +8,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// txctl_joined_forward.go — feature #379 (transaction-control params) x
-// feature #287 (cross-node callback routing) intersection, spec D7/F1:
+// txctl_joined_forward.go — transaction-control params x cross-node
+// callback routing intersection, spec D7/F1:
 //
 // A transaction-control param (transactionTimeoutMillis, transactionSize,
 // timeoutMillis) is rejected with 400 BAD_REQUEST on any request that JOINS

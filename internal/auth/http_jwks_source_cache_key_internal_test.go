@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Regression test for issue #97. The JWKS cache is now keyed on
+// Regression test: the JWKS cache is keyed on
 // (issuer, kid) rather than kid alone — this test inspects the cache
 // map directly (same-package internal test) to pin the contract.
 

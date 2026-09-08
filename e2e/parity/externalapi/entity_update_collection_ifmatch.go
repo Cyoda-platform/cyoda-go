@@ -12,7 +12,7 @@ import (
 )
 
 func init() {
-	// External API scenario suite — issue #228 contract surface.
+	// External API scenario suite — UpdateCollection ifMatch contract surface.
 	// Per-item ifMatch isolation on UpdateCollection plus the
 	// chunk-rollback contract for non-conflict per-item failures.
 	parity.Register(
@@ -28,7 +28,7 @@ func init() {
 }
 
 // RunExternalAPI_05_BulkUpdateIfMatchPerItemIsolation pins the per-item
-// ENTITY_MODIFIED isolation contract on UpdateCollection (issue #228):
+// ENTITY_MODIFIED isolation contract on UpdateCollection:
 // when one item in a bulk update carries a stale ifMatch, that item
 // surfaces in the chunk's `failed` array while its successful siblings
 // still commit.
@@ -199,7 +199,7 @@ func RunExternalAPI_05_BulkUpdateIfMatchPerItemIsolation(t *testing.T, fixture p
 }
 
 // RunExternalAPI_05_BulkUpdateChunkRollback pins the chunk-rollback
-// contract from issue #228: per-item ifMatch isolation is reserved for
+// contract: per-item ifMatch isolation is reserved for
 // ENTITY_MODIFIED conflicts; any OTHER per-item failure (validation,
 // missing entity, engine error like an invalid transition) still rolls
 // the entire chunk back. With one chunk total, that surfaces as a 4xx
@@ -279,7 +279,7 @@ func RunExternalAPI_05_BulkUpdateChunkRollback(t *testing.T, fixture parity.Back
 
 // trivialWorkflowJSON is a workflow that admits arbitrary loopback
 // updates and exposes no manual transitions: initialState=CREATED with
-// no declared transitions. Used by issue-#228 ifMatch parity scenarios
+// no declared transitions. Used by the ifMatch parity scenarios
 // because they pin the ifMatch routing, not workflow behavior.
 const trivialWorkflowJSON = `{
 	"importMode": "REPLACE",

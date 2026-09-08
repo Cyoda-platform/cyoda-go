@@ -269,7 +269,7 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	pageNumber := req.PageNumber
 
 	// Reject negative / over-cap / overflow-prone values BEFORE the
-	// storage lookup (PR #149 follow-up). Without this guard, an
+	// storage lookup. Without this guard, an
 	// attacker-supplied PageNumber up to MaxInt would propagate to the
 	// service layer and panic with a slice-bounds error.
 	if vErr := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); vErr != nil {
@@ -672,7 +672,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	}
 
 	// Reject negative / over-cap / overflow-prone values BEFORE the
-	// snapshot lookup (PR #149 follow-up). The HTTP async-results path
+	// snapshot lookup. The HTTP async-results path
 	// already validates here; the gRPC entry point did not, leaving the
 	// same offset = pageNumber*pageSize multiplication exposed.
 	if vErr := pagination.ValidateOffset(int64(req.PageNumber), int64(req.PageSize)); vErr != nil {

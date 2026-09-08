@@ -13,7 +13,7 @@ import (
 // negative-cache entries the cache holds for any single (tenant, ref)
 // model. Otter's S3-FIFO eviction handles overflow within the bucket.
 //
-// Issue #175 — pre-fix the cache used a single global otter cache
+// Pre-fix the cache used a single global otter cache
 // with MaximumSize=10000; an adversarial tenant could fill it with
 // 10001 distinct random fieldPaths under their own (tenant, ref) and
 // S3-FIFO-evict every other tenant's legitimate entries. Per-bucket
@@ -27,16 +27,16 @@ import (
 const pathValidationBucketCapacity = 100
 
 // pathValidationBucketMapCap bounds the number of distinct
-// (tenant, ref) buckets the cache retains. Issue #218 — pre-cap the
-// map grew without bound; an adversarial tenant with model-creation
+// (tenant, ref) buckets the cache retains. Without this cap the
+// map grows without bound; an adversarial tenant with model-creation
 // privilege at scale could accumulate ~unbounded buckets even though
-// each bucket itself was capped at pathValidationBucketCapacity.
+// each bucket itself is capped at pathValidationBucketCapacity.
 //
-// 10000 matches the pre-#211 single-cache global entry budget so the
-// worst-case memory footprint is roughly equivalent to the old
-// design (10k buckets × 100 entries each = 1M entries — vs. the
-// pre-#211 10k flat entries — at the cost of more buckets, each
-// holding tenant-scoped data). Per-bucket isolation (#175) is
+// 10000 matches the single-cache global entry budget this design
+// replaced, so the worst-case memory footprint is roughly
+// equivalent (10k buckets × 100 entries each = 1M entries — vs.
+// 10k flat entries — at the cost of more buckets, each
+// holding tenant-scoped data). Per-bucket isolation is
 // preserved.
 //
 // LRU is the eviction policy: the bucket whose last access (read OR
@@ -64,14 +64,14 @@ type modelRefKey struct {
 // when a schema change for that model lands. The cache holds no
 // reference to the descriptor cache or the cluster broadcaster
 // directly: app wiring connects it to either or both via
-// modelcache.CachingStoreFactory.SubscribeLocal (issue #174 — local
+// modelcache.CachingStoreFactory.SubscribeLocal (local
 // mutations AND gossip events both reach this cache, on every
 // cluster topology).
 //
-// Each (tenant, ref) lives in its own bounded otter cache (issue #175
-// — per-bucket capacity isolates cross-tenant eviction). InvalidateRef
+// Each (tenant, ref) lives in its own bounded otter cache
+// (per-bucket capacity isolates cross-tenant eviction). InvalidateRef
 // drops the bucket entirely. The bucket map itself is also capped
-// with LRU eviction (issue #218) so an adversarial tenant cannot
+// with LRU eviction so an adversarial tenant cannot
 // grow the map indefinitely.
 //
 // The zero value is not safe — use NewPathValidationCache.
@@ -111,7 +111,7 @@ func NewPathValidationCache() *PathValidationCache {
 //
 // The lookup AND the otter GetIfPresent call run under c.mu so a
 // concurrent InvalidateRef cannot drop the bucket between the two
-// steps (review #211 — TOCTOU concern). otter.Cache is internally
+// steps (a TOCTOU concern). otter.Cache is internally
 // thread-safe; the mutex is about preserving the "operate on the
 // bucket I just resolved from c.buckets" invariant, not about
 // otter's own concurrency.
@@ -140,7 +140,7 @@ func (c *PathValidationCache) IsAbsent(tenant string, ref spi.ModelRef, path str
 //
 // Lock held across both bucket allocation and Set so a concurrent
 // InvalidateRef can't drop the bucket out from under us — without
-// the lock the Set would land in an orphaned bucket (review #211).
+// the lock the Set would land in an orphaned bucket.
 func (c *PathValidationCache) MarkAbsent(tenant string, ref spi.ModelRef, path string) {
 	if c == nil {
 		return
@@ -182,7 +182,7 @@ func (c *PathValidationCache) MarkPresent(tenant string, ref spi.ModelRef, path 
 // MarkAbsent for that bucket allocates a fresh otter cache.
 //
 // Invalidate is destructive, not a recency signal — it doesn't touch
-// LRU recency on any other bucket (issue #218 design choice).
+// LRU recency on any other bucket.
 //
 // This is the public hook wired up by app.go to
 // modelcache.CachingStoreFactory.SubscribeLocal so the cache reacts
@@ -207,13 +207,12 @@ func (c *PathValidationCache) InvalidateRef(tenant string, ref spi.ModelRef) {
 // bucketLocked returns the bucket for k. Caller MUST hold c.mu — the
 // returned otter.Cache pointer is only safe to operate on while c.mu
 // is held, since InvalidateRef may delete the map entry concurrently
-// otherwise (review #211).
+// otherwise.
 //
 // Side effect: every successful return path (existing OR newly
 // allocated) promotes the bucket to MRU on the LRU list. When
 // createIfMissing=true and the map is at the size cap, the LRU
-// (back-of-list) bucket is evicted before the new one is allocated
-// (issue #218).
+// (back-of-list) bucket is evicted before the new one is allocated.
 func (c *PathValidationCache) bucketLocked(k modelRefKey, createIfMissing bool) *otter.Cache[string, struct{}] {
 	if e, ok := c.buckets[k]; ok {
 		c.lruOrder.MoveToFront(e.elem)

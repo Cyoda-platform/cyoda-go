@@ -52,7 +52,7 @@ const MaxConditionDepth = spi.MaxConditionDepth
 // The set must include every operator the runtime matcher
 // (internal/match/operators.go) accepts — otherwise previously-valid
 // requests that would have matched correctly in-memory are rejected at
-// the API boundary. Issue #90 closed the "silently falls through to
+// the API boundary. This closed the "silently falls through to
 // regex" gap at the default; the set must still admit every operator
 // the system actually supports.
 var canonicalOperators = func() map[string]struct{} {

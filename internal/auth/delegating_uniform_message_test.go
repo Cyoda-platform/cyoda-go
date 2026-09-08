@@ -16,7 +16,7 @@ import (
 )
 
 // TestDelegatingAuthenticator_UniformClientMessage pins the user-enumeration
-// mitigation for issue #68 item 12: every Authenticate failure must return
+// mitigation: every Authenticate failure must return
 // an error whose Error() is exactly the generic string "authentication failed",
 // with no per-branch suffix that would let a probing client distinguish the
 // failure mode (e.g. "missing header" vs "token invalid").

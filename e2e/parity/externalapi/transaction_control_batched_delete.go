@@ -18,7 +18,7 @@ func init() {
 }
 
 // RunTransactionControl_BatchedDeleteEntitiesFinalState — batched
-// deleteEntities (?transactionSize=N) final-state consistency (#379).
+// deleteEntities (?transactionSize=N) final-state consistency.
 //
 // Seeds 5 entities, deletes them with transactionSize=2 (forcing 3 batches:
 // 2, 2, 1) and a condition matching all 5, then asserts only the OBSERVABLE
@@ -71,7 +71,7 @@ func RunTransactionControl_BatchedDeleteEntitiesFinalState(t *testing.T, fixture
 }
 
 // RunTransactionControl_BatchedDeleteMessages — batched deleteMessages
-// (?transactionSize=N) response shape + final-state consistency (#379).
+// (?transactionSize=N) response shape + final-state consistency.
 //
 // Seeds 5 messages and deletes all 5 ids at once with transactionSize=2,
 // forcing the server to page the delete into 3 batches (2, 2, 1). Asserts

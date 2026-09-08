@@ -91,7 +91,7 @@ var allTests = []NamedTest{
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
 	{"TenantIsolationModels", RunTenantIsolationModels},
 	// v0.6.3 — temporal-query tenant isolation (existence-oracle pinning;
-	// companions to PR #161/#164/#165). Structurally guaranteed today;
+	// companions to the tenant-isolation helpers). Structurally guaranteed today;
 	// pinned here so a future refactor cannot silently regress.
 	{"TenantIsolationTransactionIDInvisible", RunTenantIsolationTransactionIDInvisible},
 	{"TenantIsolationTransitionsTransactionIDRejected", RunTenantIsolationTransitionsTransactionIDRejected},
@@ -103,7 +103,7 @@ var allTests = []NamedTest{
 	{"MessageDelete", RunMessageDelete},
 	{"MessageLargePayload", RunMessageLargePayload},
 
-	// Edge message — flat metaData round-trip (Task 7, #369 group 4)
+	// Edge message — flat metaData round-trip (Task 7, group 4)
 	{"MessageRoundTrip", RunMessageRoundTrip},
 
 	// Phase 4a — schema symmetry (Task 4a.7)
@@ -132,7 +132,7 @@ var allTests = []NamedTest{
 	{"SearchPointInTime", RunSearchPointInTime},
 	{"SearchDirectBoundedOrFail", RunSearchDirectBoundedOrFail},
 
-	// Temporal search filters (#423) — chronological date-typed meta
+	// Temporal search filters — chronological date-typed meta
 	// compare + meta-vocabulary reconciliation, cross-backend.
 	{"SearchTemporalCreationDate", RunSearchTemporalCreationDate},
 	{"SearchTemporalLastUpdateTime", RunSearchTemporalLastUpdateTime},
@@ -194,7 +194,7 @@ var allTests = []NamedTest{
 	{"ConcurrentConflictingUpdate", RunConcurrentConflictingUpdate},
 	{"ConcurrentTransitionsDifferentEntities", RunConcurrentTransitionsDifferentEntities},
 
-	// Compute-node callback transaction-join (#287) — backend-agnostic join
+	// Compute-node callback transaction-join — backend-agnostic join
 	// invariants driven through the callback-capable compute-test-client.
 	// Concurrency/torn-write cases are intentionally NOT here (isolated e2e).
 	{"CallbackTxJoin_SyncWriteAtomic", RunCallbackSyncWriteAtomic},
@@ -242,7 +242,7 @@ var allTests = []NamedTest{
 	{"ModelKindBranchExtension", RunModelKindBranchExtension},
 	{"ModelSampleDataCollectionImport", RunModelSampleDataCollectionImport},
 
-	// Phase 9.2 — OIDC CRUD + authz (#284)
+	// Phase 9.2 — OIDC CRUD + authz
 	// Rows 1-6: CRUD happy-path.
 	{"OidcRegister", RunOidcRegister},
 	{"OidcListAll", RunOidcListAll},
@@ -268,7 +268,7 @@ var allTests = []NamedTest{
 	{"OidcNonAdminDelete", RunOidcNonAdminDelete},
 	{"OidcNonAdminReload", RunOidcNonAdminReload},
 
-	// Phase 9.3 — OIDC validation + rotation + isolation (rows 17-27) (#284)
+	// Phase 9.3 — OIDC validation + rotation + isolation (rows 17-27)
 	// JWT validation integration (rows 17-20): register mock IdP, sign JWT,
 	// assert accept/reject across lifecycle state changes.
 	{"OidcJWTValidation_RegisterAndAccept", RunOidcJWTValidation_RegisterAndAccept},
@@ -290,7 +290,7 @@ var allTests = []NamedTest{
 	// Multi-provider isolation (row 27).
 	{"OidcMultiProvider_Isolation", RunOidcMultiProvider_Isolation},
 
-	// Phase 9.4 — OIDC divergences (rows 28-46) (#284)
+	// Phase 9.4 — OIDC divergences (rows 28-46)
 	// D5 inactive-update (row 28).
 	{"OidcInactiveUpdate_Returns409Conflict", RunOidcInactiveUpdate_Returns409Conflict},
 	// Tenant isolation (rows 29-30).
@@ -323,7 +323,7 @@ var allTests = []NamedTest{
 	{"OidcD18_ReloadInvalidateSerializeLocally", RunOidcD18_ReloadInvalidateSerializeLocally},
 	{"OidcD18_ReloadAllSerializesWithReloadOne", RunOidcD18_ReloadAllSerializesWithReloadOne},
 
-	// Phase 9.5 — OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E (rows 47-68) (#284)
+	// Phase 9.5 — OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E (rows 47-68)
 	// D10 SSRF (rows 47-49).
 	{"OidcD10_SSRF_FetchTimeDNSRebind", RunOidcD10_SSRF_FetchTimeDNSRebind},
 	{"OidcD10_SSRF_IPv6BlockedRanges", RunOidcD10_SSRF_IPv6BlockedRanges},
@@ -362,12 +362,12 @@ var allTests = []NamedTest{
 	{"OidcE2E_TokenValidation", RunOidcE2E_TokenValidation},
 	{"OidcE2E_MultiNodeEviction", RunOidcE2E_MultiNodeEviction},
 
-	// Phase 9.6 — Audit fixes (#284)
+	// Phase 9.6 — Audit fixes
 	// Critical: non-deterministic cross-tenant routing fix (audience disambiguation).
 	{"OidcCriticalAuditFix_AudienceDisambiguatesSharedIdP", RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP},
 	{"OidcCriticalAuditFix_AmbiguousProviderRejected_Skip", RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip},
 
-	// Phase 9.7 — Audit fixes round 2 (#284)
+	// Phase 9.7 — Audit fixes round 2
 	// I-1: reactivateKeys=false cache-preservation (unit-level coverage; skipped at parity level).
 	{"OidcReactivate_KeysFalse_PreservesCache_Skip", RunOidcReactivate_KeysFalse_PreservesCache_Skip},
 

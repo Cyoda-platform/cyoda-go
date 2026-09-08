@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -584,7 +585,7 @@ func TestErrCode_Parity(t *testing.T) {
 
 // Phrases that MUST appear somewhere under cli/*.md or config/*.md
 // after the printHelp() migration. Pins content that the env-var
-// grep (test #11) alone doesn't cover.
+// grep alone doesn't cover.
 var printHelpMustAppearPhrases = []string{
 	"_FILE",          // secret-from-file pattern
 	"--force",        // cyoda init flag
@@ -945,5 +946,93 @@ func TestDefaultTree_ConfigClusterSubtopic(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("config see_also missing %s (got %q)", want, joined)
 		}
+	}
+}
+
+// hexColourPattern matches a CSS-style hex colour such as "#118080" used by
+// the terminal renderer's style table. These are legitimate "#" + digits
+// tokens and are excluded from the issue-number scan below.
+var hexColourPattern = regexp.MustCompile(`#[0-9a-fA-F]{6}\b`)
+
+// issueNumberPattern matches a GitHub issue/PR reference: "#" followed by two
+// or more digits.
+var issueNumberPattern = regexp.MustCompile(`#[0-9]{2,}`)
+
+// TestSource_NoIssueNumbers is the exit check for the project rule "no issue
+// IDs in shipped artefacts": GitHub issue/PR numbers belong in PR bodies,
+// commit messages and design specs — never in source, comments, help content
+// or the OpenAPI document. The rationale a comment gives must survive; only
+// the reference goes.
+//
+// Hex colours ("#" + exactly six hex digits) are the sole exception. The
+// docs/ tree and .claude/ are not scanned — issue references are legitimate
+// there.
+func TestSource_NoIssueNumbers(t *testing.T) {
+	root := repoRoot(t)
+
+	var offenders []string
+	check := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			// Blank out hex colours first so "#118080" cannot be
+			// mistaken for an issue reference.
+			stripped := hexColourPattern.ReplaceAllString(line, "")
+			if m := issueNumberPattern.FindString(stripped); m != "" {
+				offenders = append(offenders, rel+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line)+" (matched "+m+")")
+			}
+		}
+	}
+
+	for _, dir := range []string{"cmd", "app", "internal", "plugins", "e2e"} {
+		base := filepath.Join(root, dir)
+		err := filepath.WalkDir(base, func(p string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fs.SkipDir
+				}
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(p, ".go") {
+				return nil
+			}
+			check(p)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", base, err)
+		}
+	}
+
+	contentDir := filepath.Join(root, "cmd/cyoda/help/content")
+	if err := filepath.WalkDir(contentDir, func(p string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(p, ".md") {
+			return nil
+		}
+		check(p)
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s: %v", contentDir, err)
+	}
+
+	check(filepath.Join(root, "api/openapi.yaml"))
+
+	if len(offenders) > 0 {
+		sort.Strings(offenders)
+		t.Errorf("issue/PR numbers must not appear in shipped source, comments, help content or OpenAPI "+
+			"(%d occurrence(s)); keep the reason, drop the reference:\n%s",
+			len(offenders), strings.Join(offenders, "\n"))
 	}
 }

@@ -292,7 +292,7 @@ func (s *Service) emitOwnershipTransitionAndUpdateHistory(ctx context.Context, p
 			"new_provider_uuid", p.ID.String(),
 		)
 
-		// Layer 3 — Cross-tenant audience-overlap WARN (#284 Critical audit fix).
+		// Layer 3 — Cross-tenant audience-overlap WARN (Critical audit fix).
 		// If the registering provider and any prior/concurrent provider share an
 		// empty or overlapping ExpectedAudiences set, tokens will be rejected as
 		// ErrAmbiguousProvider at validation time. Emit a WARN so operators can

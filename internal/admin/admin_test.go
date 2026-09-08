@@ -32,8 +32,8 @@ func TestHandler_Readyz_Unready(t *testing.T) {
 	}
 }
 
-// TestHandler_Readyz_Unready_DoesNotLeakInternalDetails guards #68 item 14
-// for the admin /readyz path. A readiness probe returning an error must not
+// TestHandler_Readyz_Unready_DoesNotLeakInternalDetails guards output
+// sanitisation on the admin /readyz path. A readiness probe returning an error must not
 // reflect that error's text into the HTTP body — readiness checks may surface
 // connection details, secrets, or stack traces from the underlying probe.
 func TestHandler_Readyz_Unready_DoesNotLeakInternalDetails(t *testing.T) {

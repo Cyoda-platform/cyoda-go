@@ -9,7 +9,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Temporal search filters (issue #423): creationDate chronological compare
+// Temporal search filters: creationDate chronological compare
 // via LifecycleCondition, exercised through the gRPC EntitySearchCollection
 // envelope. Mirrors internal/e2e/search_temporal_test.go's condition JSON
 // shapes and the CLIENT_ERROR envelope convention already established by

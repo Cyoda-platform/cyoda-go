@@ -105,11 +105,11 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 // TestSearch_NegativeCache_InvalidatedOnSchemaChange asserts that after
 // InvalidateRef fires for a (tenant, ref), the previously-cached
 // negative entry is dropped: the next validation re-consults the inner
-// store. Required to preserve the issue #77 "fresh-after-extend"
+// store. Required to preserve the "fresh-after-extend"
 // contract — a peer extending the model must not be hidden behind a
 // stale negative cache.
 //
-// Issue #174 — pre-fix the cache subscribed to a gossip broadcaster
+// Pre-fix the cache subscribed to a gossip broadcaster
 // directly, so this contract did not hold on single-node deployments.
 // After the redesign, app.go wires modelcache.SubscribeLocal to
 // pathValidationCache.InvalidateRef so every invalidation (local OR

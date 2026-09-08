@@ -90,8 +90,8 @@ func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDG
 // PARTICIPATES in a transaction already on ctx.
 //
 // A joined tx on ctx (spi.GetTransaction(ctx) != nil) means we are servicing a
-// routed compute-node callback that a later task joined onto the owner's tx
-// (#287). In that case we return the joined tx's ID with owned=false and DO NOT
+// routed compute-node callback joined onto the owner's tx. In that case we
+// return the joined tx's ID with owned=false and DO NOT
 // Begin — the write lands in the shared buffer for the owner to commit. When
 // there is no joined tx (the normal inbound case) we Begin our own tx and
 // return owned=true. The txCtx returned in the joined case is the caller's ctx
@@ -304,7 +304,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request, format genapi.C
 	}
 
 	// Detect JSON array body — chunk via the same transactionWindow contract
-	// as POST /api/entity/{format} (CreateCollection). Issue #227 pass 3.
+	// as POST /api/entity/{format} (CreateCollection).
 	if string(format) == "JSON" && len(bodyBytes) > 0 && bodyBytes[0] == '[' {
 		var rawItems []json.RawMessage
 		if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
@@ -383,7 +383,7 @@ func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId 
 		EntityID:    entityId.String(),
 		PointInTime: params.PointInTime,
 	}
-	// Propagate transactionId scope. Issue #150: previously this query
+	// Propagate transactionId scope: previously this query
 	// param was parsed by the generated server interface but never plumbed
 	// into the service input, so the handler silently returned the latest
 	// entity regardless of transactionId.
@@ -622,7 +622,7 @@ func (h *Handler) GetAllEntities(w http.ResponseWriter, r *http.Request, entityN
 	// Reject negative / over-cap / overflow-prone values BEFORE the
 	// storage lookup. Without this guard, an attacker-supplied
 	// pageNumber=MaxInt32 panics in ListEntities (slice bounds out of
-	// range) and surfaces as 500 — see PR #149 follow-up. ValidateOffset
+	// range) and surfaces as 500. ValidateOffset
 	// returns *common.AppError as error; classifyError routes it to the
 	// 400 BAD_REQUEST response.
 	if err := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); err != nil {
@@ -703,7 +703,7 @@ func resolveRequestTimeout(ctx context.Context, millis *int64) (context.Context,
 // collectionChunkResult is one element of the collection-endpoint response
 // array. Successful chunks carry transactionId + entityIds. Failed chunks
 // carry the Error field with code/message and the chunk's index. Chunks with
-// per-item ENTITY_MODIFIED isolation (issue #228) carry transactionId +
+// per-item ENTITY_MODIFIED isolation carry transactionId +
 // entityIds for the successful items plus a Failed slice for the conflicted
 // items.
 //
@@ -711,12 +711,11 @@ func resolveRequestTimeout(ctx context.Context, millis *int64) (context.Context,
 // batches of at most `transactionWindow` items returns one element per chunk
 // in commit order; chunks committed before any failure remain durable, and
 // chunk-wide failures surface as an error element marking chunkIndex.
-// Issue #227, extended by #228.
 type collectionChunkResult struct {
 	TransactionID string `json:"transactionId,omitempty"`
 	// EntityIDs is intentionally NOT omitempty so the wire shape stays
 	// stable across "fully successful" and "all-stale per-item-isolated"
-	// chunks (issue #228). Construction sites must initialise this non-nil
+	// chunks. Construction sites must initialise this non-nil
 	// (e.g. `make([]string, 0)`) so json.Marshal emits `entityIds: []`
 	// rather than `null` for a chunk with zero successful items. This
 	// matches the documented contract in OpenAPI / cmd/cyoda/help/content/crud.md.
@@ -736,7 +735,7 @@ type collectionChunkError struct {
 
 // collectionChunkItemFailure documents a single per-item failure that did NOT
 // roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
-// carrying an IfMatch precondition (issue #228). ItemIndex is the failing
+// carrying an IfMatch precondition. ItemIndex is the failing
 // item's zero-based position within its chunk's request slice.
 type collectionChunkItemFailure struct {
 	EntityID string                 `json:"entityId"`
@@ -770,7 +769,6 @@ type collectionChunkItemErr struct {
 //
 // Single chunking primitive shared by CreateCollection (POST /entity/{format})
 // and Create (POST /entity/{format}/{entityName}/{modelVersion} array body).
-// Issue #227.
 func (h *Handler) runChunkedCreate(ctx context.Context, items []CollectionItem, window int) ([]collectionChunkResult, *common.AppError) {
 	results := make([]collectionChunkResult, 0)
 	for chunkIdx, start := 0, 0; start < len(items); chunkIdx, start = chunkIdx+1, start+window {
@@ -924,7 +922,7 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 
 	// Per docs: `payload` is a JSON-encoded STRING (not a nested object).
 	// Match CreateCollection's wire contract exactly. Optional per-item
-	// `ifMatch` carries the cross-request precondition (issue #228).
+	// `ifMatch` carries the cross-request precondition.
 	var rawItems []struct {
 		ID         string `json:"id"`
 		Payload    string `json:"payload"`

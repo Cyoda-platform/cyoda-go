@@ -41,8 +41,8 @@ func (s *SearchService) RegisteredJobCountForTest() int {
 }
 
 // PathValidationBucketMapCap returns the configured maximum number of
-// (tenant, ref) buckets the path-validation cache will retain. Issue
-// #218 — used by tests to drive the LRU eviction path.
+// (tenant, ref) buckets the path-validation cache will retain.
+// Used by tests to drive the LRU eviction path.
 func PathValidationBucketMapCap() int {
 	return pathValidationBucketMapCap
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// callback_txjoin.go — feature #287 cross-backend parity scenarios for
+// callback_txjoin.go — cross-backend parity scenarios for
 // compute-node callbacks that JOIN the originating transition's transaction T.
 //
 // Backend-agnostic invariants proven identically on memory / sqlite / postgres
@@ -218,8 +218,8 @@ func RunCallbackSyncWriteAtomic(t *testing.T, fixture BackendFixture) {
 	// Same-transaction assertion: the primary's processor-launching transition
 	// and the secondary create must carry the IDENTICAL transactionId. This is
 	// the unambiguous proof that the callback joined T rather than opening a
-	// separate transaction — it would FAIL under the pre-#287 behaviour where
-	// the callback ran its own Begin/Commit.
+	// separate transaction — it would FAIL if the callback ran its own
+	// Begin/Commit.
 	cbAssertSameTxID(t, c, primaryID, secID)
 
 	// --- failure branch (THE ATOMICITY PROOF) ---
@@ -594,8 +594,8 @@ func cbFirstTxID(resp client.EntityAuditEventsResponse) string {
 // cbAssertSameTxID queries the audit REST endpoint for both the primary
 // and secondary entities and asserts that each carries a non-empty
 // transactionId and that both transactionIds are IDENTICAL. A mismatch
-// means the callback ran in a separate transaction (pre-#287 behaviour),
-// not the expected join into T.
+// means the callback ran in a separate transaction rather than the
+// expected join into T.
 func cbAssertSameTxID(t *testing.T, c *client.Client, primaryID, secondaryID uuid.UUID) {
 	t.Helper()
 	primAudit, err := c.GetAuditEvents(t, primaryID)

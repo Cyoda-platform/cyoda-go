@@ -11,8 +11,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// Cross-backend parity scenarios for chronological temporal search filters
-// (issue #423): creationDate/lastUpdateTime compared via epoch-ms flooring
+// Cross-backend parity scenarios for chronological temporal search filters:
+// creationDate/lastUpdateTime compared via epoch-ms flooring
 // (spi.ParseTemporalMillis / cyoda_epoch_millis), not lexical string
 // equality. These prove memory/sqlite/postgres (+ commercial) agree on the
 // same chronological ordering and the same millisecond-floor semantics.

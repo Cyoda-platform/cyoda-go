@@ -1,7 +1,7 @@
 package e2e_test
 
 // transaction_control_test.go is the running-backend e2e coverage for the
-// transaction-control-params feature (issue #379): ?transactionTimeoutMillis
+// transaction-control-params feature: ?transactionTimeoutMillis
 // on the 7 entity write ops + newMessage, ?transactionSize on
 // deleteEntities/deleteMessages, and ?timeoutMillis on searchEntities. The
 // feature surface itself (validation, deadline attachment, 408

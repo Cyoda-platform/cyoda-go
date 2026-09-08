@@ -492,7 +492,7 @@ var directMetaColumns = map[string]bool{
 // fieldExpr returns the SQL expression for accessing a field.
 // SourceMeta "id" resolves to the entity_id column (direct, no json_extract).
 // SourceMeta fields matching a canonical lifecycle-filter name (as used by
-// post-#423 temporal/lifecycle filters, e.g. "creationDate") are mapped
+// temporal/lifecycle filters, e.g. "creationDate") are mapped
 // through metaBlobKey to their meta-blob storage key — mirroring
 // orderByFieldExpr's resolution so filter and ORDER BY agree on where a
 // canonical path lives.

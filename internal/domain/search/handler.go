@@ -192,7 +192,7 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 			common.WriteError(w, r, appErr)
 			return
 		}
-		// Pre-execution validation (issue #77) returns a classified
+		// Pre-execution validation returns a classified
 		// *common.AppError directly; forward it so the 4xx surfaces
 		// instead of being shrouded as a 5xx ticket.
 		var appErr *common.AppError
@@ -313,9 +313,9 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 		pageNumber = pn
 	}
 
-	// Cap + overflow check via the shared helper (issue #98, #68 item
-	// 10): rejects negative values, pageSize > MaxPageSize, pageNumber >
-	// MaxPageNumber, and any pageNumber*pageSize that overflows int64.
+	// Cap + overflow check via the shared helper: rejects negative
+	// values, pageSize > MaxPageSize, pageNumber > MaxPageNumber, and
+	// any pageNumber*pageSize that overflows int64.
 	// Apply the cap to the *effective* pageSize (with the 1000 default
 	// substituted for non-positive values) so the bound matches what is
 	// actually used downstream.

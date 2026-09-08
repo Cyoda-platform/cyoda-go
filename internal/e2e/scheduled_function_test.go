@@ -15,7 +15,7 @@ import (
 )
 
 // scheduled_function_test.go is Task 9.1's E2E layer for the scheduled-
-// transition Function feature (issue #419, design
+// transition Function feature (design
 // docs/superpowers/specs/2026-07-17-scheduled-transition-function-design.md):
 // import-time validation of the schedule.function shape, and arm-time happy
 // paths through the full HTTP stack.

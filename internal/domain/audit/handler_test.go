@@ -388,8 +388,8 @@ func TestAuditTransactionIdFilter(t *testing.T) {
 	_ = updateEntity(t, srv.URL, entityID, `{"name":"Carol"}`)
 
 	// Filter by the create transaction ID — returns both EntityChange and
-	// StateMachine events that share the same txID (issue #20: the workflow
-	// engine now uses the entity-write txID for SM audit events).
+	// StateMachine events that share the same txID (the workflow
+	// engine uses the entity-write txID for SM audit events).
 	events, _ := getAuditEvents(t, srv.URL, entityID, "transactionId="+createTxID)
 
 	if len(events) < 1 {
@@ -614,7 +614,7 @@ func newTestServerNoContextPath(t *testing.T) *httptest.Server {
 }
 
 // getSmTransactionID queries audit events for the given entity and returns the
-// transactionId from the first StateMachine event. Since issue #20, this is the
+// transactionId from the first StateMachine event. This is the
 // same as the entity-write transaction ID (the workflow engine uses
 // entity.Meta.TransactionID for SM audit events).
 func getSmTransactionID(t *testing.T, base, entityID string) string {
@@ -658,7 +658,7 @@ func TestGetStateMachineFinishedEvent_Found(t *testing.T) {
 
 	entityID := createEntityAndGetID(t, srv.URL, "SMFinish", 1, `{"name":"Bob","age":25}`)
 
-	// Since issue #20, the SM txID matches the entity-write txID.
+	// The SM txID matches the entity-write txID.
 	smTxID := getSmTransactionID(t, srv.URL, entityID)
 
 	url := fmt.Sprintf("%s/audit/entity/%s/workflow/%s/finished", srv.URL, entityID, smTxID)

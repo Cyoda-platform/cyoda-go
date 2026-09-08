@@ -482,7 +482,7 @@ func TestAuditEventsRecorded(t *testing.T) {
 }
 
 // TestExecuteUsesCallerTxID verifies that Execute uses the caller-provided
-// transaction ID for all state-machine audit events (issue #20). The caller's
+// transaction ID for all state-machine audit events. The caller's
 // txID is the entity-write transaction ID — it must match what the audit
 // endpoint expects so clients can look up /audit/entity/{id}/workflow/{txId}/finished
 // using the transactionId returned by POST /entity.
@@ -550,7 +550,7 @@ func TestExecuteUsesCallerTxID(t *testing.T) {
 }
 
 // TestManualTransitionUsesCallerTxID verifies ManualTransition uses the
-// caller-provided txID (same issue #20 pattern as Execute).
+// caller-provided txID (same pattern as Execute).
 func TestManualTransitionUsesCallerTxID(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -612,7 +612,7 @@ func TestManualTransitionUsesCallerTxID(t *testing.T) {
 }
 
 // TestLoopbackUsesCallerTxID verifies Loopback uses the caller-provided
-// txID (same issue #20 pattern as Execute and ManualTransition).
+// txID (same pattern as Execute and ManualTransition).
 func TestLoopbackUsesCallerTxID(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -3226,7 +3226,7 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 // TestEngine_CascadeSkipsScheduled_RestsInState verifies that when a state has
 // ONLY a scheduled transition as its exit, the automated cascade silently skips
 // the scheduled transition and the entity rests in its source state. Until the
-// scheduled-task runtime ships (#251), scheduled transitions are invisible to
+// scheduled-task runtime ships, scheduled transitions are invisible to
 // the cascade — they wait for their timer.
 func TestEngine_CascadeSkipsScheduled_RestsInState(t *testing.T) {
 	engine, factory := setupEngine(t)

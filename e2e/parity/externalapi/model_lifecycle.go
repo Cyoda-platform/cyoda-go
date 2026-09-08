@@ -23,7 +23,7 @@ import (
 )
 
 func init() {
-	// External API scenario suite — tranche 1 (issue #118)
+	// External API scenario suite — tranche 1
 	// 01-model-lifecycle
 	parity.Register(
 		parity.NamedTest{Name: "ExternalAPI_01_01_RegisterModel", Fn: RunExternalAPI_01_01_RegisterModel},

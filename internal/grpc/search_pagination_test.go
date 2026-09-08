@@ -9,7 +9,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 )
 
-// Regression tests for PR #149 follow-up: gRPC search/getAll handlers
+// Regression tests: gRPC search/getAll handlers
 // must apply the same pagination caps and overflow guard as the HTTP
 // search handler. Validation must happen BEFORE the storage / job
 // lookup — asserted by passing an unknown model or unknown snapshot ID
@@ -60,7 +60,7 @@ func TestRPC_EntityGetAll_PageSizeExceedsCap_RejectedBeforeStorage(t *testing.T)
 // TestRPC_SnapshotGetResults_PageNumberOverflow_RejectedBeforeJobLookup —
 // handleSnapshotGetRequestStreaming previously passed PageNumber/PageSize
 // straight through to GetAsyncSearchResults with no cap. An attacker
-// supplying MaxInt64 caused the same overflow class as PR #149 fixed in
+// supplying MaxInt64 caused the same overflow class fixed in
 // HTTP. The handler must validate before the snapshot lookup, surfacing a
 // CLIENT_ERROR rather than an internal/not-found.
 func TestRPC_SnapshotGetResults_PageNumberOverflow_RejectedBeforeJobLookup(t *testing.T) {

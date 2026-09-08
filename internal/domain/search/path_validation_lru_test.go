@@ -8,7 +8,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
-// TestPathValidationCache_BucketMapEvictsLRU pins issue #218: the
+// TestPathValidationCache_BucketMapEvictsLRU pins the bucket-map cap: the
 // per-(tenant, ref) bucket map must enforce a maximum size to bound
 // memory under adversarial workloads (a tenant with model-creation
 // privilege at scale who searches against many distinct models).

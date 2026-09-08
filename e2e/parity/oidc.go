@@ -1,6 +1,6 @@
 package parity
 
-// OIDC provider management parity scenarios — Phases 9.2–9.5 (#284).
+// OIDC provider management parity scenarios — Phases 9.2–9.5.
 //
 // Rows 1-6:   CRUD happy-path (register, list-all, list-active-only,
 //              update-issuers, invalidate, delete).
@@ -1073,7 +1073,7 @@ func assertErrCodeOptional(t *testing.T, raw []byte, wantCode string) {
 	}
 }
 
-// --- Phase 9.4 — OIDC divergences (rows 28-46) (#284) ---
+// --- Phase 9.4 — OIDC divergences (rows 28-46) ---
 //
 // These scenarios cover cyoda-go-specific behaviours (D5, D17, D3, D6, D11,
 // D8, D18) that diverge from or go beyond the cyoda-cloud reference. Several
@@ -1875,7 +1875,7 @@ func RunOidcD18_ReloadInvalidateSerializeLocally(t *testing.T, fix BackendFixtur
 	}
 }
 
-// --- Phase 9.5 — SSRF / D19 / D20 / D23 / D25 / D21 / I9 / state / E2E (rows 47-68) (#284) ---
+// --- Phase 9.5 — SSRF / D19 / D20 / D23 / D25 / D21 / I9 / state / E2E (rows 47-68) ---
 
 // RunOidcD18_ReloadAllSerializesWithReloadOne verifies D18 row 46: a
 // reload_all broadcast serializes with concurrent reload(T, uri) calls.
@@ -2920,10 +2920,10 @@ func RunOidcD10_MaliciousDiscoveryJWKSURI_Skip(t *testing.T, _ BackendFixture) {
 	t.Skip("covered by internal/auth/oidc unit test TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked — parity subprocess has CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true which would bypass the safeDialContext blocklist check")
 }
 
-// --- Phase 9.6 — Audit fixes (#284) ---
+// --- Phase 9.6 — Audit fixes ---
 
 // RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP verifies the Critical
-// audit fix (#284): two tenants register the same IdP URI with distinct
+// audit fix: two tenants register the same IdP URI with distinct
 // ExpectedAudiences; tokens route to the correct tenant deterministically.
 //
 // Scenario:

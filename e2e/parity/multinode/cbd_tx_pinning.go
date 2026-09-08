@@ -15,7 +15,7 @@ func init() {
 }
 
 // RunWorkflowProc_CBD_TxPostPinnedToHomeNode covers spec §16 case 14
-// (cluster-mode TX_post pinning) for issue #27. Spec §4.3 states that a
+// (cluster-mode TX_post pinning). Spec §4.3 states that a
 // COMMIT_BEFORE_DISPATCH cascade pins both segments — TX_pre and TX_post —
 // to the same node, because the cascade is driven by the goroutine
 // holding the HTTP request open and that goroutine never moves. Cross-node

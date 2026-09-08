@@ -11,7 +11,7 @@ import (
 )
 
 // Canonical v1 (time-based) UUID matching cyoda-go's UUIDGenerator
-// convention per docs/milestones/m3-entity-crud/design.md decision #10.
+// convention per docs/milestones/m3-entity-crud/design.md.
 const fixtureEntityID = "a9d92c64-3f49-11b2-ad21-125557264b03"
 
 // TestHTTPClient_DisallowUnknownFields proves the parity HTTP client

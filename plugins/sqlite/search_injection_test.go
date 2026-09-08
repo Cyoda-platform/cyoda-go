@@ -12,7 +12,7 @@ import (
 // paths containing SQL-injection payloads are rejected at the Search()
 // boundary — before they can be interpolated into a json_extract expression.
 //
-// Regression test for issue #64 (SQLite JSON-path SQL injection via
+// Regression test for SQLite JSON-path SQL injection via
 // Filter/OrderSpec Path). Pre-fix, these payloads reached
 // fmt.Sprintf("json_extract(json(meta), '$.%s')", path) and broke out of
 // the single-quoted JSON-path literal, injecting arbitrary SQL.

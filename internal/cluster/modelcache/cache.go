@@ -43,7 +43,7 @@ type CachingModelStore struct {
 
 	flight singleflight.Group
 
-	// localSubMu guards localSubs. Issue #174 — downstream caches
+	// localSubMu guards localSubs: downstream caches
 	// (e.g. the path-validation negative cache) register here to
 	// receive an in-process notification on every invalidation,
 	// regardless of whether a cluster broadcaster is wired up. On
@@ -339,7 +339,7 @@ func (c *CachingModelStore) handleInvalidation(payload []byte) {
 // (e.g. the path-validation negative cache) use this to stay in lock
 // step with the descriptor cache regardless of cluster topology.
 //
-// Issue #174 — pre-fix the path-validation cache subscribed to the
+// Pre-fix the path-validation cache subscribed to the
 // gossip broadcaster directly, so single-node deployments (where the
 // broadcaster is nil) never received any invalidation events.
 func (c *CachingModelStore) SubscribeLocal(h func(tenant string, ref spi.ModelRef)) {

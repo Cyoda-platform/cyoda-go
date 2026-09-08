@@ -574,5 +574,5 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 // would duplicate the signing logic. The token-exchange principal-tenant
 // invariant is asserted at unit level in internal/auth/store_test.go and
 // internal/auth/kv_trusted_store_test.go.
-// TODO(#288): add an E2E token-exchange test once the harness supports
+// TODO(oauth-token-exchange-e2e): add an E2E token-exchange test once the harness supports
 // embedded fixture keys with private-key material retained across calls.

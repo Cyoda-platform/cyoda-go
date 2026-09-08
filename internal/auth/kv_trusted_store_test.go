@@ -263,7 +263,7 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 
 // TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys verifies that the store
 // rejects Register once the configured cap is reached — defence against
-// memory/storage exhaustion via runaway trusted-key registration (#34 item 2).
+// memory/storage exhaustion via runaway trusted-key registration.
 func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := systemCtx()
