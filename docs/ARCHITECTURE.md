@@ -367,11 +367,11 @@ contract.
 
 **Release on every exit path.** An entity write flow opens its transaction through a deferred scope (`txScope`, `internal/domain/entity/txscope.go`) that rolls back the segment currently open unless the flow committed it. One deferred `Release` covers every return, every error branch, and a panic unwinding the stack, so a transaction is never abandoned open with its pooled connection unreturned. A joined callback never rolls back its owner's transaction; a segment the engine opened during the call is released regardless of ownership. The workflow engine carries the same guard for the segments it opens itself, since those are its own until handed back.
 
-**Panic containment.** Four recovery sites wrap code that runs the engine or the store on the application's behalf: the gRPC server (unary and stream interceptors), every HTTP route, the async-search goroutine, and the scheduler's dispatch goroutine. All four log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line plus the ordinary redispatch throttle for a scheduled fire, which has no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. That is why the scheduler site latches too — `ClusterExecutor.Execute` fires in-process whenever distribution picks this node, so otherwise an identical panicking fire would withdraw the node only when the pick happened to be a peer.
+**Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL and stale-job sweeps share one ticker), and the scheduler's dispatch goroutine. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for a scheduled fire, the latter with no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. That is why the scheduler site latches too — `ClusterExecutor.Execute` fires in-process whenever distribution picks this node, so otherwise an identical panicking fire would withdraw the node only when the pick happened to be a peer.
 
-Two further recovery sites deliberately do **not** latch, because they wrap notification callbacks rather than domain work: the member-registry `onChange` fan-out (`internal/grpc/members.go`) and the OIDC broadcast handler with its dispatch goroutines (`internal/auth/oidc/broadcast.go`, which counts panics on its own metric). Neither holds a transaction, and both self-heal on the next event.
+Further recovery sites deliberately do **not** latch, because they wrap probes, notification callbacks or per-connection framing rather than domain work: the admin listener, which runs the same `Recovery` middleware with no health flag (`cmd/cyoda/adminserver.go`) so a panic in `/livez`, `/readyz` or a `/metrics` scrape still answers a ticket-carrying 500 without withdrawing the node; the member-registry `onChange` fan-out (`internal/grpc/members.go`); the OIDC broadcast handler with its dispatch goroutines (`internal/auth/oidc/broadcast.go`, which counts panics on its own metric); and each per-member gRPC stream's three per-connection goroutines — the writer (`Member.writeLoop`), the receive goroutine (`receiveLoop`) and the keep-alive loop (`keepAliveLoop`), all in `internal/grpc/streaming.go` and `members.go` — which recover with a ticket-carrying status and evict just that member rather than latching the node, since each wraps only that member's own framing or liveness bookkeeping, not domain work. None of these sites holds a transaction, and all self-heal: the admin surface on the next probe, the fan-out and broadcast handler on the next event, the three per-member goroutines by the client reconnecting as a fresh member.
 
-Nothing resets the flag: `GET /health` on the API listener reports `503 DOWN` from then on, and the admin listener's `/readyz` (§7.5) reports `503` for the same reason. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked.
+Nothing resets the flag: it latches on the first panic recovered in engine or store work, and `GET /health` on the API listener mirrors it directly — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` once latched — while the admin listener's `/readyz` (§7.5) reads the same flag and reports `503` for the same reason. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked. Read the ticket in the log, then replace the node — nothing re-arms the flag. `/health` and `/readyz` read the same flag but serve different audiences: `/readyz` (with `/livez`, unconditional) is the deployment probe on the admin listener; `/health` is a plain summary for humans and simple scripts.
 
 What the flag actually stops, and what it does not:
 
@@ -1187,7 +1187,7 @@ join --> greet --> keep-alive --> dispatch/response --> leave
 
 1. **Join:** Client sends `CalculationMemberJoinEvent` as first message. Server registers member in `MemberRegistry`, extracts tags and tenant from payload. Returns `CalculationMemberGreetEvent` with assigned member ID.
 
-2. **Keep-alive:** Server sends `CalculationMemberKeepAliveEvent` at configurable interval (default 10s). Client must respond with a keep-alive within the timeout (default 30s). If not, the server considers the member dead and unregisters it.
+2. **Keep-alive:** Server sends `CalculationMemberKeepAliveEvent` at configurable interval (default 10s). A processor response, criteria response, function response, `EventAckResponse`, or keep-alive echo all count as activity; if none is seen within the timeout (default 30s), or one outbound write stalls that long, the server evicts the member. The same interval/timeout also drive grpc-go's transport keepalive (HTTP/2 PING and ack deadline), which catches a peer whose TCP is alive but whose process is gone.
 
 3. **Dispatch/Response:** Server sends `EntityProcessorCalculationRequest` or `EntityCriteriaCalculationRequest`. Client processes and returns the corresponding `Response` type. Correlation is by `requestID` field in the CloudEvent payload.
 
@@ -1309,7 +1309,11 @@ Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC str
 
 The admin listener (`/livez`, `/readyz`, `/metrics` on
 `CYODA_ADMIN_PORT`, default `9091`) is served separately from the
-main API listener and has its own authentication policy:
+main API listener and has its own authentication policy. This is
+where the deployment probes live — `GET /health` on the main API
+listener (§3.4) mirrors the same readiness flag as `/readyz` but is
+a plain summary for humans and simple scripts, not the orchestrator
+contract:
 
 - **`/livez` and `/readyz`** are always unauthenticated. Kubelet
   probes carry no bearer token; authenticating these endpoints
@@ -1444,6 +1448,10 @@ credentials from Secrets into the process without exposing them in
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_HTTP_PORT` | `8080` | HTTP server listen port |
+| `CYODA_HTTP_READ_HEADER_TIMEOUT` | `10s` | Time allowed to receive a request's headers on the API and admin servers. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`. |
+| `CYODA_HTTP_READ_TIMEOUT` | `5m` | Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables. |
+| `CYODA_HTTP_WRITE_TIMEOUT` | `0s` | Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests. |
+| `CYODA_HTTP_IDLE_TIMEOUT` | `2m` | How long an idle keep-alive connection is held open between requests. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`. |
 | `CYODA_CONTEXT_PATH` | `/api` | URL prefix for all API routes |
 | `CYODA_ERROR_RESPONSE_MODE` | `sanitized` | `sanitized` or `verbose` (dev only) |
 | `CYODA_MAX_STATE_VISITS` | `10` | Per-state visit limit for cascade loop protection |
@@ -1555,8 +1563,8 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_GRPC_PORT` | `9090` | gRPC server listen port |
-| `CYODA_KEEPALIVE_INTERVAL` | `10` | Keep-alive ping interval (seconds) |
-| `CYODA_KEEPALIVE_TIMEOUT` | `30` | Keep-alive timeout before eviction (seconds) |
+| `CYODA_KEEPALIVE_INTERVAL` | `10` | Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time |
+| `CYODA_KEEPALIVE_TIMEOUT` | `30` | Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout |
 
 ### Cluster
 
@@ -1661,9 +1669,16 @@ OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal
 
 **Plugin-level instrumentation:** plugins are free to add their own
 spans and metrics under a plugin-specific namespace. The `memory`
-and `postgres` plugins do not emit custom plugin-level telemetry;
-their behaviour is fully captured by the core transaction /
-workflow / dispatch spans listed above. Other plugins may add
+plugin does not emit custom plugin-level telemetry; its behaviour is
+fully captured by the core transaction / workflow / dispatch spans
+listed above. The `postgres` plugin registers seven
+`cyoda.storage.pool.*` instruments (connections by state, max
+connections, acquires, empty acquires, canceled acquires, acquire
+duration, empty-acquire wait — all labeled `backend="postgres"`) from
+`pgxpool.Stat()`, unconditionally at `NewFactory` — pool saturation is
+the dominant outage mode this instrumentation guards against, so
+these are always on regardless of `CYODA_OTEL_ENABLED`, unlike the
+core transaction/dispatch metrics above. Other plugins may add
 detailed instrumentation scoped to their own namespace as their
 hot-path semantics warrant.
 

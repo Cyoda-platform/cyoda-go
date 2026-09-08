@@ -551,12 +551,15 @@ func New(cfg Config) *App {
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
-		a.memberRegistry.SetOnChange(func(tags map[string][]string) {
-			if gossipReg, ok := a.nodeRegistry.(*registry.Gossip); ok {
-				if err := gossipReg.UpdateTags(tags); err != nil {
-					slog.Error("failed to update gossip tags", "pkg", "cluster", "err", err)
-				}
+		a.memberRegistry.SetOnChange(func(tags map[string][]string) error {
+			gossipReg, ok := a.nodeRegistry.(*registry.Gossip)
+			if !ok {
+				return nil
 			}
+			if err := gossipReg.UpdateTags(tags); err != nil {
+				return fmt.Errorf("update gossip tags: %w", err)
+			}
+			return nil
 		})
 	}
 
@@ -779,30 +782,29 @@ func New(cfg Config) *App {
 		a.handler = mux
 	}
 
-	// Recovery wraps the fully assembled mux rather than the "/" catch-all.
-	// Every pattern more specific than "/" wins over it, which silently excluded
-	// the peer scheduler RPC, cluster dispatch, health, discovery, help, the
-	// admin log-level routes and more — and would have excluded any route added
-	// later. One call site instead of a dozen, with no way to escape it.
-	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
-
-	// Cluster routing middleware — outermost layer, before auth and recovery.
-	// The proxy forwards the original request including auth headers to the
-	// target node, where auth is applied locally.
+	// Cluster routing sits directly over the mux: a request carrying a
+	// transaction token for another node is forwarded before auth runs here
+	// (auth is applied on the owning node).
 	if cfg.Cluster.Enabled {
 		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback)(a.handler)
 	}
 
-	// CORS middleware — outermost wrapper. Sits outside cluster-routing
-	// so preflights short-circuit at the receiving node and never get
-	// proxied. Sits outside outerMux so /help, discovery, and the API
-	// surface are all covered by a single CORS policy. See spec
+	// CORS sits outside cluster routing so preflights short-circuit at the
+	// receiving node and never get proxied, and outside outerMux so /help,
+	// discovery, and the API surface share one policy. See
 	// docs/superpowers/specs/2026-05-01-issue-196-cors-design.md.
 	corsPolicy := middleware.NewCORSPolicy(cfg.CORS.Enabled, cfg.CORS.Wildcard, cfg.CORS.AllowedOrigins)
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
+	// Recovery is the outermost layer, so nothing — CORS, cluster routing,
+	// or any route added later — sits outside panic containment. CORS writes
+	// its headers before calling the next handler, so a recovered 500 keeps
+	// them. Recovery re-raises http.ErrAbortHandler, which is how the reverse
+	// proxy reports a client hang-up, so proxied disconnects stay silent.
+	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
+
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
 
 	return a
 }

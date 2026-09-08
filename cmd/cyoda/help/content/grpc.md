@@ -220,6 +220,13 @@ The compute member protocol allows external processes to serve as workflow proce
 }
 ```
 
+**What a compute member must do:**
+
+- The greet is always the first event on the stream, before any request.
+- Read the stream continuously — a member that stops reading is treated as frozen and evicted after `CYODA_KEEPALIVE_TIMEOUT` seconds, and every callout in flight on it fails with `COMPUTE_MEMBER_DISCONNECTED`.
+- Write to the stream from one goroutine at a time — the gRPC streaming API forbids concurrent sends on one stream.
+- Answer requests, acknowledge events, or echo the server's keep-alive at least once per `CYODA_KEEPALIVE_TIMEOUT` seconds.
+
 **Processor dispatch (server → client):**
 
 Server sends `EntityProcessorCalculationRequest` when a workflow transition invokes an `externalized` processor whose `calculationNodesTags` matches one of the member's declared tags:
@@ -369,12 +376,30 @@ The server attaches CloudEvent Auth Context extension attributes to every dispat
 
 ## KEEPALIVE
 
-The server sends `CalculationMemberKeepAliveEvent` to each connected member every `CYODA_KEEPALIVE_INTERVAL` seconds. If a member does not respond (via keep-alive echo, processor response, criteria response, or `EventAckResponse`) within `CYODA_KEEPALIVE_TIMEOUT` seconds of the last seen activity, the server closes the stream.
+The server sends `CalculationMemberKeepAliveEvent` to each connected member
+every `CYODA_KEEPALIVE_INTERVAL` seconds, and evicts a member when either of
+two things happens within `CYODA_KEEPALIVE_TIMEOUT` seconds: no inbound
+activity has been seen from it, or one outbound write to it has stalled that
+long. Processor responses, criteria responses, function responses, and
+`EventAckResponse` all count as inbound activity, the same as a keep-alive
+echo — any of them resets the eviction clock.
 
-- `CYODA_KEEPALIVE_INTERVAL` — seconds between server-sent keep-alive events (default: `10`)
-- `CYODA_KEEPALIVE_TIMEOUT` — seconds of inactivity before the server terminates the stream (default: `30`)
+The same two values also drive grpc-go's HTTP/2 transport keepalive: a PING
+is sent after `CYODA_KEEPALIVE_INTERVAL` seconds of transport idleness, and
+the connection is closed if it goes unacknowledged for
+`CYODA_KEEPALIVE_TIMEOUT` seconds — a second, independent layer that catches
+a peer whose TCP connection is alive but whose process is gone. The
+enforcement policy the server advertises to clients is deliberately
+permissive — pings from a client are accepted no more often than every 5
+seconds, well below grpc-go's default 5-minute floor, so a compute node
+pinging on a normal cadence is never disconnected for it.
 
-Both variables are read by `DefaultConfig()` and applied at gRPC server construction time.
+- `CYODA_KEEPALIVE_INTERVAL` — seconds between server-sent keep-alive events and the transport keepalive idle time (default: `10`)
+- `CYODA_KEEPALIVE_TIMEOUT` — seconds of inactivity (or write stall) before the server evicts the member, and the transport keepalive ack timeout (default: `30`)
+
+Both variables are applied to the gRPC server at construction. A value that
+parses to zero or a negative number is a startup error; an unparseable value
+falls back to the default.
 
 ## TAG ROUTING
 

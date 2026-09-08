@@ -115,19 +115,34 @@ func makeJoinEvent(t *testing.T, tenantID string, tags []string) *cepb.CloudEven
 	return ce
 }
 
-func makeKeepAliveEvent(t *testing.T) *cepb.CloudEvent {
-	t.Helper()
-	ce, err := NewCloudEvent(CalculationMemberKeepAliveEvent, map[string]any{"success": true})
-	if err != nil {
-		t.Fatalf("failed to create keep alive event: %v", err)
-	}
+// makeKeepAliveEvent takes no *testing.T, unlike makeJoinEvent: goroutines that
+// may outlive the test body feed keep-alives, and calling t from one is not
+// allowed. Marshalling a one-field map cannot fail, so there is nothing to
+// report anyway.
+func makeKeepAliveEvent() *cepb.CloudEvent {
+	ce, _ := NewCloudEvent(CalculationMemberKeepAliveEvent, map[string]any{"success": true})
 	return ce
 }
 
-func newServiceForTest() *CloudEventsServiceImpl {
-	return &CloudEventsServiceImpl{
-		registry: NewMemberRegistry(),
+// tryEnqueue is enqueue that drops the event when the buffer is full: once the
+// member is evicted nobody drains recvCh, and a blocking send would leak the
+// feeding goroutine. It writes to the same channel closeRecv closes, so a test
+// that does both must stop its feeder before closing.
+func (m *mockBidiStream) tryEnqueue(ce *cepb.CloudEvent) {
+	select {
+	case m.recvCh <- ce:
+	default:
 	}
+}
+
+func newServiceForTest() *CloudEventsServiceImpl {
+	return newServiceWithKeepAlive(10*time.Second, 30*time.Second)
+}
+
+// newServiceWithKeepAlive builds a streaming-capable service. The keep-alive
+// interval and timeout have no defaults: every service that streams sets them.
+func newServiceWithKeepAlive(interval, timeout time.Duration) *CloudEventsServiceImpl {
+	return &CloudEventsServiceImpl{registry: NewMemberRegistry(), keepAliveInterval: interval, keepAliveTimeout: timeout}
 }
 
 func m2mContext(tenantID spi.TenantID) context.Context {
@@ -250,10 +265,9 @@ func TestStreaming_MemberRegisteredAndUnregistered(t *testing.T) {
 // unbounded ping-pong storm that pins both processes at 100% CPU. Each side
 // must ping only on its own ticker (see TestStreaming_ServerSendsKeepAliveOnTicker).
 func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
-	svc := newServiceForTest()
 	// Long ticker interval so the server's own keep-alive ticker cannot fire
 	// during the test window and be mistaken for an echo.
-	svc.SetKeepAliveConfig(time.Hour, 2*time.Hour)
+	svc := newServiceWithKeepAlive(time.Hour, 2*time.Hour)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
@@ -277,7 +291,7 @@ func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
 	before := member.LastSeen()
 
 	// Send an inbound keep-alive from the "client".
-	stream.enqueue(makeKeepAliveEvent(t))
+	stream.enqueue(makeKeepAliveEvent())
 
 	// Liveness must be refreshed: poll until LastSeen advances past the
 	// registration timestamp (proves the keep-alive was processed).
@@ -310,10 +324,9 @@ func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
 // fresh (via the client echoing on its own schedule) now that the server no
 // longer echoes inbound keep-alives.
 func TestStreaming_ServerSendsKeepAliveOnTicker(t *testing.T) {
-	svc := newServiceForTest()
 	// Short interval so the ticker fires quickly; large timeout so the member
 	// is never reaped during the test.
-	svc.SetKeepAliveConfig(30*time.Millisecond, time.Hour)
+	svc := newServiceWithKeepAlive(30*time.Millisecond, time.Hour)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
@@ -351,9 +364,8 @@ func TestStreaming_ServerSendsKeepAliveOnTicker(t *testing.T) {
 // capped at roughly one keep-alive per ticker interval regardless of how
 // eagerly the client echoes.
 func TestStreaming_EchoingClientDoesNotStorm(t *testing.T) {
-	svc := newServiceForTest()
 	const interval = 20 * time.Millisecond
-	svc.SetKeepAliveConfig(interval, time.Hour)
+	svc := newServiceWithKeepAlive(interval, time.Hour)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()
@@ -370,7 +382,7 @@ func TestStreaming_EchoingClientDoesNotStorm(t *testing.T) {
 	// one back — the exact behavior that ignited the storm in the field. The
 	// echoed event is read-only to the server, so one instance is reused (and
 	// built here, not in the goroutine, to keep t.* off a non-test goroutine).
-	echo := makeKeepAliveEvent(t)
+	echo := makeKeepAliveEvent()
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -466,7 +478,7 @@ func TestStreaming_FirstMessageNotJoin_InvalidArgument(t *testing.T) {
 	stream := newMockBidiStream(ctx)
 
 	// Send a keep-alive as the first message instead of a join.
-	stream.enqueue(makeKeepAliveEvent(t))
+	stream.enqueue(makeKeepAliveEvent())
 
 	err := svc.StartStreaming(stream)
 	if err == nil {
@@ -528,7 +540,10 @@ func TestStreaming_ProcessorResponse(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-123")
+	respCh, err := member.TrackRequest("req-123")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	// Send processor response from the "client".
 	respPayload := map[string]any{
@@ -585,7 +600,10 @@ func TestStreaming_CriteriaResponse(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-456")
+	respCh, err := member.TrackRequest("req-456")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	// Send criteria response.
 	respPayload := map[string]any{
@@ -637,7 +655,10 @@ func TestStreaming_CriteriaResponse_PropagatesReason(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-reason-1")
+	respCh, err := member.TrackRequest("req-reason-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	respPayload := map[string]any{
 		"requestId": "req-reason-1",
@@ -706,7 +727,10 @@ func newRetryableHarness(t *testing.T, requestID string) *retryableHarness {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest(requestID)
+	respCh, err := member.TrackRequest(requestID)
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 	return &retryableHarness{stream, done, respCh}
 }
 
@@ -907,7 +931,10 @@ func TestStreaming_FunctionResponse(t *testing.T) {
 	if member == nil {
 		t.Fatal("member not found")
 	}
-	respCh := member.TrackRequest("req-fn-1")
+	respCh, err := member.TrackRequest("req-fn-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
 
 	respPayload := map[string]any{
 		"requestId":  "req-fn-1",
@@ -982,9 +1009,8 @@ func TestStreaming_FunctionResponse_PropagatesError(t *testing.T) {
 }
 
 func TestStreaming_KeepAliveTimeout(t *testing.T) {
-	svc := newServiceForTest()
 	// Set very short keep-alive for testing.
-	svc.SetKeepAliveConfig(50*time.Millisecond, 100*time.Millisecond)
+	svc := newServiceWithKeepAlive(50*time.Millisecond, 100*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
 	defer cancel()

@@ -31,6 +31,10 @@ type ConfigVar struct {
 var rootConfigVars = []ConfigVar{
 	// --- server ---
 	{Name: "CYODA_HTTP_PORT", Topic: "server", Type: "int", Default: "8080", Description: "HTTP listen port."},
+	{Name: "CYODA_HTTP_READ_HEADER_TIMEOUT", Topic: "server", Type: "duration", Default: "10s", Description: "Time allowed to receive a request's headers on the API and admin servers. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
+	{Name: "CYODA_HTTP_READ_TIMEOUT", Topic: "server", Type: "duration", Default: "5m", Description: "Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables."},
+	{Name: "CYODA_HTTP_WRITE_TIMEOUT", Topic: "server", Type: "duration", Default: "0s", Description: "Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests."},
+	{Name: "CYODA_HTTP_IDLE_TIMEOUT", Topic: "server", Type: "duration", Default: "2m", Description: "How long an idle keep-alive connection is held open between requests. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
 	{Name: "CYODA_CONTEXT_PATH", Topic: "server", Type: "string", Default: "/api", Description: "URL prefix for all routes."},
 	{Name: "CYODA_ERROR_RESPONSE_MODE", Topic: "server", Type: "string", Default: "sanitized", Description: "Error detail level: sanitized (generic message + ticket UUID for 5xx) or verbose (internal detail included; development only)."},
 	{Name: "CYODA_LOG_LEVEL", Topic: "server", Type: "string", Default: "info", Description: "Log level: debug|info|warn|error."},
@@ -73,8 +77,6 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long the dispatcher polls gossip for a compute member with matching tags."},
 	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "HTTP timeout for the cross-node forwarding call."},
 	{Name: "CYODA_TX_TOKEN_TTL", Topic: "cluster", Type: "duration", Default: "1m30s", Description: "TTL of the signed transaction routing token minted on processor/criteria dispatch."},
-	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "cluster", Type: "int", Default: "10", Description: "Keep-alive send interval in seconds."},
-	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "cluster", Type: "int", Default: "30", Description: "Keep-alive timeout in seconds."},
 
 	// --- auth ---
 	{Name: "CYODA_IAM_MODE", Topic: "auth", Type: "string", Default: "mock", Description: "Authentication mode: mock or jwt."},
@@ -111,6 +113,8 @@ var rootConfigVars = []ConfigVar{
 
 	// --- grpc ---
 	{Name: "CYODA_GRPC_PORT", Topic: "grpc", Type: "int", Default: "9090", Description: "gRPC listen port."},
+	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "grpc", Type: "int", Default: "10", Description: "Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time."},
+	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "grpc", Type: "int", Default: "30", Description: "Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout."},
 	{Name: "CYODA_COMPUTE_GRPC_ENDPOINT", Topic: "grpc", Type: "string", Default: "", Description: "gRPC endpoint for a compute node to connect to (compute-client side)."},
 	{Name: "CYODA_COMPUTE_TOKEN", Topic: "grpc", Type: "string", Default: "", Description: "Bearer token for compute-node authentication (compute-client side)."},
 	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node calls back into (compute-client side)."},

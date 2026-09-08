@@ -11,10 +11,11 @@ import (
 
 // StoreFactory implements spi.StoreFactory backed by PostgreSQL.
 type StoreFactory struct {
-	pool      *pgxpool.Pool
-	cfg       config              // plugin config; threaded into stores that read config fields (e.g. modelStore)
-	tm        *TransactionManager // may be nil if transactions not configured
-	applyFunc ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
+	pool              *pgxpool.Pool
+	cfg               config              // plugin config; threaded into stores that read config fields (e.g. modelStore)
+	tm                *TransactionManager // may be nil if transactions not configured
+	applyFunc         ApplyFunc           // set via SetApplyFunc; used by modelStore.Get to fold the schema delta log
+	unregisterMetrics func()              // stops the pool-stat OTel callback; nil when NewStoreFactory/newStoreFactoryWithConfig built this factory outside Plugin.NewFactory
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -267,6 +268,9 @@ func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskS
 }
 
 func (f *StoreFactory) Close() error {
+	if f.unregisterMetrics != nil {
+		f.unregisterMetrics()
+	}
 	f.pool.Close()
 	return nil
 }

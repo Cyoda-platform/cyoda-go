@@ -347,6 +347,11 @@ type recoveryTestServer struct {
 	localProc *localproc.LocalProcessingService
 	tracker   *recoveryTrackingTxMgr
 	raw       spi.StoreFactory
+	// addr is the server's listen address, for a test that needs its own
+	// dial options (a pinned HTTP/2 window, a proxy in front of it).
+	addr     string
+	registry *MemberRegistry
+	srv      *Server
 }
 
 // authedCtx returns a context carrying an authorization header the test's
@@ -450,6 +455,15 @@ func (a *fixedAuthService) Authenticate(context.Context, *http.Request) (*spi.Us
 // workflow criterion evaluation) over an actual gRPC connection.
 func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTestServer {
 	t.Helper()
+	return startRecoveryTestServerWithKeepAlive(t, healthFlag,
+		KeepAliveConfig{Interval: 10 * time.Second, Timeout: 30 * time.Second})
+}
+
+// startRecoveryTestServerWithKeepAlive is startRecoveryTestServer with the
+// keep-alive configuration under the test's control, for tests whose subject
+// is the keep-alive itself and which cannot wait out the production timings.
+func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool, ka KeepAliveConfig) *recoveryTestServer {
+	t.Helper()
 
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { _ = factory.Close() })
@@ -476,7 +490,9 @@ func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTes
 		UserID:   "recovery-test-user",
 		UserName: "Recovery Test",
 		Tenant:   spi.Tenant{ID: "recovery-tenant", Name: "Recovery Tenant"},
-		Roles:    []string{"ADMIN"},
+		// ROLE_M2M in addition to ADMIN: the member stream refuses a principal
+		// without it, and the keep-alive tests join over this same fixture.
+		Roles: []string{"ADMIN", "ROLE_M2M"},
 	}
 	authSvc := &fixedAuthService{uc: uc}
 
@@ -485,9 +501,10 @@ func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTes
 		t.Fatalf("token.NewSigner: %v", err)
 	}
 
-	srv := NewServer(authSvc, NewMemberRegistry(), tracker, entityHandler, modelHandler, searchSvc,
+	registry := NewMemberRegistry()
+	srv := NewServer(authSvc, registry, tracker, entityHandler, modelHandler, searchSvc,
 		tokenSigner, nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
-		false, 0, true, healthFlag)
+		false, 0, true, healthFlag, ka)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -508,5 +525,8 @@ func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTes
 		localProc: localProc,
 		tracker:   tracker,
 		raw:       factory,
+		addr:      lis.Addr().String(),
+		registry:  registry,
+		srv:       srv,
 	}
 }

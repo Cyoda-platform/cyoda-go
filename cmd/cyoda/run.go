@@ -12,8 +12,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/admin"
-	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
 // shutdownDrainBudget bounds graceful HTTP/admin server drain. Matches the
@@ -81,7 +79,7 @@ func runServers(
 
 	// HTTP server (the application surface).
 	httpAddr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	httpServer := &http.Server{Addr: httpAddr, Handler: a.Handler()}
+	httpServer := newHTTPServer(httpAddr, a.Handler(), cfg.HTTP)
 	g.Go(func() error {
 		slog.Info("HTTP server starting", "addr", httpAddr)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -101,14 +99,7 @@ func runServers(
 
 	// Admin server (/livez, /readyz, /metrics).
 	adminAddr := fmt.Sprintf("%s:%d", cfg.Admin.BindAddress, cfg.Admin.Port)
-	adminServer := &http.Server{
-		Addr: adminAddr,
-		Handler: admin.NewHandler(admin.Options{
-			Readiness:          a.ReadinessCheck,
-			MetricsBearerToken: cfg.Admin.MetricsBearerToken,
-			MetricsHandler:     observability.MetricsHandler(),
-		}),
-	}
+	adminServer := newHTTPServer(adminAddr, newAdminHandler(a.ReadinessCheck, cfg.Admin.MetricsBearerToken), cfg.HTTP)
 	g.Go(func() error {
 		slog.Info("admin server starting", "addr", adminAddr)
 		if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

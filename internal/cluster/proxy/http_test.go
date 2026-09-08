@@ -3,12 +3,15 @@ package proxy_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -395,5 +398,46 @@ func TestProxy_PreservesQueryString(t *testing.T) {
 	}
 	if gotRawQuery != rawQuery {
 		t.Fatalf("query string not preserved across the forwarded hop: got %q, want %q", gotRawQuery, rawQuery)
+	}
+}
+
+// An upstream that hangs up mid-body makes ReverseProxy panic with
+// http.ErrAbortHandler. Under Recovery that must stay a silent abort: the
+// node's health flag is untouched.
+func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler) // closes the upstream connection short
+	}))
+	defer upstream.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: upstream.URL, Alive: true},
+	)
+
+	tok, err := signer.Issue("node-2", "tx-hangup", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+	h := middleware.Recovery(healthFlag)(proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)(localHandler()))
+	srv := httptest.NewServer(h) // a real server, so the re-raised sentinel reaches net/http
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	if !healthFlag.Load() {
+		t.Fatal("a proxied client hang-up latched the node unhealthy")
 	}
 }

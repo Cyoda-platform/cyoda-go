@@ -396,7 +396,7 @@ All 54 candidate findings with their adversarial verdict and **verified** (post�
 | `cross-cutting-2` | resource-exhaustion | high | **high** | ✅ confirmed | Cluster orphaned-tx reaper is non-functional: nothing registers txs; its Rollback is tenant-gated out |
 | `cross-cutting-3` | resource-exhaustion | high | **high** | ✅ confirmed | Panic between Begin and Commit leaks the pooled connection (no defer-rollback; reaper dead) |
 | `grpc-compute-1` | unavailability | critical | **high** | ✅ confirmed | SYNC/ASYNC_SAME_TX dispatch holds a pooled DB connection across the external gRPC round-trip |
-| `grpc-compute-2` | unavailability | critical | **high** | ✅ confirmed | A black-holed compute node makes stream.Send block past the timeout; the member is never evicted |
+| `grpc-compute-2` | unavailability | critical | **high** | ✅ closed | A black-holed compute node makes stream.Send block past the timeout; the member is never evicted — closed: one writer goroutine per member draining an outbox; eviction after `CYODA_KEEPALIVE_TIMEOUT` of inbound silence or of one stalled write |
 | `grpc-compute-7` | resource-exhaustion | high | **high** | ✅ confirmed | Async snapshot search (via gRPC) spawns an unbounded detached goroutine with no timeout/cancellation |
 | `resource-exhaustion-1` | resource-exhaustion | high | **high** | ✅ confirmed | List/GetAll materialises the entire model in memory regardless of page size → OOM |
 | `resource-exhaustion-2` | resource-exhaustion | high | **high** | ✅ confirmed | Synchronous search with no limit is fully unbounded on postgres (bypasses both caps) |
@@ -413,22 +413,22 @@ All 54 candidate findings with their adversarial verdict and **verified** (post�
 | `ssi-correctness-5` | inconsistency | medium | **medium** | ✅ confirmed | External side-effects execute before commit-time validation; conflict-retry double-fires them |
 | `tx-client-tunable-dispatch-timeout-5` | unavailability | medium | **medium** | ✅ confirmed | Per-dispatch timeout is caller/config-controlled with no upper clamp → arbitrarily long conn pin |
 | `tx-unbounded-async-search-goroutine-6` | resource-exhaustion | medium | **medium** | ✅ confirmed | Async search spawns an unbounded, uncancellable detached goroutine per request |
-| `api-boundary-http-no-timeouts-1` | resource-exhaustion | medium | **low** | ✅ confirmed | HTTP server has no Read/ReadHeader/Write/Idle timeouts (Slowloris/idle-conn hardening gap) |
-| `api-boundary-recovery-coverage-2` | inconsistency | low | **low** | ✅ confirmed | Panic recovery inconsistent — directly-mounted routes bypass the Recovery middleware |
+| `api-boundary-http-no-timeouts-1` | resource-exhaustion | medium | **low** | ✅ closed | HTTP server has no Read/ReadHeader/Write/Idle timeouts (Slowloris/idle-conn hardening gap) — closed: `CYODA_HTTP_READ_HEADER_TIMEOUT`/`CYODA_HTTP_READ_TIMEOUT`/`CYODA_HTTP_IDLE_TIMEOUT` set on both servers via `newHTTPServer` |
+| `api-boundary-recovery-coverage-2` | inconsistency | low | **low** | ✅ closed | Panic recovery inconsistent — directly-mounted routes bypass the Recovery middleware — closed: `Recovery` is the outermost layer on the API server and wraps the admin mux too |
 | `tenant-isolation-1` | cross-tenant-leak | low | **low** | ✅ confirmed | GetSubmitTime is not tenant-gated — cross-tenant existence/timing oracle for committed txIDs |
 | `cross-cutting-1` | unavailability | critical | **high** | 🟡 partial | Held REPEATABLE READ tx spans external dispatch over a 25-conn pool (bounded/self-healing at 30s) |
 | `api-boundary-grpc-recovery-1` | uncontrolled-breakdown | high | **medium** | 🟡 partial | No gRPC recovery interceptor (structural gap real; cited compute-message trigger is panic-safe) |
 | `api-boundary-cbd-partial-durability-1` | inconsistency | medium | **low** | 🟡 partial | COMMIT_BEFORE_DISPATCH leaves durable intermediate state on failure (opt-in; conflict is non-retryable) |
-| `api-boundary-health-1` | unavailability | high | **low** | 🟡 partial | One recovered panic latches /health DOWN forever; /readyz reads the same flag, so client traffic via the Service stops — peer-forwarded work and scheduler share continue, and /livez is unconditional so it never restarts |
+| `api-boundary-health-1` | unavailability | high | **low** | ✅ decided — latch kept, documented; probes are /livez and /readyz | One recovered panic latches /health DOWN forever; /readyz reads the same flag, so client traffic via the Service stops — peer-forwarded work and scheduler share continue, and /livez is unconditional so it never restarts |
 | `cluster-coordination-4` | inconsistency | medium | **low** | 🟡 partial | Model-cache invalidation rides best-effort gossip (survives single-packet loss; 5-min lease) |
 | `cluster-coordination-5` | inconsistency | low | **low** | 🟡 partial | Tx-routing token never minted in production — proxy affinity primitive is inert dead code |
 | `cluster-coordination-6` | unavailability | medium | **low** | 🟡 partial | One shared secret for gossip/AEAD/token; rotation needs full downtime (fails loud, not split-brain) |
 | `cluster-coordination-7` | unavailability | low | **low** | 🟡 partial | Dispatch nonce cache fail-closed at 100k (unreachable at moderate volume; per-node, self-clearing) |
 | `concurrency-fatal-4` | inconsistency | medium | **low** | 🟡 partial | Postgres doesn't use OpMu (satisfies contract trivially — its TransactionState maps are unused) |
 | `cross-cutting-5` | inconsistency | medium | **low** | 🟡 partial | Shutdown abandons in-flight workflows past 10s; pool.Close doesn't wait (SYNC rolls back cleanly) |
-| `grpc-compute-4` | resource-exhaustion | medium | **low** | 🟡 partial | Pending-request map entries not removed on timeout/cancel (small leak; reclaimed on disconnect) |
-| `grpc-compute-5` | inconsistency | medium | **low** | 🟡 partial | Tag-change propagation goroutine-per-event, version-less overwrite → stale routing under flap |
-| `grpc-compute-6` | unavailability | medium | **low** | 🟡 partial | Member-death race in a sub-ms window; self-heals at dispatch timeout (CBD partial-apply is by design) |
+| `grpc-compute-4` | resource-exhaustion | medium | **low** | ✅ closed | Pending-request map entries not removed on timeout/cancel (small leak; reclaimed on disconnect) — closed: `defer member.AbandonRequest(requestID)` removes the entry on every dispatch exit path |
+| `grpc-compute-5` | inconsistency | medium | **low** | ✅ closed | Tag-change propagation goroutine-per-event, version-less overwrite → stale routing under flap — closed: publication is versioned, advanced only on a successful publish; an older snapshot never overwrites a newer one |
+| `grpc-compute-6` | unavailability | medium | **low** | ✅ closed | Member-death race in a sub-ms window; self-heals at dispatch timeout (CBD partial-apply is by design) — closed: `TrackRequest` fails fast with `COMPUTE_MEMBER_DISCONNECTED` once the member is evicted or closed |
 | `resource-exhaustion-4` | resource-exhaustion | high | **low** | 🟡 partial | Orphaned-tx map/connection leak (real defects, but headline slow-node/disconnect triggers self-heal) |
 | `resource-exhaustion-5` | resource-exhaustion | medium | **low** | 🟡 partial | In-tx GetAll/DeleteAll readSet bloat (readSet drained by write-promotion; second pass skipped) |
 | `schema-model-migration-2` | data-loss | high | **low** | 🟡 partial | Dev-only operator-contract guard is dead code (but state-machine guards are the real defense) |

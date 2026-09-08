@@ -250,9 +250,9 @@ func TestRPC_ScheduledFunction_DispatchTimeout_Envelope(t *testing.T) {
 	wf := scheduleFunctionRPCWorkflowJSON("schedfn-timeout-wf", schedFnConfigJSON("calcSlow", tag, responseTimeoutMs))
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName, wf)
 
-	svc.registry.Register(testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
+	svc.registry.Register("m-1", testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
 		return nil // never answers — the request is tracked but never completed
-	})
+	}, nil)
 
 	typed := createScheduledEntity(t, svc, ctx, modelName)
 	assertClientErrorEnvelope(t, typed, "DISPATCH_TIMEOUT")
@@ -275,8 +275,8 @@ func TestRPC_ScheduledFunction_MalformedResult_Envelope(t *testing.T) {
 	wf := scheduleFunctionRPCWorkflowJSON("schedfn-malformed-wf", schedFnConfigJSON("calcBadResult", tag, 0))
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName, wf)
 
-	var memberID string
-	memberID = svc.registry.Register(testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
+	const memberID = "m-1"
+	svc.registry.Register(memberID, testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
 		reqID, err := extractRequestID(ce)
 		if err != nil {
 			t.Errorf("extractRequestID: %v", err)
@@ -290,7 +290,7 @@ func TestRPC_ScheduledFunction_MalformedResult_Envelope(t *testing.T) {
 			Result: json.RawMessage(`{"fireAt":1234567890000,"fireAfterMs":1000}`),
 		})
 		return nil
-	})
+	}, nil)
 
 	typed := createScheduledEntity(t, svc, ctx, modelName)
 	if typed.Success {
@@ -326,8 +326,8 @@ func TestRPC_ScheduledFunction_ExplicitFire_ReturnsTransitionNotFound(t *testing
 	wf := scheduleFunctionRPCWorkflowJSON("schedfn-explicit-wf", schedFnConfigJSON("calcExplicit", tag, 0))
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName, wf)
 
-	var memberID string
-	memberID = svc.registry.Register(testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
+	const memberID = "m-1"
+	svc.registry.Register(memberID, testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
 		reqID, err := extractRequestID(ce)
 		if err != nil {
 			t.Errorf("extractRequestID: %v", err)
@@ -341,7 +341,7 @@ func TestRPC_ScheduledFunction_ExplicitFire_ReturnsTransitionNotFound(t *testing
 			Result: json.RawMessage(`{"fireAfterMs":600000}`),
 		})
 		return nil
-	})
+	}, nil)
 
 	createTyped := createScheduledEntity(t, svc, ctx, modelName)
 	if !createTyped.Success {

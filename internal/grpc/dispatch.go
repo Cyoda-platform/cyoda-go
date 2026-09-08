@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -118,22 +119,46 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	ceData := ce.GetTextData()
 	slog.Debug("dispatch request", "pkg", "grpc", "requestId", requestID, "payload", logging.PayloadPreview([]byte(ceData), 200))
 
-	ch := member.TrackRequest(requestID)
+	if timeoutMs <= 0 {
+		timeoutMs = defaultResponseTimeoutMs
+	}
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	// One deadline bounds the whole callout: handing the request to the
+	// member's writer AND waiting for the response. A member whose writer is
+	// stalled cannot hold a dispatcher past this.
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// TrackRequest fails closed with ErrMemberEvicted the instant the member
+	// is torn down, even in the window before Evict has finished closing the
+	// evicted channel (see Member.closed): that is what keeps a dispatcher
+	// from selecting on a nil/never-tracked channel until its timeout and
+	// misreporting DISPATCH_TIMEOUT for a member that was already gone.
+	ch, err := member.TrackRequest(requestID)
+	if err != nil {
+		// The member left between being chosen and the request being tracked.
+		slog.Warn("member gone before dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+		return nil, disconnectedErr(label)
+	}
 	// Spec D11: every exit that does not consume the response must clear the
 	// tracking entry, or a late compute-node reply finds a dangling channel
 	// and the map entry leaks. The response arm's normal completion path
 	// already cleared it; clearing again is a no-op.
 	defer member.AbandonRequest(requestID)
 
-	if err := member.Send(ce); err != nil {
-		slog.Error("failed to send to member", "pkg", "grpc", "memberId", member.ID, "error", err)
-		return nil, fmt.Errorf("failed to send %s request: %w", label, err)
+	if err := member.Send(callCtx, ce); err != nil {
+		switch {
+		case errors.Is(err, ErrMemberEvicted):
+			slog.Error("member evicted while enqueueing dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
+			return nil, disconnectedErr(label)
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		default:
+			slog.Error("dispatch timeout", "pkg", "grpc", "phase", "enqueue", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", timeout)
+			return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
+				fmt.Sprintf("%s dispatch timed out after %dms: member not draining", label, timeoutMs)).AsRetryable()
+		}
 	}
-
-	if timeoutMs <= 0 {
-		timeoutMs = defaultResponseTimeoutMs
-	}
-	timeout := time.Duration(timeoutMs) * time.Millisecond
 
 	select {
 	case resp := <-ch:
@@ -146,8 +171,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		}
 		if resp != nil && resp.Disconnected {
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
-			return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
-				fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
+			return nil, disconnectedErr(label)
 		}
 		if resp == nil || !resp.Success {
 			errMsg := label + " returned failure"
@@ -159,13 +183,22 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		}
 		slog.Info("dispatch completed", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "success", true)
 		return resp, nil
-	case <-time.After(timeout):
-		slog.Error("dispatch timeout", "pkg", "grpc", "label", label, "name", name, "requestId", requestID, "timeout", timeout)
+	case <-callCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		slog.Error("dispatch timeout", "pkg", "grpc", "phase", "response", "memberId", member.ID, "label", label, "name", name, "requestId", requestID, "timeout", timeout)
 		return nil, common.Operational(http.StatusServiceUnavailable, common.ErrCodeDispatchTimeout,
-			fmt.Sprintf("%s dispatch timed out after %dms", label, timeoutMs)).AsRetryable()
-	case <-ctx.Done():
-		return nil, ctx.Err()
+			fmt.Sprintf("%s dispatch timed out after %dms: no response", label, timeoutMs)).AsRetryable()
 	}
+}
+
+// disconnectedErr is the retryable 503 a caller gets when the compute member
+// it was routed to is gone; another member (or the same one, reconnected) may
+// serve the retry.
+func disconnectedErr(label string) error {
+	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeComputeMemberDisconnected,
+		fmt.Sprintf("compute member disconnected during %s dispatch", label)).AsRetryable()
 }
 
 // DispatchProcessor sends an entity processor calculation request to a matching

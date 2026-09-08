@@ -18,6 +18,7 @@ import (
 
 type Config struct {
 	HTTPPort          int
+	HTTP              HTTPConfig
 	ContextPath       string
 	ErrorResponseMode string
 	MaxStateVisits    int
@@ -79,6 +80,23 @@ type Config struct {
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
+}
+
+// HTTPConfig holds the receive-side timeouts applied to both the API server
+// and the admin server. ReadHeaderTimeout, ReadTimeout and IdleTimeout bound
+// how a request is received and how long an idle keep-alive connection is
+// kept; none of them limits how long a handler runs (Go clears the read
+// deadline once the body is drained). WriteTimeout does limit handler
+// execution and ships disabled: the server imposes no time budget on work.
+// Zero disables ReadTimeout and WriteTimeout outright. For ReadHeaderTimeout
+// and IdleTimeout, zero instead means "use ReadTimeout" — Go's own
+// net/http.Server fallback — so those two are off only when ReadTimeout is
+// also zero.
+type HTTPConfig struct {
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
 }
 
 // SearchAsyncConfig bounds the async-search worker pool
@@ -402,6 +420,12 @@ func DefaultConfig() Config {
 			RedispatchBackoff: envDuration("CYODA_SCHEDULER_REDISPATCH_BACKOFF", 30*time.Second),
 			ExpiryGrace:       envDuration("CYODA_SCHEDULER_EXPIRY_GRACE", 100*time.Millisecond),
 		},
+		HTTP: HTTPConfig{
+			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
+			ReadTimeout:       envDuration("CYODA_HTTP_READ_TIMEOUT", 5*time.Minute),
+			WriteTimeout:      envDuration("CYODA_HTTP_WRITE_TIMEOUT", 0),
+			IdleTimeout:       envDuration("CYODA_HTTP_IDLE_TIMEOUT", 120*time.Second),
+		},
 	}
 }
 
@@ -685,13 +709,33 @@ func isASCII(s string) bool {
 // name the offending setting; it exits before New is ever reached, so the
 // same error is never reported twice.
 func (c Config) Validate() error {
+	if err := ValidateGRPCKeepAlive(c.GRPC); err != nil {
+		return err
+	}
 	if err := ValidateSearchAsync(c.SearchAsync); err != nil {
 		return err
 	}
 	if err := ValidateSearchJobHeartbeat(c.SearchJobHeartbeatInterval); err != nil {
 		return err
 	}
-	return ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval)
+	if err := ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval); err != nil {
+		return err
+	}
+	return ValidateHTTP(c.HTTP)
+}
+
+// ValidateGRPCKeepAlive rejects a keep-alive interval or timeout that is not
+// positive. Both drive tickers and transport deadlines; zero or negative would
+// panic the ticker or disable eviction, neither of which is a configuration
+// anyone means. Config is a QA'd artefact: an invalid value is a startup error.
+func ValidateGRPCKeepAlive(c GRPCConfig) error {
+	if c.KeepAliveInterval <= 0 {
+		return fmt.Errorf("CYODA_KEEPALIVE_INTERVAL must be >= 1 (seconds), got %d", c.KeepAliveInterval)
+	}
+	if c.KeepAliveTimeout <= 0 {
+		return fmt.Errorf("CYODA_KEEPALIVE_TIMEOUT must be >= 1 (seconds), got %d", c.KeepAliveTimeout)
+	}
+	return nil
 }
 
 // ValidateSearchAsync enforces startup-time correctness for the
@@ -759,6 +803,28 @@ func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
 	if staleAfter < minStale {
 		return fmt.Errorf("CYODA_SEARCH_JOB_STALE_AFTER must be >= %d x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL (%s, given interval=%s), got %s",
 			staleAfterMinMultiple, minStale, interval, staleAfter)
+	}
+	return nil
+}
+
+// ValidateHTTP rejects a negative timeout; zero means disabled. The fields
+// are walked as a slice, not a map, so that a config with more than one
+// negative value always names the same one — a map's iteration order would
+// make the startup error differ between runs of the same binary on the same
+// configuration.
+func ValidateHTTP(c HTTPConfig) error {
+	for _, f := range []struct {
+		name string
+		d    time.Duration
+	}{
+		{"CYODA_HTTP_READ_HEADER_TIMEOUT", c.ReadHeaderTimeout},
+		{"CYODA_HTTP_READ_TIMEOUT", c.ReadTimeout},
+		{"CYODA_HTTP_WRITE_TIMEOUT", c.WriteTimeout},
+		{"CYODA_HTTP_IDLE_TIMEOUT", c.IdleTimeout},
+	} {
+		if f.d < 0 {
+			return fmt.Errorf("%s must not be negative, got %s", f.name, f.d)
+		}
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ func validSearchConfig() Config {
 		SearchAsync:                SearchAsyncConfig{Workers: 8, QueueLen: 256, MaxPerTenant: 8},
 		SearchJobHeartbeatInterval: 15 * time.Second,
 		SearchJobStaleAfter:        5 * time.Minute,
+		GRPC:                       GRPCConfig{KeepAliveInterval: 10, KeepAliveTimeout: 30},
 	}
 }
 
@@ -45,5 +46,25 @@ func TestConfig_Validate(t *testing.T) {
 				t.Fatalf("Validate() = nil, want an error for %s", tc.name)
 			}
 		})
+	}
+}
+
+func TestValidateGRPCKeepAlive_RejectsNonPositive(t *testing.T) {
+	for _, c := range []GRPCConfig{{KeepAliveInterval: 0, KeepAliveTimeout: 30}, {KeepAliveInterval: 10, KeepAliveTimeout: -1}} {
+		if err := ValidateGRPCKeepAlive(c); err == nil {
+			t.Errorf("ValidateGRPCKeepAlive(%+v) = nil, want error", c)
+		}
+	}
+	if err := ValidateGRPCKeepAlive(GRPCConfig{KeepAliveInterval: 10, KeepAliveTimeout: 30}); err != nil {
+		t.Errorf("valid config rejected: %v", err)
+	}
+}
+
+func TestValidateHTTP_RejectsNegative(t *testing.T) {
+	if err := ValidateHTTP(HTTPConfig{ReadTimeout: -1}); err == nil {
+		t.Fatal("negative timeout accepted")
+	}
+	if err := ValidateHTTP(HTTPConfig{}); err != nil {
+		t.Fatalf("all-zero (disabled) rejected: %v", err)
 	}
 }

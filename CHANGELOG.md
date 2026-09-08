@@ -997,6 +997,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   never a model-wide scan for what only needs one field's worth of audit
   metadata.
 
+- **HTTP receive-side timeouts, configurable.** `CYODA_HTTP_READ_HEADER_TIMEOUT`
+  (`10s`), `CYODA_HTTP_READ_TIMEOUT` (`5m`), `CYODA_HTTP_IDLE_TIMEOUT` (`2m`) on
+  both the API and admin servers. A request whose headers or body are not
+  received within those bounds is cut off; handler execution is not limited.
+  `CYODA_HTTP_READ_HEADER_TIMEOUT` and `CYODA_HTTP_IDLE_TIMEOUT` fall back to
+  `CYODA_HTTP_READ_TIMEOUT` when set to `0` (Go's own `net/http.Server`
+  behaviour), so those two are off only when `CYODA_HTTP_READ_TIMEOUT` is also
+  `0`. `CYODA_HTTP_WRITE_TIMEOUT` exists and ships disabled (`0`): the server
+  imposes no time budget on work. A client that takes more than five minutes
+  to deliver a request body is now cut off. `cyoda help config`.
+
+- **Postgres pool saturation metrics.** `cyoda_storage_pool_connections{state}`,
+  `cyoda_storage_pool_max_connections`, `cyoda_storage_pool_acquires_total`,
+  `cyoda_storage_pool_empty_acquires_total`, `cyoda_storage_pool_canceled_acquires_total`,
+  `cyoda_storage_pool_acquire_duration_seconds_total`,
+  `cyoda_storage_pool_empty_acquire_wait_seconds_total`, all labelled
+  `backend="postgres"`, always on at `/metrics`. `cyoda help telemetry`.
+
 ### Changed
 
 - **Async search translates the condition before it persists the job.**
@@ -1196,6 +1214,45 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **A frozen compute node is evicted within the keep-alive timeout and never
+  wedges a dispatcher.** Each member's stream now has exactly one writer
+  goroutine draining an outbox; dispatchers hand it events under their own
+  deadline and are released by that deadline (`503 DISPATCH_TIMEOUT`, "member
+  not draining") or by the member's eviction (`503 COMPUTE_MEMBER_DISCONNECTED`).
+  A member is evicted after `CYODA_KEEPALIVE_TIMEOUT` of inbound silence **or**
+  when one write has stalled that long, so a node that keeps pinging while its
+  application is stuck is caught too. grpc-go transport keepalive is
+  configured from the same two variables, with a permissive enforcement floor
+  (5s) so external compute nodes are never GOAWAY'd for pinging.
+
+- **`CYODA_KEEPALIVE_INTERVAL` and `CYODA_KEEPALIVE_TIMEOUT` were parsed and
+  ignored.** They now reach the gRPC server; a non-positive value is a
+  startup error. Processor, criteria and function responses count as
+  liveness, as the help topic said.
+
+- **Panics in the member stream's keep-alive loop, receive goroutine and
+  writer are contained** with a ticket and evict the member; they do not
+  latch the node unhealthy (no engine work runs there).
+
+- **Compute-member routing tags could go stale under connect/disconnect
+  flap:** tag publication is versioned and an older snapshot never
+  overwrites a newer one.
+
+- **A member disconnecting between being chosen and the request being
+  tracked** now fails fast with `COMPUTE_MEMBER_DISCONNECTED` instead of
+  waiting out the dispatch timeout.
+
+- **Panic recovery is the outermost HTTP layer**, covering the CORS and
+  cluster-routing middleware, and the admin server (`/livez`, `/readyz`,
+  `/metrics`) is covered too (contained with a ticket; it does not latch the
+  node — probes and scrapes do no engine work). `Recovery` re-raises
+  `http.ErrAbortHandler`, so a client hanging up on a proxied response is no
+  longer logged as a panic — and, now that the proxy sits inside recovery,
+  does not latch the node.
+
+- **The reference compute client** (`cmd/compute-test-client`) serialises its
+  own stream writes; compute-node implementations must do the same.
 
 - **A 4xx error body no longer scales with the size of a malicious request,
   and a decoding-contract violation on a write now answers 5xx instead of

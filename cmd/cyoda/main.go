@@ -92,6 +92,10 @@ func main() {
 		slog.Error("CORS validation failed", "error", err)
 		os.Exit(1)
 	}
+	if err := app.ValidateGRPCKeepAlive(cfg.GRPC); err != nil {
+		slog.Error("gRPC keep-alive config validation failed", "error", err)
+		os.Exit(1)
+	}
 	if err := app.ValidateSearchAsync(cfg.SearchAsync); err != nil {
 		slog.Error("search async config validation failed", "error", err)
 		os.Exit(1)

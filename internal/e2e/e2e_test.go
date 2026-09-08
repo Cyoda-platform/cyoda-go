@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 	"github.com/cyoda-platform/cyoda-go/internal/testpg"
 
@@ -152,6 +153,14 @@ func TestMain(m *testing.M) {
 	// so the JWKS validator URL points to the right place.
 	srvPort := srv.Listener.Addr().(*net.TCPAddr).Port
 	cfg.HTTPPort = srvPort
+
+	// Same order as cmd/cyoda/main.go: the metrics pipeline exists before the
+	// storage plugin registers its instruments.
+	otelShutdown, err := observability.Init(ctx, "cyoda-e2e", "e2e", false)
+	if err != nil {
+		log.Fatalf("observability init: %v", err)
+	}
+	defer otelShutdown(ctx)
 
 	testApp = app.New(cfg)
 

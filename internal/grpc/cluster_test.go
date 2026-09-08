@@ -29,7 +29,7 @@ func TestClusterService_ListEmpty(t *testing.T) {
 
 func TestClusterService_ListWithMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	registry.Register(spi.TenantID("tenant-1"), []string{"python"}, func(ce *cepb.CloudEvent) error { return nil })
+	registry.Register("m-1", spi.TenantID("tenant-1"), []string{"python"}, func(ce *cepb.CloudEvent) error { return nil }, nil)
 
 	svc := NewClusterService(registry)
 	data, err := svc.ListCalculationMembers(context.Background())
@@ -57,10 +57,10 @@ func TestClusterService_ListWithMember(t *testing.T) {
 
 func TestClusterService_GetMember(t *testing.T) {
 	registry := NewMemberRegistry()
-	memberID := registry.Register(spi.TenantID("tenant-2"), []string{"java"}, func(ce *cepb.CloudEvent) error { return nil })
+	member := registry.Register("m-1", spi.TenantID("tenant-2"), []string{"java"}, func(ce *cepb.CloudEvent) error { return nil }, nil)
 
 	svc := NewClusterService(registry)
-	data, err := svc.GetCalculationMember(context.Background(), memberID)
+	data, err := svc.GetCalculationMember(context.Background(), member.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,8 +69,8 @@ func TestClusterService_GetMember(t *testing.T) {
 	if err := json.Unmarshal(data, &info); err != nil {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
-	if info.MemberID != memberID {
-		t.Errorf("expected memberId=%s, got %s", memberID, info.MemberID)
+	if info.MemberID != member.ID {
+		t.Errorf("expected memberId=%s, got %s", member.ID, info.MemberID)
 	}
 	if info.TenantID != "tenant-2" {
 		t.Errorf("expected tenantId=tenant-2, got %s", info.TenantID)
@@ -93,9 +93,9 @@ func TestClusterService_GetMemberNotFound(t *testing.T) {
 func TestClusterService_Summary(t *testing.T) {
 	registry := NewMemberRegistry()
 	noop := func(ce *cepb.CloudEvent) error { return nil }
-	registry.Register(spi.TenantID("tenant-a"), []string{"python"}, noop)
-	registry.Register(spi.TenantID("tenant-a"), []string{"java"}, noop)
-	registry.Register(spi.TenantID("tenant-b"), []string{"python"}, noop)
+	registry.Register("m-1", spi.TenantID("tenant-a"), []string{"python"}, noop, nil)
+	registry.Register("m-2", spi.TenantID("tenant-a"), []string{"java"}, noop, nil)
+	registry.Register("m-3", spi.TenantID("tenant-b"), []string{"python"}, noop, nil)
 
 	svc := NewClusterService(registry)
 	data, err := svc.GetSummary(context.Background())

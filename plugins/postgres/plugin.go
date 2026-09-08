@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"go.opentelemetry.io/otel"
 )
 
 func init() { spi.Register(&plugin{}) }
@@ -51,5 +52,11 @@ func (p *plugin) NewFactory(
 
 	factory := newStoreFactory(pool, cfg)
 	factory.initTransactionManager(&defaultUUIDGenerator{})
+	unregister, err := registerPoolMetrics(otel.Meter(meterName), pool)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres: %w", err)
+	}
+	factory.unregisterMetrics = unregister
 	return factory, nil
 }

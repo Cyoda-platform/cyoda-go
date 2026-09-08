@@ -75,14 +75,18 @@ func renderMillis(d time.Duration) string {
 func defaultFor(c app.Config) map[string]string {
 	return map[string]string{
 		// --- server ---
-		"CYODA_HTTP_PORT":           strconv.Itoa(c.HTTPPort),
-		"CYODA_CONTEXT_PATH":        c.ContextPath,
-		"CYODA_ERROR_RESPONSE_MODE": c.ErrorResponseMode,
-		"CYODA_LOG_LEVEL":           c.LogLevel,
-		"CYODA_STARTUP_TIMEOUT":     renderDuration(c.StartupTimeout),
-		"CYODA_MAX_STATE_VISITS":    strconv.Itoa(c.MaxStateVisits),
-		"CYODA_MODEL_CACHE_LEASE":   renderDuration(c.ModelCacheLease),
-		"CYODA_STORAGE_BACKEND":     c.StorageBackend,
+		"CYODA_HTTP_PORT":                strconv.Itoa(c.HTTPPort),
+		"CYODA_HTTP_READ_HEADER_TIMEOUT": renderDuration(c.HTTP.ReadHeaderTimeout),
+		"CYODA_HTTP_READ_TIMEOUT":        renderDuration(c.HTTP.ReadTimeout),
+		"CYODA_HTTP_WRITE_TIMEOUT":       renderDuration(c.HTTP.WriteTimeout),
+		"CYODA_HTTP_IDLE_TIMEOUT":        renderDuration(c.HTTP.IdleTimeout),
+		"CYODA_CONTEXT_PATH":             c.ContextPath,
+		"CYODA_ERROR_RESPONSE_MODE":      c.ErrorResponseMode,
+		"CYODA_LOG_LEVEL":                c.LogLevel,
+		"CYODA_STARTUP_TIMEOUT":          renderDuration(c.StartupTimeout),
+		"CYODA_MAX_STATE_VISITS":         strconv.Itoa(c.MaxStateVisits),
+		"CYODA_MODEL_CACHE_LEASE":        renderDuration(c.ModelCacheLease),
+		"CYODA_STORAGE_BACKEND":          c.StorageBackend,
 
 		// --- admin ---
 		"CYODA_ADMIN_PORT":           strconv.Itoa(c.Admin.Port),
