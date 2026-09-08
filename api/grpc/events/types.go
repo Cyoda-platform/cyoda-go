@@ -3059,7 +3059,11 @@ type EntitySearchRequestJsonOrderByElem struct {
 	// Desc corresponds to the JSON schema field "desc".
 	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
 
-	// Path corresponds to the JSON schema field "path".
+	// A dotted scalar path in the entity data (`price`, `address.city`; the `$.`
+	// leader is optional) or, with `source: "meta"`, a canonical meta field name.
+	// Array subscripts and projections (`items[*].name`, `items[0].name`) are
+	// rejected — an ordering needs a single scalar — as is any character outside
+	// `A-Za-z0-9_-`. Refused paths answer `INVALID_FIELD_PATH`.
 	Path string `json:"path" yaml:"path" mapstructure:"path"`
 
 	// Source corresponds to the JSON schema field "source".
@@ -3217,7 +3221,11 @@ type EntitySnapshotSearchRequestJsonOrderByElem struct {
 	// Desc corresponds to the JSON schema field "desc".
 	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
 
-	// Path corresponds to the JSON schema field "path".
+	// A dotted scalar path in the entity data (`price`, `address.city`; the `$.`
+	// leader is optional) or, with `source: "meta"`, a canonical meta field name.
+	// Array subscripts and projections (`items[*].name`, `items[0].name`) are
+	// rejected — an ordering needs a single scalar — as is any character outside
+	// `A-Za-z0-9_-`. Refused paths answer `INVALID_FIELD_PATH`.
 	Path string `json:"path" yaml:"path" mapstructure:"path"`
 
 	// Source corresponds to the JSON schema field "source".
