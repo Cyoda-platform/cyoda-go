@@ -2325,7 +2325,7 @@ type GroupedStatsRequest struct {
 	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); a value outside that range is rejected with 400 `INVALID_LIMIT` rather than clamped.
 	Limit *int32 `json:"limit,omitempty"`
 
-	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Defaults to the current consistency time.
+	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Absent means the current committed state.
 	PointInTime *time.Time `json:"pointInTime,omitempty"`
 }
 
@@ -3307,13 +3307,13 @@ type CreateTechnicalUserParams struct {
 
 // GetEntityStatisticsParams defines parameters for GetEntityStatistics.
 type GetEntityStatisticsParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
 // GetEntityStatisticsByStateParams defines parameters for GetEntityStatisticsByState.
 type GetEntityStatisticsByStateParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
@@ -3322,7 +3322,7 @@ type GetEntityStatisticsByStateParams struct {
 
 // GetEntityStatisticsByStateForModelParams defines parameters for GetEntityStatisticsByStateForModel.
 type GetEntityStatisticsByStateForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
@@ -3331,13 +3331,13 @@ type GetEntityStatisticsByStateForModelParams struct {
 
 // GetEntityStatisticsForModelParams defines parameters for GetEntityStatisticsForModel.
 type GetEntityStatisticsForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
 // GetOneEntityParams defines parameters for GetOneEntity.
 type GetOneEntityParams struct {
-	// PointInTime The point-in-time for loading the entity, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for loading the entity, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// TransactionId Load the entity as it was at the end of the specified transaction with the given transactionId
@@ -3346,7 +3346,7 @@ type GetOneEntityParams struct {
 
 // GetEntityChangesMetadataParams defines parameters for GetEntityChangesMetadata.
 type GetEntityChangesMetadataParams struct {
-	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
@@ -3389,7 +3389,7 @@ type GetAllEntitiesParams struct {
 	// PageNumber Page number to retrieve, starting from 0. Must be greater than or equal to 0.
 	PageNumber *int32 `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
 
-	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
@@ -3709,7 +3709,7 @@ type SubmitAsyncSearchJobJSONBody struct {
 
 // SubmitAsyncSearchJobParams defines parameters for SubmitAsyncSearchJob.
 type SubmitAsyncSearchJobParams struct {
-	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
@@ -3732,7 +3732,7 @@ type SearchEntitiesJSONBody struct {
 
 // SearchEntitiesParams defines parameters for SearchEntities.
 type SearchEntitiesParams struct {
-	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Defaults to the consistency time of the system if not provided.
+	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Limit Caps the matched result set; not a page size. Defaults to 1000 if not provided. Accepts 1-10000; values outside this range, including 0, are rejected with 400. A matched set larger than `limit` fails 400 `SEARCH_RESULT_LIMIT` rather than returning a truncated prefix.

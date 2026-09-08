@@ -840,8 +840,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -882,8 +881,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -987,8 +985,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -1089,8 +1086,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -1297,8 +1293,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entity, in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to the current consistency time of
-            the system if not provided.
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -1514,8 +1509,8 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entity changes, in ISO 8601
-            format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current
-            consistency time of the system if not provided.
+            format (e.g., '2035-01-01T12:00:00Z'). Absent means the current
+            committed state.
           required: false
           schema:
             type: string
@@ -1597,8 +1592,8 @@ paths:
 
 
         Exactly one of `pointInTime` or `transactionId` may be supplied;
-        both together is an error. When neither is provided the current
-        consistency time is used.
+        both together is an error. When neither is provided, the current
+        committed state is used.
 
 
         The transitions list is derived from the workflow definition the
@@ -1763,8 +1758,8 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entities, in ISO 8601 format
-            (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency
-            time of the system if not provided.
+            (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed
+            state.
           required: false
           schema:
             type: string
@@ -6946,8 +6941,7 @@ paths:
         - name: pointInTime
           in: query
           description: "The point-in-time for the report, in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to the current consistency time of
-            the system if not provided. "
+            '2035-01-01T12:00:00Z'). Absent means the current committed state. "
           required: false
           schema:
             type: string
@@ -7290,7 +7284,7 @@ paths:
         - name: pointInTime
           in: query
           description: "The point-in-time for searching the entities, in ISO 8601 format.
-            Defaults to the consistency time of the system if not provided. "
+            Absent means the current committed state. "
           required: false
           schema:
             type: string
@@ -11059,7 +11053,7 @@ components:
           format: date-time
           description: >-
             Optional point-in-time for the query in ISO 8601 / RFC 3339
-            format. Defaults to the current consistency time.
+            format. Absent means the current committed state.
           example: 2035-01-01T12:00:00Z
         limit:
           type: integer

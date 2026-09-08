@@ -321,7 +321,7 @@ Response: `200 OK`, `application/json`:
 - `modelVersion` (path): int32
 - `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
 - `pointInTime` (query, optional): RFC 3339 — select the entities that existed at this instant (committed state; the ambient transaction is ignored) and delete their current rows. Absent means the current committed state. An entity selected at the instant but already gone is reported in `deleteResult.idToError`.
-- `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every entity ID the delete attempted (an empty body lists them too); an ID whose delete failed also appears in `deleteResult.idToError`.
+- `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every entity ID the delete attempted (an empty body lists them too); an ID whose delete failed also appears in `deleteResult.idToError`; on a large model this enumerates every entity of the model in one response.
 
 Request body: optional `AbstractConditionDto` (same condition DSL as `/search/*`). When the body is absent or empty, all entities of the model are deleted.
 
@@ -707,7 +707,7 @@ curl -s -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1"
 
-# Delete only VALIDATED entities and list the deleted IDs:
+# Delete only VALIDATED entities and list the attempted IDs:
 curl -s -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \

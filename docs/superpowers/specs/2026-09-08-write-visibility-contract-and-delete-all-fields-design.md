@@ -120,7 +120,10 @@ and D2 honors it, so it is not fictional. Recorded in
 
 **D4 — No new error codes.** `pointInTime`'s OpenAPI description on `deleteEntities` is
 reworded from "defaults to the consistency time of the system" to "absent means the current
-committed state" — there is no consistency time under this contract.
+committed state" — there is no consistency time under this contract. The same "consistency
+time" wording on every other point-in-time parameter (entity reads, listings, search,
+statistics, history) and in the analytics help topic is reworded to "absent means the current
+committed state" — description-only, one definition of an absent instant across the spec.
 
 ## Error / status table
 

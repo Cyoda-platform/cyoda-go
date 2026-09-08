@@ -143,13 +143,11 @@ func TestDeleteEntities_Unconditional_Verbose_ListsAttemptedIDs(t *testing.T) {
 }
 
 func TestDeleteEntities_Unconditional_PointInTime_ModelNotFound(t *testing.T) {
-	status, _, body := deleteModelEntities(t, "e2e-deluncond-nosuch", "pointInTime=2030-01-01T00:00:00Z")
-	if status != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404: %s", status, body)
+	resp := doAuth(t, http.MethodDelete, "/api/entity/e2e-deluncond-nosuch/1?pointInTime=2030-01-01T00:00:00Z", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
-	if !strings.Contains(body, "MODEL_NOT_FOUND") {
-		t.Errorf("body must carry MODEL_NOT_FOUND: %s", body)
-	}
+	commontest.ExpectErrorCode(t, resp, "MODEL_NOT_FOUND")
 }
 
 func TestDeleteEntities_Unconditional_MalformedPointInTime_400(t *testing.T) {

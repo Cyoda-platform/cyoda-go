@@ -114,6 +114,44 @@ func TestRPC_EntityDeleteAll_PointInTime_SparesLaterCreates(t *testing.T) {
 	}
 }
 
+// An id selected at the pointInTime instant but already deleted by the time
+// the delete-all runs is reported per id in errorsById, while still
+// appearing in the attempted entityIds set alongside the survivors.
+func TestRPC_EntityDeleteAll_PointInTime_AlreadyGoneIDInErrorsByID(t *testing.T) {
+	svc, ctx, _, _ := newDeleteAllTxSizeEnv(t)
+	before := seedDeleteAllPersonIDs(t, svc, ctx, 3, true)
+	time.Sleep(2 * time.Millisecond)
+	pit := time.Now().UTC()
+	time.Sleep(2 * time.Millisecond)
+	seedDeleteAllPersonIDs(t, svc, ctx, 2, false)
+
+	goneID := before[0]
+	deleteCE := makeCE(EntityDeleteRequest, map[string]any{
+		"id":       "test",
+		"entityId": goneID,
+	})
+	if _, err := svc.EntityManage(ctx, deleteCE); err != nil {
+		t.Fatalf("delete %s before delete-all: %v", goneID, err)
+	}
+
+	typed := deleteAllViaGRPC(t, svc, ctx, map[string]any{
+		"pointInTime": pit.Format(time.RFC3339Nano),
+		"verbose":     true,
+	})
+	if !typed.Success {
+		t.Fatalf("expected success=true, error=%+v", typed.Error)
+	}
+	if typed.NumDeleted != 2 {
+		t.Errorf("NumDeleted = %d, want 2 (the already-gone id doesn't count)", typed.NumDeleted)
+	}
+	if _, ok := typed.ErrorsByID[goneID]; !ok {
+		t.Errorf("ErrorsByID = %v, want an entry for the already-gone id %s", typed.ErrorsByID, goneID)
+	}
+	if got, want := sortedCopy(typed.EntityIds), sortedCopy(before); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("EntityIds = %v, want the attempted set %v (including the already-gone id)", got, want)
+	}
+}
+
 func TestRPC_EntityDeleteAll_Verbose_ListsAttemptedIDs_SingleTx(t *testing.T) {
 	svc, ctx, spyStore, rtm := newDeleteAllTxSizeEnv(t)
 	ids := seedDeleteAllPersonIDs(t, svc, ctx, 3, true)

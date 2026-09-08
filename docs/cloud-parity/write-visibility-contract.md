@@ -6,9 +6,9 @@ cyoda-go's write visibility. cyoda-go is the authoritative implementation.
 ## The contract
 
 **A successful write response means the write is visible to subsequent reads
-on every node.** Point reads, listings, searches and point-in-time reads
-issued after the response — on any node — see the write. There is no opt-in
-and no client-side wait.
+on every node.** Point reads, listings and searches issued after the
+response — on any node — see the write, and so does a point-in-time read at
+or after the write's instant. There is no opt-in and no client-side wait.
 
 ## `waitForConsistencyAfter` is retired
 
