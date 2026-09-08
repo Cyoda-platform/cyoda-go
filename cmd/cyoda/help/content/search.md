@@ -92,7 +92,7 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 jsonPath  = "$." segment ( "." segment )*
 segment   = name subscript*
 name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-subscript = "[" ( "*" / 1*DIGIT ) "]"
+subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit a signed 32-bit integer
 ```
 
 The `$.` leader is **required**. A bare `amount` is not a path and is rejected `400 errors.INVALID_FIELD_PATH` — it is not a tolerated alias for `$.amount`. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set.
@@ -101,7 +101,11 @@ The `$.` leader is **required**. A bare `amount` is not a path and is rejected `
 
 `[*]` addresses **every** element, so a leaf on it holds when **some** element satisfies it: `$.tags[*] EQUALS "red"` selects the entities whose `tags` contains `"red"`. It is existential, so nothing matches an empty array — neither `IS_NULL` nor `NOT_NULL` holds on `{"tags": []}`. `[0]` addresses that one element. A trailing `[*]` on an array of **pure objects** is rejected `400 errors.INVALID_FIELD_PATH` under a scalar operator — the element has no scalar form, so navigate to the leaf (`$.items[*].sku`, not `$.items[*]`).
 
-Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`). These used to go unvalidated and return `200` with an empty page.
+**Multi-branch fields and vacuity.** A field may be declared as more than one shape, and a path is accepted when it is a valid statement for **at least one** declared branch. Per entity the predicate then applies to whichever branch that entity's data actually is; where the path is not a valid statement for that branch the entity simply does not match — that is a non-match, not an error. So for a field declared as string *and* array-of-string, `$.a EQUALS "A"` selects the scalar-shaped entities and `$.a[*] EQUALS "A"` the array-shaped ones, and neither condition is rejected.
+
+An empty array answers the three path forms differently, because each addresses something different. A bare `$.a` addresses the array itself, which exists when it is empty, so `NOT_NULL` is **true**. `$.a[*]` addresses the elements and never the array's own nullness, so over `[]` both `IS_NULL` and `NOT_NULL` are **false** — on a wildcard path the two are complements only where at least one element exists. `$.a[0]` addresses one position, which is absent and therefore null, so `IS_NULL` is **true**. Full addressing, branch and vacuity rules: `docs/cloud-parity/path-grammar.md`.
+
+Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), whitespace inside (`$.a[ 0]`), or a positional index too large to fit a signed 32-bit integer (`$.a[2147483648]`) — `2147483647` is the largest index accepted, and no entity array is long enough for a larger one to address a real position. The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`). These used to go unvalidated and return `200` with an empty page.
 
 Metadata is not addressed through `jsonPath` at all — a `lifecycle` condition names a meta field directly (see **LifecycleCondition**) and is not subject to this grammar. A *data* path that happens to spell `$._meta.state` is an ordinary dotted path.
 
@@ -270,6 +274,8 @@ Response: `200 OK`, `application/json`:
 - `finishTime`: RFC 3339 with nanoseconds; absent when status is `RUNNING`
 - `expirationDate`: `createTime + 24h` — job results expire after this time
 
+A job ends `FAILED` when the search itself failed, when the reaper claims it from a dead node, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
+
 **GET /api/search/async/{jobId}** — Retrieve async job results (paginated)
 
 - `jobId` (path): UUID
@@ -378,6 +384,7 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. an operand that parses into no temporal form on a temporal meta field (`creationDate`/`lastUpdateTime`); a string or pattern operator on one of those fields is `INVALID_CONDITION` instead, see **LifecycleCondition** above
 - `errors.INVALID_CONDITION` — `400` — a condition fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, a `null`/object/complex operand on a binary or range operator, a malformed `LIKE`/`MATCHES_PATTERN` operand, a string or pattern operator on a temporal meta field, an `array` clause on a bare path or with a badly-shaped `values` entry, or a `function` clause at any depth (criteria only — see `predicates`)
 - `errors.BAD_REQUEST` — `400` — malformed condition JSON, invalid limit/pageSize/pageNumber, result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
+- `errors.SERVER_ERROR` — `500` — the target model's schema could not be loaded or parsed, so the condition could not be checked against it. The request fails with a ticket id and no result set rather than skipping validation: without declared types, comparison and ordering leaves match nothing, so the answer would be a short page indistinguishable from a complete one. HTTP and gRPC fail alike — over gRPC it is an envelope error, never an empty stream. A condition built only of `lifecycle` clauses needs no schema and is unaffected
 
 ## EXAMPLES
 

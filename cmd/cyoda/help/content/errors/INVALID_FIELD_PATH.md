@@ -29,14 +29,14 @@ Three checks emit this code.
 jsonPath  = "$." segment ( "." segment )*
 segment   = name subscript*
 name      = 1*( ALPHA / DIGIT / "_" / "-" )   ; ASCII only
-subscript = "[" ( "*" / 1*DIGIT ) "]"
+subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit a signed 32-bit integer
 ```
 
 `$.amount` and `$.address.city` are paths. A bare `amount` is **not** one and is rejected — it is not a tolerated alias. So are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.['x']`, `$.a["b"]` — use dotted access instead), and any character outside the segment set.
 
 A **well-formed** array subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid JSON Path and is **accepted** (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`); it cannot be pushed into the storage query, so it is evaluated in memory.
 
-Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. These previously slipped through unvalidated and answered `200` with an empty page (or, on the grouped-stats `condition` and workflow-criterion surfaces, wrong buckets and a criterion that silently never fired).
+Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). A positional index must also fit a signed 32-bit integer: `2147483647` is the largest accepted, and a wider digit run (`$.a[2147483648]`) is rejected with this code rather than truncated or wrapped — no entity array is long enough for such an index to address a real position. Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. These previously slipped through unvalidated and answered `200` with an empty page (or, on the grouped-stats `condition` and workflow-criterion surfaces, wrong buckets and a criterion that silently never fired).
 
 This check is syntactic and runs on every search-shaped surface regardless of whether a schema is loaded: `/search` (sync and async), conditional delete, and the `condition` of a grouped-statistics query.
 

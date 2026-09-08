@@ -54,10 +54,11 @@ Variables read specifically during server boot (not covered by the config subtop
 - `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
 - `CYODA_SUPPRESS_BANNER` (bool, default: `false`) — suppress the ASCII startup banner and mock-auth warning.
 
-## STARTUP EXIT CODES
+## EXIT CODES
 
 - `0` — clean shutdown after SIGINT or SIGTERM.
 - `1` — startup failure: IAM validation failed (`CYODA_REQUIRE_JWT` contract not met), OTel SDK initialization error, gRPC port-bind failure, or backend connection failure during `app.New`.
+- `2` — hard exit forced by a second SIGINT or SIGTERM delivered while the graceful drain was still running. Nothing is drained or flushed on this path.
 
 ## EXAMPLES
 
