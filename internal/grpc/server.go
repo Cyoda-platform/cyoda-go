@@ -101,6 +101,11 @@ func NewServer(
 	// dispatches. The enforcement policy is deliberately permissive —
 	// grpc-go's default (MinTime 5m) would GOAWAY an external compute node
 	// that pings more often than every five minutes.
+	// The MinTime/PermitWithoutStream constants below are reviewed, not
+	// covered by a unit test: discriminating a too-strict enforcement
+	// policy from a correct one needs ~20s of real-network idle time (three
+	// GOAWAY strikes at grpc-go's own ping cadence), which is too slow for
+	// this package's test budget.
 	opts = append(opts,
 		googlegrpc.KeepaliveParams(keepalive.ServerParameters{Time: keepAlive.Interval, Timeout: keepAlive.Timeout}),
 		googlegrpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 5 * time.Second, PermitWithoutStream: true}),

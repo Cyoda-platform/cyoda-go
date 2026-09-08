@@ -408,10 +408,19 @@ func (r *MemberRegistry) Unregister(memberID string) {
 		}
 		return m
 	}()
+	// notifyChange is gated on the member actually having been found, same
+	// as the tagsVersion bump above: an unregister of an unknown ID is a
+	// no-op, not a membership change, so it should not spawn a publish
+	// goroutine. Reviewed, not unit-tested — notifyChange's own version
+	// dedup already makes the two behaviors unobservable via onChange (a
+	// not-found unregister never advances tagsVersion, so an ungated
+	// publish goroutine finds nothing new to publish and returns
+	// immediately), and there is no black-box way to assert "no goroutine
+	// was spawned" without a production test hook.
 	if m != nil {
 		m.Evict(status.Error(codes.Unavailable, "member unregistered"))
+		r.notifyChange()
 	}
-	r.notifyChange()
 }
 
 // Get returns the member with the given ID, or nil if not found.

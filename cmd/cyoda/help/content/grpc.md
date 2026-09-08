@@ -376,10 +376,11 @@ within `CYODA_KEEPALIVE_TIMEOUT` seconds: no inbound activity has been seen
 from it, or one outbound write to it has been stalled that long. Processor
 responses, criteria responses, function responses, and `EventAckResponse`
 all count as inbound activity, the same as a keep-alive echo — any of them
-resets the eviction clock. A compute node that dispatches its own stream
-writes from multiple goroutines without serializing them can trip the
-write-stall check itself; it must serialize writes to its side of the
-stream.
+resets the eviction clock. What trips the write-stall check is the compute
+node failing to read from the stream — the server's own send to it then has
+nowhere to go and stalls. Separately, a compute node must serialize its own
+writes to the stream: issuing concurrent `SendMsg` calls from multiple
+goroutines violates the gRPC streaming API contract regardless of keep-alive.
 
 The same two values also drive grpc-go's HTTP/2 transport keepalive: a PING
 is sent after `CYODA_KEEPALIVE_INTERVAL` seconds of transport idleness, and
@@ -394,8 +395,9 @@ pinging on a normal cadence is never disconnected for it.
 - `CYODA_KEEPALIVE_INTERVAL` — seconds between server-sent keep-alive events and the transport keepalive idle time (default: `10`)
 - `CYODA_KEEPALIVE_TIMEOUT` — seconds of inactivity (or write stall) before the server evicts the member, and the transport keepalive ack timeout (default: `30`)
 
-Both variables are applied to the gRPC server at construction; a value that
-is not a positive integer is a startup error.
+Both variables are applied to the gRPC server at construction. A value that
+parses to zero or a negative number is a startup error; an unparseable value
+falls back to the default.
 
 ## TAG ROUTING
 
