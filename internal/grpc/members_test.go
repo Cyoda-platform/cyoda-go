@@ -40,10 +40,34 @@ func TestMemberRegistry_RegisterAndUnregister(t *testing.T) {
 	reg := NewMemberRegistry()
 	m := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
 
-	reg.Unregister(m.ID)
+	reg.Unregister(m)
 
 	if len(reg.List()) != 0 {
 		t.Fatal("expected 0 members after unregister")
+	}
+}
+
+// A displaced member's handler still runs its deferred Unregister. If that
+// unregistered by ID it would delete the member that displaced it — the live
+// connection — leaving the registry empty while the client believes it is
+// registered. Unregister therefore only removes the entry when it is still
+// the member the caller means.
+func TestMemberRegistry_UnregisterOfADisplacedMemberLeavesTheLiveOne(t *testing.T) {
+	reg := NewMemberRegistry()
+	first := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
+	second := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
+
+	reg.Unregister(first)
+
+	members := reg.List()
+	if len(members) != 1 {
+		t.Fatalf("expected the live member to remain, got %d member(s)", len(members))
+	}
+	if members[0] != second {
+		t.Fatal("the registry holds a different member than the one that displaced the first")
+	}
+	if got := reg.Get("m-1"); got != second {
+		t.Fatalf("Get returned %v, want the member that displaced the first", got)
 	}
 }
 
@@ -128,7 +152,7 @@ func TestMemberRegistry_UnregisterFailsPending(t *testing.T) {
 		t.Fatalf("TrackRequest: %v", err)
 	}
 
-	reg.Unregister(m.ID)
+	reg.Unregister(m)
 
 	select {
 	case resp := <-ch:

@@ -27,7 +27,7 @@ func (s *overlapStream) Send(*cepb.CloudEvent) error {
 	}
 	return nil
 }
-func (s *overlapStream) Context() context.Context { return context.Background() }
+func (s *overlapStream) Context() context.Context     { return context.Background() }
 func (s *overlapStream) Header() (metadata.MD, error) { return nil, nil }
 
 func TestDispatcher_SendIsSerialised(t *testing.T) {

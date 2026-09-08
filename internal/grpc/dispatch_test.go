@@ -1167,7 +1167,7 @@ func TestBuildEntityPayload(t *testing.T) {
 func TestDispatch_MemberGoneBeforeTrack_IsDisconnectedImmediately(t *testing.T) {
 	dispatcher, registry, memberID, _ := setupTestDispatcher(t)
 	member := registry.Get(memberID)
-	registry.Unregister(memberID)
+	registry.Unregister(member)
 
 	start := time.Now()
 	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
@@ -1251,7 +1251,7 @@ func newWedgedDispatcher(t *testing.T) (*ProcessorDispatcher, *Member) {
 	t.Cleanup(func() { close(release) })
 	member := registry.Register("m-wedged", testTenantID, []string{"python"},
 		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
-	t.Cleanup(func() { registry.Unregister("m-wedged") })
+	t.Cleanup(func() { registry.Unregister(member) })
 	_ = member.Send(context.Background(), mustCE(t)) // wedge the writer
 	signer, _ := token.NewSigner(make32(t))
 	return NewProcessorDispatcher(registry, common.NewTestUUIDGenerator(), signer, "node-test", time.Minute), member

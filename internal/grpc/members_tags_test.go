@@ -7,8 +7,11 @@ import (
 	"time"
 )
 
-// An older snapshot never overwrites a newer one, and a failed publish does
-// not advance the version, so the next attempt republishes.
+// An older snapshot never overwrites a newer one: whatever ends up published
+// last is the newest membership, even when an earlier snapshot's publish
+// failed. (That a failed publish leaves the version unadvanced is the
+// mechanism; it is not separately observable from here — this test only sees
+// the final published snapshot.)
 func TestMemberRegistry_TagPublishIsVersioned(t *testing.T) {
 	reg := NewMemberRegistry()
 	var mu sync.Mutex
@@ -25,9 +28,9 @@ func TestMemberRegistry_TagPublishIsVersioned(t *testing.T) {
 		return nil
 	})
 
-	reg.Register("m1", "t", []string{"a"}, noopSend, nil) // v1: fails
-	reg.Register("m2", "t", []string{"b"}, noopSend, nil) // v2
-	reg.Unregister("m1")                                  // v3: newest
+	m1 := reg.Register("m1", "t", []string{"a"}, noopSend, nil) // v1: fails
+	m2 := reg.Register("m2", "t", []string{"b"}, noopSend, nil) // v2
+	reg.Unregister(m1)                                          // v3: newest
 	time.Sleep(50 * time.Millisecond)
 
 	mu.Lock()
@@ -39,7 +42,7 @@ func TestMemberRegistry_TagPublishIsVersioned(t *testing.T) {
 	if got := last["t"]; len(got) != 1 || got[0] != "b" {
 		t.Fatalf("last published tags = %v, want [b] (the newest membership)", got)
 	}
-	reg.Unregister("m2")
+	reg.Unregister(m2)
 }
 
 // Publishes deliver monotonically increasing versions even when goroutines
@@ -58,15 +61,15 @@ func TestMemberRegistry_TagPublishLatestWinsUnderFlap(t *testing.T) {
 	})
 	for i := 0; i < 50; i++ {
 		id := "m" + string(rune('a'+i%26)) + string(rune('a'+i/26))
-		reg.Register(id, "t", []string{"flap"}, noopSend, nil)
-		reg.Unregister(id)
+		m := reg.Register(id, "t", []string{"flap"}, noopSend, nil)
+		reg.Unregister(m)
 	}
-	reg.Register("stable", "t", []string{"stable"}, noopSend, nil)
+	stable := reg.Register("stable", "t", []string{"stable"}, noopSend, nil)
 	time.Sleep(300 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
 	if got := last["t"]; len(got) != 1 || got[0] != "stable" {
 		t.Fatalf("final published tags = %v, want [stable]", got)
 	}
-	reg.Unregister("stable")
+	reg.Unregister(stable)
 }

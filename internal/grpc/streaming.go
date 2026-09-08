@@ -84,7 +84,7 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	member := s.registry.Register(memberID, tenantID, joinEvent.Tags, func(ce *cepb.CloudEvent) error {
 		return stream.Send(ce)
 	}, greetCE)
-	defer s.registry.Unregister(memberID)
+	defer s.registry.Unregister(member)
 	slog.Info("member joined", "pkg", "grpc", "memberId", memberID, "tenantId", string(tenantID), "tags", joinEvent.Tags)
 
 	// 6. Keep-alive loop and receive goroutine. Both evict the member to end

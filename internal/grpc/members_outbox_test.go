@@ -13,15 +13,6 @@ import (
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
-func testCE(t *testing.T) *cepb.CloudEvent {
-	t.Helper()
-	ce, err := NewCloudEvent(CalculationMemberKeepAliveEvent, map[string]any{"success": true})
-	if err != nil {
-		t.Fatalf("NewCloudEvent: %v", err)
-	}
-	return ce
-}
-
 // The greet is the first event on the wire, ahead of anything a dispatcher
 // enqueues the instant the member becomes visible in the registry.
 func TestMember_GreetIsFirstOnTheWire(t *testing.T) {
@@ -29,9 +20,9 @@ func TestMember_GreetIsFirstOnTheWire(t *testing.T) {
 	sent := make(chan *cepb.CloudEvent, 8)
 	greet, _ := NewCloudEvent(CalculationMemberGreetEvent, map[string]any{"memberId": "m1", "success": true})
 	m := reg.Register("m1", "tenant-1", []string{"go"}, func(ce *cepb.CloudEvent) error { sent <- ce; return nil }, greet)
-	defer reg.Unregister("m1")
+	defer reg.Unregister(m)
 
-	if err := m.Send(context.Background(), testCE(t)); err != nil {
+	if err := m.Send(context.Background(), mustCE(t)); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	first := <-sent
@@ -46,16 +37,16 @@ func TestMember_SendHonoursDeadlineWhileWriterWedged(t *testing.T) {
 	reg := NewMemberRegistry()
 	release := make(chan struct{})
 	m := reg.Register("m1", "tenant-1", nil, func(*cepb.CloudEvent) error { <-release; return nil }, nil)
-	defer func() { close(release); reg.Unregister("m1") }()
+	defer func() { close(release); reg.Unregister(m) }()
 
 	// First send is taken by the writer and wedges inside the raw send.
-	if err := m.Send(context.Background(), testCE(t)); err != nil {
+	if err := m.Send(context.Background(), mustCE(t)); err != nil {
 		t.Fatalf("first Send: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	err := m.Send(ctx, testCE(t))
+	err := m.Send(ctx, mustCE(t))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second Send err = %v, want DeadlineExceeded", err)
 	}
@@ -80,16 +71,17 @@ func TestMember_SendReturnsWhenCallerGivesUp(t *testing.T) {
 		<-release
 		return nil
 	}, nil)
-	defer reg.Unregister("m1")
+	defer reg.Unregister(m)
 
-	_ = m.Send(context.Background(), testCE(t)) // wedges the writer
+	_ = m.Send(context.Background(), mustCE(t)) // wedges the writer
 	<-sent
 
-	// Hand the writer an item whose ctx is already cancelled at the moment
-	// the writer picks it up: enqueue with a live ctx, then cancel.
+	// Park a sender on the unbuffered outbox behind the wedged writer, then
+	// cancel its ctx: the sender is released by its own cancellation while
+	// still parked, so the item never reaches the writer at all.
 	ctx, cancel := context.WithCancel(context.Background())
 	enqueued := make(chan error, 1)
-	go func() { enqueued <- m.Send(ctx, testCE(t)) }()
+	go func() { enqueued <- m.Send(ctx, mustCE(t)) }()
 	time.Sleep(20 * time.Millisecond) // sender is parked on the unbuffered outbox
 	cancel()
 	if err := <-enqueued; !errors.Is(err, context.Canceled) {
@@ -111,13 +103,13 @@ func TestMember_EvictReleasesSendersAndWaiters(t *testing.T) {
 	m := reg.Register("m1", "tenant-1", nil, func(*cepb.CloudEvent) error { <-release; return nil }, nil)
 	defer close(release)
 
-	_ = m.Send(context.Background(), testCE(t)) // wedge the writer
+	_ = m.Send(context.Background(), mustCE(t)) // wedge the writer
 	ch, err := m.TrackRequest("req-1")
 	if err != nil {
 		t.Fatalf("TrackRequest: %v", err)
 	}
 	sendErr := make(chan error, 1)
-	go func() { sendErr <- m.Send(context.Background(), testCE(t)) }()
+	go func() { sendErr <- m.Send(context.Background(), mustCE(t)) }()
 	time.Sleep(20 * time.Millisecond)
 
 	want := status.Error(codes.DeadlineExceeded, "member not draining")
@@ -142,7 +134,7 @@ func TestMember_EvictReleasesSendersAndWaiters(t *testing.T) {
 	if _, err := m.TrackRequest("req-2"); !errors.Is(err, ErrMemberEvicted) {
 		t.Fatalf("TrackRequest after Evict err = %v, want ErrMemberEvicted", err)
 	}
-	if m.TrySend(testCE(t)) {
+	if m.TrySend(mustCE(t)) {
 		t.Fatal("TrySend after Evict must be false")
 	}
 }
@@ -152,7 +144,7 @@ func TestMember_EvictReleasesSendersAndWaiters(t *testing.T) {
 func TestMember_WriterExitsAndSendFailureEvicts(t *testing.T) {
 	reg := NewMemberRegistry()
 	m := reg.Register("m1", "tenant-1", nil, func(*cepb.CloudEvent) error { return errors.New("wire broke") }, nil)
-	_ = m.Send(context.Background(), testCE(t))
+	_ = m.Send(context.Background(), mustCE(t))
 	select {
 	case <-m.Evicted():
 	case <-time.After(time.Second):
@@ -166,7 +158,7 @@ func TestMember_WriterExitsAndSendFailureEvicts(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("writer did not exit after eviction")
 	}
-	reg.Unregister("m1")
+	reg.Unregister(m)
 }
 
 // A panic inside the raw send is contained: ticket status, member evicted,
@@ -174,8 +166,8 @@ func TestMember_WriterExitsAndSendFailureEvicts(t *testing.T) {
 func TestMember_WriterPanicIsContained(t *testing.T) {
 	reg := NewMemberRegistry()
 	m := reg.Register("m1", "tenant-1", nil, func(*cepb.CloudEvent) error { panic("transport bug") }, nil)
-	defer reg.Unregister("m1")
-	_ = m.Send(context.Background(), testCE(t))
+	defer reg.Unregister(m)
+	_ = m.Send(context.Background(), mustCE(t))
 	select {
 	case <-m.Evicted():
 	case <-time.After(time.Second):
@@ -193,9 +185,9 @@ func TestMember_WriterPanicIsContained(t *testing.T) {
 func TestMember_ReRegisteredIDEvictsTheDisplacedMember(t *testing.T) {
 	reg := NewMemberRegistry()
 	first := reg.Register("m1", "tenant-1", nil, noopSend, nil)
-	defer reg.Unregister("m1")
 
-	reg.Register("m1", "tenant-1", nil, noopSend, nil)
+	second := reg.Register("m1", "tenant-1", nil, noopSend, nil)
+	defer reg.Unregister(second)
 
 	select {
 	case <-first.Evicted():

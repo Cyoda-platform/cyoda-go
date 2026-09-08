@@ -376,7 +376,10 @@ func (r *MemberRegistry) SetOnChange(fn TagChangeFunc) {
 // Re-registering an ID that is already present displaces the old member, whose
 // writer would otherwise run forever and whose pending requests would wait out
 // their timeouts with nobody left to answer them: it is evicted, which stops
-// its writer and fails its waiters at once.
+// its writer and fails its waiters at once. The displaced member's own handler
+// still runs its deferred Unregister afterwards; that is why Unregister takes
+// the member and removes the entry only while it is still that member, rather
+// than deleting whatever now holds the ID.
 func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags []string, send SendFunc, greet *cepb.CloudEvent) *Member {
 	m := newMember(memberID, tenantID, tags, send)
 	go m.writeLoop(greet)
@@ -395,30 +398,39 @@ func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags [
 	return m
 }
 
-// Unregister removes the member with the given ID and evicts it, which fails
-// all its pending requests and stops its writer.
-func (r *MemberRegistry) Unregister(memberID string) {
-	m := func() *Member {
+// Unregister removes m and evicts it, which fails all its pending requests
+// and stops its writer.
+//
+// It takes the member, not its ID, and removes the map entry only while that
+// entry is still m: a displaced member's handler runs its own deferred
+// Unregister after the member that displaced it is already published under
+// the same ID, and deleting by ID there would drop the live connection from
+// the registry while its client believes it is registered. m is still
+// evicted either way — a member the registry no longer holds must not be
+// left with a running writer and stranded waiters.
+func (r *MemberRegistry) Unregister(m *Member) {
+	found := func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		m, ok := r.members[memberID]
-		if ok {
-			delete(r.members, memberID)
-			r.tagsVersion++
+		cur, ok := r.members[m.ID]
+		if !ok || cur != m {
+			return false
 		}
-		return m
+		delete(r.members, m.ID)
+		r.tagsVersion++
+		return true
 	}()
-	// notifyChange is gated on the member actually having been found, same
-	// as the tagsVersion bump above: an unregister of an unknown ID is a
+	m.Evict(status.Error(codes.Unavailable, "member unregistered"))
+	// notifyChange is gated on the entry actually having been removed, same
+	// as the tagsVersion bump above: an unregister that removed nothing is a
 	// no-op, not a membership change, so it should not spawn a publish
 	// goroutine. Reviewed, not unit-tested — notifyChange's own version
-	// dedup already makes the two behaviors unobservable via onChange (a
-	// not-found unregister never advances tagsVersion, so an ungated
-	// publish goroutine finds nothing new to publish and returns
+	// dedup already makes the two behaviors unobservable via onChange (an
+	// unregister that removed nothing never advances tagsVersion, so an
+	// ungated publish goroutine finds nothing new to publish and returns
 	// immediately), and there is no black-box way to assert "no goroutine
 	// was spawned" without a production test hook.
-	if m != nil {
-		m.Evict(status.Error(codes.Unavailable, "member unregistered"))
+	if found {
 		r.notifyChange()
 	}
 }

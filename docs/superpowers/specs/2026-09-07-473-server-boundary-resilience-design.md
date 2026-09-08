@@ -335,6 +335,7 @@ gRPC `StartStreaming` (the member stream), per exit:
 | No inbound activity for the keep-alive timeout | `DeadlineExceeded` "keep-alive timeout" (unchanged) |
 | One write in flight longer than the keep-alive timeout | `DeadlineExceeded` "member not draining" |
 | Writer's raw send failed | `Unavailable` "send failed: …" |
+| Panic in the writer goroutine (raw send) | `Internal` "SERVER_ERROR: internal error [ticket: …]" (the member is evicted with it; no latch) |
 | Panic in keep-alive loop or receive goroutine | `Internal` "SERVER_ERROR: internal error [ticket: …]" (interceptor envelope; no latch) |
 | Client closed or reset the stream | the `Recv` error, or `Unavailable` "send failed" if the writer noticed first |
 
@@ -372,7 +373,7 @@ nothing written, nothing latched. No new error codes.
 | Clean client disconnect unregisters promptly (existing regression test kept) | `internal/grpc` | — | — | — |
 | Member unregistered between lookup and track → immediate `DISCONNECTED`; after `Evict` but before `Unregister` → same | `internal/grpc` | — | — | — |
 | Double `Evict` keeps the first error | `internal/grpc` | — | — | — |
-| Writer, receive and keep-alive goroutines exit after handler return (done-channel per goroutine) | `internal/grpc` | — | — | — |
+| Writer exit after handler return, asserted on `WriterDone()`; the receive and keep-alive goroutines have no done channel — they exit on `Evicted()`/ctx and are verified by reading | `internal/grpc` | — | — | — |
 | Older tag snapshot never overwrites newer; failed publish does not advance the version | `internal/grpc` | — | — | — |
 | Responses refresh `LastSeen` | `internal/grpc` | — | — | — |
 | Server options carry the configured keepalive values | `internal/grpc` | — | — | — |

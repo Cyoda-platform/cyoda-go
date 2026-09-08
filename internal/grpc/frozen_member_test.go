@@ -110,9 +110,15 @@ func TestFrozenMember_IsEvictedAndDispatchersAreReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 	fillerDone := make(chan struct{})
+	stopFiller := make(chan struct{})
 	go func() {
 		defer close(fillerDone)
 		for {
+			select {
+			case <-stopFiller:
+				return
+			default:
+			}
 			fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
 			err := member.Send(fctx, ce)
 			fcancel()
@@ -121,7 +127,12 @@ func TestFrozenMember_IsEvictedAndDispatchersAreReleased(t *testing.T) {
 			}
 		}
 	}()
-	t.Cleanup(func() { <-fillerDone })
+	// Stop the filler before waiting on it. On the happy path it has already
+	// returned (the member is evicted, so Send fails); on a failure path —
+	// "writer never wedged", where the client is still draining — it would
+	// otherwise loop forever and the cleanup would hang instead of reporting
+	// the failure.
+	t.Cleanup(func() { close(stopFiller); <-fillerDone })
 
 	// The writer must be stuck in a raw send, not merely idle: that stall is
 	// what the keep-alive loop reads. One non-zero sample is not enough — a

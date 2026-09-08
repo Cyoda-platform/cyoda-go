@@ -807,16 +807,23 @@ func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
 	return nil
 }
 
-// ValidateHTTP rejects a negative timeout; zero means disabled.
+// ValidateHTTP rejects a negative timeout; zero means disabled. The fields
+// are walked as a slice, not a map, so that a config with more than one
+// negative value always names the same one — a map's iteration order would
+// make the startup error differ between runs of the same binary on the same
+// configuration.
 func ValidateHTTP(c HTTPConfig) error {
-	for name, d := range map[string]time.Duration{
-		"CYODA_HTTP_READ_HEADER_TIMEOUT": c.ReadHeaderTimeout,
-		"CYODA_HTTP_READ_TIMEOUT":        c.ReadTimeout,
-		"CYODA_HTTP_WRITE_TIMEOUT":       c.WriteTimeout,
-		"CYODA_HTTP_IDLE_TIMEOUT":        c.IdleTimeout,
+	for _, f := range []struct {
+		name string
+		d    time.Duration
+	}{
+		{"CYODA_HTTP_READ_HEADER_TIMEOUT", c.ReadHeaderTimeout},
+		{"CYODA_HTTP_READ_TIMEOUT", c.ReadTimeout},
+		{"CYODA_HTTP_WRITE_TIMEOUT", c.WriteTimeout},
+		{"CYODA_HTTP_IDLE_TIMEOUT", c.IdleTimeout},
 	} {
-		if d < 0 {
-			return fmt.Errorf("%s must not be negative, got %s", name, d)
+		if f.d < 0 {
+			return fmt.Errorf("%s must not be negative, got %s", f.name, f.d)
 		}
 	}
 	return nil

@@ -58,6 +58,7 @@ Exit conditions on the member's `StartStreaming` stream:
 | No inbound activity for the keep-alive timeout | `DeadlineExceeded` "keep-alive timeout" (unchanged) |
 | One write in flight longer than the keep-alive timeout | `DeadlineExceeded` "member not draining" |
 | Writer's raw send failed | `Unavailable` "send failed: …" |
+| Panic in the writer goroutine (raw send) | `Internal` "SERVER_ERROR: internal error [ticket: …]" (the member is evicted with it; no latch) |
 | Panic in keep-alive loop or receive goroutine | `Internal` "SERVER_ERROR: internal error [ticket: …]" (interceptor envelope; no latch) |
 | Client closed or reset the stream | the `Recv` error, or `Unavailable` "send failed" if the writer noticed first |
 
