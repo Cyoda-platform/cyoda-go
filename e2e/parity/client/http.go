@@ -1521,6 +1521,29 @@ type StreamDeleteResult struct {
 	IDs          []string
 }
 
+// decodeStreamDeleteResult decodes the deleteEntities response body
+// ({entityModelClassId, deleteResult:{idToError, numberOfEntitites,
+// numberOfEntititesRemoved}, ids?}) into a StreamDeleteResult.
+func decodeStreamDeleteResult(raw []byte) (StreamDeleteResult, error) {
+	var resp struct {
+		DeleteResult struct {
+			IDToError                map[string]string `json:"idToError"`
+			NumberOfEntitites        int               `json:"numberOfEntitites"`
+			NumberOfEntititesRemoved int               `json:"numberOfEntititesRemoved"`
+		} `json:"deleteResult"`
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return StreamDeleteResult{}, err
+	}
+	return StreamDeleteResult{
+		MatchedCount: resp.DeleteResult.NumberOfEntitites,
+		RemovedCount: resp.DeleteResult.NumberOfEntititesRemoved,
+		IDToError:    resp.DeleteResult.IDToError,
+		IDs:          resp.IDs,
+	}, nil
+}
+
 // DeleteEntitiesConditional issues DELETE /api/entity/{name}/{version} with
 // the given search condition as the request body, verbose=true (so the
 // response echoes the deleted ids), and an optional transactionSize query
@@ -1536,23 +1559,32 @@ func (c *Client) DeleteEntitiesConditional(t *testing.T, name string, version in
 	if err != nil {
 		return StreamDeleteResult{}, err
 	}
-	var resp struct {
-		DeleteResult struct {
-			IDToError                map[string]string `json:"idToError"`
-			NumberOfEntitites        int               `json:"numberOfEntitites"`
-			NumberOfEntititesRemoved int               `json:"numberOfEntititesRemoved"`
-		} `json:"deleteResult"`
-		IDs []string `json:"ids"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	result, err := decodeStreamDeleteResult(raw)
+	if err != nil {
 		return StreamDeleteResult{}, fmt.Errorf("decode DeleteEntitiesConditional response: %w (body=%s)", err, string(raw))
 	}
-	return StreamDeleteResult{
-		MatchedCount: resp.DeleteResult.NumberOfEntitites,
-		RemovedCount: resp.DeleteResult.NumberOfEntititesRemoved,
-		IDToError:    resp.DeleteResult.IDToError,
-		IDs:          resp.IDs,
-	}, nil
+	return result, nil
+}
+
+// DeleteEntitiesByModelVerbose issues DELETE /api/entity/{name}/{version}?verbose=true
+// with an empty body (every entity of the model) and, when pointInTime is
+// non-nil, &pointInTime=<RFC3339Nano UTC> so the selection is the committed
+// state as at that instant. Returns the decoded StreamDeleteResult.
+func (c *Client) DeleteEntitiesByModelVerbose(t *testing.T, name string, version int, pointInTime *time.Time) (StreamDeleteResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?verbose=true", name, version)
+	if pointInTime != nil {
+		path += "&pointInTime=" + pointInTime.UTC().Format(time.RFC3339Nano)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, path, "")
+	if err != nil {
+		return StreamDeleteResult{}, err
+	}
+	result, err := decodeStreamDeleteResult(raw)
+	if err != nil {
+		return StreamDeleteResult{}, fmt.Errorf("decode DeleteEntitiesByModelVerbose response: %w (body=%s)", err, string(raw))
+	}
+	return result, nil
 }
 
 // LockModelRaw issues PUT /api/model/{name}/{version}/lock and returns
