@@ -526,3 +526,41 @@ func TestRPC_EntityDeleteAll_NonConvergence_Envelope(t *testing.T) {
 		t.Errorf("Retryable = %v, want true (the condition clears once the concurrent writers stop)", typed.Error.Retryable)
 	}
 }
+
+// TestEntityDeleteAllRequestJson_PageSize_Tolerated pins that pageSize is no
+// longer part of the request type (there is nothing for it to mean —
+// selection is streamed) while a client still sending it is tolerated: the
+// generated unmarshaller ignores unknown fields.
+func TestEntityDeleteAllRequestJson_PageSize_Tolerated(t *testing.T) {
+	payload := []byte(`{"id":"test","model":{"name":"person","version":1},"pageSize":10,"verbose":true}`)
+
+	var req events.EntityDeleteAllRequestJson
+	if err := json.Unmarshal(payload, &req); err != nil {
+		t.Fatalf("unmarshal with a legacy pageSize field must succeed: %v", err)
+	}
+	if !req.Verbose {
+		t.Error("Verbose = false, want true (the rest of the payload must still bind)")
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "pageSize") {
+		t.Errorf("re-encoded request still carries pageSize: %s", raw)
+	}
+}
+
+// TestRPC_EntityDeleteAll_PageSize_Tolerated pins the door-level half: a
+// legacy client that still sends pageSize gets a normal success envelope.
+func TestRPC_EntityDeleteAll_PageSize_Tolerated(t *testing.T) {
+	svc, ctx, _, _ := newDeleteAllTxSizeEnv(t)
+	seedDeleteAllPersonIDs(t, svc, ctx, 2, true)
+
+	typed := deleteAllViaGRPC(t, svc, ctx, map[string]any{"pageSize": 10})
+	if !typed.Success {
+		t.Fatalf("expected success=true with a legacy pageSize field, error=%+v", typed.Error)
+	}
+	if typed.NumDeleted != 2 {
+		t.Errorf("NumDeleted = %d, want 2", typed.NumDeleted)
+	}
+}

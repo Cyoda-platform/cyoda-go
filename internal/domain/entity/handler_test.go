@@ -1931,41 +1931,6 @@ func TestTransitionNotFound(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestWaitForConsistencyFalse(t *testing.T) {
-	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "WfAsync", 1, `{"name":"Alice"}`)
-
-	entityID := createEntityAndGetID(t, srv.URL, "WfAsync", 1, `{"name":"Bob"}`)
-
-	// UpdateSingle with waitForConsistencyAfter=false → succeeds (200) after SSI commit.
-	url := fmt.Sprintf("%s/entity/JSON/%s/UPDATE?waitForConsistencyAfter=false", srv.URL, entityID)
-	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(`{"name":"Bob"}`))
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-
-	// UpdateSingleWithLoopback with waitForConsistencyAfter=false → succeeds (200).
-	url = fmt.Sprintf("%s/entity/JSON/%s?waitForConsistencyAfter=false", srv.URL, entityID)
-	req, err = http.NewRequest(http.MethodPut, url, strings.NewReader(`{"name":"Bob"}`))
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-}
-
 // --- If-Match optimistic-concurrency tests ---
 
 func getEntityTransactionID(t *testing.T, base, entityID string) string {

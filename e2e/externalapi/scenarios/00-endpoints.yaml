@@ -110,10 +110,6 @@ variables:
 # Query parameters accepted by save/update endpoints. Internal tests set
 # these via ParsingSpec; external clients expose them as query params.
 query_params:
-  waitForConsistencyAfter:
-    type: boolean
-    default: false
-    purpose: block response until indexing catches up
   transactionWindow:
     type: duration
     default: "provider-specific"

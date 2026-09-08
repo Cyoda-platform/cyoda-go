@@ -237,7 +237,7 @@ Condition pushdown by category:
 - `INDEX` — applied as in-memory predicates on array index values
 - `DATA` — applied as value map conditions, pushed to the storage layer
 
-Data is fetched in pages (default page size: 1000). Point-in-time is derived from the `POINT_TIME` condition or defaults to the current consistency time.
+Data is fetched in pages (default page size: 1000). Point-in-time is derived from the `POINT_TIME` condition; absent means the current committed state.
 
 Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
 see `cyoda help crud` ("Point-in-time semantics").

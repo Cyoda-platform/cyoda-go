@@ -65,11 +65,12 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 		return status.Errorf(codes.PermissionDenied, "tenant mismatch")
 	}
 
-	// 5. Build the greet and register. Register starts the member's writer
-	// with the greet as its first event and only then publishes the member,
-	// so a dispatch routed the instant the member is visible queues behind
-	// the greet. The raw stream.Send closure below is the ONLY raw write on
-	// this stream, and only the writer ever calls it.
+	// 5. Build the greet and register. Register publishes the member and
+	// then starts its writer with the greet as the first event on the wire,
+	// so the member is already visible when the client holds the greet, and
+	// a dispatch routed the instant the member is visible still queues
+	// behind the greet. The raw stream.Send closure below is the ONLY raw
+	// write on this stream, and only the writer ever calls it.
 	memberID := uuid.NewString()
 	greetPayload := events.CalculationMemberGreetEventJson{
 		ID:                  memberID,

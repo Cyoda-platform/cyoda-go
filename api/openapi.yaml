@@ -840,8 +840,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -882,8 +881,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -987,8 +985,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -1089,8 +1086,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to current consistency time if not
-            provided
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -1297,8 +1293,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entity, in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to the current consistency time of
-            the system if not provided.
+            '2035-01-01T12:00:00Z'). Absent means the current committed state.
           required: false
           schema:
             type: string
@@ -1514,8 +1509,8 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entity changes, in ISO 8601
-            format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current
-            consistency time of the system if not provided.
+            format (e.g., '2035-01-01T12:00:00Z'). Absent means the current
+            committed state.
           required: false
           schema:
             type: string
@@ -1597,8 +1592,8 @@ paths:
 
 
         Exactly one of `pointInTime` or `transactionId` may be supplied;
-        both together is an error. When neither is provided the current
-        consistency time is used.
+        both together is an error. When neither is provided, the current
+        committed state is used.
 
 
         The transitions list is derived from the workflow definition the
@@ -1763,8 +1758,8 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entities, in ISO 8601 format
-            (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency
-            time of the system if not provided.
+            (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed
+            state.
           required: false
           schema:
             type: string
@@ -1931,9 +1926,12 @@ paths:
           example: 1000
         - name: pointInTime
           in: query
-          description: The point-in-time for selecting the entities for deletion, in ISO
-            8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the
-            consistency time of the system if not provided.
+          description: |
+            Select the entities that existed at this instant, in ISO 8601
+            format (e.g. '2035-01-01T12:00:00Z'), and delete their current
+            rows. Absent means the current committed state. An entity
+            selected at the instant but already gone is reported in
+            idToError.
           required: false
           schema:
             type: string
@@ -1941,8 +1939,10 @@ paths:
           example: 2035-01-01T12:00:00Z
         - name: verbose
           in: query
-          description: Include the list of deleted entity IDs in the response. When false,
-            only returns statistics.
+          description: |
+            Include the list of entity IDs the delete attempted in the
+            response; an ID whose delete failed also appears in idToError.
+            When false, only statistics are returned.
           required: false
           schema:
             type: boolean
@@ -2139,18 +2139,6 @@ paths:
           schema:
             type: integer
             format: int64
-        - name: waitForConsistencyAfter
-          in: query
-          description: |
-            If true, waits for consistency after operation completes.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
-          required: false
-          schema:
-            type: boolean
-            default: false
       requestBody:
         content:
           application/json:
@@ -2367,18 +2355,6 @@ paths:
           schema:
             type: integer
             format: int64
-        - name: waitForConsistencyAfter
-          in: query
-          description: |
-            If true, waits for consistency after operation completes.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
-          required: false
-          schema:
-            type: boolean
-            default: false
       requestBody:
         content:
           application/json:
@@ -2581,21 +2557,6 @@ paths:
             type: integer
             format: int64
           example: 30000
-        - name: waitForConsistencyAfter
-          in: query
-          description: |
-            If true, waits for the consistency time to pass before responding.
-            May increase response time but guarantees data consistency when
-            returning, so that subsequent calls will see the updated data.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
-          required: false
-          schema:
-            type: boolean
-            default: false
-          example: true
       requestBody:
         content:
           application/json:
@@ -2762,21 +2723,6 @@ paths:
             type: integer
             format: int64
           example: 30000
-        - name: waitForConsistencyAfter
-          in: query
-          description: |
-            If true, waits for the consistency time to pass before responding.
-            May increase response time but guarantees data consistency when
-            returning, so that subsequent calls will see the updated data.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
-          required: false
-          schema:
-            type: boolean
-            default: false
-          example: true
       requestBody:
         required: true
         content:
@@ -2933,21 +2879,6 @@ paths:
             type: integer
             format: int64
           example: 30000
-        - name: waitForConsistencyAfter
-          in: query
-          description: |
-            If true, waits for the consistency time to pass before responding.
-            May increase response time but guarantees data consistency when
-            returning, so that subsequent calls will see the updated data.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
-          required: false
-          schema:
-            type: boolean
-            default: false
-          example: true
       requestBody:
         content:
           application/json:
@@ -3124,21 +3055,6 @@ paths:
             type: integer
             format: int64
           example: 30000
-        - name: waitForConsistencyAfter
-          in: query
-          description: |
-            If true, waits for the consistency time to pass before responding.
-            May increase response time but guarantees data consistency when
-            returning, so that subsequent calls will see the updated data.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
-          required: false
-          schema:
-            type: boolean
-            default: false
-          example: true
       requestBody:
         required: true
         content:
@@ -3303,18 +3219,6 @@ paths:
           schema:
             type: integer
             format: int64
-        - name: waitForConsistencyAfter
-          in: query
-          description: |
-            If true, waits for consistency after the operation completes.
-            Accepted for Cyoda Cloud API parity. Behavior is
-            storage-engine-plugin dependent — not every plugin honors this
-            field; consult the runtime plugin's documentation for the
-            supported behavior.
-          required: false
-          schema:
-            type: boolean
-            default: false
       requestBody:
         content:
           application/json:
@@ -7037,8 +6941,7 @@ paths:
         - name: pointInTime
           in: query
           description: "The point-in-time for the report, in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Defaults to the current consistency time of
-            the system if not provided. "
+            '2035-01-01T12:00:00Z'). Absent means the current committed state. "
           required: false
           schema:
             type: string
@@ -7381,7 +7284,7 @@ paths:
         - name: pointInTime
           in: query
           description: "The point-in-time for searching the entities, in ISO 8601 format.
-            Defaults to the consistency time of the system if not provided. "
+            Absent means the current committed state. "
           required: false
           schema:
             type: string
@@ -11150,7 +11053,7 @@ components:
           format: date-time
           description: >-
             Optional point-in-time for the query in ISO 8601 / RFC 3339
-            format. Defaults to the current consistency time.
+            format. Absent means the current committed state.
           example: 2035-01-01T12:00:00Z
         limit:
           type: integer
