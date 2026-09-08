@@ -409,6 +409,12 @@ func (r *MemberRegistry) Register(memberID string, tenantID spi.TenantID, tags [
 // evicted either way — a member the registry no longer holds must not be
 // left with a running writer and stranded waiters.
 func (r *MemberRegistry) Unregister(m *Member) {
+	// A nil here is a programming error, but panicking would unwind inside
+	// the stream handler where the interceptor latches the node, so this is
+	// a no-op instead.
+	if m == nil {
+		return
+	}
 	found := func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()

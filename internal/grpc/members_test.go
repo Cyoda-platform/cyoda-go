@@ -69,6 +69,12 @@ func TestMemberRegistry_UnregisterOfADisplacedMemberLeavesTheLiveOne(t *testing.
 	if got := reg.Get("m-1"); got != second {
 		t.Fatalf("Get returned %v, want the member that displaced the first", got)
 	}
+
+	select {
+	case <-second.Evicted():
+		t.Fatal("the displaced member's Unregister evicted the live member")
+	default:
+	}
 }
 
 func TestMemberRegistry_FindByTags_MatchingTag(t *testing.T) {

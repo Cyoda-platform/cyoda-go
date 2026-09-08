@@ -1247,9 +1247,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   cluster-routing middleware, and the admin server (`/livez`, `/readyz`,
   `/metrics`) is covered too (contained with a ticket; it does not latch the
   node — probes and scrapes do no engine work). `Recovery` re-raises
-  `http.ErrAbortHandler`, so
-  a client hanging up on a proxied response is no longer logged as a panic
-  — and, now that the proxy sits inside recovery, does not latch the node.
+  `http.ErrAbortHandler`, so a client hanging up on a proxied response is no
+  longer logged as a panic — and, now that the proxy sits inside recovery,
+  does not latch the node.
 
 - **The reference compute client** (`cmd/compute-test-client`) serialises its
   own stream writes; compute-node implementations must do the same.
