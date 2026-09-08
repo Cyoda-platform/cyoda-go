@@ -204,9 +204,10 @@ Per-finding contract decisions from the Edge-message reconciliation slice.
   breaking input change, taken on a patch release because edge messages have no known consumers.
   Supersedes the `meta-data` request-field spelling in M1 and M3. Direction: **cyoda-go leads —
   Cloud MUST conform**: accept `metaData` (not `meta-data`) on the `newMessage` request body.
-- **Deferred (out of this slice).** Honoring `transactionTimeoutMillis` / `transactionSize` uniformly
-  → **#379** (supersedes #372). Native non-JSON / content-type payloads (binary without base64
-  wrapping) → **#193**. The message contract documents current JSON-envelope behavior.
+- **Deferred (out of this slice).** Honoring `transactionTimeoutMillis` / `transactionSize`
+  uniformly on the message endpoints is tracked separately, as is native non-JSON /
+  content-type payload support (binary without base64 wrapping). The message contract
+  documents current JSON-envelope behavior.
 
 ## Open questions (Cloud-fact-blocked)
 

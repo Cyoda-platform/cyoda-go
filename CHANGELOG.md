@@ -6,6 +6,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`waitForConsistencyAfter` is retired from the seven entity write
+  operations.** A successful write response already means the write is
+  visible to every subsequent read on every node, so the flag could toggle
+  nothing. A request that still carries it — with any value, including a
+  malformed one that used to answer `400` — is accepted and the parameter is
+  ignored. The contract and what every backend must do to meet it are
+  recorded in `docs/cloud-parity/write-visibility-contract.md`.
+
+- **`pageSize` is removed from the gRPC `EntityDeleteAllRequest` event.**
+  Selection is streamed, so there was nothing for it to control; it was
+  decoded and ignored. The generated Go type in `api/grpc/events` loses the
+  field. A client still sending it is tolerated.
+
 - **An array's length is not part of the model.** A model's array branch
   declares its element and nothing else: a homogeneous list of any length is
   held by the array that declared it, at every `changeLevel` and under strict
@@ -1214,6 +1227,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gap this leaves for any future same-shaped migration.
 
 ### Fixed
+
+- **A whole-model delete honors `pointInTime` and `verbose` on both doors.**
+  `DELETE /entity/{entityName}/{modelVersion}` with an empty body and the
+  gRPC `EntityDeleteAllRequest` took a fast path that ignored the instant —
+  deleting entities created after it — and returned an empty id list beside
+  a non-zero count. The fast path is now taken only when nothing per entity
+  is needed; otherwise the delete selects the committed state as at the
+  instant and lists every attempted id, exactly as the conditional form
+  always did. The gRPC response's `entityIds` is populated for the first
+  time.
 
 - **A frozen compute node is evicted within the keep-alive timeout and never
   wedges a dispatcher.** Each member's stream now has exactly one writer
