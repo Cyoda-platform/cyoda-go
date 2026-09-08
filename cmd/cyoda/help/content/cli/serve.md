@@ -30,7 +30,7 @@ The server handles graceful shutdown on `SIGINT` (Ctrl+C) or `SIGTERM`: the HTTP
 
 Three TCP listeners start concurrently:
 
-- **REST API** — `CYODA_HTTP_PORT` (default: 8080). All entity, schema, workflow, and auth endpoints, plus `GET /health` — a health summary for humans and simple scripts, not the deployment probe: `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after any recovered panic, latched until the node is replaced. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
+- **REST API** — `CYODA_HTTP_PORT` (default: 8080). All entity, schema, workflow, and auth endpoints, plus `GET /health` — a health summary for humans and simple scripts, not the deployment probe: `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
 - **gRPC** — `CYODA_GRPC_PORT` (default: 9090). Externalized-processor streaming.
 - **Admin** — `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default: `127.0.0.1:9091`). `/livez`, `/readyz`, and `/metrics` endpoints — `/livez` (unconditional) and `/readyz` (mirrors the same flag as `/health`) are the deployment probes. Admin port is bound to localhost by default; the Helm chart overrides `CYODA_ADMIN_BIND_ADDRESS` so the kubelet can reach `/readyz` without traversing the service mesh.
 

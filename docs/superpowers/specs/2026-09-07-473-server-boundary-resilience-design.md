@@ -22,8 +22,9 @@ folded in below.
   seconds. Distinct from the **transport keepalive**, which is grpc-go's
   HTTP/2 PING mechanism on the underlying connection.
 - **Health flag** — the process-wide `atomic.Bool` that starts true and is
-  latched false by the first recovered panic. `/readyz` and `/health` read
-  it; `/livez` does not.
+  latched false by the first panic recovered in code doing engine or store
+  work on the application's behalf. `/readyz` and `/health` read it;
+  `/livez` does not.
 - **Evict** — the server unilaterally ending a member's stream and failing
   its in-flight dispatches with a retryable `COMPUTE_MEMBER_DISCONNECTED`.
 - **Writer** — the one goroutine per member that is the only caller of the
@@ -62,7 +63,7 @@ Re-verified at `53fca77`:
 | D10 | `TrackRequest` fails once the member is **evicted or closed**, both checked under the pending-map lock; `Send`/`TrySend` test eviction before enqueueing. | grpc-compute-6, and the keep-alive-eviction → deferred-`Unregister` window. |
 | D11 | `/health` **keeps the latch**. Documentation states the semantics. | A behaviour change would need a probe audit; #485 owns the further drain decision. |
 | D12 | Pool statistics are exported by the **Postgres plugin registering observable instruments on the global OTel meter**. No SPI or core change. One pool per process is the assumption. | `observability.Init` runs before the plugin factory in `main`; the global meter replays instruments and callbacks on the first `SetMeterProvider`, so the order also works when a test initialises later. The acquire-timeout precedent avoided an SPI change for the same reason. |
-| D13 | `Recovery` becomes the **outermost** layer of the main handler chain and wraps the admin mux. `Recovery` **re-raises `http.ErrAbortHandler`**. | CORS writes its headers before calling `next`, so a recovered 500 keeps them. `httputil.ReverseProxy` panics with `ErrAbortHandler` when the client hangs up mid-body; `net/http` handles that sentinel silently, and without the re-raise every proxied client disconnect would latch the node unready. Latent defect in `Recovery` today; fixed on its own. A panic in a `/metrics` scrape or `/livez` latches like any other: one policy per door, stated in the docs. |
+| D13 | `Recovery` becomes the **outermost** layer of the main handler chain and wraps the admin mux. `Recovery` **re-raises `http.ErrAbortHandler`**. | CORS writes its headers before calling `next`, so a recovered 500 keeps them. `httputil.ReverseProxy` panics with `ErrAbortHandler` when the client hangs up mid-body; `net/http` handles that sentinel silently, and without the re-raise every proxied client disconnect would latch the node unready. Latent defect in `Recovery` today; fixed on its own. A panic in a `/metrics` scrape, `/livez` or `/readyz` is contained the same way — ticket, log, sanitized 500 — but does **not** latch: the criterion is what the recovered code was doing, and probes and scrapes do no engine or store work on the application's behalf, so a panic there says nothing about whether this node's state is correct. `Recovery` takes a nil health flag for exactly that. |
 | D14 | Processor, criteria and function responses **refresh liveness**. | The gRPC help topic already says they do. |
 | D15 | `Register` takes the greet event as a **value** and returns `*Member`. | Greet-first ordering without inverting control; removes the six `registry.Get(memberID)` re-lookups in the stream handler, each a small member-death race. |
 | D16 | The in-repo compute client (`cmd/compute-test-client`) gets the same single-writer discipline. | It calls the raw stream send from two goroutines today; it is the reference client. |
@@ -270,8 +271,12 @@ sees these timeouts; the tests live in `cmd/cyoda` deliberately.
 2. In `app.New` the order becomes inner mux → cluster proxy (cluster only)
    → CORS → `Recovery` (outermost). No helper with fake-injectable layers;
    the comments at the three sites are rewritten to state the order and why.
-3. `run.go` wraps the admin handler in `middleware.Recovery(a.HealthFlag())`;
-   `App` gains a `HealthFlag()` accessor. No import cycle: `internal/admin`
+3. `run.go` wraps the admin handler in `middleware.Recovery(nil)` — the
+   containment (ticket, log, sanitized 500) without the latch, because
+   `/livez` writes a constant, `/readyz` reads two flags and `/metrics`
+   gathers collectors: no engine or store work on the application's behalf,
+   the same criterion the per-member gRPC goroutines follow. `Recovery`'s
+   flag parameter is therefore optional. No import cycle: `internal/admin`
    imports no internal package, and `middleware` imports only
    `internal/common` and `internal/contract`.
 
@@ -280,8 +285,10 @@ sees these timeouts; the tests live in `cmd/cyoda` deliberately.
 No code change. `internal/api/health.go`'s doc comment,
 `cmd/cyoda/help/content/run.md`, `cli/serve.md`, `cli/health.md`,
 `docs/ARCHITECTURE.md` state: `/health` mirrors the readiness flag; a
-recovered panic anywhere (API, gRPC, admin, background loops that do engine
-work) latches it until the node is replaced; deployment probes are `/livez`
+recovered panic in code doing engine or store work on the application's
+behalf (API, gRPC, background loops) latches it until the node is replaced —
+a panic on the admin listener's own probes and scrapes does not; deployment
+probes are `/livez`
 and `/readyz` on the admin server. `docs/PRD.md` and `docs/FEATURES.md` stop
 calling `/health` the readiness probe.
 
@@ -342,10 +349,11 @@ Dispatch outcomes surfaced to the HTTP/gRPC caller of the transition:
 | Caller context cancelled | ctx error (unchanged) | | |
 
 HTTP servers: slow-header → connection closed, no response; slow-body →
-`400 BAD_REQUEST` on the entity route; panic anywhere in the chain, admin
-included → `500 SERVER_ERROR` with ticket, health flag latched; client
-hang-up during a proxied response → nothing written, nothing latched. No new
-error codes.
+`400 BAD_REQUEST` on the entity route; panic anywhere in the API chain →
+`500 SERVER_ERROR` with ticket, health flag latched; the same panic on the
+admin listener → `500 SERVER_ERROR` with ticket, nothing latched (probes and
+scrapes do no engine work); client hang-up during a proxied response →
+nothing written, nothing latched. No new error codes.
 
 ## 7. Coverage matrix
 
@@ -375,7 +383,7 @@ error codes.
 | HTTP env binding for all four; negatives rejected; `WriteTimeout` default 0 | `app`, `cmd/cyoda/help` | — | — | — |
 | `Recovery` re-raises `ErrAbortHandler`; ordinary panic still 500 + latch | `internal/api/middleware` | — | — | — |
 | Proxy under `Recovery` with an upstream that hangs up mid-body: nothing latched | `internal/cluster/proxy` | — | — | — |
-| Admin server panic → 500 + latch | `cmd/cyoda` | — | — | — |
+| Admin server panic → 500 with ticket, nothing latched | `cmd/cyoda` | — | — | — |
 | Pool metrics: callback reports pool state; unregister stops it | `plugins/postgres` (`sdk/metric` `ManualReader`) | `internal/e2e` scrape via `observability.MetricsHandler()` asserts the seven rendered names with `backend="postgres"` | — | — |
 | `/health` and `/readyz` latch semantics (existing tests) | existing | existing | — | — |
 

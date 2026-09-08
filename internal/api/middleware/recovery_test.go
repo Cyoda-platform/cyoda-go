@@ -200,3 +200,36 @@ func TestRecoveryMiddlewareReRaisesErrAbortHandler(t *testing.T) {
 		t.Fatal("ErrAbortHandler must not latch the health flag")
 	}
 }
+
+// A surface that does no engine or store work on the application's behalf —
+// the admin listener's probes and metrics scrape — opts out of the latch by
+// passing no flag. Containment still applies: the panic becomes a sanitised
+// 500 carrying a ticket. Nothing the process holds is marked unhealthy.
+func TestRecoveryMiddleware_NilFlagContainsWithoutLatch(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	// A flag the caller holds but never hands to Recovery. It stands in for
+	// the node-health flag the admin door deliberately does not pass, and it
+	// must come out of the panic untouched.
+	otherFlag := &atomic.Bool{}
+	otherFlag.Store(true)
+
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("probe exploded")
+	})
+	w := httptest.NewRecorder()
+	middleware.Recovery(nil)(handler).ServeHTTP(w, httptest.NewRequest("GET", "/readyz", nil))
+
+	if w.Code != 500 {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	var pd map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&pd); err != nil {
+		t.Fatalf("decode problem detail: %v", err)
+	}
+	if ticket, _ := pd["ticket"].(string); ticket == "" {
+		t.Error("expected a ticket UUID in the panic response")
+	}
+	if !otherFlag.Load() {
+		t.Error("Recovery(nil) must not latch any health flag")
+	}
+}

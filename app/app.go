@@ -884,11 +884,6 @@ func (a *App) ReadinessCheck() error {
 	return nil
 }
 
-// HealthFlag is the process-wide flag every panic-recovery site latches and
-// /readyz reads. Exposed so the admin server, built in cmd/cyoda, can wrap
-// its own handler in the same Recovery.
-func (a *App) HealthFlag() *atomic.Bool { return a.healthFlag }
-
 func (a *App) StoreFactory() spi.StoreFactory             { return a.storeFactory }
 func (a *App) TransactionManager() spi.TransactionManager { return a.transactionManager }
 func (a *App) AuthenticationService() contract.AuthenticationService {

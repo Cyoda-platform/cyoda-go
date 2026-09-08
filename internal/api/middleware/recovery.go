@@ -24,6 +24,15 @@ import (
 // restarted: /livez is unconditional, deliberately, so a deterministic panic
 // (a poisoned entity, a bad workflow definition) does not become a restart
 // loop. Replacing the node is an operator action.
+//
+// healthFlag is optional. Passing nil keeps the containment — ticket, log,
+// sanitized 500 — and skips the latch, which is how a surface that does no
+// engine or store work on the application's behalf opts out: the admin
+// listener, whose /livez writes a constant, whose /readyz reads two flags,
+// and whose /metrics gathers registered collectors. A panic there says
+// nothing about whether this node's entity state is still correct, so
+// latching would take a healthy node out of service over a broken probe.
+// Same criterion as internal/grpc/recovery.go's per-member goroutines.
 func Recovery(healthFlag *atomic.Bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +61,9 @@ func Recovery(healthFlag *atomic.Bool) func(http.Handler) http.Handler {
 						"ticket", ticket, "err", err, "stack", stack)
 					appErr := common.Fatal("internal server error", err).WithTicket(ticket)
 					appErr.Detail = "panic recovered; check server logs for details"
-					healthFlag.Store(false)
+					if healthFlag != nil {
+						healthFlag.Store(false)
+					}
 					common.WriteError(w, r, appErr)
 				}
 			}()
