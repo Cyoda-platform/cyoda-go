@@ -148,6 +148,29 @@ it is absolute:
 > never-seen) for both the SPI and the binary. Cost: a burned version number
 > and a day of churn. Prevention: this rule.
 
+### Who can cut a tag
+
+**Every release tag in all four namespaces is annotated and SSH-signed**, and
+only a maintainer holding the signing key can create one:
+
+| Namespace | Example | Fires |
+|---|---|---|
+| `cyoda-go-spi` | `v0.8.4` | nothing; the tag *is* the release |
+| Binary | `v0.8.4` | `release.yml` |
+| Plugin submodules | `plugins/postgres/v0.8.4` | nothing; consumed by the root pin |
+| Helm chart | `cyoda-0.8.4` | `release-chart.yml` |
+
+A full coordinated release therefore needs **six signed tags**: one SPI, three
+plugin submodules, one binary, one chart.
+
+This is not a formality. `cyoda-go-spi`'s `CHANGELOG.md` states the commitment
+in prose, and a Go module version is bound to its commit permanently the first
+time the proxy serves it — an unsigned tag cannot be corrected afterwards
+without burning the version number. Anyone preparing a release who cannot sign
+should get the branch to a verified-green commit and then hand the exact
+`git tag -s -a … <sha>` command to someone who can, rather than substituting
+`gh release create` or a lightweight tag.
+
 ### 0. Reconcile dependencies on the release branch (gate)
 
 **Dependency hygiene is a release gate, not post-release cleanup.** Before
@@ -191,11 +214,14 @@ mental model simple:
 ```bash
 # In cyoda-go (main branch, at the commit to be released):
 V=v0.6.0   # pick per release
-git tag "plugins/memory/$V"
-git tag "plugins/postgres/$V"
-git tag "plugins/sqlite/$V"
+for p in memory postgres sqlite; do
+  git tag -s -a "plugins/$p/$V" -m "Release plugins/$p/$V"
+done
 git push origin "plugins/memory/$V" "plugins/postgres/$V" "plugins/sqlite/$V"
 ```
+
+Signed and annotated, like every other release tag — see
+[Who can cut a tag](#who-can-cut-a-tag).
 
 ### 3. Pin plugin module versions to the release tags
 
@@ -313,23 +339,44 @@ The update lands either on the release-prep PR (if the matrix data is known pre-
 
 ### 7. Cut the release
 
-Use `gh release create` rather than raw `git tag + git push`:
+**Push the signed tag first, then create the Release against it.** The
+order matters: `gh release create` on a tag that does not yet exist creates
+one server-side, and that tag is **lightweight and unsigned**. That is how
+`v0.8.1` and `v0.8.2` shipped unsigned after the project had already
+committed to signing every tag.
 
 ```bash
 V=v0.6.0   # or whatever this release is
+
+# 1. The tag. Signed and annotated, at the exact verified commit.
+git tag -s -a "$V" -m "Release $V" <sha>
+git push origin "$V"
+
+# 2. The Release page, against the tag that now exists.
+#    --verify-tag aborts rather than silently creating a lightweight one.
 gh release create "$V" \
   --title "$V" \
-  --generate-notes \
-  --target main
+  --verify-tag \
+  --generate-notes
+```
+
+Confirm the tag really is signed before moving on — a published version
+cannot be re-cut:
+
+```bash
+git cat-file -p "$V" | grep -q "BEGIN SSH SIGNATURE" && echo signed
 ```
 
 `--generate-notes` drafts release notes from merged PR titles since
 the previous tag. Edit in the browser before publishing if you want
-a hand-written summary on top of the PR list. No separate
-`CHANGELOG.md` is maintained — GitHub Releases are the canonical
-changelog.
+a hand-written summary on top of the PR list.
 
-The release creation pushes the tag, which fires `release.yml`:
+The changelog is **not** the GitHub Release. `CHANGELOG.md` is maintained
+per release, and the narrative notes published to the docs site live in
+`docs/release-notes/v<X-Y-Z>.md`. Both are written before the tag, as part
+of the release-prep commit.
+
+Pushing the tag fires `release.yml`:
 pre-flight module verification, build binaries, multi-arch image to
 GHCR, keyless cosign signing, SBOM attachment, Homebrew formula
 commit to the tap, GitHub Release artifacts attached.
@@ -358,10 +405,12 @@ cyoda-go-spi   ← cyoda-go   ← cyoda-go-cassandra
 
 Release in topological order:
 
-1. **`cyoda-go-spi`**: merge the feature branch, then
-   `gh release create $V --generate-notes`. No build workflow to fire;
-   the release is the tag itself. Wait 30s or so for `proxy.golang.org`
-   to be able to serve the new version.
+1. **`cyoda-go-spi`**: merge the feature branch, rename its `[Unreleased]`
+   changelog section to the version being cut, then push the signed tag
+   (`git tag -s -a $V -m "Release $V" <sha>`) and only afterwards
+   `gh release create $V --verify-tag --generate-notes`. No build workflow
+   to fire; the release is the tag itself. Wait 30s or so for
+   `proxy.golang.org` to be able to serve the new version.
 
 2. **`cyoda-go`**: on its feature branch, bump `go.mod`'s
    `cyoda-go-spi` require line to the new `$V`; similarly for each
@@ -373,7 +422,8 @@ Release in topological order:
 
 3. **`cyoda-go-cassandra`**: on its feature branch, bump `go.mod`'s
    `cyoda-go-spi`, `cyoda-go`, and `cyoda-go/plugins/*` require
-   lines to the new versions. Merge. `gh release create $V ...`.
+   lines to the new versions. Merge, then signed tag first and
+   `gh release create $V --verify-tag ...` after it.
 
 Each step waits for the prior tag to land before its `go mod tidy`
 can resolve. In practice: merge, tag, wait for CI, then move on.
@@ -461,7 +511,7 @@ Per-release procedure:
    ```bash
    V=v0.6.3   # the binary tag you just released
    CHART_V=${V#v}
-   git tag "cyoda-$CHART_V"
+   git tag -s -a "cyoda-$CHART_V" -m "Release chart cyoda-$CHART_V"
    git push origin "cyoda-$CHART_V"
    ```
 4. **Verify**:
