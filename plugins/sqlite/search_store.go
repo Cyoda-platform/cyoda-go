@@ -399,7 +399,6 @@ type staleClaimCandidate struct {
 	tenantID string
 	jobID    string
 	epoch    int64
-	released bool
 }
 
 func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
@@ -420,7 +419,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	// ORDER BY create_time so a limit-capped sweep takes the OLDEST stale
 	// jobs, not an arbitrary subset — matching postgres's ORDER BY created_at.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tenant_id, job_id, epoch, released FROM search_jobs
+		`SELECT tenant_id, job_id, epoch FROM search_jobs
 		 WHERE status = 'RUNNING'
 		   AND (released = 1 OR COALESCE(heartbeat_time, create_time) < ?)
 		 ORDER BY create_time
@@ -433,7 +432,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	var candidates []staleClaimCandidate
 	for rows.Next() {
 		var c staleClaimCandidate
-		if err := rows.Scan(&c.tenantID, &c.jobID, &c.epoch, &c.released); err != nil {
+		if err := rows.Scan(&c.tenantID, &c.jobID, &c.epoch); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("failed to scan stale search job row: %w", err)
 		}
@@ -456,14 +455,22 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 			return nil, err
 		}
 
+		// The stale_claims increment reads released from the row itself
+		// (CASE WHEN), not from a Go-side literal captured at SELECT time,
+		// so it is atomic with the fence: a concurrent Release landing
+		// between the candidate SELECT and this UPDATE is reflected here
+		// rather than counted as a staleness claim. SQLite evaluates all
+		// SET right-hand sides against the pre-update row, so this reads
+		// released BEFORE the `released = 0` in the same statement applies
+		// — matching postgres's single CTE under FOR UPDATE.
 		res, err := s.db.ExecContext(ctx,
 			`UPDATE search_jobs
 			 SET epoch = epoch + 1,
 			     heartbeat_time = ?,
-			     stale_claims = stale_claims + ?,
+			     stale_claims = stale_claims + (CASE WHEN released = 1 THEN 0 ELSE 1 END),
 			     released = 0
 			 WHERE tenant_id = ? AND job_id = ? AND epoch = ? AND status = 'RUNNING'`,
-			now, boolToInt(!c.released), c.tenantID, c.jobID, c.epoch)
+			now, c.tenantID, c.jobID, c.epoch)
 		if err != nil {
 			return nil, fmt.Errorf("failed to claim search job %s: %w", c.jobID, err)
 		}
@@ -559,14 +566,6 @@ func fencedUpdate(ctx context.Context, ex dbExecer, tid spi.TenantID, jobID stri
 		return fmt.Errorf("search job %q is in terminal status %s: %w", jobID, status, spi.ErrAlreadyTerminal)
 	}
 	return fmt.Errorf("search job %q: caller epoch %d does not match current epoch %d: %w", jobID, epoch, actualEpoch, spi.ErrStaleClaim)
-}
-
-// boolToInt converts a bool to SQLite's 0/1 integer representation.
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // scanSearchJob reads a single SearchJob from a *sql.Row, matching the
