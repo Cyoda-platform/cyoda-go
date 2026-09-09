@@ -360,3 +360,16 @@ func TestDefaultConfig_HTTPTimeouts(t *testing.T) {
 		t.Fatalf("HTTP from env = %+v, want %+v", cfg.HTTP, want)
 	}
 }
+
+func TestConfig_SearchJobMaxAttempts_Default(t *testing.T) {
+	os.Unsetenv("CYODA_SEARCH_JOB_MAX_ATTEMPTS")
+	if got := DefaultConfig().SearchJobMaxAttempts; got != 3 {
+		t.Fatalf("default = %d, want 3", got)
+	}
+}
+func TestConfig_SearchJobMaxAttempts_Override(t *testing.T) {
+	t.Setenv("CYODA_SEARCH_JOB_MAX_ATTEMPTS", "5")
+	if got := DefaultConfig().SearchJobMaxAttempts; got != 5 {
+		t.Fatalf("override = %d, want 5", got)
+	}
+}

@@ -77,6 +77,12 @@ type Config struct {
 	// executor — see ValidateSearchJobStaleAfter.
 	// CYODA_SEARCH_JOB_STALE_AFTER, default 5m.
 	SearchJobStaleAfter time.Duration
+	// SearchJobMaxAttempts bounds how many executions an async-search job may
+	// consume before it is failed: the initial run plus one per executor lost
+	// without a graceful release (SearchJob.StaleClaims). A graceful handoff
+	// (Release then reclaim) does not count. CYODA_SEARCH_JOB_MAX_ATTEMPTS,
+	// default 3, minimum 1; 1 disables re-execution (claim-then-FAIL).
+	SearchJobMaxAttempts int
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.
 	Scheduler SchedulerConfig
@@ -349,6 +355,7 @@ func DefaultConfig() Config {
 		},
 		SearchJobHeartbeatInterval: envDuration("CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", 15*time.Second),
 		SearchJobStaleAfter:        envDuration("CYODA_SEARCH_JOB_STALE_AFTER", 5*time.Minute),
+		SearchJobMaxAttempts:       envInt("CYODA_SEARCH_JOB_MAX_ATTEMPTS", 3),
 		Admin: AdminConfig{
 			Port:               envInt("CYODA_ADMIN_PORT", 9091),
 			BindAddress:        envString("CYODA_ADMIN_BIND_ADDRESS", "127.0.0.1"),
@@ -721,6 +728,9 @@ func (c Config) Validate() error {
 	if err := ValidateSearchJobStaleAfter(c.SearchJobStaleAfter, c.SearchJobHeartbeatInterval); err != nil {
 		return err
 	}
+	if err := ValidateSearchJobMaxAttempts(c.SearchJobMaxAttempts); err != nil {
+		return err
+	}
 	return ValidateHTTP(c.HTTP)
 }
 
@@ -803,6 +813,17 @@ func ValidateSearchJobStaleAfter(staleAfter, interval time.Duration) error {
 	if staleAfter < minStale {
 		return fmt.Errorf("CYODA_SEARCH_JOB_STALE_AFTER must be >= %d x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL (%s, given interval=%s), got %s",
 			staleAfterMinMultiple, minStale, interval, staleAfter)
+	}
+	return nil
+}
+
+// ValidateSearchJobMaxAttempts rejects a cap below 1. Config is a QA'd
+// artefact: an invalid value is a hard startup error, not a clamp. A cap of 1
+// disables re-execution (a job is failed on its first executor loss);
+// anything below 1 would fail a job before it ever ran.
+func ValidateSearchJobMaxAttempts(n int) error {
+	if n < 1 {
+		return fmt.Errorf("CYODA_SEARCH_JOB_MAX_ATTEMPTS must be >= 1, got %d", n)
 	}
 	return nil
 }
