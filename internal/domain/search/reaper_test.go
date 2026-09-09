@@ -1,11 +1,11 @@
 package search_test
 
-// Tests for the stale-job claim-then-FAIL reaper (task E3): FailStaleJobs
-// claims stale RUNNING async-search jobs (spi.AsyncSearchStore.ClaimStale)
-// and marks each FAILED via an epoch-fenced write, using a per-job tenant
-// context reconstructed from SearchJob.TenantID. Each test below maps to one
-// of the E3.1 scenarios in
-// .superpowers/sdd/2026-08-22-472-search-spi-surface/task-E3-brief.md.
+// Driving tests for the stale-job RECLAIM reaper (task 8): ReclaimStaleJobs
+// claims stale/released RUNNING async-search jobs and RE-EXECUTES them on this
+// node, or FAILS those past the attempt cap (a bound on StaleClaims, executor
+// losses). These are the two behaviour drivers the task asks for; the full
+// matrix (zero-headroom, ClearResults-error, self-reclaim, Cap(),
+// self-executing skip beyond the one below) is a later task.
 
 import (
 	"context"
@@ -14,262 +14,127 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// newReaperTestStore builds a memory AsyncSearchStore driven by a
-// TestClock so staleness can be advanced deterministically instead of
-// sleeping in real time.
-func newReaperTestStore(t *testing.T) (spi.AsyncSearchStore, *memory.TestClock) {
+// newReclaimTestService builds a memory-backed SearchService with a bounded
+// pool so the reclaim sweep can actually re-execute a claimed job end to end.
+// The pool is drained at cleanup so no worker goroutines outlive the test.
+func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFactory, spi.AsyncSearchStore) {
 	t.Helper()
-	clk := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	factory := memory.NewStoreFactory(memory.WithClock(clk))
+	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	store, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	return store, clk
+	pool := search.NewWorkerPool(2, 8)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+		WithAsyncPool(pool).
+		WithHeartbeat(50 * time.Millisecond)
+	return svc, factory, store
 }
 
-// createRunningJob persists a RUNNING job under tenant with the given
-// CreateTime, returning its ID.
-func createRunningJob(t *testing.T, store spi.AsyncSearchStore, tenant spi.TenantID, id string, createTime time.Time) {
+// createStaleReclaimJob persists a RUNNING job whose CreateTime is an hour in
+// the past (so it is stale against any staleAfter well under an hour) and no
+// heartbeat, with the condition and options envelope SubmitAsync itself
+// persists — so decodeStoredJob can reconstruct and re-run it.
+func createStaleReclaimJob(t *testing.T, store spi.AsyncSearchStore, tenant spi.TenantID, id string, ref spi.ModelRef, cond predicate.Condition, pit time.Time) {
 	t.Helper()
+	condJSON, err := json.Marshal(cond)
+	if err != nil {
+		t.Fatalf("marshal condition: %v", err)
+	}
+	optsJSON, err := json.Marshal(struct {
+		Limit       int             `json:"limit"`
+		PointInTime *time.Time      `json:"pointInTime,omitempty"`
+		OrderBy     []spi.OrderSpec `json:"orderBy,omitempty"`
+	}{Limit: 10, PointInTime: &pit})
+	if err != nil {
+		t.Fatalf("marshal opts: %v", err)
+	}
 	job := &spi.SearchJob{
 		ID:         id,
 		TenantID:   tenant,
 		Status:     "RUNNING",
-		ModelRef:   spi.ModelRef{EntityName: "widget", ModelVersion: "1"},
-		Condition:  json.RawMessage(`{}`),
-		SearchOpts: json.RawMessage(`{}`),
-		CreateTime: createTime,
+		ModelRef:   ref,
+		Condition:  condJSON,
+		SearchOpts: optsJSON,
+		CreateTime: time.Now().Add(-time.Hour),
 	}
 	if err := store.CreateJob(tenantCtx(string(tenant)), job); err != nil {
 		t.Fatalf("CreateJob(%s): %v", id, err)
 	}
 }
 
-// (a) a RUNNING job whose baseline (CreateTime, no heartbeat) is older than
-// staleAfter is claimed and marked FAILED with a finish time and the
-// sanitised fallback message.
-func TestFailStaleJobs_ClaimsAndFailsStaleJob(t *testing.T) {
-	store, clk := newReaperTestStore(t)
-	const staleAfter = 5 * time.Minute
+// (a) a stale job with StaleClaims below the attempt cap is re-enqueued and
+// runs to SUCCESSFUL on this node — a crashed node's job is completed by a
+// live node, not failed.
+func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
+	svc, factory, store := newReclaimTestService(t)
+	ctx := tenantCtx("tenant-a")
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
-	createRunningJob(t, store, "tenant-a", "job-stale", clk.Now())
-	clk.Advance(2 * staleAfter)
+	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
+	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
+	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
 
-	n, err := search.FailStaleJobs(context.Background(), store, staleAfter, 10)
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	createStaleReclaimJob(t, store, "tenant-a", "job-stale", ref, cond, time.Now())
+
+	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
-		t.Fatalf("FailStaleJobs: %v", err)
+		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("FailStaleJobs claimed+failed %d jobs, want 1", n)
+	if reenq != 1 || failed != 0 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (1, 0)", reenq, failed)
 	}
 
-	got, err := store.GetJob(tenantCtx("tenant-a"), "job-stale")
+	status := pollUntilTerminal(t, svc, ctx, "job-stale", 5*time.Second)
+	if status.Status != "SUCCESSFUL" {
+		t.Fatalf("reclaimed job status = %q, want SUCCESSFUL", status.Status)
+	}
+
+	ids, total, err := store.GetResultIDs(ctx, "job-stale", 0, 10)
+	if err != nil {
+		t.Fatalf("GetResultIDs: %v", err)
+	}
+	if total != 1 || len(ids) != 1 || ids[0] != "e1" {
+		t.Fatalf("results = %v (total %d), want [e1]", ids, total)
+	}
+}
+
+// (b) a job at the attempt cap (the staleness claim brings StaleClaims up to
+// maxAttempts) is FAILED with the jobAttemptsExhausted message, not re-run.
+func TestReclaimStaleJobs_AttemptCapFailsJob(t *testing.T) {
+	svc, _, store := newReclaimTestService(t)
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
+	createStaleReclaimJob(t, store, "tenant-a", "job-cap", ref, cond, time.Now())
+
+	// maxAttempts=1: this first staleness claim bumps StaleClaims to 1, which
+	// meets the cap, so the job is abandoned (FAILED) rather than re-run.
+	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1)
+	if err != nil {
+		t.Fatalf("ReclaimStaleJobs: %v", err)
+	}
+	if reenq != 0 || failed != 1 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 1)", reenq, failed)
+	}
+
+	got, err := store.GetJob(tenantCtx("tenant-a"), "job-cap")
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
 	if got.Status != "FAILED" {
 		t.Errorf("job status = %q, want FAILED", got.Status)
 	}
-	if got.Error != search.JobFailureFallback() {
-		t.Errorf("job error = %q, want sanitised fallback %q", got.Error, search.JobFailureFallback())
-	}
-	if got.FinishTime == nil {
-		t.Error("job FinishTime is nil, want a stamped finish time")
-	}
-}
-
-// (b) a RUNNING job whose owner is alive and heartbeating recently must
-// never be claimed — the reaper must not fight a live executor.
-func TestFailStaleJobs_FreshHeartbeatJobUntouched(t *testing.T) {
-	store, clk := newReaperTestStore(t)
-	const staleAfter = 5 * time.Minute
-
-	createRunningJob(t, store, "tenant-a", "job-fresh", clk.Now())
-	// Advance well past staleAfter from CreateTime, then heartbeat right
-	// before the reaper runs — the fresh heartbeat resets the baseline so
-	// the job must survive despite its old CreateTime.
-	clk.Advance(2 * staleAfter)
-	if err := store.Heartbeat(tenantCtx("tenant-a"), "job-fresh", 1); err != nil {
-		t.Fatalf("Heartbeat: %v", err)
-	}
-	clk.Advance(1 * time.Minute) // still well under staleAfter since the heartbeat
-
-	n, err := search.FailStaleJobs(context.Background(), store, staleAfter, 10)
-	if err != nil {
-		t.Fatalf("FailStaleJobs: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("FailStaleJobs claimed+failed %d jobs, want 0 (fresh heartbeat)", n)
-	}
-
-	got, err := store.GetJob(tenantCtx("tenant-a"), "job-fresh")
-	if err != nil {
-		t.Fatalf("GetJob: %v", err)
-	}
-	if got.Status != "RUNNING" {
-		t.Errorf("job status = %q, want RUNNING (untouched)", got.Status)
-	}
-}
-
-// (c) a job already in a terminal status (SUCCESSFUL) is never claimed or
-// rewritten, regardless of staleness.
-func TestFailStaleJobs_SuccessfulJobUntouched(t *testing.T) {
-	store, clk := newReaperTestStore(t)
-	const staleAfter = 5 * time.Minute
-
-	createRunningJob(t, store, "tenant-a", "job-done", clk.Now())
-	finishTime := clk.Now()
-	if err := store.UpdateJobStatus(tenantCtx("tenant-a"), "job-done", 1, "SUCCESSFUL", 3, "", finishTime, 42); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	clk.Advance(2 * staleAfter)
-
-	n, err := search.FailStaleJobs(context.Background(), store, staleAfter, 10)
-	if err != nil {
-		t.Fatalf("FailStaleJobs: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("FailStaleJobs claimed+failed %d jobs, want 0 (terminal)", n)
-	}
-
-	got, err := store.GetJob(tenantCtx("tenant-a"), "job-done")
-	if err != nil {
-		t.Fatalf("GetJob: %v", err)
-	}
-	if got.Status != "SUCCESSFUL" || got.Error != "" || got.ResultCount != 3 {
-		t.Errorf("terminal job was rewritten: status=%q error=%q resultCount=%d", got.Status, got.Error, got.ResultCount)
-	}
-}
-
-// (d) a job claimed by FailStaleJobs but reclaimed by a concurrent claimer
-// before FailStaleJobs' own follow-up write lands loses the race
-// (ErrStaleClaim) — tolerated, counted as skipped, not surfaced as an
-// error and not left FAILED.
-func TestFailStaleJobs_LostFenceRaceCountsAsSkipped(t *testing.T) {
-	store, clk := newReaperTestStore(t)
-	const staleAfter = 5 * time.Minute
-
-	createRunningJob(t, store, "tenant-a", "job-raced", clk.Now())
-	clk.Advance(2 * staleAfter)
-
-	racing := &raceInjectingStore{AsyncSearchStore: store, targetJobID: "job-raced"}
-
-	n, err := search.FailStaleJobs(context.Background(), racing, staleAfter, 10)
-	if err != nil {
-		t.Fatalf("FailStaleJobs: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("FailStaleJobs reported %d successful failures, want 0 (lost the fence race)", n)
-	}
-	if !racing.triggered {
-		t.Fatal("test precondition: the race injection never fired")
-	}
-
-	// The job was NOT marked FAILED by the losing write — the concurrent
-	// claimer's reclaim left it RUNNING under a newer epoch.
-	got, err := store.GetJob(tenantCtx("tenant-a"), "job-raced")
-	if err != nil {
-		t.Fatalf("GetJob: %v", err)
-	}
-	if got.Status != "RUNNING" {
-		t.Errorf("job status = %q, want RUNNING (the reclaimer, not FailStaleJobs, owns it now)", got.Status)
-	}
-}
-
-// raceInjectingStore wraps a real spi.AsyncSearchStore and, on the first
-// UpdateJobStatus call for targetJobID, reclaims that job via a second
-// ClaimStale (bumping its epoch) before forwarding the original call —
-// simulating a concurrent reaper/claimer winning the race between
-// FailStaleJobs' own claim and its follow-up write.
-type raceInjectingStore struct {
-	spi.AsyncSearchStore
-	targetJobID string
-	triggered   bool
-}
-
-func (r *raceInjectingStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
-	if jobID == r.targetJobID && !r.triggered {
-		r.triggered = true
-		// A negative staleAfter pushes the cutoff into the future relative
-		// to any baseline stamped "now" by the virtual TestClock (which does
-		// not advance between this claim and the one FailStaleJobs already
-		// made), so this reclaims the job unconditionally — simulating a
-		// second claimer racing in right now.
-		if _, err := r.AsyncSearchStore.ClaimStale(context.Background(), -time.Hour, 10); err != nil {
-			return err
-		}
-	}
-	return r.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
-}
-
-// (e) tenant reconstruction: ClaimStale is cross-tenant, but the follow-up
-// FAILED write for each claimed job must land under that job's own tenant
-// — never leak into another tenant's context or a tenant-less one.
-func TestFailStaleJobs_TenantReconstructionPerJob(t *testing.T) {
-	store, clk := newReaperTestStore(t)
-	const staleAfter = 5 * time.Minute
-
-	createRunningJob(t, store, "tenant-a", "job-a", clk.Now())
-	createRunningJob(t, store, "tenant-b", "job-b", clk.Now())
-	clk.Advance(2 * staleAfter)
-
-	n, err := search.FailStaleJobs(context.Background(), store, staleAfter, 10)
-	if err != nil {
-		t.Fatalf("FailStaleJobs: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("FailStaleJobs claimed+failed %d jobs, want 2", n)
-	}
-
-	gotA, err := store.GetJob(tenantCtx("tenant-a"), "job-a")
-	if err != nil {
-		t.Fatalf("GetJob(job-a) under tenant-a: %v", err)
-	}
-	if gotA.Status != "FAILED" {
-		t.Errorf("job-a status = %q, want FAILED", gotA.Status)
-	}
-
-	gotB, err := store.GetJob(tenantCtx("tenant-b"), "job-b")
-	if err != nil {
-		t.Fatalf("GetJob(job-b) under tenant-b: %v", err)
-	}
-	if gotB.Status != "FAILED" {
-		t.Errorf("job-b status = %q, want FAILED", gotB.Status)
-	}
-
-	// job-a must not be visible/mutable under tenant-b's context and
-	// vice versa — the memory store is tenant-scoped per resolveTenant,
-	// so a cross-tenant GetJob is a miss (ErrNotFound), not a leak.
-	if _, err := store.GetJob(tenantCtx("tenant-b"), "job-a"); err == nil {
-		t.Error("job-a was visible under tenant-b's context — cross-tenant leak")
-	}
-	if _, err := store.GetJob(tenantCtx("tenant-a"), "job-b"); err == nil {
-		t.Error("job-b was visible under tenant-a's context — cross-tenant leak")
-	}
-}
-
-// (f) the claim is bounded: FailStaleJobs never pulls more than batch jobs
-// in one call.
-func TestFailStaleJobs_BoundedBatch(t *testing.T) {
-	store, clk := newReaperTestStore(t)
-	const staleAfter = 5 * time.Minute
-
-	for i := 0; i < 5; i++ {
-		createRunningJob(t, store, "tenant-a", "job-"+string(rune('a'+i)), clk.Now())
-	}
-	clk.Advance(2 * staleAfter)
-
-	n, err := search.FailStaleJobs(context.Background(), store, staleAfter, 2)
-	if err != nil {
-		t.Fatalf("FailStaleJobs: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("FailStaleJobs claimed+failed %d jobs, want batch-bounded 2", n)
+	if got.Error != search.JobAttemptsExhausted() {
+		t.Errorf("job error = %q, want %q", got.Error, search.JobAttemptsExhausted())
 	}
 }

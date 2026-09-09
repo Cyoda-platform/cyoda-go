@@ -70,9 +70,10 @@ type Config struct {
 	// SearchJobStaleAfter is how long a RUNNING async-search job may go
 	// without a heartbeat (spi.AsyncSearchStore.ClaimStale's staleness
 	// baseline — HeartbeatTime, or CreateTime when never heartbeated)
-	// before the reaper (internal/domain/search.FailStaleJobs, wired into
-	// the same ticker as the snapshot-TTL reaper in app.go) claims it and
-	// marks it FAILED. Must dominate SearchJobHeartbeatInterval by a wide
+	// before the reaper (internal/domain/search.ReclaimStaleJobs, wired into
+	// the reclaim ticker in app.go) claims it and re-executes it on a live
+	// node (or fails it past the attempt cap). Must dominate
+	// SearchJobHeartbeatInterval by a wide
 	// margin so a merely slow heartbeat tick is never mistaken for a dead
 	// executor — see ValidateSearchJobStaleAfter.
 	// CYODA_SEARCH_JOB_STALE_AFTER, default 5m.

@@ -1,14 +1,14 @@
 package search_test
 
-// TestFailStaleJobs_SelfExecutingStore_NeverClaimsOrWrites pins the final-
-// review finding that the stale-job reaper lacked the self-executing-store
-// guard SubmitAsync already has. A self-executing store's jobs never
-// receive an engine heartbeat (SubmitAsync skips its background goroutine
-// for these stores), so ClaimStale's COALESCE(heartbeat_time, created_at)
-// baseline would make every healthy job of theirs look stale after
-// staleAfter by construction — and, absent this guard, FailStaleJobs would
+// TestReclaimStaleJobs_SelfExecutingStore_NeverClaimsOrWrites pins that the
+// stale-job reclaim sweep keeps the self-executing-store guard SubmitAsync
+// already has. A self-executing store's jobs never receive an engine
+// heartbeat (SubmitAsync skips its background goroutine for these stores), so
+// ClaimStale's COALESCE(heartbeat_time, created_at) baseline would make every
+// healthy job of theirs look stale after staleAfter by construction — and,
+// absent this guard, ReclaimStaleJobs would claim them and clear/re-run or
 // FAIL them out from under the store's own recovery pipeline. Fail closed:
-// skip reaping entirely for a spi.SelfExecutingSearchStore, exactly as
+// skip reclaim entirely for a spi.SelfExecutingSearchStore, exactly as
 // SubmitAsync skips its own background execution for one.
 
 import (
@@ -17,7 +17,9 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // selfExecutingAsyncStore wraps a real spi.AsyncSearchStore, implements
@@ -43,15 +45,25 @@ func (s *selfExecutingAsyncStore) UpdateJobStatus(ctx context.Context, jobID str
 
 var _ spi.SelfExecutingSearchStore = (*selfExecutingAsyncStore)(nil)
 
-func TestFailStaleJobs_SelfExecutingStore_NeverClaimsOrWrites(t *testing.T) {
-	base, _ := newReaperTestStore(t)
+func TestReclaimStaleJobs_SelfExecutingStore_NeverClaimsOrWrites(t *testing.T) {
+	factory := memory.NewStoreFactory()
+	t.Cleanup(func() { factory.Close() })
+	base, err := factory.AsyncSearchStore(context.Background())
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
 	store := &selfExecutingAsyncStore{AsyncSearchStore: base, t: t}
 
-	n, err := search.FailStaleJobs(context.Background(), store, 5*time.Minute, search.StaleClaimBatch)
+	pool := search.NewWorkerPool(2, 8)
+	t.Cleanup(func() { pool.Drain(context.Background()) })
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+		WithAsyncPool(pool)
+
+	reenq, failed, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, search.StaleClaimBatch)
 	if err != nil {
-		t.Fatalf("FailStaleJobs: %v", err)
+		t.Fatalf("ReclaimStaleJobs: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("FailStaleJobs claimed+failed %d jobs, want 0 (self-executing store, reaping must be skipped)", n)
+	if reenq != 0 || failed != 0 {
+		t.Fatalf("ReclaimStaleJobs = (reenqueued %d, failed %d), want (0, 0) for a self-executing store", reenq, failed)
 	}
 }

@@ -39,7 +39,7 @@ package e2e_test
 //     gRPC cancel envelope TestEntitySearch_SnapshotCancel_Envelope
 //     (internal/grpc/search_test.go).
 //  8. Heartbeat + ClaimStale orphan handling: spitest + engine unit
-//     (TestFailStaleJobs_* in internal/domain/search/reaper_test.go,
+//     (TestReclaimStaleJobs_* in internal/domain/search/reaper_test.go,
 //     TestExecutor_HeartbeatRecordedWhileQueuedAndScanning /
 //     TestExecutor_HeartbeatFencingAborts in executor_test.go); e2e
 //     TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan (this file) — synthesises
@@ -53,9 +53,11 @@ package e2e_test
 //     production-valid cadence (staleAfter == the enforced 4x floor).
 //  9. Epoch fencing (stale-epoch Heartbeat/SaveResults/UpdateJobStatus
 //     refused; ClearResults idempotent): spitest only.
-// 10. Shutdown drain (no RUNNING left, FAILED safe message): engine
-//     AbortRegisteredJobs is exercised by App.Shutdown itself; e2e
+// 10. Shutdown drain then release-for-reclaim: engine
+//     ReleaseRegisteredJobs is exercised by App.Shutdown itself; e2e
 //     TestE2E_AsyncSearch_ShutdownDrain_FailsInFlightJob (this file).
+//     NOTE: this e2e still asserts the pre-reclaim FAILED disposition; the
+//     crash-mid-save reclaim task rewrites it to the release disposition.
 // 11. Worker pool (<=poolSize concurrent, excess queue): engine
 //     TestWorkerPool_ConcurrencyBound / TestWorkerPool_BoundedQueue_QueueFull
 //     (internal/domain/search/pool_test.go); isolated e2e
@@ -555,10 +557,15 @@ func TestE2E_AsyncSearch_ShutdownDrain_FailsInFlightJob(t *testing.T) {
 	}
 
 	// Shutdown's own pool.Drain waits up to its budget for the (permanently
-	// blocked) worker to exit naturally, times out, then AbortRegisteredJobs
+	// blocked) worker to exit naturally, times out, then ReleaseRegisteredJobs
 	// cancels the job's ctx directly — which is what finally unblocks the
-	// gate (wait selects on ctx.Done() too) — and writes FAILED. This call
-	// is synchronous and returns only once that has happened.
+	// gate (wait selects on ctx.Done() too). This call is synchronous and
+	// returns only once that has happened.
+	//
+	// NOTE (superseded assertion): the disposition is now release-for-reclaim,
+	// not FAILED. This test still asserts the old FAILED status and is left for
+	// the crash-mid-save reclaim e2e task to rewrite; it is out of scope for
+	// the engine/app reclaim wiring.
 	a.Shutdown()
 
 	statusResp := doAuthOn(http.MethodGet, "/api/search/async/"+jobID+"/status", "")
@@ -607,8 +614,13 @@ func reaperFastCadence(cfg *app.Config) {
 }
 
 // TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan pins app.New's wired reaper
-// ticker (app.go's stopSearchReaper loop calling search.FailStaleJobs) as a
+// ticker (app.go's stopSearchReaper loop calling search.ReclaimStaleJobs) as a
 // genuinely running e2e path, not just the engine unit tests.
+//
+// NOTE (superseded assertion): the reaper now RECLAIMS and re-executes an
+// orphan rather than failing it. This test still asserts the old FAILED
+// disposition and is left for the crash-mid-save reclaim e2e task to rewrite;
+// it is out of scope for the engine/app reclaim wiring.
 //
 // The subject is the case ClaimStale exists for: a RUNNING job whose owning
 // executor is GONE — the node holding it crashed or was killed — so nothing

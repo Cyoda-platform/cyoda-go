@@ -16,13 +16,20 @@ import (
 // duplicate jobID) structurally rather than through the single call site that
 // happens to guarantee unique ids today.
 func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) bool {
-	return s.registerJob(jobID, cancel, uc, 1)
+	_, ok := s.registerJob(jobID, cancel, uc, 1)
+	return ok
 }
 
-// DeregisterJobForTest exposes deregisterJob, the release half of the pair
-// above.
+// DeregisterJobForTest exposes deregisterJobHandle, the release half of the
+// pair above. It looks up jobID's current handle and deregisters by identity,
+// matching how the executor's own defer releases its registration.
 func (s *SearchService) DeregisterJobForTest(jobID string) {
-	s.deregisterJob(jobID)
+	s.registryMu.Lock()
+	h := s.registry[jobID]
+	s.registryMu.Unlock()
+	if h != nil {
+		s.deregisterJobHandle(jobID, h)
+	}
 }
 
 // TenantInFlightForTest returns tenant's current in-flight count, the quantity
@@ -65,10 +72,16 @@ func (s *SearchService) ResolveSortKeysForTest(ctx context.Context, modelRef spi
 }
 
 // JobFailureFallback returns the sanitised message written into a job
-// record on an unattributable failure — the same constant FailStaleJobs
-// (reaper.go) and the executor's own failure paths (service.go) both use.
-// Exposed so external tests can assert against the constant itself rather
-// than duplicating its literal text.
+// record on an unattributable failure — the constant the executor's own
+// failure paths (service.go) use. Exposed so external tests can assert
+// against the constant itself rather than duplicating its literal text.
 func JobFailureFallback() string {
 	return jobFailureFallback
+}
+
+// JobAttemptsExhausted returns the caller-facing message the reclaim sweep
+// writes when it abandons a job past the attempt cap. Exposed so external
+// tests assert against the constant rather than duplicating its text.
+func JobAttemptsExhausted() string {
+	return jobAttemptsExhausted
 }

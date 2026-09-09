@@ -69,6 +69,11 @@ type App struct {
 	nodeRegistry       contract.NodeRegistry
 	scheduler          *scheduler.Service
 	stopSearchReaper   chan struct{}
+	// searchReaperDone is closed by the reaper goroutine when it exits, so
+	// stopSearchReaperLoop can await a clean stop. stopSearchReaperOnce makes
+	// the close idempotent — both Shutdown and Close signal the loop.
+	searchReaperDone     chan struct{}
+	stopSearchReaperOnce sync.Once
 	// searchPool is the bounded worker pool async-search submissions run
 	// on, sized from cfg.SearchAsync. Shutdown drains it (bounded by
 	// searchDrainBudget) before aborting whatever async jobs are still
@@ -464,15 +469,29 @@ func New(cfg Config) *App {
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
-	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
+	// Search reapers (use stopSearchReaper/searchReaperDone for graceful
+	// shutdown). Two cadences: the snapshot-TTL sweep on SearchReapInterval,
+	// and the stale-job reclaim sweep on the finer SearchJobHeartbeatInterval,
+	// plus one reclaim sweep at startup.
 	a.stopSearchReaper = make(chan struct{})
+	a.searchReaperDone = make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(cfg.SearchReapInterval)
-		defer ticker.Stop()
+		defer close(a.searchReaperDone)
+		// Startup sweep: a restarted node reclaims its own released jobs and
+		// any already-stale jobs the moment it can execute, not after the
+		// first interval.
+		reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
+
+		snapTicker := time.NewTicker(cfg.SearchReapInterval)
+		defer snapTicker.Stop()
+		claimTicker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
+		defer claimTicker.Stop()
 		for {
 			select {
-			case <-ticker.C:
-				searchReaperTick(context.Background(), searchStore, cfg.SearchSnapshotTTL, cfg.SearchJobStaleAfter, a.healthFlag)
+			case <-snapTicker.C:
+				reapExpiredSnapshotsTick(context.Background(), searchStore, cfg.SearchSnapshotTTL, a.healthFlag)
+			case <-claimTicker.C:
+				reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
 			case <-a.stopSearchReaper:
 				return
 			}
@@ -810,43 +829,52 @@ func New(cfg Config) *App {
 	return a
 }
 
-// searchReaperTick runs one pass of the two search reapers: the snapshot-TTL
-// sweep, then the stale-job claim-then-FAIL sweep (interim disposition — see
-// search.FailStaleJobs' doc comment: a RUNNING job whose owner stopped
-// heartbeating, most likely a crashed node, is failed rather than left
-// RUNNING forever). One ticker drives both, not two loops.
-//
-// A panic beneath either sweep is recovered here and latches healthFlag
-// false, exactly as the async-search executor's own recovery does: this
+// latchOnPanic recovers a panic beneath a reaper sweep and latches healthFlag
+// false, exactly as the async-search executor's own recovery does: a reaper
 // goroutine has no HTTP handler above it, so an unrecovered panic takes the
 // process down, and a node that has panicked has state nothing has verified.
 // Recovering also keeps the ticker alive, so one bad tick does not silently
-// end snapshot reaping for the rest of the process's life. No plugin
-// currently returns the shapes that would panic (a nil element from
-// ClaimStale, say), so this is hardening rather than a fix for a live defect.
-func searchReaperTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL, staleAfter time.Duration, healthFlag *atomic.Bool) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Error("panic recovered in search reaper", "pkg", "search",
-				"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
-			if healthFlag != nil {
-				healthFlag.Store(false)
-			}
+// end reaping for the rest of the process's life. Deferred at the top of each
+// tick; site names the sweep in the log. No plugin currently returns the
+// shapes that would panic (a nil element from ClaimStale, say), so this is
+// hardening rather than a fix for a live defect.
+func latchOnPanic(healthFlag *atomic.Bool, site string) {
+	if rec := recover(); rec != nil {
+		slog.Error("panic recovered in "+site, "pkg", "search",
+			"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
+		if healthFlag != nil {
+			healthFlag.Store(false)
 		}
-	}()
+	}
+}
 
+// reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
+// on SearchReapInterval. Panic-latches health like the other engine-work sites.
+func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthFlag *atomic.Bool) {
+	defer latchOnPanic(healthFlag, "search snapshot reaper")
 	reaped, err := store.ReapExpired(ctx, snapshotTTL)
 	if err != nil {
 		slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
 	} else if reaped > 0 {
 		slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
 	}
+}
 
-	failed, err := search.FailStaleJobs(ctx, store, staleAfter, search.StaleClaimBatch)
+// reclaimStaleTick claims stale/released RUNNING jobs and re-executes them on
+// this node (or fails those past the attempt cap). Runs on the heartbeat
+// interval — a finer cadence than the snapshot reap — plus once at startup.
+func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthFlag *atomic.Bool) {
+	defer latchOnPanic(healthFlag, "search stale-job reaper")
+	reenqueued, failed, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
 	if err != nil {
-		slog.Error("stale search job reaper error", "pkg", "search", "err", err)
-	} else if failed > 0 {
-		slog.Warn("failed stale async search jobs", "pkg", "search", "count", failed)
+		slog.Error("stale search job reclaim error", "pkg", "search", "err", err)
+		return
+	}
+	if reenqueued > 0 {
+		slog.Info("re-enqueued stale async search jobs", "pkg", "search", "count", reenqueued)
+	}
+	if failed > 0 {
+		slog.Warn("failed async search jobs past the attempt cap", "pkg", "search", "count", failed)
 	}
 }
 
@@ -913,11 +941,23 @@ func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegis
 const gRPCGracefulStopBudget = 10 * time.Second
 
 // searchDrainBudget bounds how long Shutdown waits for in-flight async
-// search jobs to finish naturally before forcing whatever is still
-// registered to FAILED. Jobs run their own context (not the pool's — see
+// search jobs to finish naturally before releasing whatever is still
+// registered for reclaim. Jobs run their own context (not the pool's — see
 // search.WithAsyncPool's doc comment), so pool.Drain's own ctx cancellation
 // does not itself abort them; this budget is what actually bounds the wait.
 const searchDrainBudget = 5 * time.Second
+
+// stopSearchReaperLoop signals the reaper goroutine and waits for it to exit.
+// Idempotent: safe to call from both Shutdown and Close (sync.Once guards the
+// close; the done-channel wait is a no-op once the goroutine has already
+// returned).
+func (a *App) stopSearchReaperLoop() {
+	if a.stopSearchReaper == nil {
+		return
+	}
+	a.stopSearchReaperOnce.Do(func() { close(a.stopSearchReaper) })
+	<-a.searchReaperDone
+}
 
 // Close performs graceful shutdown of all backend resources.
 //
@@ -932,6 +972,9 @@ const searchDrainBudget = 5 * time.Second
 // so operators can see the budget was hit.
 func (a *App) Close() error {
 	slog.Info("shutting down")
+	// Stop the reaper first so a node whose store is closing does not keep
+	// sweeping on the claim ticker against a store being torn down.
+	a.stopSearchReaperLoop()
 	var err error
 	if a.storeFactory != nil {
 		err = a.storeFactory.Close()
@@ -974,22 +1017,17 @@ func (a *App) StopGRPC() {
 // followed by Close() (the runServers sequence) close the factory
 // exactly once.
 func (a *App) Shutdown() {
-	if a.stopSearchReaper != nil {
-		close(a.stopSearchReaper)
-	}
+	a.stopSearchReaperLoop()
 	if a.searchPool != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
 		a.searchPool.Drain(drainCtx)
 		cancel()
 	}
 	if a.searchService != nil {
-		// Interim disposition (see the task E2 note this mirrors): a job
-		// still registered here did not finish within the drain budget —
-		// mark it FAILED with the safe fallback message rather than leave
-		// it RUNNING against a process that is going away. Re-executing an
-		// aborted job elsewhere is a follow-up, not handled by this call.
-		if n := a.searchService.AbortRegisteredJobs(context.Background()); n > 0 {
-			slog.Warn("aborted in-flight async search jobs at shutdown", "pkg", "search", "count", n)
+		// Jobs still registered after the drain budget are released for
+		// reclaim (a peer, or this node on restart, re-runs them), not failed.
+		if n := a.searchService.ReleaseRegisteredJobs(context.Background()); n > 0 {
+			slog.Info("released in-flight async search jobs for reclaim at shutdown", "pkg", "search", "count", n)
 		}
 	}
 	if a.scheduler != nil {

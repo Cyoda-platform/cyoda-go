@@ -147,8 +147,8 @@ func TestWorkerPool_ConcurrencyBound(t *testing.T) {
 // TestWorkerPool_Drain_WaitsForInFlightJob asserts Drain lets an in-flight
 // job run to completion and does not return until it has actually finished.
 // Drain deliberately has no way to interrupt it (see jobFunc): the drain
-// budget is the job's chance to finish, and App.Shutdown cancels whatever
-// is still running only afterwards, via AbortRegisteredJobs.
+// budget is the job's chance to finish, and App.Shutdown releases whatever
+// is still running only afterwards, via ReleaseRegisteredJobs.
 func TestWorkerPool_Drain_WaitsForInFlightJob(t *testing.T) {
 	pool := NewWorkerPool(1, 1)
 

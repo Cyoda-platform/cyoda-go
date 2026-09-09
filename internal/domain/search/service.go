@@ -41,6 +41,13 @@ var ErrSearchJobNotComplete = errors.New("search job is not complete")
 // it. Every other cancellation cause keeps recording a terminal status.
 var errJobReleased = errors.New("async search job released for reclaim")
 
+// errJobSuperseded cancels a stale in-process executor when this same node
+// reclaims a job it still had registered (its own paused executor). The old
+// executor's writes are fenced by epoch regardless; the cause is distinct
+// from errJobReleased so its failure write is still suppressed but not
+// mistaken for a graceful handoff.
+var errJobSuperseded = errors.New("async search job superseded by self-reclaim")
+
 // jobLookupErr preserves why an async-job lookup failed.
 //
 // A job that genuinely is not there keeps ErrSearchJobNotFound, which the
@@ -80,6 +87,12 @@ const searchCeilingMessage = "search exceeded the backend's async search ceiling
 // business seeing — a driver error, a recovered panic. That text is operator
 // information, and the job record is caller-facing.
 const jobFailureFallback = "search failed unexpectedly"
+
+// jobAttemptsExhausted is the caller-facing failure text for a job the reclaim
+// sweep abandons after its executor was lost (StaleClaims) more times than the
+// configured attempt cap allows. Distinct from jobFailureFallback so a caller
+// can tell a crash-looping job from a one-off internal failure.
+const jobAttemptsExhausted = "search abandoned: executor lost repeatedly"
 
 // searchCeilingExceeded is the marker a backend attaches when the async-search
 // scan exceeded the ceiling that workload runs under. Matched with errors.As on
@@ -222,10 +235,10 @@ type SearchService struct {
 
 	// registryMu guards registry and tenantInFlight, the jobID ->
 	// in-process cancel handle map used by CancelRunning (in-process
-	// immediate cancel) and AbortRegisteredJobs (shutdown drain), and the
+	// immediate cancel) and ReleaseRegisteredJobs (shutdown handoff), and the
 	// per-tenant count derived from it. An entry exists for the lifetime of
 	// a job on this node: from registerJob at submit time (queued or
-	// executing) to deregisterJob in the executor's own defer.
+	// executing) to deregisterJobHandle in the executor's own defer.
 	registryMu sync.Mutex
 	registry   map[string]*asyncJobHandle
 	// tenantInFlight counts registry entries per tenant. Kept alongside the
@@ -247,13 +260,13 @@ type asyncJobHandle struct {
 	// nil and keep recording a terminal status as before.
 	cancel context.CancelCauseFunc
 	// uc is the submitting user's tenant context, needed to build a fresh
-	// (non-cancelled) ctx for a shutdown-time fenced write after cancel has
+	// (non-cancelled) ctx for a shutdown-time fenced Release after cancel has
 	// already been called on jobCtx.
 	uc *spi.UserContext
 	// epoch is the claim epoch this job is executing under — the value
 	// every fenced write (Heartbeat, SaveResults, the terminal
-	// UpdateJobStatus) for this job must use. Stored here so a
-	// shutdown-time write (AbortRegisteredJobs) fences against the same
+	// UpdateJobStatus, Release) for this job must use. Stored here so a
+	// shutdown-time Release (ReleaseRegisteredJobs) fences against the same
 	// epoch the executor itself is running at.
 	epoch int64
 }
@@ -371,12 +384,12 @@ func (s *SearchService) heartbeatEvery() time.Duration {
 }
 
 // registerJob records jobID's in-process cancel handle so CancelRunning and
-// AbortRegisteredJobs can find it. Called once at submit time, before the
-// job is handed to the pool — the submitter owns the queue entry, so the
-// registration (and the heartbeat ticker) span the queued state too, not
-// just execution.
+// ReleaseRegisteredJobs can find it, returning the handle it created. Called
+// once at submit time, before the job is handed to the pool — the submitter
+// owns the queue entry, so the registration (and the heartbeat ticker) span
+// the queued state too, not just execution.
 //
-// Returns false when uc's tenant already holds maxPerTenant in-flight jobs
+// Returns (nil, false) when uc's tenant already holds maxPerTenant in-flight jobs
 // on this node, or when jobID is already registered; nothing is registered in
 // either case and the caller must reject the submission (SubmitAsync answers
 // the shared QueueFullError, the same 503 the pool's own backpressure
@@ -392,7 +405,7 @@ func (s *SearchService) heartbeatEvery() time.Duration {
 // deregister then leaves the tenant permanently one slot short. Submit's fresh
 // time-UUIDs make that unreachable today, which is a property of the caller,
 // not of this function.
-func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) bool {
+func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) (*asyncJobHandle, bool) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 	if s.registry == nil {
@@ -402,15 +415,49 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 		s.tenantInFlight = make(map[spi.TenantID]int)
 	}
 	if _, dup := s.registry[jobID]; dup {
-		return false
+		return nil, false
 	}
 	tenant := tenantOf(uc)
 	if s.maxPerTenant > 0 && s.tenantInFlight[tenant] >= s.maxPerTenant {
-		return false
+		return nil, false
 	}
-	s.registry[jobID] = &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+	s.registry[jobID] = h
 	s.tenantInFlight[tenant]++
-	return true
+	return h, true
+}
+
+// registerReclaim registers a reclaimed job's handle at its claimed epoch. It
+// bypasses the per-tenant in-flight cap (admission happened at submit,
+// cluster-wide) and, if this node still has a stale handle for the job (its
+// own paused executor), cancels that handle with errJobSuperseded and replaces
+// it. Returns the new handle.
+func (s *SearchService) registerReclaim(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	if s.registry == nil {
+		s.registry = make(map[string]*asyncJobHandle)
+	}
+	if s.tenantInFlight == nil {
+		s.tenantInFlight = make(map[spi.TenantID]int)
+	}
+	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
+	if old, ok := s.registry[jobID]; ok {
+		old.cancel(errJobSuperseded) // fence-safe; its writes are stale-epoch
+	} else {
+		s.tenantInFlight[tenantOf(uc)]++
+	}
+	s.registry[jobID] = h
+	return h
+}
+
+// registrySize reports how many jobs are currently registered (queued or
+// executing) on this node. The reclaim sweep subtracts it from the pool's
+// capacity so a node claims only what it has room to start.
+func (s *SearchService) registrySize() int {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	return len(s.registry)
 }
 
 // tenantAtCap reports whether tenant currently holds its full share of this
@@ -435,19 +482,23 @@ func (s *SearchService) tenantAtCap(uc *spi.UserContext) bool {
 	return s.tenantInFlight[tenantOf(uc)] >= s.maxPerTenant
 }
 
-// deregisterJob removes jobID's entry and releases its tenant's in-flight
-// slot. Idempotent — a missing entry is a no-op, so both the queue-full
-// submit path and the executor's own defer can call it without coordinating
-// who runs first, and neither can double-decrement the count.
-func (s *SearchService) deregisterJob(jobID string) {
+// deregisterJobHandle removes jobID's entry and releases its tenant's
+// in-flight slot, but ONLY if h is still the handle registered for jobID.
+// Compare-and-delete on handle identity so a superseded old executor's
+// deferred deregistration cannot evict the new epoch's handle a self-reclaim
+// installed in its place. Idempotent — a missing entry, or a mismatched
+// handle, is a no-op, so both the queue-full submit path and the executor's
+// own defer can call it without coordinating who runs first, and neither can
+// double-decrement the count.
+func (s *SearchService) deregisterJobHandle(jobID string, h *asyncJobHandle) {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
-	entry, ok := s.registry[jobID]
-	if !ok {
-		return
+	cur, ok := s.registry[jobID]
+	if !ok || cur != h {
+		return // a newer handle (self-reclaim) owns this id now
 	}
 	delete(s.registry, jobID)
-	tenant := tenantOf(entry.uc)
+	tenant := tenantOf(cur.uc)
 	if n := s.tenantInFlight[tenant]; n <= 1 {
 		delete(s.tenantInFlight, tenant)
 	} else {
@@ -489,40 +540,6 @@ func (s *SearchService) CancelRunning(jobID string) bool {
 	}
 	entry.cancel(nil)
 	return true
-}
-
-// AbortRegisteredJobs cancels every job still registered on this node (queued
-// or executing) and marks each FAILED via an epoch-fenced write carrying
-// the safe fallback message — called from App.Shutdown after pool.Drain, so
-// a job that did not finish in the drain budget is not left RUNNING forever
-// against a process that is going away. Interim disposition: the job is not
-// re-queued for another node to pick up (see the shutdown re-execution
-// follow-up noted in the caller). A lost race against the job's own terminal
-// write (ErrAlreadyTerminal/ErrStaleClaim) is expected and logged at Warn,
-// not treated as a failure of this call. Returns the number of jobs this
-// call attempted to abort.
-func (s *SearchService) AbortRegisteredJobs(ctx context.Context) int {
-	// IIFE so the lock is released via defer before entry.cancel() runs
-	// below — same reasoning as CancelRunning.
-	entries := func() map[string]*asyncJobHandle {
-		s.registryMu.Lock()
-		defer s.registryMu.Unlock()
-		snap := make(map[string]*asyncJobHandle, len(s.registry))
-		for id, e := range s.registry {
-			snap[id] = e
-		}
-		return snap
-	}()
-
-	for jobID, entry := range entries {
-		entry.cancel(nil)
-		writeCtx := ctx
-		if entry.uc != nil {
-			writeCtx = spi.WithUserContext(ctx, entry.uc)
-		}
-		s.writeAsyncFailure(writeCtx, jobID, entry.epoch, jobFailureFallback, time.Now(), 0)
-	}
-	return len(entries)
 }
 
 // ReleaseRegisteredJobs cancels every in-flight (queued or executing) job on
@@ -1027,7 +1044,8 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// handed to the pool: the submitter owns the queue entry, so both span
 	// the queued state, not just execution.
 	jobCtx, cancel := context.WithCancelCause(bgCtx)
-	if !s.registerJob(jobID, cancel, uc, 1) {
+	handle, ok := s.registerJob(jobID, cancel, uc, 1)
+	if !ok {
 		// This tenant already holds its full share of this node's async
 		// capacity. Same disposition as a pool rejection below — the job
 		// never entered the queue, so the row is deleted rather than left
@@ -1044,14 +1062,14 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	s.startHeartbeat(jobCtx, cancel, jobID, 1)
 
 	submitErr := s.asyncPool().Submit(func() {
-		s.runAsyncJob(jobCtx, cancel, jobID, 1, modelRef, cond, opts, orderBy)
+		s.runAsyncJob(jobCtx, cancel, handle, jobID, 1, modelRef, cond, opts, orderBy)
 	})
 	if submitErr != nil {
 		// The job never entered the queue, so there was never a claim to
 		// fence a terminal write against — delete the row rather than
 		// writing FAILED, so it does not linger RUNNING.
 		cancel(nil)
-		s.deregisterJob(jobID)
+		s.deregisterJobHandle(jobID, handle)
 		if delErr := s.searchStore.DeleteJob(bgCtx, jobID); delErr != nil {
 			slog.Error("failed to delete search job after queue rejection", "pkg", "search", "jobID", jobID, "err", delErr)
 		}
@@ -1101,19 +1119,24 @@ func (s *SearchService) startHeartbeat(jobCtx context.Context, cancel context.Ca
 // matches through Iterate → SaveResults instead of materializing the full
 // result set first, and records a single epoch-fenced terminal write.
 // cancel stops the heartbeat ticker (via jobCtx) on every exit path.
-func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.CancelCauseFunc, jobID string, epoch int64, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions, resolvedOrderBy []spi.OrderSpec) {
-	if errors.Is(context.Cause(jobCtx), errJobReleased) {
-		// Released before a worker ever picked this job up (the common
-		// shutdown case for a queued job): no scan ran, so there is
-		// nothing to unwind — just drop the registration. Skips the
-		// defers below (cancel is already fired; a second deregister
-		// would be a harmless no-op, but the early return keeps this
-		// path's accounting obviously single-shot).
-		s.deregisterJob(jobID)
+//
+// handle is this executor's own registry entry: deregistration is by handle
+// identity (deregisterJobHandle), so a self-reclaim that replaced this entry
+// with a newer epoch's handle is not evicted when this executor unwinds.
+func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.CancelCauseFunc, handle *asyncJobHandle, jobID string, epoch int64, modelRef spi.ModelRef, cond predicate.Condition, opts SearchOptions, resolvedOrderBy []spi.OrderSpec) {
+	if c := context.Cause(jobCtx); errors.Is(c, errJobReleased) || errors.Is(c, errJobSuperseded) {
+		// Released (shutdown handoff) or superseded (this node self-reclaimed
+		// the job) before a worker ever picked it up: no scan ran, so there
+		// is nothing to unwind — just drop this handle's registration if it
+		// is still the current one. Skips the defers below (cancel is already
+		// fired; the compare-and-delete deregister is a no-op when a newer
+		// handle owns the id, but the early return keeps this path's
+		// accounting obviously single-shot).
+		s.deregisterJobHandle(jobID, handle)
 		return
 	}
 	defer cancel(nil)
-	defer s.deregisterJob(jobID)
+	defer s.deregisterJobHandle(jobID, handle)
 
 	start := time.Now()
 
@@ -1345,11 +1368,13 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 // context again is a no-op, so the cancellation-recovery call site loses
 // nothing by it.
 func (s *SearchService) writeAsyncFailure(ctx context.Context, jobID string, epoch int64, msg string, finishTime time.Time, calcTimeMs int64) {
-	if errors.Is(context.Cause(ctx), errJobReleased) {
-		// Released for reclaim: a peer (or this node's next sweep) re-runs
-		// it. Recording FAILED here would defeat the handoff. Must be
-		// checked before WithoutCancel below — cancellation propagation is
-		// stripped there, but the cause is still readable from ctx itself.
+	if c := context.Cause(ctx); errors.Is(c, errJobReleased) || errors.Is(c, errJobSuperseded) {
+		// Released for reclaim, or superseded by this node's own self-reclaim:
+		// a peer, this node's next sweep, or the replacing executor re-runs
+		// it. Recording FAILED here would defeat the handoff, and the old
+		// executor's writes are fenced by epoch regardless. Must be checked
+		// before WithoutCancel below — cancellation propagation is stripped
+		// there, but the cause is still readable from ctx itself.
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
