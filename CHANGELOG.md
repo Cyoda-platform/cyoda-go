@@ -1953,6 +1953,22 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   grouped stats records nothing in a transaction, matching sqlite and postgres.
   `GetAll` and `GetPage` also refuse a committed transaction's context, the
   guard sqlite already carried on every in-transaction entry point.
+- **Conformance pins the whole `TrackingRead` read-set contract, on both
+  filter-taking read entry points.** A tracking read records the rows it hands
+  back and only those, records nothing when the flag is unset, and records
+  nothing for a point-in-time read either way. The `spitest` case that gated
+  the flag before seeded a single entity and iterated with a match-all filter,
+  where "scanned" and "yielded" are the same set, so it passed identically
+  whether a backend recorded per yield or per scanned row — blind to the
+  distinction it existed to pin. The replacements seed two committed entities
+  and select exactly one, under two predicate shapes so that a backend which
+  translates the predicate into storage is not the only thing being tested,
+  and they pin both directions: a concurrent write to the yielded row aborts
+  the tracking transaction, a concurrent write to the excluded row does not.
+  In-transaction `Search` carried the same flag with no conformance coverage
+  at all, and now runs the same cases. Out-of-tree storage plugins that record
+  per scanned row, ignore the flag, or record a point-in-time read fail
+  conformance on their next dependency update.
 - **postgres: text comparisons (`<`, `>`, `<=`, `>=`, `BETWEEN`,
   `BETWEEN_INCLUSIVE`) now compare with `COLLATE "C"`, matching the ordering
   the search kernel and `ORDER BY` already use.** On a database whose default
