@@ -16,7 +16,7 @@ import (
 // duplicate jobID) structurally rather than through the single call site that
 // happens to guarantee unique ids today.
 func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelFunc, uc *spi.UserContext) bool {
-	return s.registerJob(jobID, cancel, uc)
+	return s.registerJob(jobID, cancel, uc, 1)
 }
 
 // DeregisterJobForTest exposes deregisterJob, the release half of the pair
