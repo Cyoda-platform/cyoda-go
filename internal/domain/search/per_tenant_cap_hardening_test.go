@@ -38,11 +38,11 @@ func TestRegisterJob_DuplicateIDIsRefused(t *testing.T) {
 
 	uc := &spi.UserContext{Tenant: spi.Tenant{ID: "tenant-dup"}}
 	firstCancelled := false
-	first := func() { firstCancelled = true }
+	first := func(error) { firstCancelled = true }
 	if ok := svc.RegisterJobForTest("job-1", first, uc); !ok {
 		t.Fatal("first registerJob = false, want true")
 	}
-	if ok := svc.RegisterJobForTest("job-1", func() {}, uc); ok {
+	if ok := svc.RegisterJobForTest("job-1", func(error) {}, uc); ok {
 		t.Error("registerJob accepted a duplicate jobID; the first cancel handle is dropped (nothing can cancel that job) and the tenant is charged twice for one slot")
 	}
 	if got := svc.TenantInFlightForTest("tenant-dup"); got != 1 {

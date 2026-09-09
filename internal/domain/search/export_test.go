@@ -15,7 +15,7 @@ import (
 // accounting invariants (one slot per registered job, no double-count on a
 // duplicate jobID) structurally rather than through the single call site that
 // happens to guarantee unique ids today.
-func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelFunc, uc *spi.UserContext) bool {
+func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) bool {
 	return s.registerJob(jobID, cancel, uc, 1)
 }
 
