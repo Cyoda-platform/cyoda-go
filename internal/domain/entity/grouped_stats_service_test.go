@@ -11,11 +11,34 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
-// fakeIterable satisfies only spi.Iterable.
+// fakeIterable serves Iterate and nothing else, and genuinely applies the Filter
+// it is handed — via spi.Prepare(flt).Match, the same kernel a real backend's
+// Iterate uses — rather than recording it and returning every row regardless.
+//
+// It used to be a pure recorder, trusting every caller to either pass a
+// zero-value Filter (which spi.Prepare/PreparedFilter.Match already treats
+// as match-everything, so genuine filtering is a no-op for those callers) or
+// not care about the returned rows' contents. That was safe only as long as
+// grouped_stats_service.go's tallyStreaming had some way to reach its
+// residual guard (pushable == false) with a real, non-trivial condition —
+// once every condition shape reachable from ValidatedGroupedStatsRequest
+// became pushable (spi.ConditionToFilter now translates a wildcard array
+// path like any other), tallyStreaming started trusting THIS double to have
+// filtered a real, non-zero pushdown Filter it was handed, and a recorder
+// that doesn't enforce it silently returned unfiltered rows — the residual
+// guard being correctly skipped is what makes not-filtering wrong, not a
+// property of the guard itself. A genuinely-filtering double is what a real
+// backend's Iterate is, so this is what fakeIterable must be to stand in for
+// one.
 type fakeIterable struct {
+	// Embedded nil: only Iterate is ever called on this double, and a
+	// panic on any other EntityStore method is the assertion that stays
+	// true. Iterate below shadows the embedded interface's own.
+	spi.EntityStore
 	entities []*spi.Entity
 	lastFlt  spi.Filter
 	// iterErr, when set, is returned from the yielded fakeIter's Err()
@@ -26,7 +49,17 @@ type fakeIterable struct {
 
 func (f *fakeIterable) Iterate(_ context.Context, _ spi.ModelRef, flt spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
 	f.lastFlt = flt
-	return &fakeIter{rows: f.entities, err: f.iterErr}, nil
+	pf, err := spi.Prepare(flt)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]*spi.Entity, 0, len(f.entities))
+	for _, e := range f.entities {
+		if pf.Match(e.Data, e.Meta) {
+			rows = append(rows, e)
+		}
+	}
+	return &fakeIter{rows: rows, err: f.iterErr}, nil
 }
 
 type fakeIter struct {
@@ -45,6 +78,51 @@ func (i *fakeIter) Next() bool {
 func (i *fakeIter) Entity() *spi.Entity { return i.rows[i.idx-1] }
 func (i *fakeIter) Err() error          { return i.err }
 func (i *fakeIter) Close() error        { return nil }
+
+// closeStickyIter models the trap tallyStreaming's iterator drain used to
+// have (M4, final review): some iterator implementations only surface a
+// sticky scan error once Close() has run — Err() returns nil beforehand.
+// Reading Err() before Close() (the pre-fix ordering: a bare
+// `defer iter.Close()` registered ahead of a same-function `iter.Err()`
+// call that ran first) would see the stale nil and miss the failure
+// entirely; reading it after Close() (the fix) observes it.
+type closeStickyIter struct {
+	rows      []*spi.Entity
+	idx       int
+	stickyErr error
+	err       error
+	closed    bool
+}
+
+func (i *closeStickyIter) Next() bool {
+	if i.idx >= len(i.rows) {
+		return false
+	}
+	i.idx++
+	return true
+}
+func (i *closeStickyIter) Entity() *spi.Entity { return i.rows[i.idx-1] }
+func (i *closeStickyIter) Err() error          { return i.err }
+func (i *closeStickyIter) Close() error {
+	if !i.closed {
+		i.closed = true
+		i.err = i.stickyErr
+	}
+	return nil
+}
+
+// closeStickyIterable serves Iterate and nothing else, always yielding a
+// closeStickyIter over rows.
+type closeStickyIterable struct {
+	// Embedded nil: see fakeIterable.
+	spi.EntityStore
+	rows      []*spi.Entity
+	stickyErr error
+}
+
+func (f *closeStickyIterable) Iterate(_ context.Context, _ spi.ModelRef, _ spi.Filter, _ spi.IterateOptions) (spi.Iterator, error) {
+	return &closeStickyIter{rows: f.rows, stickyErr: f.stickyErr}, nil
+}
 
 // fakeAggregator satisfies only spi.GroupedAggregator (and embeds an Iterable
 // when tests want both capabilities).
@@ -77,7 +155,7 @@ type dualBackend struct {
 // newStreamingStatsFixture builds a service + streaming-only (Iterable)
 // store whose iterator's Err() returns iterErr once Next() runs dry —
 // used to exercise sentinel classification for errors surfaced from the
-// streaming fallback path (e.g. spi.ErrScanBudgetExhausted).
+// streaming fallback path.
 func newStreamingStatsFixture(t *testing.T, iterErr error) (
 	svc *entity.GroupedStatsService,
 	ctx context.Context,
@@ -120,15 +198,6 @@ func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 	}
 	if total != 3 {
 		t.Fatalf("total count %d, want 3", total)
-	}
-}
-
-func TestQueryGroupedStats_501WhenNoCapability(t *testing.T) {
-	type noop struct{}
-	svc := entity.NewGroupedStatsService(10000)
-	_, err := svc.QueryGroupedStats(context.Background(), noop{}, spi.ModelRef{}, nil, &entity.ValidatedGroupedStatsRequest{GroupBy: []entity.GroupExprValidated{{IsState: true}}})
-	if !errors.Is(err, entity.ErrBackendNotSupported) {
-		t.Fatalf("want ErrBackendNotSupported, got %v", err)
 	}
 }
 
@@ -210,26 +279,29 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestQueryGroupedStats_ScanBudgetMapsTo400 verifies that
-// spi.ErrScanBudgetExhausted surfacing from the streaming path is
-// classified by QueryGroupedStats into a 400 AppError with
-// common.ErrCodeScanBudgetExhausted, while remaining reachable via
-// errors.Is(err, spi.ErrScanBudgetExhausted) (WithCause preserves the
-// sentinel in the chain).
-func TestQueryGroupedStats_ScanBudgetMapsTo400(t *testing.T) {
-	// Iterable whose iter.Err() returns the scan-budget sentinel.
-	svc, ctx, store, model, req := newStreamingStatsFixture(t, spi.ErrScanBudgetExhausted)
-	_, err := svc.QueryGroupedStats(ctx, store, model, nil, req)
+// TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery pins the fix for
+// M4 (final review): tallyStreaming used to read iter.Err() before the
+// deferred iter.Close() ran, so an error that only becomes visible via
+// Err() after Close() (closeStickyIter's shape — see its doc comment) was
+// silently missed and the query returned success. Reordering to read Err()
+// after Close() runs surfaces it.
+func TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery(t *testing.T) {
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{IsState: true}},
+	}
+	stickyErr := errors.New("driver error surfaced only at Close")
+	store := &closeStickyIterable{
+		rows:      []*spi.Entity{{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)}},
+		stickyErr: stickyErr,
+	}
 
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	_, err := svc.QueryGroupedStats(context.Background(), store, spi.ModelRef{}, nil, req)
+	if err == nil {
+		t.Fatal("expected the Close()-only-surfaced error to fail the query, got nil (success) — a silent scan truncation")
 	}
-	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeScanBudgetExhausted {
-		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeScanBudgetExhausted)
-	}
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Errorf("WithCause must preserve the sentinel")
+	if !errors.Is(err, stickyErr) {
+		t.Errorf("got %v, want an error wrapping/matching stickyErr", err)
 	}
 }
 
@@ -293,7 +365,15 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	// fakeIterable genuinely applies the pushed Filter (spi.Prepare(flt).Match),
+	// and the pushdown Filter's Declared type comes from fields: an EQUALS leaf
+	// with no declared type degrades to non-match in the shared kernel. Declare
+	// $.color so the two matching rows below are actually evaluated as matches,
+	// not merely returned unfiltered by the store.
+	fields := map[string]schema.FieldDescriptor{
+		"$.color": {Path: "$.color", Types: []spi.DataType{spi.String}},
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,15 +386,37 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 	}
 }
 
-func TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual(t *testing.T) {
-	// FunctionCondition is parseable but ConditionToFilter rejects it,
-	// so the service must pass zero-value Filter and re-apply match.Match.
+// TestQueryGroupedStats_WildcardArrayPathConditionPushesDown proves a
+// wildcard array path condition is now filtered correctly end to end via
+// genuine pushdown, not a re-applied residual.
+//
+// This test used to be named …AppliesResidual and pin the opposite: a
+// wildcard array path was parseable and evaluable in-memory but
+// ConditionToFilter rejected the "[" as non-pushdownable, forcing the
+// service down the residual path (a zero-value Filter to Iterate, then
+// match.Prepare/(Prepared).Match re-applied per row). That premise is dead —
+// spi.ConditionToFilter now pushes a wildcard array path down like any other
+// (path-grammar.md §2/§8) — so `pushable` comes back true for this
+// condition and the residual guard never fires for it. The genuinely-
+// filtering fakeIterable (see its own doc comment) is what makes this a
+// meaningful assertion rather than a coincidence: the pushed Filter it
+// receives is what excludes the second row, and iter.lastFlt now being
+// NON-zero (the opposite of what this test used to require) is the
+// evidence of that.
+//
+// There is no residual mechanism left to cover separately: the tally applies
+// the translated filter and nothing else, and a condition that would not
+// translate is refused before it gets here.
+func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 	cond := json.RawMessage(`{
-		"type": "function",
-		"function": {"name": "any-fn"}
+		"type": "simple",
+		"jsonPath": "$.items[*].name",
+		"operatorType": "EQUALS",
+		"value": "keep"
 	}`)
 	rows := []*spi.Entity{
-		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"items":[{"name":"keep"}]}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"items":[{"name":"drop"}]}`)},
 	}
 	iter := &fakeIterable{entities: rows}
 	svc := entity.NewGroupedStatsService(10000)
@@ -322,14 +424,89 @@ func TestQueryGroupedStats_StreamingWithUnpushableConditionAppliesResidual(t *te
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
 	}
-	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
-	// match.Match returns an error for FunctionCondition — surface it.
-	if err == nil {
-		t.Fatal("expected match.Match error for function condition, got nil")
+	// The pushed Filter's Declared type comes from fields: an EQUALS leaf
+	// with no declared type degrades to non-match in the shared kernel.
+	fields := map[string]schema.FieldDescriptor{
+		"$.items[*].name": {Path: "$.items[*].name", Types: []spi.DataType{spi.String}, IsArray: true},
 	}
-	// And critically, Iterate must have been called with a zero-value Filter.
-	if iter.lastFlt.Op != "" {
-		t.Fatalf("expected zero-value Filter, got %+v", iter.lastFlt)
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Critically, Iterate must have been called with the pushed-down Filter,
+	// not a zero-value one — the condition is pushable now.
+	if iter.lastFlt.Op == "" {
+		t.Fatal("expected the pushable filter passed to Iterate, got zero-value")
+	}
+	if len(buckets) != 1 || buckets[0].Count != 1 {
+		t.Fatalf("buckets = %+v, want one bucket count=1 (the pushed filter excluded the second row)", buckets)
+	}
+}
+
+// TestQueryGroupedStats_TallyTrustsTheTranslatedFilter pins that the tally
+// hands the store the filter the condition translated to and then counts what
+// comes back, without re-deciding per row.
+//
+// It used to guard the symmetry between two "!pushable" guards in
+// tallyStreaming — the one that built a residual match.Prepared and the one
+// in the per-row loop that applied it — because a loop guard firing while
+// the build guard had not left every row matched against a zero-value
+// match.Prepared, silently emptying every bucket with no error. Both guards
+// are gone: an untranslatable condition is refused now, so the tally has no
+// second opinion to keep in sync. The scenario still earns its place —
+// a real filter, a store that enforces it (fakeIterable), and mixed rows, so
+// a tally that dropped or ignored the filter produces an observably wrong
+// count rather than coincidentally passing.
+func TestQueryGroupedStats_TallyTrustsTheTranslatedFilter(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "simple",
+		"jsonPath": "$.color",
+		"operatorType": "EQUALS",
+		"value": "red"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"blue"}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	// The pushdown Filter's Declared type comes from fields: an EQUALS leaf
+	// with no declared type degrades to non-match in the shared kernel, so
+	// fakeIterable's own spi.Prepare(flt).Match needs it too or every row —
+	// matching or not — would be excluded regardless of any residual guard.
+	fields := map[string]schema.FieldDescriptor{
+		"$.color": {Path: "$.color", Types: []spi.DataType{spi.String}},
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Count != 2 {
+		t.Fatalf("buckets = %+v, want one bucket count=2 (the two pushdown-filtered red rows, not silently emptied by a wrongly re-applied residual)", buckets)
+	}
+}
+
+// A function clause reaching the grouped-stats service would be a boundary
+// bug — search.ValidateCondition rejects it first. Defence in depth: if one
+// ever does, it must fail closed rather than silently produce buckets over an
+// unevaluated predicate.
+func TestQueryGroupedStats_FunctionConditionFailsClosed(t *testing.T) {
+	cond := json.RawMessage(`{"type":"function","function":{"name":"any-fn"}}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	if _, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req); err == nil {
+		t.Fatal("expected a function condition to fail closed, got nil")
 	}
 }
 
@@ -466,11 +643,39 @@ func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 	}
 }
 
+// TestQueryGroupedStats_InvalidFilterPathMapsTo400 pins the missing arm of
+// classifyGroupedStatsError. spi.ErrInvalidFilterPath is the cross-backend
+// sentinel a plugin returns when a path it was handed is not the model's path
+// syntax — malformed CLIENT input, reaching the plugin's backstop. Returned
+// unclassified it became a 500 plus a support ticket, on the same input
+// /search answers 400 INVALID_FIELD_PATH for.
+func TestQueryGroupedStats_InvalidFilterPathMapsTo400(t *testing.T) {
+	agg := &fakeAggregator{err: fmt.Errorf("plugin detail: %w", spi.ErrInvalidFilterPath)}
+	iter := &fakeIterable{}
+	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy: []entity.GroupExprValidated{{IsState: true}},
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), dual, spi.ModelRef{}, nil, req)
+
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Errorf("got %d/%q, want 400/%s", appErr.Status, appErr.Code, common.ErrCodeInvalidFieldPath)
+	}
+	if !errors.Is(err, spi.ErrInvalidFilterPath) {
+		t.Errorf("errors.Is(err, ErrInvalidFilterPath) = false; WithCause must preserve the sentinel")
+	}
+}
+
 // TestQueryGroupedStats_MalformedRegexRejected is a regression test for a
 // fail-open bug: the plugin residual filter evaluators
 // (plugins/sqlite/post_filter.go evaluateFilter, plugins/postgres/grouped_stats.go
-// evalPostFilter) delegate to the error-free spi.MatchFilter, which returns
-// false (non-match) rather than erroring on a malformed MATCHES_PATTERN
+// evalPostFilter) delegate to the error-free spi.PreparedFilter.Match kernel,
+// which returns false (non-match) rather than erroring on a malformed MATCHES_PATTERN
 // regex. Without upstream validation this silently under-includes buckets
 // instead of rejecting the request. QueryGroupedStats must reject a
 // malformed regex before dispatching to any backend, the same way the
@@ -502,7 +707,7 @@ func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
 // type-unsound temporal/lifecycle condition (400), but grouped-stats
 // previously accepted the same malformed condition and silently degraded to
 // an empty result (the condition doesn't translate to a pushdown filter and
-// never matches anything via match.Match either). QueryGroupedStats must
+// never matches anything via match.Prepare either). QueryGroupedStats must
 // reject a temporal comparison operand that parses into no temporal type,
 // the same way search.ValidateConditionValueTypes does.
 func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
@@ -530,6 +735,47 @@ func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
 	}
 	if !errors.Is(err, search.ErrConditionTypeMismatch) {
 		t.Fatalf("want search.ErrConditionTypeMismatch (parity with /search's CONDITION_TYPE_MISMATCH), got %v", err)
+	}
+}
+
+// TestQueryGroupedStats_LifecycleTemporalStringOpRejected is the fifth
+// defect this batch closes: a string or pattern operator on a temporal meta
+// field (creationDate, lastUpdateTime) previously produced two different
+// answers depending on the query plan — the SPI kernel's pushdown re-check
+// bridges the field to RFC3339 text and matches CONTAINS lexically, while
+// internal/match's residual route guarded the same case to a never-match.
+// classifyGroupedStatsError must classify the shared boundary's rejection as
+// search.ErrInvalidCondition (400 INVALID_CONDITION), the same code /search
+// now answers for the identical condition.
+func TestQueryGroupedStats_LifecycleTemporalStringOpRejected(t *testing.T) {
+	cond := json.RawMessage(`{
+		"type": "lifecycle",
+		"field": "creationDate",
+		"operatorType": "CONTAINS",
+		"value": "2021"
+	}`)
+	rows := []*spi.Entity{
+		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
+	}
+	iter := &fakeIterable{entities: rows}
+	svc := entity.NewGroupedStatsService(10000)
+	req := &entity.ValidatedGroupedStatsRequest{
+		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
+		Condition: []byte(cond),
+	}
+	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	if err == nil {
+		t.Fatal("expected error for CONTAINS against temporal field creationDate, got nil")
+	}
+	if !errors.Is(err, search.ErrInvalidCondition) {
+		t.Fatalf("want search.ErrInvalidCondition (parity with /search's INVALID_CONDITION), got %v", err)
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("want *common.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != common.ErrCodeInvalidCondition {
+		t.Fatalf("got code %s, want %s", appErr.Code, common.ErrCodeInvalidCondition)
 	}
 }
 
@@ -630,7 +876,14 @@ func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
 	}
-	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
+	// fakeIterable genuinely applies the pushed Filter, whose Declared type
+	// comes from fields: an EQUALS leaf with no declared type degrades to
+	// non-match in the shared kernel. Declare $.color so the bucket-count
+	// assertion below exercises a real match, not an unfiltered pass-through.
+	fields := map[string]schema.FieldDescriptor{
+		"$.color": {Path: "$.color", Types: []spi.DataType{spi.String}},
+	}
+	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)
 	if err != nil {
 		t.Fatalf("unexpected error for valid data condition: %v", err)
 	}

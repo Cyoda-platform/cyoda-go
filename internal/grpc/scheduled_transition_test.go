@@ -43,7 +43,7 @@ func newTestEnvWithWorkflow(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
 	workflowHandler := workflow.New(factory, engine)
 
@@ -83,8 +83,7 @@ func setupScheduledWorkflowRPCEnv(t *testing.T, svc *CloudEventsServiceImpl, wfH
 // than manually fireable. Mirrors
 // TestE2E_ExplicitFireOfScheduledTransition_ReturnsTransitionNotFound
 // (internal/e2e/scheduled_transition_test.go) but proves the rejection also
-// flows through the gRPC surface, not just HTTP (design §10, §11 "G" column,
-// #251).
+// flows through the gRPC surface, not just HTTP (design §10, §11 "G" column).
 //
 // At the gRPC envelope layer, operational AppErrors are reported as
 // Error.Code == "CLIENT_ERROR" with the domain error code embedded as a

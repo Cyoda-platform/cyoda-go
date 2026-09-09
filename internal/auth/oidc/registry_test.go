@@ -308,7 +308,7 @@ func TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Audit fix: cross-tenant resolution with audience disambiguation (#284)
+// Audit fix: cross-tenant resolution with audience disambiguation
 // ---------------------------------------------------------------------------
 
 // TestResolveKey_TwoTenantsSameURIDistinctAudiences_RoutesByAud verifies
@@ -489,7 +489,7 @@ func TestResolveKey_DeterministicSortColdPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Audit fix E2: fetch-time pin enforcement for pinned Issuers (#284)
+// Audit fix E2: fetch-time pin enforcement for pinned Issuers
 // ---------------------------------------------------------------------------
 
 // outcomeRecordingMetrics extends recordingMetrics to capture the last

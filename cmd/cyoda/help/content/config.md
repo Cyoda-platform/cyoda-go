@@ -65,6 +65,10 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 ### Server options
 
 - `CYODA_HTTP_PORT` (int, default: `8080`) — HTTP listen port.
+- `CYODA_HTTP_READ_HEADER_TIMEOUT` (duration, default: `10s`) — time allowed to receive a request's headers on the API and admin servers. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`.
+- `CYODA_HTTP_READ_TIMEOUT` (duration, default: `5m`) — time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables.
+- `CYODA_HTTP_WRITE_TIMEOUT` (duration, default: `0s`) — time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests.
+- `CYODA_HTTP_IDLE_TIMEOUT` (duration, default: `2m`) — how long an idle keep-alive connection is held open between requests. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`.
 - `CYODA_CONTEXT_PATH` (string, default: `/api`) — URL prefix for all routes.
 - `CYODA_ERROR_RESPONSE_MODE` (string, default: `sanitized`) — error detail level: `sanitized` (generic message + ticket UUID for 5xx) or `verbose` (internal error detail included in responses; development use only).
 - `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
@@ -83,14 +87,17 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 - `CYODA_METRICS_BEARER` (string, default: unset) — static Bearer token for `GET /metrics`. Supports `_FILE` suffix.
 - `CYODA_OTEL_ENABLED` (bool, default: `false`) — enable OpenTelemetry tracing and metrics.
 
-### Search and transaction internals
+### Search internals
 
 - `CYODA_SEARCH_SNAPSHOT_TTL` (duration, default: `1h`) — search snapshot TTL.
-- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval.
+- `CYODA_SEARCH_REAP_INTERVAL` (duration, default: `5m`) — search snapshot reap interval: how often terminal jobs older than `CYODA_SEARCH_SNAPSHOT_TTL` are deleted. It no longer drives the stale/reclaim sweep — that runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker instead (see `CYODA_SEARCH_JOB_STALE_AFTER`). This is purely the snapshot-cleanup cadence.
 - `CYODA_SEARCH_MAX_SORT_KEYS` (int, default: `16`) — maximum number of `sort` keys per search request. Requests exceeding this cap are rejected with `400 INVALID_FIELD_PATH`. Values `<= 0` are clamped to the default.
-- `CYODA_TX_TTL` (duration, default: `60s`) — transaction TTL.
-- `CYODA_TX_REAP_INTERVAL` (duration, default: `10s`) — transaction reap interval.
-- `CYODA_TX_OUTCOME_TTL` (duration, default: `5m`) — transaction outcome TTL.
+- `CYODA_SEARCH_ASYNC_WORKERS` (int, default: `8`) — async-search worker pool size. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped.
+- `CYODA_SEARCH_ASYNC_QUEUE` (int, default: `256`) — async-search submit queue capacity beyond the running workers. Once both are exhausted, submission fails with `503 SEARCH_QUEUE_FULL` (retryable). Values `< 0` fail startup.
+- `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (int, default: `8` — tracks `CYODA_SEARCH_ASYNC_WORKERS`) — maximum async-search jobs one tenant may have in flight (queued or running) on a node. Over-cap submissions get the same retryable `503 SEARCH_QUEUE_FULL`, so one tenant's burst cannot fill the shared queue and lock every other tenant out. A tenant may still occupy every worker; it just cannot hold more than this many queue slots. `0` disables the cap. Values `< 0` fail startup.
+- `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (duration, default: `15s`) — how often a running async-search executor stamps job liveness and polls for a cross-node cancel/terminal status, starting at submit time (queued or scanning). Config is a QA'd artefact: values `<= 0` fail startup rather than being clamped.
+- `CYODA_SEARCH_JOB_STALE_AFTER` (duration, default: `5m`) — how long a `RUNNING` async-search job may go without a heartbeat before the reaper claims it for reclaim (its owning executor most likely crashed or was killed). Config is a QA'd artefact: values below `4 x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` fail startup rather than being clamped. The stale/reclaim sweep runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default `15s`) plus once at startup — not on `CYODA_SEARCH_REAP_INTERVAL`, which now drives only the snapshot-TTL reap. A crash therefore hands off within `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at defaults); a graceful shutdown or restart releases in-flight jobs immediately, so those hand off within one heartbeat interval — or immediately on the restarted node's own startup sweep. Operational note: on postgres, a node that dies mid-save (inside the `SaveResults` chunk transaction) is reaped by the server's transaction-local idle timeout rather than by this sweep directly, so a mid-save crash's handoff still matches any other crash once that timeout releases the row.
+- `CYODA_SEARCH_JOB_MAX_ATTEMPTS` (int, default: `3`) — executions an async-search job may consume before it is failed: the initial run plus one per executor lost without a graceful release. A graceful handoff (release then reclaim) does not count. Config is a QA'd artefact: values `< 1` fail startup rather than being clamped. `1` disables re-execution — a job is failed the first time its executor is lost.
 
 ### Cluster and dispatch
 

@@ -9,7 +9,7 @@ import (
 )
 
 // TestPathValidationCache_CrossTenantNoisyNeighborSurvives pins
-// issue #175. Pre-fix the cache used a single global otter cache
+// cross-tenant eviction isolation. Pre-fix the cache used a single global otter cache
 // with MaximumSize=10000 — a tenant-A flooder spamming distinct
 // random fieldPaths against `(tenantA, refX)` could S3-FIFO-evict
 // every legitimate `(tenantB, refY)` entry from tenant B.
@@ -45,7 +45,7 @@ func TestPathValidationCache_CrossTenantNoisyNeighborSurvives(t *testing.T) {
 }
 
 // TestPathValidationCache_PerBucketCapacityIsolatesWithinTenant pins
-// the second half of #175's contract — eviction inside tenant A's
+// the second half of that contract — eviction inside tenant A's
 // bucket only affects tenant A's own entries within that (tenant, ref).
 // The flood evicts tenant A's own earlier entries, but does not reach
 // across the (tenant, ref) partition into tenant B's data.

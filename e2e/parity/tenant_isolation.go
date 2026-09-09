@@ -155,7 +155,7 @@ func problemBodyHasErrorCode(t *testing.T, body []byte, want string) bool {
 // factory derives tenant from request context before any history scan).
 // This test pins the invariant so a future refactor that introduced an
 // existence oracle on the temporal path would fail loudly. Companion to
-// PR #165 (GetOneEntity honors transactionId).
+// GetOneEntity honouring transactionId.
 func RunTenantIsolationTransactionIDInvisible(t *testing.T, fixture BackendFixture) {
 	tenantA := fixture.NewTenant(t)
 	tenantB := fixture.NewTenant(t)
@@ -214,6 +214,65 @@ func RunTenantIsolationTransactionIDInvisible(t *testing.T, fixture BackendFixtu
 	}
 }
 
+// RunTenantIsolationTransitionsTransactionIDRejected pins the contract
+// that the transitions endpoint's `?transactionId=` parameter cannot be
+// used to resolve another tenant's transaction. Unlike the entity GET
+// (which scans tenant-scoped history), the transitions handler resolves
+// the txID to a submit time via TransactionManager.GetSubmitTime BEFORE
+// any entity lookup — so this pins the tenant check inside GetSubmitTime
+// itself: a cross-tenant txID and a nonexistent txID must both yield the
+// same 400 status, never a resolved point-in-time (and never a status
+// that distinguishes "exists in another tenant" from "doesn't exist").
+func RunTenantIsolationTransitionsTransactionIDRejected(t *testing.T, fixture BackendFixture) {
+	tenantA := fixture.NewTenant(t)
+	tenantB := fixture.NewTenant(t)
+	clientA := client.NewClient(fixture.BaseURL(), tenantA.Token)
+	clientB := client.NewClient(fixture.BaseURL(), tenantB.Token)
+
+	const modelName = "iso-txid-transitions"
+	const modelVersion = 1
+
+	setupSimpleWorkflow(t, clientA, modelName, modelVersion)
+	entityID, txIDA, err := clientA.CreateEntityWithTxID(t, modelName, modelVersion,
+		`{"name":"TenantA","amount":10,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateEntityWithTxID (tenant A): %v", err)
+	}
+	if txIDA == "" {
+		t.Fatal("tenant A create returned empty transactionId — needed to drive cross-tenant lookup")
+	}
+
+	// Sanity: tenant A resolves its own txID on its own entity.
+	statusOwn, bodyOwn, err := clientA.GetTransitionsByTransactionIDBodyRaw(t, entityID, txIDA)
+	if err != nil {
+		t.Fatalf("tenant A GET transitions?transactionId=<own>: transport error: %v", err)
+	}
+	if statusOwn != http.StatusOK {
+		t.Errorf("tenant A GET transitions?transactionId=<own>: status got %d, want 200 (body=%s)", statusOwn, string(bodyOwn))
+	}
+
+	// (1) Tenant B supplies tenant A's real txID. The submit-time lookup
+	// must reject it — 400, not 200 (which would leak that the txID is
+	// committed) and not any tenant-A data.
+	statusReal, bodyReal, err := clientB.GetTransitionsByTransactionIDBodyRaw(t, entityID, txIDA)
+	if err != nil {
+		t.Fatalf("tenant B GET transitions?transactionId=<txID_A>: transport error: %v", err)
+	}
+	if statusReal != http.StatusBadRequest {
+		t.Errorf("tenant B GET transitions?transactionId=<txID_A>: status got %d, want 400 (body=%s)", statusReal, string(bodyReal))
+	}
+
+	// (2) Tenant B supplies a txID that exists in no tenant — the status
+	// must be the same 400, so the status code is not an existence oracle.
+	statusBogus, bodyBogus, err := clientB.GetTransitionsByTransactionIDBodyRaw(t, entityID, uuid.New().String())
+	if err != nil {
+		t.Fatalf("tenant B GET transitions?transactionId=<bogus>: transport error: %v", err)
+	}
+	if statusBogus != http.StatusBadRequest {
+		t.Errorf("tenant B GET transitions?transactionId=<bogus>: status got %d, want 400 (body=%s)", statusBogus, string(bodyBogus))
+	}
+}
+
 // RunTenantIsolationPointInTimeInvisible pins the contract that the
 // `?pointInTime=` temporal query parameter cannot be used as an
 // existence oracle across tenants. Tenant A creates an entity at time
@@ -221,8 +280,8 @@ func RunTenantIsolationTransactionIDInvisible(t *testing.T, fixture BackendFixtu
 // and again at a clearly-bogus point in time before A created it. Both
 // responses must be byte-equal 404s.
 //
-// Companion to PR #161/#164 (parity helpers + propagated pointInTime in
-// GetEntityChangesMetadata).
+// Companion to the parity helpers and the propagated pointInTime in
+// GetEntityChangesMetadata.
 func RunTenantIsolationPointInTimeInvisible(t *testing.T, fixture BackendFixture) {
 	tenantA := fixture.NewTenant(t)
 	tenantB := fixture.NewTenant(t)
@@ -232,21 +291,20 @@ func RunTenantIsolationPointInTimeInvisible(t *testing.T, fixture BackendFixture
 	const modelName = "iso-pit-test"
 	const modelVersion = 1
 
-	// Record a "before any tenant created anything" timestamp for the
-	// bogus probe.
-	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
-
-	// Tenant A: set up model + workflow + entity. Sleep around create to
-	// give us a stable t1+epsilon window.
+	// Tenant A: set up model + workflow + entity.
 	setupSimpleWorkflow(t, clientA, modelName, modelVersion)
-	time.Sleep(10 * time.Millisecond)
 	entityID, err := clientA.CreateEntity(t, modelName, modelVersion,
 		`{"name":"TenantA","amount":10,"status":"new"}`)
 	if err != nil {
 		t.Fatalf("CreateEntity (tenant A): %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	afterCreate := time.Now().UTC()
+
+	// afterCreate must be a PIT at which the entity genuinely EXISTS for
+	// tenant A — that is what makes probe (1) below distinct from the bogus-PIT
+	// probe (2). Derived from the server's clock so skew cannot silently
+	// collapse the two probes into the same test (see pit_time.go).
+	afterCreate := LatestChangeTime(t, clientA, entityID)
+	beforeCreate := afterCreate.Add(-1 * time.Hour)
 
 	// (1) Tenant B asks for tenant A's entity at t1+epsilon (when it
 	// exists in A's tenant). Must be 404 ENTITY_NOT_FOUND.
@@ -288,7 +346,7 @@ func RunTenantIsolationPointInTimeInvisible(t *testing.T, fixture BackendFixture
 // asks for its change history at a recent PIT and at a bogus PIT —
 // both must return byte-equal 404s.
 //
-// Companion to PR #164 (propagated pointInTime in GetEntityChangesMetadata).
+// Companion to the propagated pointInTime in GetEntityChangesMetadata.
 func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixture) {
 	tenantA := fixture.NewTenant(t)
 	tenantB := fixture.NewTenant(t)
@@ -297,9 +355,6 @@ func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixtur
 
 	const modelName = "iso-changes-pit-test"
 	const modelVersion = 1
-
-	// PIT in the far past, before any tenant created anything.
-	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
 
 	// Tenant A: set up the temporal workflow (NONE->CREATED auto,
 	// CREATED->CREATED manual UPDATE) so we can produce multiple changes.
@@ -322,8 +377,11 @@ func RunTenantIsolationChangesAtPITInvisible(t *testing.T, fixture BackendFixtur
 		`{"name":"TenantA","amount":2,"status":"v2"}`); err != nil {
 		t.Fatalf("UpdateEntity v2 (tenant A): %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	afterUpdates := time.Now().UTC()
+
+	// A PIT at which the history genuinely EXISTS for tenant A, on the server's
+	// clock — see pit_time.go. beforeCreate is the far-past bogus probe.
+	afterUpdates := LatestChangeTime(t, clientA, entityID)
+	beforeCreate := afterUpdates.Add(-1 * time.Hour)
 
 	// (1) Tenant B asks for the change history of tenant A's entity at a
 	// PIT after the updates landed. Must be 404 ENTITY_NOT_FOUND.

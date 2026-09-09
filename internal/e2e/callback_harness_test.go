@@ -30,7 +30,7 @@ import (
 )
 
 // callback_harness_test.go builds a callback-capable in-process compute member
-// for feature #287 (compute-node callbacks join the originating transaction).
+// for the callback-join contract (compute-node callbacks join the originating transaction).
 //
 // Unlike the localproc in-process ExternalProcessingService used by the other
 // workflow E2E tests, this harness stands up a SEPARATE full cyoda-go stack
@@ -123,13 +123,13 @@ type callbackCrit func(rc *reqCtx) (matches bool, err error)
 
 // callbackFunc is a generic Function callout implemented on the compute
 // member (spi.ScheduleFunction, e.g. a scheduled-transition arm-time timing
-// computation — issue #419). Returns the response's resultKind discriminator
+// computation). Returns the response's resultKind discriminator
 // and result payload (marshalled as the response's "result" object), or an
 // error to have the harness reply with a failed EntityFunctionCalculationResponse.
 type callbackFunc func(rc *reqCtx) (resultKind string, result map[string]any, err error)
 
 // callbackHarness is a full HTTP+gRPC cyoda-go stack (real Postgres) with a
-// connected gRPC compute member. Reused across the #287 callback E2E tests.
+// connected gRPC compute member. Reused across the callback E2E tests.
 type callbackHarness struct {
 	app     *app.App
 	baseURL string // e.g. http://127.0.0.1:PORT
@@ -273,7 +273,7 @@ func (h *callbackHarness) lookupCrit(name string) (callbackCrit, bool) {
 }
 
 // RegisterFunction registers a generic Function callout implementation on the
-// member (spi.ScheduleFunction — issue #419's scheduled-transition arm-time
+// member (spi.ScheduleFunction — the scheduled-transition arm-time
 // timing computation, and reusable by any future Function-typed callout).
 func (h *callbackHarness) RegisterFunction(name string, fn callbackFunc) {
 	h.mu.Lock()
@@ -411,22 +411,48 @@ func (h *callbackHarness) SetupModelWithWorkflow(t *testing.T, entityName, workf
 // can assert on both success and failure of the cascade.
 func (h *callbackHarness) CreateEntity(t *testing.T, entityName string, modelVersion int, payload string) (entityID string, status int, body string) {
 	t.Helper()
-	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/%d", entityName, modelVersion), payload, "")
-	body = h.readBody(t, resp)
-	status = resp.StatusCode
-	if status != http.StatusOK {
-		return "", status, body
+	h.token(t) // seed the cached bearer token that CreateEntityRaw reads
+	res := h.CreateEntityRaw(entityName, modelVersion, payload)
+	if res.err != nil {
+		t.Fatalf("%v", res.err)
+	}
+	return res.entityID, res.status, res.body
+}
+
+// createEntityResult is the outcome of a client-facing entity POST, captured
+// so it can be asserted on the test goroutine.
+type createEntityResult struct {
+	entityID string
+	status   int
+	body     string
+	err      error
+}
+
+// CreateEntityRaw is the goroutine-safe form of CreateEntity: it returns the
+// outcome instead of aborting the test, so callers driving the cascade from a
+// goroutine can assert after joining. It reuses h.callback, which reads the
+// cached bearer token seeded on the test goroutine during setup.
+func (h *callbackHarness) CreateEntityRaw(entityName string, modelVersion int, payload string) createEntityResult {
+	res, err := h.callback(http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/%d", entityName, modelVersion), payload, "")
+	if err != nil {
+		return createEntityResult{status: -1, err: fmt.Errorf("createEntity %s: %w", entityName, err)}
+	}
+	out := createEntityResult{status: res.StatusCode, body: res.Body}
+	if out.status != http.StatusOK {
+		return out
 	}
 	var arr []map[string]any
-	if err := json.Unmarshal([]byte(body), &arr); err != nil || len(arr) == 0 {
-		t.Fatalf("createEntity %s: unparseable response: %s", entityName, body)
+	if err := json.Unmarshal([]byte(res.Body), &arr); err != nil || len(arr) == 0 {
+		out.err = fmt.Errorf("createEntity %s: unparseable response: %s", entityName, res.Body)
+		return out
 	}
 	ids, _ := arr[0]["entityIds"].([]any)
 	if len(ids) == 0 {
-		t.Fatalf("createEntity %s: no entityIds: %s", entityName, body)
+		out.err = fmt.Errorf("createEntity %s: no entityIds: %s", entityName, res.Body)
+		return out
 	}
-	entityID, _ = ids[0].(string)
-	return entityID, status, body
+	out.entityID, _ = ids[0].(string)
+	return out
 }
 
 // GetEntityState returns an entity's state, or "" (with the status) when the GET
@@ -601,7 +627,7 @@ func newComputeMember(t *testing.T, h *callbackHarness, grpcAddr string) *comput
 				}(ce, payload)
 			case internalgrpc.EntityFunctionCalculationRequest:
 				// Generic Function callout (e.g. scheduled-transition arm-time
-				// timing computation — issue #419). Dispatched concurrently for
+				// timing computation). Dispatched concurrently for
 				// the same reason as processors/criteria above.
 				m.handlers.Add(1)
 				go func(ce *cepb.CloudEvent, payload []byte) {
@@ -795,8 +821,8 @@ func (h *callbackHarness) handleCriteriaRequest(send func(*cepb.CloudEvent) erro
 // handleFunctionRequest runs the registered Function callback for an inbound
 // EntityFunctionCalculationRequest and replies with an
 // EntityFunctionCalculationResponse carrying resultKind/result (e.g.
-// resultKind:"Schedule" for a scheduled-transition arm-time computation —
-// issue #419). Dispatched on a per-request goroutine; send serialises the
+// resultKind:"Schedule" for a scheduled-transition arm-time computation).
+// Dispatched on a per-request goroutine; send serialises the
 // reply against other concurrent handlers and the receive loop's keep-alive
 // replies.
 func (h *callbackHarness) handleFunctionRequest(send func(*cepb.CloudEvent) error, ce *cepb.CloudEvent, payload []byte) {

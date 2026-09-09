@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Regression test for issue #92. PUT /api/entity/{format} (collection
+// Regression test: PUT /api/entity/{format} (collection
 // update) was a stub returning 501 with a wrong errorCode. The endpoint
 // is in the route table and advertised — AI clients hit it and failed.
 
@@ -206,7 +206,7 @@ func TestUpdateCollection_TransactionWindowValidation(t *testing.T) {
 // contract: "Collections exceeding `transactionWindow` size are
 // automatically split into multiple transactional batches". Both chunks
 // must commit. Response is the EntityTransactionResponse array with one
-// element per chunk in commit order. Issue #227.
+// element per chunk in commit order.
 func TestUpdateCollection_BatchChunksAtWindowBoundary(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "UpdBatchChunk", 1, `{"name":"x","v":0}`)
@@ -278,7 +278,7 @@ func TestUpdateCollection_BatchChunksAtWindowBoundary(t *testing.T) {
 // TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable — when a
 // later chunk fails (here: chunk 2 contains a missing-entity id), earlier
 // chunks remain committed. The response is HTTP 200 carrying the durable
-// chunks plus an error element marking the failed chunk's index. Issue #227.
+// chunks plus an error element marking the failed chunk's index.
 func TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "UpdChunkFail", 1, `{"name":"x","v":0}`)
@@ -363,7 +363,7 @@ func TestUpdateCollection_ChunkFailureLeavesEarlierChunksDurable(t *testing.T) {
 	}
 }
 
-// --- Issue #228: per-item ifMatch + per-chunk failed[] ---
+// --- Per-item ifMatch + per-chunk failed[] ---
 
 // doGetEntityTxID issues GET /entity/{id} and returns meta.transactionId.
 // Used by ifMatch tests to seed a fresh precondition token.

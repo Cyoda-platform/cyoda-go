@@ -18,7 +18,6 @@ import (
 var gsModel = spi.ModelRef{EntityName: "Item", ModelVersion: "1"}
 
 // gsNewStore creates a fresh postgres-backed EntityStore for grouped-stats tests.
-// Skips if CYODA_TEST_DB_URL is not set (Docker required).
 func gsNewStore(t *testing.T) (*postgres.StoreFactory, spi.EntityStore, context.Context) {
 	t.Helper()
 	factory := setupEntityTest(t)
@@ -58,10 +57,7 @@ func TestPostgresIterate_StreamsAllEntitiesForModel(t *testing.T) {
 		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{"x": i})
 	}
 
-	it, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -89,7 +85,7 @@ func TestPostgresIterate_FilterPushdown(t *testing.T) {
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Munich"})
 	gsSave(t, ctx, store, "c", "available", map[string]any{"city": "Berlin"})
 
-	it := store.(spi.Iterable)
+	it := store
 	filter := spi.Filter{
 		Op:       spi.FilterEq,
 		Source:   spi.SourceData,
@@ -115,12 +111,45 @@ func TestPostgresIterate_FilterPushdown(t *testing.T) {
 	}
 }
 
+// TestPostgresIterate_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Iterate's planFor call: a leaf spi.Prepare
+// genuinely cannot evaluate must fail Iterate outright, not silently stream
+// zero rows.
+func TestPostgresIterate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	it := store
+	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.IterateOptions{})
+	// Drain and close defensively: if the guard under test regressed and
+	// Iterate wrongly succeeded, an undrained cursor would leak the pool
+	// connection and hang later tests' cleanup instead of failing cleanly
+	// right here.
+	if iter != nil {
+		for iter.Next() {
+		}
+		if err == nil {
+			err = iter.Err()
+		}
+		_ = iter.Close()
+	}
+	if err == nil {
+		t.Fatal("Iterate must fail on an unevaluable filter, not silently stream zero rows")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 func TestPostgresIterate_ResidualApplied(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"city": "Berlin", "tag": "x"})
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Berlin", "tag": "y"})
 
-	it := store.(spi.Iterable)
+	it := store
 	// MatchesRegex is non-pushable in postgres planner — forces residual evaluation.
 	filter := spi.Filter{
 		Op: spi.FilterAnd,
@@ -148,25 +177,27 @@ func TestPostgresIterate_ResidualApplied(t *testing.T) {
 }
 
 func TestPostgresIterate_PointInTime(t *testing.T) {
-	_, store, ctx := gsNewStore(t)
+	factory, store, ctx := gsNewStore(t)
 
 	// Seed two entities. We'll delete one after a snapshot instant; PIT
 	// before the delete must show both, PIT after must show one.
 	gsSave(t, ctx, store, "a", "available", map[string]any{"x": 1})
 	gsSave(t, ctx, store, "b", "available", map[string]any{"x": 2})
 
-	// Snapshot before the delete.
-	beforeDelete := time.Now()
+	// Both bounds come from the database clock, never time.Now() — see
+	// pit_time_test.go.
+	beforeDelete := dbNow(t, ctx, factory.Pool())
+
+	// Separate the deletion marker into a distinct instant.
 	time.Sleep(10 * time.Millisecond)
 
 	if err := store.Delete(ctx, "b"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
-	afterDelete := time.Now()
+	afterDelete := dbNow(t, ctx, factory.Pool())
 
-	it := store.(spi.Iterable)
+	it := store
 
 	// PIT before delete → 2 entities (deletion-marker version not yet present).
 	iterBefore, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{PointInTime: &beforeDelete})
@@ -210,7 +241,7 @@ func TestPostgresIterate_CtxCancellation(t *testing.T) {
 	}
 
 	cancelCtx, cancel := context.WithCancel(ctx)
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(cancelCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -235,7 +266,7 @@ func TestPostgresIterate_CloseIdempotent(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -249,6 +280,34 @@ func TestPostgresIterate_CloseIdempotent(t *testing.T) {
 }
 
 // ---------- GroupedAggregate ----------
+
+// TestPostgresGroupedAggregate_RejectsUnevaluableFilter pins the
+// propagation of spi.Prepare's error through GroupedAggregate's planFor
+// call: a leaf spi.Prepare genuinely cannot evaluate must fail the
+// aggregation outright, not silently bucket zero entities.
+func TestPostgresGroupedAggregate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	ga, ok := store.(spi.GroupedAggregator)
+	if !ok {
+		t.Fatal("entityStore does not implement spi.GroupedAggregator")
+	}
+	_, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{
+			Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+			Value: `a\`, Declared: []spi.DataType{spi.String},
+		},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err == nil {
+		t.Fatal("GroupedAggregate must fail on an unevaluable filter, not silently bucket zero entities")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
 
 func TestPostgresGroupedAggregate_PushesCountByState(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
@@ -454,8 +513,8 @@ func TestPostgresGroupedAggregate_UsesNativeGroupByOnIsNullOnlyFilter(t *testing
 // re-check — and hand-tallies by state, pinning that the boundary rows are
 // correctly excluded from the final count. This is the count a memory
 // backend would also produce for the identical corpus+filter: memory's
-// Iterate has no SQL layer at all, it evaluates spi.MatchFilter directly per
-// entity (plugins/memory/grouped_stats.go msMatchFilter) — so "correct here"
+// Iterate has no SQL layer at all, it evaluates spi.Prepare(filter).Match
+// directly per entity (plugins/memory/grouped_stats.go) — so "correct here"
 // and "identical to memory" are the same claim.
 func TestPostgresGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
@@ -466,7 +525,7 @@ func TestPostgresGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundar
 
 	filter := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -804,10 +863,19 @@ func TestPostgresGroupedAggregate_StateIdxUsed(t *testing.T) {
 func TestPostgresGroupedStats_PathValidation(t *testing.T) {
 	// Inputs that MUST be rejected by the SQL-boundary validator. These are
 	// the characters that could break out of the single-quoted JSONB key
-	// literal, plus empty / leading-trailing-dot / double-dot grammar
-	// violations.
+	// literal, plus leading-trailing-dot / double-dot grammar violations.
+	//
+	// "" and "a[0]" are deliberately NOT here (they used to be): the
+	// validator now delegates to spi.ValidateFilterPath, the one filter-path
+	// grammar (docs/cloud-parity/path-grammar.md section 9), which accepts
+	// both — "" is the legal empty path the AND/OR tree operators carry, and
+	// "a[0]" is a legal positional array subscript, exactly the form this
+	// change teaches jsonbExtractText/jsonbExtractJSONB to render as an
+	// integer accessor. See TestJsonbExtract_RendersSubscript in
+	// query_planner_test.go for the rendering, and
+	// TestValidateJSONPath_AcceptsEmpty in path_validation_test.go for why
+	// "" is not an injection surface despite being grammar-legal.
 	bad := []string{
-		"",
 		".",
 		"foo.",
 		".bar",
@@ -816,7 +884,8 @@ func TestPostgresGroupedStats_PathValidation(t *testing.T) {
 		"a'b",        // single quote (literal terminator)
 		"a\"b",       // double quote
 		"a;b",        // semicolon
-		"a[0]",       // brackets
+		"a[-1]",      // negative index — outside the grammar
+		"a[",         // unclosed bracket
 		"foo\x00bar", // NUL byte
 	}
 	for _, p := range bad {
@@ -827,14 +896,18 @@ func TestPostgresGroupedStats_PathValidation(t *testing.T) {
 
 	// Inputs that should be accepted. Hyphens are deliberately permitted —
 	// '--' is harmless INSIDE a single-quoted literal (SQL comments only
-	// have meaning outside string context).
+	// have meaning outside string context). "" and "a[0]"/"a[*]" are
+	// accepted per the one filter-path grammar (see the "bad" comment above).
 	good := []string{
+		"",
 		"variantId",
 		"a.b.c",
 		"foo_bar",
 		"foo-bar",
 		"a--b", // hyphens allowed; safe inside the quoted literal
 		"a123.b456",
+		"a[0]",
+		"a[*]",
 	}
 	for _, p := range good {
 		if err := postgres.ValidateJSONPathForTest(p); err != nil {
@@ -856,5 +929,56 @@ func TestPostgresGroupedStats_DeclinesInvalidGroupPath(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatalf("expected error for malformed group path, got nil")
+	}
+}
+
+// TestPostgresGroupedAggregate_GroupAndAggregatePathsValidatedBeforeDeclines:
+// GroupExpr.Path and AggregateExpr.Field were validated inside
+// groupExprToSQL / aggregateExprToSQL, which the residual-filter decline
+// returns before ever reaching. So a malformed group path plus a residual
+// filter answered ErrAggregationNotPushdownable, while the memory backend —
+// which validates both unconditionally — answered ErrInvalidFilterPath for the
+// same request. The service layer then streams a request it should have
+// refused, and gjson resolves the malformed path to nothing, bucketing every
+// entity as null.
+//
+// Validation now sits with validateFilterPaths, after the PIT early-return
+// (which keeps precedence, as on sqlite) and before every other decline.
+func TestPostgresGroupedAggregate_GroupAndAggregatePathsValidatedBeforeDeclines(t *testing.T) {
+	// Gt is pushable but only a SOUND SUPERSET, so planQuery installs a
+	// residual postFilter — the decline that skipped validation.
+	residual := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
+
+	cases := []struct {
+		name  string
+		group []spi.GroupExpr
+		aggs  []spi.AggregateExpr
+	}{
+		{
+			"malformed group path behind the residual-filter decline",
+			[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "foo';x"}},
+			nil,
+		},
+		{
+			"malformed aggregate field behind the residual-filter decline",
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			[]spi.AggregateExpr{{Op: spi.AggSum, Field: "pri ce", Alias: "s"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, store, ctx := gsNewStore(t)
+			gsSave(t, ctx, store, "a", "available", map[string]any{"price": 150.0})
+
+			ga := store.(spi.GroupedAggregator)
+			_, err := ga.GroupedAggregate(ctx, gsModel, tc.group, residual,
+				spi.GroupedAggregationsOptions{MaxBuckets: 10, Aggregations: tc.aggs})
+			if !errors.Is(err, postgres.ErrInvalidFilterPath) {
+				t.Fatalf("got %v, want ErrInvalidFilterPath", err)
+			}
+			if errors.Is(err, spi.ErrAggregationNotPushdownable) {
+				t.Errorf("a malformed path must not be reported as a pushdown decline: %v", err)
+			}
+		})
 	}
 }

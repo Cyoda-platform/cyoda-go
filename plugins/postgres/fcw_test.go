@@ -42,11 +42,11 @@ func setupFCWTest(t *testing.T) (*postgres.StoreFactory, *postgres.TransactionMa
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: Regression — disjoint concurrent inserts must not conflict (#17)
+// Test 1: Regression — disjoint concurrent inserts must not conflict
 // ---------------------------------------------------------------------------
 
-// TestFCW_DisjointConcurrentInserts_NoFalseConflicts is a regression guard for
-// issue #17. Under SSI, page-level SIReadLocks caused serialization failures
+// TestFCW_DisjointConcurrentInserts_NoFalseConflicts is a regression guard.
+// Under SSI, page-level SIReadLocks caused serialization failures
 // (~40001) for concurrent inserts of distinct UUIDs into the same tenant after
 // the b-tree had ≥200 rows. Under SI + FCW, disjoint inserts must all commit.
 //
@@ -57,7 +57,7 @@ func TestFCW_DisjointConcurrentInserts_NoFalseConflicts(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("fcw-tenant-1")
 
-	// Seed 200 rows to fill the b-tree (mirrors #17 reproducer).
+	// Seed 200 rows to fill the b-tree (mirrors the reproducer).
 	seedStore, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore (seed): %v", err)
@@ -148,40 +148,25 @@ func TestFCW_SameEntityUpdate_FirstCommitterWins(t *testing.T) {
 
 	// Tx A and Tx B: begin both, read shared, then write + commit concurrently.
 	// Both transactions start before any commit so both see v=1 in their snapshot.
-	txIDA, txCtxA, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	txIDB, txCtxB, err := tm.Begin(ctx)
-	if err != nil {
-		_ = tm.Rollback(txCtxA, txIDA)
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txIDA, txCtxA := beginGuarded(t, tm, ctx)
+	txIDB, txCtxB := beginGuarded(t, tm, ctx)
 
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
-		_ = tm.Rollback(txCtxA, txIDA)
-		_ = tm.Rollback(txCtxB, txIDB)
 		t.Fatalf("Tx A EntityStore: %v", err)
 	}
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxA, txIDA)
-		_ = tm.Rollback(txCtxB, txIDB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 
 	// Both read shared while in their snapshot — both see v=1.
 	gotA, err := storeA.Get(txCtxA, "shared")
 	if err != nil {
-		_ = tm.Rollback(txCtxA, txIDA)
-		_ = tm.Rollback(txCtxB, txIDB)
 		t.Fatalf("Tx A Get: %v", err)
 	}
 	gotB, err := storeB.Get(txCtxB, "shared")
 	if err != nil {
-		_ = tm.Rollback(txCtxA, txIDA)
-		_ = tm.Rollback(txCtxB, txIDB)
 		t.Fatalf("Tx B Get: %v", err)
 	}
 
@@ -253,11 +238,7 @@ func TestFCW_ReadThenConcurrentDelete_Conflict(t *testing.T) {
 	}
 
 	// Tx A: Begin and read e1.
-	txA, txCtxA, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, ctx)
 
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
@@ -272,16 +253,12 @@ func TestFCW_ReadThenConcurrentDelete_Conflict(t *testing.T) {
 	}
 
 	// Tx B: Begin, Delete e1, Commit (bumps version to 2, marks deleted).
-	txB, txCtxB, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, ctx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if err := storeB.Delete(txCtxB, "e1"); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Delete e1: %v", err)
 	}
 	if err := tm.Commit(ctx, txB); err != nil {
@@ -324,11 +301,7 @@ func TestFCW_LargeReadSet_ChunkedValidation(t *testing.T) {
 	}
 
 	// Begin tx and manually populate readSet with all 2500 entities at v=1.
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	txID, _ := beginGuarded(t, tm, ctx)
 
 	state, ok := postgres.LookupTxStateForTest(tm, txID)
 	if !ok {
@@ -382,11 +355,7 @@ func TestFCW_SavepointRollback_DropsReadSet_CommitSucceeds(t *testing.T) {
 	}
 
 	// Tx A: Begin.
-	txA, txCtxA, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, ctx)
 
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
@@ -422,16 +391,12 @@ func TestFCW_SavepointRollback_DropsReadSet_CommitSucceeds(t *testing.T) {
 	}
 
 	// Step 4: Tx B deletes y and commits (y's version becomes 2, deleted=true).
-	txB, txCtxB, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, ctx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if err := storeB.Delete(txCtxB, "sp-y"); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Delete sp-y: %v", err)
 	}
 	if err := tm.Commit(ctx, txB); err != nil {
@@ -488,11 +453,7 @@ func TestFCW_PureReadSetConflict_NoWriteOverlap(t *testing.T) {
 	}
 
 	// Step 2: Tx A: Begin, Get x (records x in readSet), Save y (records y in writeSet).
-	txA, txCtxA, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, ctx)
 
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
@@ -530,17 +491,13 @@ func TestFCW_PureReadSetConflict_NoWriteOverlap(t *testing.T) {
 	}
 
 	// Step 3: Tx B: Begin, update x to v=2 via raw SQL, Commit.
-	txB, txCtxB, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, ctx)
 	pgxTxB, _ := tm.LookupTx(txB)
 	if _, err := pgxTxB.Exec(txCtxB,
 		`UPDATE entities SET version=2 WHERE tenant_id='fcw-tenant-6' AND entity_id='prs-x'`); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B update prs-x: %v", err)
 	}
-	// Use ctx (which carries the test tenant) so the post-#199 PR-C2 tenant
+	// Use ctx (which carries the test tenant) so the tenant
 	// gate accepts this commit. context.Background() has no UserContext and
 	// would be rejected with a "tenant mismatch" error.
 	if err := tm.Commit(ctx, txB); err != nil {

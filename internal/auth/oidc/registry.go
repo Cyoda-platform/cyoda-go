@@ -6,10 +6,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
+	"reflect"
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -61,6 +64,19 @@ type RegistryConfig struct {
 	// SocketTimeout is applied as the ResponseHeaderTimeout on the JWKS-fetch
 	// transport. Zero or negative values default to 5 s.
 	SocketTimeout time.Duration
+
+	// WarmupRetryInterval is the tick interval of StartWarmupRetryLoop, which
+	// re-attempts the JWKS warm-up of active providers that have no installed
+	// key source (e.g. the IdP was unreachable at startup or registration).
+	// Zero or negative values default to 30 s.
+	WarmupRetryInterval time.Duration
+
+	// ReconcileInterval is the tick interval of StartReconcileLoop, the
+	// periodic KV-reconcile backstop behind the best-effort provider
+	// broadcast. Zero or negative values default to 60 s (matching
+	// CYODA_AUTH_CACHE_RECONCILE_INTERVAL). The per-tick wait is jittered
+	// ±10% to avoid a cross-node herd.
+	ReconcileInterval time.Duration
 }
 
 // Registry is the per-process OIDC provider cache. It implements the read
@@ -79,6 +95,39 @@ type Registry struct {
 	metrics      Metrics
 	logger       *slog.Logger
 	cfg          RegistryConfig
+
+	// warmupRetryStarted makes StartWarmupRetryLoop's call-once contract
+	// self-enforcing: a second call is a no-op.
+	warmupRetryStarted atomic.Bool
+
+	// reconcileLoopStarted makes StartReconcileLoop's call-once contract
+	// self-enforcing: a second call is a no-op. Also read by the ResolveKey
+	// staleness breaker to know whether reconcile accounting is live.
+	reconcileLoopStarted atomic.Bool
+
+	// reloadWarmMu serializes ReloadAllAndWarm: concurrent force-warm calls
+	// (an admin looping the reload endpoint, or endpoint + broadcast racing)
+	// queue behind one fetch pool instead of multiplying outbound traffic to
+	// every tenant's IdP.
+	reloadWarmMu sync.Mutex
+
+	// mapGen counts direct provider-map mutations AND ReloadAll swaps.
+	// ReloadAll snapshots it before store.LoadAll and discards its built
+	// snapshot if it changed by swap time — a mutation or a faster reload
+	// landing mid-build always wins over the older snapshot.
+	mapGen atomic.Uint64
+	// reconcileMu serializes ReloadAll executions (periodic reconcile,
+	// reload_all broadcast, admin endpoint) so overlapping rebuilds cannot
+	// commit KV snapshots out of order.
+	reconcileMu sync.Mutex
+
+	// Reconcile health (read by the ResolveKey staleness breaker).
+	lastReconcileNanos  atomic.Int64
+	consecutiveFailures atomic.Int64
+
+	// loadAllHook, when non-nil, runs after store.LoadAll inside ReloadAll.
+	// Test-only seam for generation-guard races.
+	loadAllHook func()
 }
 
 // NewRegistry constructs the registry. broadcast may be nil in tests or
@@ -103,6 +152,12 @@ func NewRegistry(
 	}
 	if cfg.SocketTimeout <= 0 {
 		cfg.SocketTimeout = 5 * time.Second
+	}
+	if cfg.WarmupRetryInterval <= 0 {
+		cfg.WarmupRetryInterval = 30 * time.Second
+	}
+	if cfg.ReconcileInterval <= 0 {
+		cfg.ReconcileInterval = 60 * time.Second
 	}
 	r := &Registry{
 		providers:    map[spi.TenantID]map[string]*OidcProvider{},
@@ -137,6 +192,7 @@ func (r *Registry) addToProviderMap(p *OidcProvider) {
 		r.providers[tenant] = map[string]*OidcProvider{}
 	}
 	r.providers[tenant][p.WellKnownConfigURI] = p
+	r.mapGen.Add(1)
 }
 
 // installForTest is a test-only helper that injects a provider + source +
@@ -154,6 +210,7 @@ func (r *Registry) installForTest(p *OidcProvider, ks auth.KeySource, doc *Disco
 	}
 	r.providers[tenant][p.WellKnownConfigURI] = p
 	r.sources[tenant][p.WellKnownConfigURI] = &providerSource{keySource: ks, discoveryDoc: doc}
+	r.mapGen.Add(1)
 }
 
 // kidIndexContains is a test-only inspector for the kidIndex contents.
@@ -168,11 +225,32 @@ func (r *Registry) kidIndexContains(kid, tenant, uri string) bool {
 	return false
 }
 
+// stalenessMultiplier × ReconcileInterval is the fail-closed bound: once
+// the reconcile loop runs, a provider map older than this stops resolving
+// keys — an unbounded-stale answer on the verification path would be
+// wrong-but-available.
+const stalenessMultiplier = 10
+
+// ErrRegistryStale is returned by ResolveKey when the reconcile loop has
+// not succeeded within the staleness bound. It deliberately does NOT wrap
+// auth.ErrUnknownKID: the validator chain hard-fails on it, collapsing to
+// the uniform 401.
+var ErrRegistryStale = errors.New("oidc provider registry stale: reconcile has not succeeded within the staleness bound")
+
+// reconcileStale reports whether the fail-closed bound is exceeded. Always
+// false until StartReconcileLoop has been called.
+func (r *Registry) reconcileStale() bool {
+	if !r.reconcileLoopStarted.Load() {
+		return false
+	}
+	return r.reconcileAge() > stalenessMultiplier*r.cfg.ReconcileInterval
+}
+
 // ResolveKey implements the §4.1 disposition matrix.
 //
 // aud is the token's audience claim (single string or first element extracted
 // by the caller). It is used only in the multi-candidate disambiguation step
-// (Layer 1 of the Critical audit fix, #284): when multiple providers are
+// (Layer 1 of the Critical audit fix): when multiple providers are
 // simultaneously iss-eligible and sig-verifying, ExpectedAudiences is used
 // to route to the correct tenant. Pass an empty string when aud is absent.
 //
@@ -186,6 +264,10 @@ func (r *Registry) kidIndexContains(kid, tenant, uri string) bool {
 // D6 invariant: kidIndex is populated BEFORE the caller verifies the
 // signature. The caller MUST call EvictKidEntry on ErrSignatureFailure.
 func (r *Registry) ResolveKey(kid, iss, aud string) (*KeyResolution, error) {
+	if r.reconcileStale() {
+		return nil, ErrRegistryStale
+	}
+
 	// Hot path under RLock.
 	var candidates []providerRef
 	var res *KeyResolution
@@ -299,7 +381,7 @@ func (r *Registry) collectKeyEligibleRefs(candidates []providerRef, kid, iss str
 //     - Zero or multiple audMatched → ErrAmbiguousProvider (wraps
 //     ErrUnknownKID so the chain falls through). This prevents silent
 //     cross-tenant routing when two tenants share an IdP without setting
-//     distinct ExpectedAudiences (Critical audit fix, #284).
+//     distinct ExpectedAudiences (Critical audit fix).
 //
 // Return semantics:
 //   - success → KeyResolution with ProviderRef populated
@@ -380,7 +462,7 @@ func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss, aud str
 
 	default:
 		// Multiple key-eligible candidates across tenants. Disambiguate by aud.
-		// Layer 1 of Critical audit fix (#284): prevents non-deterministic
+		// Layer 1 of Critical audit fix: prevents non-deterministic
 		// cross-tenant routing when two tenants register the same IdP URL.
 		var audMatched []keyEligibleEntry
 		for _, e := range keyEligible {
@@ -453,34 +535,191 @@ func (r *Registry) EvictKidEntry(kid string, ref providerRef) {
 	}
 }
 
+// maxReloadAttempts bounds the generation-guard retry. Only continuous
+// provider-map churn (rare admin operations) can exhaust it.
+const maxReloadAttempts = 5
+
+// errReloadContention marks a reload that gave up because mutations kept
+// landing mid-rebuild. Not a KV failure; excluded from staleness accounting.
+var errReloadContention = errors.New("oidc registry reload: retry budget exhausted under concurrent mutation")
+
 // ReloadAll rebuilds the in-memory provider map from KV (D18). The new maps
 // are built off-lock; the swap takes the write lock so no partial-rebuild
 // state is ever visible to concurrent readers.
+//
+// Key sources survive the swap: every installed source whose (tenant, uri)
+// coordinate is still present in the fresh store snapshot is carried over,
+// so a reload is never a cache flush — tokens verified by a warm provider
+// keep verifying even if no warm-up follows or its discovery fetch fails.
+// Key freshness is still governed by the JWKS cache TTL (stale keys that
+// cannot be re-confirmed stop validating — fail closed). Sources whose
+// provider vanished from the store are dropped, and the kidIndex is rebuilt
+// lazily by the ResolveKey cold path.
+//
+// ReloadAll executions are serialized by reconcileMu (periodic reconcile,
+// reload_all broadcast, and the admin reload endpoint can all call in),
+// and each attempt is guarded by mapGen: if a direct provider-map mutation
+// (or a faster concurrent ReloadAll) lands between the KV load and the
+// swap, the stale snapshot is discarded and the load is retried rather than
+// clobbering the newer state. An identical snapshot (a quiet tick) skips
+// the swap entirely so kidIndex and warm sources are not needlessly reset;
+// it still prunes any orphaned sources and counts as a successful reconcile.
+//
+// Two production callers pass a deadline-free ctx (the broadcast reload_all
+// handler uses context.Background(); the admin reload endpoint passes the
+// bare request ctx, which has no deadline). Because reconcileMu serializes
+// every caller, a hung store.LoadAll on a dead connection would otherwise
+// hold the mutex indefinitely and block the periodic loop from ever
+// acquiring it. Each attempt's LoadAll is therefore individually bounded by
+// context.WithTimeout(ctx, r.cfg.ReconcileInterval) so no caller — bounded
+// or not — can wedge reconcileMu past one interval. A caller-driven
+// cancellation (context.Canceled) is excluded from failure accounting: it
+// reflects the caller aborting, not a KV outage.
 func (r *Registry) ReloadAll(ctx context.Context) error {
-	providers, err := r.store.LoadAll(ctx)
-	if err != nil {
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
+	for attempt := 0; attempt < maxReloadAttempts; attempt++ {
+		gen := r.mapGen.Load()
+		attemptCtx, cancel := context.WithTimeout(ctx, r.cfg.ReconcileInterval)
+		providers, err := r.store.LoadAll(attemptCtx)
+		cancel()
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				r.noteReconcileFailure(err)
+			}
+			return err
+		}
+		if r.loadAllHook != nil {
+			r.loadAllHook()
+		}
+
+		// Build fresh maps off-lock so the critical section is just the swap.
+		newProv := map[spi.TenantID]map[string]*OidcProvider{}
+		newSrc := map[spi.TenantID]map[string]*providerSource{}
+		for _, p := range providers {
+			tenant := spi.TenantID(p.OwnerLegalEntityID.String())
+			if newProv[tenant] == nil {
+				newProv[tenant] = map[string]*OidcProvider{}
+				newSrc[tenant] = map[string]*providerSource{}
+			}
+			newProv[tenant][p.WellKnownConfigURI] = p
+		}
+
+		done := func() bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.mapGen.Load() != gen {
+				return false
+			}
+			// Quiet tick: identical snapshot ⇒ skip the swap so kidIndex and
+			// sources stay warm. reflect.DeepEqual false-negatives (e.g. a
+			// locally-registered provider's monotonic-clock CreatedAt vs its
+			// KV round-trip) merely cause one extra swap and then stabilize.
+			if reflect.DeepEqual(newProv, r.providers) {
+				r.pruneOrphanSourcesLocked()
+				r.metrics.SetRegistryProviders(len(providers))
+				return true
+			}
+			for tenant, byURI := range r.sources {
+				for uri, src := range byURI {
+					if _, still := newProv[tenant][uri]; still {
+						newSrc[tenant][uri] = src
+					}
+				}
+			}
+			r.providers = newProv
+			r.sources = newSrc
+			r.kidIndex = map[string][]providerRef{}
+			r.mapGen.Add(1)
+			r.metrics.SetRegistryProviders(len(providers))
+			return true
+		}()
+		if done {
+			r.noteReconcileSuccess()
+			return nil
+		}
+	}
+	// Contention does not touch lastReconcileNanos or consecutiveFailures
+	// (local churn proves the store is reachable; stamping success here
+	// would be fail-open, and counting it as a KV failure would be wrong).
+	// But the staleness gauge must still be recorded so alerting on the
+	// fail-closed breaker (age > stalenessMultiplier x interval) is never
+	// blinded by a gauge stuck at its last (typically zero) value under
+	// sustained mutation churn.
+	stalenessSeconds := r.reconcileAge().Seconds()
+	r.metrics.SetReconcileStalenessSeconds(stalenessSeconds)
+	msg := "oidc registry reload: giving up after repeated mid-rebuild mutations"
+	fields := []any{"pkg", "oidc", "attempts", maxReloadAttempts, "stalenessSeconds", int64(stalenessSeconds + 0.5)}
+	if r.reconcileAge() > (stalenessMultiplier/2)*r.cfg.ReconcileInterval {
+		r.logger.Error(msg, fields...)
+	} else {
+		r.logger.Warn(msg, fields...)
+	}
+	return errReloadContention
+}
+
+// pruneOrphanSourcesLocked drops sources whose provider is gone. A
+// reloadOne install racing an earlier swap can strand one; the always-swap
+// path used to collect it implicitly, the skip-swap path does it here.
+// Caller must hold r.mu (write).
+func (r *Registry) pruneOrphanSourcesLocked() {
+	for tenant, byURI := range r.sources {
+		for uri := range byURI {
+			if _, ok := r.providers[tenant][uri]; !ok {
+				delete(byURI, uri)
+			}
+		}
+	}
+}
+
+func (r *Registry) noteReconcileSuccess() {
+	r.lastReconcileNanos.Store(time.Now().UnixNano())
+	r.consecutiveFailures.Store(0)
+	r.metrics.SetReconcileConsecutiveFailures(0)
+	r.metrics.SetReconcileStalenessSeconds(0)
+}
+
+func (r *Registry) noteReconcileFailure(err error) {
+	n := r.consecutiveFailures.Add(1)
+	r.metrics.SetReconcileConsecutiveFailures(int(n))
+	r.metrics.SetReconcileStalenessSeconds(r.reconcileAge().Seconds())
+	msg := "oidc provider reconcile failed; serving last-known providers until it succeeds"
+	if n > errorEscalationThreshold {
+		r.logger.Error(msg, "pkg", "oidc", "consecutiveFailures", n, "error", err.Error())
+	} else {
+		r.logger.Warn(msg, "pkg", "oidc", "consecutiveFailures", n, "error", err.Error())
+	}
+}
+
+// reconcileAge returns time since the last successful ReloadAll.
+func (r *Registry) reconcileAge() time.Duration {
+	return time.Since(time.Unix(0, r.lastReconcileNanos.Load()))
+}
+
+// errorEscalationThreshold is the consecutive-failure count from which
+// reconcile failures log at ERROR instead of WARN.
+const errorEscalationThreshold = 3
+
+// ReloadAllAndWarm is the force-warm reload used by the reload endpoint and
+// the cluster reload_all broadcast: rebuild from KV, then synchronously
+// re-fetch discovery + JWKS for every loaded active provider. A failed
+// discovery fetch is non-fatal (WARN-logged by reloadOne) and leaves the
+// carried-over source in place; a successful one installs a fresh source
+// whose key freshness is governed by the standard JWKS cache TTL, fail-closed.
+// Startup phase 1 (LoadProvidersFromKV) must NOT use this — the listener-bind
+// ordering requires warm-up to stay async there.
+//
+// The warm phase is a cluster-visible operation triggered by an admin call;
+// it runs detached from the caller's cancellation so an HTTP client
+// disconnecting mid-request cannot leave it half-completed. Each fetch is
+// individually bounded by the discovery/JWKS transport timeouts.
+func (r *Registry) ReloadAllAndWarm(ctx context.Context) error {
+	r.reloadWarmMu.Lock()
+	defer r.reloadWarmMu.Unlock()
+	if err := r.ReloadAll(ctx); err != nil {
 		return err
 	}
-
-	// Build fresh maps off-lock so the critical section is just the swap.
-	newProv := map[spi.TenantID]map[string]*OidcProvider{}
-	newSrc := map[spi.TenantID]map[string]*providerSource{}
-	for _, p := range providers {
-		tenant := spi.TenantID(p.OwnerLegalEntityID.String())
-		if newProv[tenant] == nil {
-			newProv[tenant] = map[string]*OidcProvider{}
-			newSrc[tenant] = map[string]*providerSource{}
-		}
-		newProv[tenant][p.WellKnownConfigURI] = p
-		// Sources are populated by Phase-2 warmup / individual reloadOne calls.
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.providers = newProv
-	r.sources = newSrc
-	r.kidIndex = map[string][]providerRef{}
-	r.metrics.SetRegistryProviders(len(providers))
+	r.WarmJWKS(context.WithoutCancel(ctx))
 	return nil
 }
 
@@ -489,16 +728,22 @@ func (r *Registry) LoadProvidersFromKV(ctx context.Context) error {
 	return r.ReloadAll(ctx)
 }
 
-// WarmJWKSAsync is Phase-2 startup warmup. It spawns a bounded worker pool
-// that fetches discovery + JWKS for every loaded provider. Per-provider
-// failures are WARN-logged; the goroutine does not block startup.
-func (r *Registry) WarmJWKSAsync(ctx context.Context) {
+// WarmJWKS fetches discovery + JWKS for every loaded ACTIVE provider through
+// a bounded worker pool and blocks until the pool drains — callers that must
+// not block (the phase-2 startup hook) wrap it in their own goroutine, and
+// ReloadAllAndWarm relies on it being synchronous. Per-provider failures are
+// WARN-logged and skipped. Invalidated providers are never fetched: their
+// endpoints are explicitly distrusted, and reactivation re-warms explicitly.
+func (r *Registry) WarmJWKS(ctx context.Context) {
 	var refs []providerRef
 	func() {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		for tenant, byURI := range r.providers {
-			for uri := range byURI {
+			for uri, prov := range byURI {
+				if !prov.Active() {
+					continue
+				}
 				refs = append(refs, providerRef{tenant: tenant, uri: uri})
 			}
 		}
@@ -515,7 +760,7 @@ func (r *Registry) WarmJWKSAsync(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for ref := range jobs {
-				r.reloadOne(ctx, ref.tenant, ref.uri)
+				r.warmOneSafely(ctx, ref)
 			}
 		}()
 	}
@@ -524,6 +769,132 @@ func (r *Registry) WarmJWKSAsync(ctx context.Context) {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// StartWarmupRetryLoop spawns the warm-up retry goroutine: every
+// WarmupRetryInterval it re-attempts discovery + JWKS warm-up for active
+// providers that have no installed key source (the one-shot startup warm-up
+// or a registration-time warm-up lost the race against an IdP that was not
+// yet reachable). The loop exits when ctx is cancelled. Called once at
+// startup with a process-lifetime context; returns false (and starts
+// nothing) if the loop is already running.
+func (r *Registry) StartWarmupRetryLoop(ctx context.Context) bool {
+	if !r.warmupRetryStarted.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		ticker := time.NewTicker(r.cfg.WarmupRetryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, ref := range r.coldActiveRefs() {
+					r.warmOneSafely(ctx, ref)
+					if !r.isCold(ref) {
+						r.logger.Info("oidc: provider JWKS warmed by retry loop",
+							"pkg", "oidc", "tenant", string(ref.tenant),
+							"uri_hash", sha256Hex(ref.uri))
+					}
+				}
+			}
+		}
+	}()
+	return true
+}
+
+// StartReconcileLoop starts the periodic KV-reconcile backstop: every
+// ReconcileInterval (jittered ±10%) the provider map is rebuilt from the
+// authoritative store via ReloadAll, bounding the staleness a dropped
+// broadcast can cause. NOT ReloadAllAndWarm: no per-tick outbound IdP
+// traffic — JWKS key freshness stays governed by the per-source cache, and
+// the warmup-retry loop warms any provider the reconcile discovers cold.
+// Returns false (starting nothing) if already running; exits on ctx cancel.
+//
+// The tick no longer wraps ctx in its own timeout: ReloadAll now bounds
+// each attempt's store.LoadAll internally (see its doc comment), so a
+// second timeout layer here would be redundant.
+func (r *Registry) StartReconcileLoop(ctx context.Context) bool {
+	if !r.reconcileLoopStarted.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		for {
+			timer := time.NewTimer(jitteredInterval(r.cfg.ReconcileInterval))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				r.reconcileTickSafely(ctx)
+			}
+		}
+	}()
+	return true
+}
+
+// reconcileTickSafely runs ReloadAll with a recover layer: the periodic
+// reconcile loop's goroutine has no caller to propagate a panic to, so an
+// unrecovered panic here would crash the process. Same contract as
+// warmOneSafely / safeDispatch — log-only, never the payload.
+func (r *Registry) reconcileTickSafely(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error("oidc reconcile panic", "pkg", "oidc", "panic", rec)
+		}
+	}()
+	_ = r.ReloadAll(ctx) // failures logged/accounted inside
+}
+
+// jitteredInterval returns d × [0.9, 1.1).
+func jitteredInterval(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
+}
+
+// warmOneSafely runs reloadOne with a recover layer: the warm pool's worker
+// goroutines and the retry-loop goroutine have no caller to propagate a
+// panic to, so an unrecovered panic there would crash the process. Same
+// contract as safeDispatch on the broadcast path; log-only here — the
+// broadcast panic counter stays broadcast-scoped.
+func (r *Registry) warmOneSafely(ctx context.Context, ref providerRef) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error("oidc: warm-up panic",
+				"pkg", "oidc", "tenant", string(ref.tenant),
+				"uri_hash", sha256Hex(ref.uri), "panic", rec)
+		}
+	}()
+	r.reloadOne(ctx, ref.tenant, ref.uri)
+}
+
+// coldActiveRefs returns the coordinates of active providers whose key
+// source is missing or whose discovery doc never arrived — the set the
+// warm-up retry loop re-attempts.
+func (r *Registry) coldActiveRefs() []providerRef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var refs []providerRef
+	for tenant, byURI := range r.providers {
+		for uri, prov := range byURI {
+			if !prov.Active() {
+				continue
+			}
+			src := r.sources[tenant][uri]
+			if src == nil || src.discoveryDoc == nil {
+				refs = append(refs, providerRef{tenant: tenant, uri: uri})
+			}
+		}
+	}
+	return refs
+}
+
+// isCold reports whether ref still lacks an installed source.
+func (r *Registry) isCold(ref providerRef) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	src := r.sources[ref.tenant][ref.uri]
+	return src == nil || src.discoveryDoc == nil
 }
 
 // reloadOne fetches discovery + JWKS for one (tenant, uri) provider and
@@ -582,10 +953,12 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 	// E2 fetch-time pin enforcement: when the admin has pinned Issuers, the
 	// discovery doc's issuer field MUST be in that list. An IdP returning a
 	// mismatching issuer is either misconfigured or attacker-controlled; in
-	// either case, refuse to install the source. The provider remains in
-	// Phase-2-pending state — ResolveKey returns ErrUnknownKID until the admin
-	// reconciles. Raw issuer strings are never logged (A1+B1 lessons); only
-	// SHA-256 hashes and counts are emitted.
+	// either case, refuse to install a source AND drop any existing one —
+	// unlike a transient fetch failure, this is an affirmative conflict with
+	// the binding the cached keys were fetched under, so keeping them serving
+	// would fail open. The provider ends keyless — ResolveKey returns
+	// ErrUnknownKID until the admin reconciles. Raw issuer strings are never
+	// logged (A1+B1 lessons); only SHA-256 hashes and counts are emitted.
 	if len(prov.Issuers) > 0 {
 		issMatchesPin := false
 		for _, allowed := range prov.Issuers {
@@ -603,6 +976,13 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 				"pinned_count", len(prov.Issuers),
 			)
 			r.metrics.IncJWKSFetchError("issuer_pin_mismatch")
+			func() {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				if byURI, ok := r.sources[tenant]; ok {
+					delete(byURI, uri)
+				}
+			}()
 			return
 		}
 	}
@@ -694,6 +1074,7 @@ func (r *Registry) invalidateOne(tenant spi.TenantID, uri string) {
 	if byURI, ok := r.sources[tenant]; ok {
 		delete(byURI, uri)
 	}
+	r.mapGen.Add(1)
 	target := providerRef{tenant: tenant, uri: uri}
 	for kid, refs := range r.kidIndex {
 		out := refs[:0]

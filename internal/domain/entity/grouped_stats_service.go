@@ -18,11 +18,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
-// ErrBackendNotSupported is returned when the storage backend supports
-// neither spi.Iterable nor spi.GroupedAggregator. The HTTP handler maps
-// this to 501 NOT_IMPLEMENTED_BY_BACKEND.
-var ErrBackendNotSupported = errors.New("backend supports neither Iterable nor GroupedAggregator")
-
 // ErrInvalidCondition wraps any predicate.ParseCondition failure that
 // surfaces from the service-layer dispatch. The HTTP handler maps this
 // (via errors.Is) to 400 INVALID_CONDITION per spec §3. We need the
@@ -34,7 +29,7 @@ var ErrInvalidCondition = errors.New("invalid condition")
 
 // GroupedStatsService is the per-request dispatcher described in spec §4.
 // It decides between native pushdown (spi.GroupedAggregator) and the
-// streaming-tally fallback (spi.Iterable + in-process accumulator).
+// streaming-tally fallback (EntityStore.Iterate + in-process accumulator).
 type GroupedStatsService struct {
 	maxBuckets int
 }
@@ -54,7 +49,7 @@ func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
 // Internal fallback.
 func (s *GroupedStatsService) QueryGroupedStats(
 	ctx context.Context,
-	store any,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
@@ -66,25 +61,53 @@ func (s *GroupedStatsService) QueryGroupedStats(
 	return buckets, nil
 }
 
-// classifyGroupedStatsError maps the six known sentinels to operational
+// classifyGroupedStatsError maps the known sentinels to operational
 // AppErrors (each wrapping the sentinel via WithCause so errors.Is still
 // holds); any other error is returned unchanged (surfaces as 500 at the
 // transport).
 func classifyGroupedStatsError(err error) error {
 	switch {
-	case errors.Is(err, ErrBackendNotSupported):
-		return common.Operational(http.StatusNotImplemented, "NOT_IMPLEMENTED_BY_BACKEND",
-			"backend does not support grouped stats").WithCause(err)
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
-		return common.Operational(http.StatusUnprocessableEntity, "GROUP_CARDINALITY_EXCEEDED",
+		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
-	case errors.Is(err, spi.ErrScanBudgetExhausted):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeScanBudgetExhausted,
-			"scan budget exhausted; narrow the query or add an indexable predicate").WithCause(err)
 	case errors.Is(err, ErrInvalidCondition):
+		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
+	case errors.Is(err, search.ErrInvalidCondition):
+		// The queryGroupedStatsInner ValidateConditionValueTypes call
+		// (below) propagates this sentinel unwrapped, not re-wrapped under
+		// this package's own ErrInvalidCondition above — same disposition
+		// (400 INVALID_CONDITION) via the search package's own sentinel, for
+		// an operator that is not a supported predicate for the field it's
+		// applied to (e.g. a string/pattern operator on a temporal meta
+		// field, operator-semantics.md §4/§7).
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
+	case errors.Is(err, spi.ErrInvalidFilterPath),
+		errors.Is(err, spi.ErrUnevaluableLeaf),
+		errors.Is(err, spi.ErrInvalidPattern),
+		errors.Is(err, match.ErrUnevaluableLeaf),
+		errors.Is(err, match.ErrUnsupportedOperator):
+		// spi.ErrInvalidFilterPath is the PLUGIN-side twin of the arm above: a
+		// backend's own backstop rejecting a path outside the model's syntax.
+		//
+		// spi.ErrUnevaluableLeaf / spi.ErrInvalidPattern reach here from the
+		// streaming tally's own store.Iterate call (tallyStreaming passes it
+		// the pushdown Filter — with Declared possibly empty for a
+		// bare-typeless field), or from a GroupedAggregator pushdown attempt.
+		//
+		// match.ErrUnevaluableLeaf / match.ErrUnsupportedOperator reach here
+		// from the criterion evaluator this package shares, not from grouped
+		// stats itself: the streaming tally has no in-process predicate of
+		// its own any more.
+		//
+		// All five used to propagate raw, with no case here to catch them, so
+		// they fell through to the generic 500 below — the identical defect
+		// SearchService.Search's own match.Prepare/Iterate call sites had
+		// before search.ClassifyStoreQueryError learned these sentinels (see
+		// that function's doc). Delegating keeps one mapping table instead of
+		// several.
+		return search.ClassifyStoreQueryError(err)
 	case errors.Is(err, search.ErrConditionTypeMismatch):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
 	}
@@ -92,22 +115,23 @@ func classifyGroupedStatsError(err error) error {
 }
 
 // queryGroupedStatsInner dispatches a validated grouped-stats request
-// against any storage backend. The store parameter is intentionally `any`
-// — capabilities are detected via type assertion so a backend can satisfy
-// one or both of spi.Iterable / spi.GroupedAggregator.
+// against any storage backend. Every backend implements Iterate, so the
+// query always has an execution path; GroupedAggregator is the optional
+// pushdown on top of it.
 //
-// Decision tree (spec §4, decisions D11/D14/D15):
+// Decision tree (spec §4, decisions D11/D14):
 //  1. Native pushdown — only when (a) store implements GroupedAggregator,
-//     (b) the request's Condition translates cleanly to spi.Filter, AND
-//     (c) we're not inside a transaction (D11: tx visibility requires the
-//     streaming path).
-//  2. Streaming fallback — when store implements Iterable. If the filter
-//     translates, push it; otherwise pass zero-value and re-apply
-//     match.Match per yielded entity (D15).
-//  3. Neither — return ErrBackendNotSupported (handler maps to 501).
+//     (b) the store accepts the shape, AND (c) we're not inside a
+//     transaction (D11: tx visibility requires the streaming path).
+//  2. Otherwise stream Iterate with the translated filter and tally.
+//
+// A condition that will not translate is refused before either branch, so
+// neither ever sees a filter that does not match the request. Spec §4's D15
+// — pass a zero-value filter and re-apply the predicate per yielded entity —
+// is retired with the whole-model-scan family it belonged to.
 func (s *GroupedStatsService) queryGroupedStatsInner(
 	ctx context.Context,
-	store any,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
@@ -129,79 +153,113 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		parsedCond = c
 	}
 
-	// Reject a malformed MATCHES_PATTERN regex before any backend runs.
-	// Every plugin's residual filter evaluator (sqlite's evaluateFilter,
-	// postgres's evalPostFilter) delegates to the error-free spi.MatchFilter,
-	// which returns false (non-match) rather than erroring on a bad pattern
-	// — so an unvalidated malformed regex would silently under-include
-	// buckets instead of failing the request. Validating here, in the
-	// backend-independent domain layer, makes every backend reject
-	// identically, matching the search path's ValidateRegexPatterns call.
-	if parsedCond != nil {
-		if rErr := search.ValidateRegexPatterns(parsedCond); rErr != nil {
-			return nil, fmt.Errorf("%w: invalid regex pattern in condition: %v", ErrInvalidCondition, rErr)
-		}
-	}
-
 	// Structural condition validation (canonical operator set, BETWEEN
 	// arity) — model-independent, mirrors the single boundary the search
 	// path enforces in SearchService.Search/SubmitAsync via the same
-	// search.ValidateCondition call. Without this, a malformed-arity
-	// BETWEEN (or an unknown operatorType) slips past every downstream
-	// layer here exactly as the regex case above did: ConditionToFilter and
-	// match.Match both fail closed (never matching) rather than erroring,
-	// so the request would silently degrade to an empty/wrong result
-	// instead of failing with 400.
+	// search.ValidateCondition call. Without this, a malformed-arity BETWEEN
+	// (or an unknown operatorType) slips past every downstream layer here:
+	// ConditionToFilter's translate-time check catches some shapes, but both
+	// it and match.Prepare now FAIL CLOSED WITH AN ERROR on an unevaluable
+	// leaf (never silently non-matching) — so without this earlier,
+	// better-classified check the request would surface as a generic
+	// internal error instead of a clean 400 INVALID_CONDITION naming the
+	// actual structural fault.
 	if parsedCond != nil {
 		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
+			// A jsonPath outside JSON Path nomenclature is propagated
+			// unwrapped so classifyGroupedStatsError sees the
+			// search.ErrInvalidFieldPath sentinel and emits INVALID_FIELD_PATH
+			// — the same code /search returns for the same input. Re-wrapping
+			// in ErrInvalidCondition would shadow it: that arm is tested first.
+			if errors.Is(cErr, search.ErrInvalidFieldPath) {
+				return nil, cErr
+			}
 			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
+		}
+	}
+
+	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
+	// before any backend runs. Every plugin's residual filter evaluator
+	// (sqlite's evaluateFilter, postgres's evalPostFilter) delegates to the
+	// error-free spi.PreparedFilter.Match kernel, which returns false
+	// (non-match) rather than erroring on a bad pattern — so an unvalidated
+	// malformed pattern would silently under-include buckets instead of
+	// failing the request. Validating here, in the backend-independent domain
+	// layer, makes every backend reject identically. It runs after the
+	// structural validation above, as it does on the search path: the pattern
+	// error names the leaf by the jsonPath the caller wrote, and that string
+	// should have cleared the path grammar first.
+	if parsedCond != nil {
+		if rErr := search.ValidatePatterns(parsedCond); rErr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, rErr)
 		}
 	}
 
 	// Condition type-soundness (correctness-over-availability): mirrors the
 	// search path's validateConditionTypes boundary for its model-independent
-	// parts. A nil model is passed deliberately — grouped-stats has no
-	// model-schema plumbing (a separate, unflagged concern), but the
-	// lifecycle/temporal/meta-field rules validateLifecycleType enforces
-	// (known meta field; valid operator + RFC3339 operand on temporal
-	// fields) don't need the schema at all, and ValidateConditionValueTypes
-	// gracefully skips the schema-dependent data-field check when model is
-	// nil. Without this, e.g. a CONTAINS operator against the temporal
-	// creationDate meta field would silently produce an empty result here
-	// (never matching in ConditionToFilter/match.Match) instead of the 400
-	// CONDITION_TYPE_MISMATCH the equivalent /search request returns.
+	// parts — the lifecycle/temporal/meta-field rules validateLifecycleType
+	// enforces (known meta field; a supported operator + RFC3339 operand on
+	// temporal fields), which need no schema. Without this, e.g. a CONTAINS
+	// operator against the temporal creationDate meta field would silently
+	// produce an empty result here instead of the 400 INVALID_CONDITION the
+	// equivalent /search request returns.
+	//
+	// A nil model is passed because this layer has none. The SCHEMA-dependent
+	// arm — an operand parsing into none of a declared field's types — runs at
+	// the handler, which holds the model store and validates the condition's,
+	// groupBy's and aggregates' paths against the model in the same place. A
+	// direct caller of this service that bypasses the handler gets only the
+	// model-independent half, which is why the handler is the boundary.
 	if parsedCond != nil {
 		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
 			// Propagate tErr directly (not re-wrapped): it already wraps
-			// search.ErrConditionTypeMismatch or search.ErrInvalidFieldPath,
-			// so the handler classifies it via errors.Is against those same
-			// exported sentinels — the identical classification the search
-			// path's validateConditionTypes performs — and maps to the
-			// matching CONDITION_TYPE_MISMATCH / INVALID_FIELD_PATH code.
+			// search.ErrConditionTypeMismatch, search.ErrInvalidCondition or
+			// search.ErrInvalidFieldPath, so classifyGroupedStatsError
+			// classifies it via errors.Is against those same exported
+			// sentinels — the identical classification the search path's
+			// validateConditionTypes performs — and maps to the matching
+			// CONDITION_TYPE_MISMATCH / INVALID_CONDITION / INVALID_FIELD_PATH
+			// code.
 			return nil, tErr
 		}
 	}
 
-	// Try to translate to a pushdown-friendly Filter. A nil parsedCond
-	// yields the zero-value Filter ("match all"); a parsedCond that the
-	// translator can't handle (e.g. function conditions, wildcard paths)
-	// returns an error — in that case the streaming branch will re-apply
-	// match.Match per entity.
+	// Translate to a pushdown Filter. A nil parsedCond yields the zero-value
+	// Filter ("match all").
+	//
+	// One path, as on search and conditional delete: the condition either
+	// translates or the request is refused. A translation failure is
+	// unreachable from input that cleared search.ValidateCondition above —
+	// the same pairing search runs, checked by
+	// TestDeleteAndGroupedStats_ClearingImpliesTranslates — so refusing
+	// costs no valid request.
+	//
+	// Translating is not the same as pushing down: a wildcard leaf still has
+	// no SQL form on either backend (each SQL planner's isLeafPushable
+	// routes it to that backend's own residual, see
+	// spi.ErrAggregationNotPushdownable below), so a
+	// successfully-translated wildcard Filter can still fall through to the
+	// streaming branch below. That residual is the backend's, applied to a
+	// filter it was actually given — not a whole-model scan re-matched in
+	// this process.
 	var pushFilter spi.Filter
-	pushable := true
 	if parsedCond != nil {
-		f, terr := search.ConditionToFilter(parsedCond, fields)
+		f, terr := spi.ConditionToFilter(parsedCond, fields)
 		if terr != nil {
-			pushable = false
-		} else {
-			pushFilter = f
+			if appErr := search.ClassifyStoreQueryError(terr); appErr != nil {
+				return nil, appErr
+			}
+			return nil, common.Operational(http.StatusBadRequest,
+				common.ErrCodeInvalidCondition,
+				"condition cannot be translated to a backend predicate")
 		}
+		pushFilter = f
 	}
 
 	inTx := spi.GetTransaction(ctx) != nil
 
 	// 1. Native pushdown branch.
-	if ga, ok := store.(spi.GroupedAggregator); ok && !inTx && pushable {
+	if ga, ok := store.(spi.GroupedAggregator); ok && !inTx {
 		spiGroups := translateGroupBy(req.GroupBy)
 		spiAggs := translateAggregations(req.Aggregations)
 		out, err := ga.GroupedAggregate(ctx, model, spiGroups, pushFilter, spi.GroupedAggregationsOptions{
@@ -218,77 +276,71 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		// Plugin declined this shape; fall through to streaming.
 	}
 
-	// 2. Streaming fallback.
-	if it, ok := store.(spi.Iterable); ok {
-		return s.tallyStreaming(ctx, it, model, fields, req, pushFilter, pushable, parsedCond)
-	}
-
-	// 3. Neither capability.
-	return nil, ErrBackendNotSupported
+	// 2. Stream and tally.
+	return s.tallyStreaming(ctx, store, model, fields, req, pushFilter)
 }
 
-// tallyStreaming implements the spec §4 streaming branch: iterate, apply
-// any unpushable residual via match.Match, group, accumulate, materialize.
+// tallyStreaming implements the spec §4 streaming branch: iterate the
+// translated filter, group, accumulate, materialize.
+//
+// It used to carry a residual of its own: when the condition would not
+// translate, it passed a zero-value filter and re-applied the predicate per
+// yielded entity — a whole-model scan matched in this process. The caller
+// refuses a translation failure now, so pushFilter is always what the
+// condition translated to and every yielded entity already matches.
 func (s *GroupedStatsService) tallyStreaming(
 	ctx context.Context,
-	it spi.Iterable,
+	store spi.EntityStore,
 	model spi.ModelRef,
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 	pushFilter spi.Filter,
-	pushable bool,
-	parsedCond predicate.Condition,
 ) ([]GroupedStatsBucket, error) {
-	// Declared-type resolver for the residual predicate evaluation below, so the
-	// streaming path types data leaves consistently with the pushdown filter
-	// (both stamped from `fields`). A nil `fields` yields a nil-returning
-	// resolver, which the evaluator tolerates.
-	fieldTypes := func(p string) []spi.DataType {
-		if fd, ok := fields[p]; ok {
-			return fd.Types
-		}
-		return nil
-	}
-	// D15: if the filter wasn't pushable, pass zero-value to the iterator
-	// (match-all) and re-apply match.Match inside the loop. Otherwise
-	// trust the plugin to apply pushFilter itself.
-	iterFilter := pushFilter
-	if !pushable {
-		iterFilter = spi.Filter{}
-	}
-
-	iter, err := it.Iterate(ctx, model, iterFilter, spi.IterateOptions{PointInTime: req.PointInTime})
+	iter, err := store.Iterate(ctx, model, pushFilter, spi.IterateOptions{PointInTime: req.PointInTime})
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
 
 	acc := newAccumulators(req)
-	for iter.Next() {
-		e := iter.Entity()
-
-		// Residual predicate evaluation: only when the original condition
-		// was not pushable and we therefore need to filter per entity.
-		if !pushable && parsedCond != nil {
-			ok, mErr := match.Match(parsedCond, e.Data, e.Meta, fieldTypes)
-			if mErr != nil {
-				return nil, mErr
+	// bucketErr (a definitive business-logic stop, not a scan fault) takes
+	// priority over scanErr when both are set — it mirrors the pre-fix
+	// code's immediate `return nil, spi.ErrGroupCardinalityExceeded`, which
+	// never consulted iter.Err() at all.
+	var bucketErr, scanErr error
+	func() {
+		// Close() before Err(), inside a defer so both run even on the
+		// early return below (bucketErr) — the trap this reorders away
+		// from: some iterator implementations only surface a sticky scan
+		// error at Close, not at the last Next(), so reading Err() before
+		// Close() runs (the previous shape here, with a bare
+		// `defer iter.Close()` registered ahead of a same-function
+		// `iter.Err()` call that executed first) can miss it. Err() is
+		// read after Close() everywhere an iterator is drained.
+		defer func() {
+			if closeErr := iter.Close(); closeErr != nil {
+				scanErr = closeErr
 			}
-			if !ok {
-				continue
+			if errErr := iter.Err(); errErr != nil {
+				scanErr = errErr
 			}
+		}()
+		for iter.Next() {
+			e := iter.Entity()
+			keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
+			k := buildGroupKey(keyValues)
+			if !acc.has(k) && acc.len() >= s.maxBuckets {
+				bucketErr = spi.ErrGroupCardinalityExceeded
+				return
+			}
+			numerics := extractNumerics(req.Aggregations, e.Data)
+			acc.observe(k, groupKey, numerics)
 		}
-
-		keyValues, groupKey := buildGroupKeyFromEntity(req.GroupBy, e)
-		k := buildGroupKey(keyValues)
-		if !acc.has(k) && acc.len() >= s.maxBuckets {
-			return nil, spi.ErrGroupCardinalityExceeded
-		}
-		numerics := extractNumerics(req.Aggregations, e.Data)
-		acc.observe(k, groupKey, numerics)
+	}()
+	if bucketErr != nil {
+		return nil, bucketErr
 	}
-	if err := iter.Err(); err != nil {
-		return nil, err
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	return acc.materialize(), nil
 }
@@ -315,7 +367,7 @@ func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any,
 			}
 		} else {
 			path = g.Path
-			res := gjson.GetBytes(e.Data, gjsonPath(g.Path))
+			res := resolveScalarPath(e.Data, g.Path)
 			switch {
 			case !res.Exists():
 				val = nil
@@ -347,7 +399,7 @@ func buildGroupKeyFromEntity(groups []GroupExprValidated, e *spi.Entity) ([]any,
 func extractNumerics(aggs []AggregationExprValidated, data []byte) []float64 {
 	out := make([]float64, len(aggs))
 	for i, a := range aggs {
-		res := gjson.GetBytes(data, gjsonPath(a.Field))
+		res := resolveScalarPath(data, a.Field)
 		if !res.Exists() || res.Type != gjson.Number {
 			out[i] = math.NaN()
 			continue
@@ -357,14 +409,32 @@ func extractNumerics(aggs []AggregationExprValidated, data []byte) []float64 {
 	return out
 }
 
-// gjsonPath converts our normalized JSONPath ("$.foo.bar" or "foo.bar")
-// to gjson syntax ("foo.bar"). The reserved token "state" is handled by
-// callers via IsState and never reaches here.
-func gjsonPath(p string) string {
+// resolveScalarPath resolves a normalized groupBy/aggregation JSONPath
+// ("$.foo.bar" or "foo.bar") against data through [spi.ParseFilterPath] and
+// [spi.ResolvePath] — the same addressing rule every other resolver in the
+// stack applies — rather than gjson's own path syntax, which resolves an
+// all-digit segment against an ARRAY receiver as a positional index. That
+// divergence let "$.obj.0" over {"obj":["X","Y"]} return "X" here while
+// spi.ResolvePath, and both SQL backends, correctly report it absent (a
+// field literally named "0" is not the same address as element 0).
+//
+// ValidateScalarJSONPath has already rejected any subscript on this surface,
+// so this is always a 0-or-1-value resolution: absent, or the single value
+// the path names. The reserved token "state" is handled by callers via
+// IsState and never reaches here.
+func resolveScalarPath(data []byte, p string) gjson.Result {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
-		return p[2:]
+		p = p[2:]
 	}
-	return p
+	hops, err := spi.ParseFilterPath(p)
+	if err != nil {
+		return gjson.Result{}
+	}
+	results := spi.ResolvePath(data, hops)
+	if len(results) != 1 {
+		return gjson.Result{}
+	}
+	return results[0]
 }
 
 // translateGroupBy maps the validation-layer types to the SPI types used
@@ -373,7 +443,7 @@ func gjsonPath(p string) string {
 // plugin's validateJSONPath rejects "$" as a disallowed character — the
 // SPI contract is a bare dotted-identifier path ("foo.bar"), and the
 // "$." prefix lives only at the public surface (response GroupKeyEntry.Path
-// and the in-process gjson lookup, which strips it via gjsonPath).
+// and the in-process resolveScalarPath call, which strips it the same way).
 func translateGroupBy(groups []GroupExprValidated) []spi.GroupExpr {
 	out := make([]spi.GroupExpr, len(groups))
 	for i, g := range groups {
@@ -402,10 +472,15 @@ func translateAggregations(aggs []AggregationExprValidated) []spi.AggregateExpr 
 }
 
 // stripJSONPathPrefix removes the leading "$." that normalizeScalarPath
-// preserves for the wire-shape group-key. Plugins (memory's match.Match,
-// sqlite/postgres's validateJSONPath) all expect bare dotted-identifier
-// paths. A path without the prefix is returned unchanged so the helper
-// is idempotent — re-applying it is safe.
+// preserves for the wire-shape group-key. Plugins (memory's own
+// resolveScalarPath helper in plugins/memory/grouped_stats.go, sqlite/
+// postgres's validateJSONPath) all expect bare dotted-identifier paths —
+// plugins/memory is a separate Go module with no dependency on the root
+// module, so it cannot import internal/match at all; its group-by path
+// handling is entirely local (built on spi.ParseFilterPath/spi.ResolvePath,
+// the same SPI both this package and plugins/memory already depend on). A
+// path without the prefix is returned unchanged so the helper is idempotent
+// — re-applying it is safe.
 func stripJSONPathPrefix(p string) string {
 	if len(p) >= 2 && p[0] == '$' && p[1] == '.' {
 		return p[2:]

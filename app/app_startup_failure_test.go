@@ -10,7 +10,7 @@ import (
 )
 
 // TestNew_StorageFactoryFailureExits is the representative test for the
-// startup-failure normalisation sweep (#10). It asserts that a startup
+// startup-failure normalisation contract. It asserts that a startup
 // precondition failure produces:
 //   - process exit status 1 (not a panic stack)
 //   - a structured slog.Error line tagged with "startup failure"
@@ -62,7 +62,7 @@ func TestNew_StorageFactoryFailureExits(t *testing.T) {
 
 // TestNew_JWTSigningKeyMissingExits exercises the converted shape of the
 // previously-panicking "CYODA_JWT_SIGNING_KEY is required when IAM mode is
-// jwt" precondition. After the #10 sweep, this path emits a structured
+// jwt" precondition. This path emits a structured
 // slog.Error with phase="jwt-signing-key" and exits with status 1.
 func TestNew_JWTSigningKeyMissingExits(t *testing.T) {
 	if os.Getenv("BE_CRASHER") == "1" {

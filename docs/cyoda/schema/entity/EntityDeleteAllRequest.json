@@ -11,15 +11,9 @@
       "$ref": "../common/ModelSpec.json",
       "description": "Information about the model."
     },
-    "pageSize": {
-      "type": "integer",
-      "description": "Page size.",
-      "default": 10
-    },
     "transactionSize": {
       "type": "integer",
-      "description": "Transaction size.",
-      "default": 1000
+      "description": "Transaction size."
     },
     "pointInTime": {
       "type": "string",

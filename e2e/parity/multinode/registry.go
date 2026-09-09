@@ -5,7 +5,7 @@
 // MultiNodeFixture and never run these scenarios.
 //
 // The cluster-capable backends (postgres in-tree; cassandra in
-// cyoda-go-cassandra via cyoda-go-cassandra#35) provide a fixture
+// cyoda-go-cassandra) provide a fixture
 // implementation and a TestMultiNode entry that blank-imports this
 // package to trigger init-time registration.
 package multinode

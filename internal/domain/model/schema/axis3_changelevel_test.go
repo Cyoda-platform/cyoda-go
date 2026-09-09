@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -48,11 +47,7 @@ func TestAxis3ChangeLevelMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Marshal old: %v", err)
 			}
-			incomingNode, err := importer.Walk(c.Incoming)
-			if err != nil {
-				t.Fatalf("Walk: %v", err)
-			}
-			_, extErr := schema.Extend(c.Old, incomingNode, c.Level)
+			_, extErr := schema.Extend(c.Old, c.Incoming, c.Level)
 			oldBytesAfter, _ := schema.Marshal(c.Old)
 
 			// I7: rejection must not mutate input *ModelNode.

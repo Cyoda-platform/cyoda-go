@@ -5,13 +5,17 @@ import (
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // ParseSortParam parses repeatable `sort` query values into OrderKeys.
 // Grammar: [@]path[:asc|:desc]. Bare ⇒ data; leading '@' ⇒ meta (flat name).
 // A leading "$." on a data path is tolerated. Direction defaults to asc.
-// Duplicate paths and >maxKeys keys are rejected. Semantic validation
-// (schema scalar-leaf, meta allowlist) happens later in the service.
+// Duplicate paths and >maxKeys keys are rejected. The path GRAMMAR is checked
+// here too, but it is not this parser's to own: resolveOrderBy applies it to
+// every key whatever the transport, because gRPC builds an OrderKey without
+// passing through here. Semantic validation (schema scalar-leaf, meta
+// allowlist) happens there as well.
 func ParseSortParam(values []string, maxKeys int) ([]OrderKey, error) {
 	keys := make([]OrderKey, 0, len(values))
 	for _, raw := range values {
@@ -76,23 +80,14 @@ func parseSortToken(raw string) (OrderKey, error) {
 	return OrderKey{Path: tok, Source: source, Desc: desc}, nil
 }
 
-// isValidSortPath allows dotted identifiers (letters/digits/_/-), no empty
-// segments — same dotted-identifier charset the search filter path parser accepts.
+// isValidSortPath allows dotted segments, no empty ones, each drawn from the
+// one segment charset [schema.IsSegmentName] defines — the same charset the
+// jsonPath grammar and model import hold field names to, so a field is
+// sortable exactly when it is addressable.
 func isValidSortPath(p string) bool {
-	if p == "" {
-		return false
-	}
 	for _, seg := range strings.Split(p, ".") {
-		if seg == "" {
+		if !schema.IsSegmentName(seg) {
 			return false
-		}
-		for _, c := range seg {
-			switch {
-			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z',
-				c >= '0' && c <= '9', c == '_', c == '-':
-			default:
-				return false
-			}
 		}
 	}
 	return true

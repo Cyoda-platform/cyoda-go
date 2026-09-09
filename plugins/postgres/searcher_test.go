@@ -44,17 +44,20 @@ func setupSearcher(t *testing.T) (spi.EntityStore, context.Context) {
 	return store, ctx
 }
 
-func searcherOf(t *testing.T, store spi.EntityStore) spi.Searcher {
+func searcherOf(t *testing.T, store spi.EntityStore) spi.EntityStore {
 	t.Helper()
-	sr, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("postgres entityStore does not implement spi.Searcher")
-	}
-	return sr
+	return store
 }
 
+// searcherBaseLimit is generously above every baseOpts() caller's expected
+// match count (setupSearcher seeds 5, the largest seed among them) — these
+// tests exercise filtering/ordering, not the bounded-or-fail cap itself
+// (that is boundedOpts's job below), so the Limit here only needs to never
+// be the thing that trips.
+const searcherBaseLimit = 100
+
 func baseOpts() spi.SearchOptions {
-	return spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	return spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: searcherBaseLimit}
 }
 
 func TestPGSearcher_Eq(t *testing.T) {
@@ -67,6 +70,34 @@ func TestPGSearcher_Eq(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("city=Berlin: want 2, got %d", len(got))
+	}
+}
+
+// TestPGSearcher_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Search: a leaf spi.Prepare genuinely cannot
+// evaluate (a LIKE pattern with a trailing unpaired escape, which will not
+// compile) must fail the search outright, not silently degrade to an empty
+// page. See .claude/rules/correctness-over-availability.md. Both malformed
+// operands `spitest`'s `Pattern/MalformedLike` conformance case requires an
+// error for (a trailing escape after a literal, and a bare trailing escape)
+// are exercised here too, pinning the same requirement at this plugin's own
+// Search boundary.
+func TestPGSearcher_RejectsUnevaluableFilter(t *testing.T) {
+	for _, operand := range []string{`a\`, `\`} {
+		t.Run(operand, func(t *testing.T) {
+			store, ctx := setupSearcher(t)
+			_, err := searcherOf(t, store).Search(ctx,
+				spi.Filter{
+					Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+					Value: operand, Declared: []spi.DataType{spi.String},
+				}, baseOpts())
+			if err == nil {
+				t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
+			}
+			if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+				t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+			}
+		})
 	}
 }
 
@@ -290,12 +321,13 @@ func TestPGSearcher_OrderByNumericData(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "n", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
 		})
 	if err != nil {
@@ -347,12 +379,13 @@ func TestPGSearcher_OrderByCreationDateMeta(t *testing.T) {
 			t.Fatalf("patch creation_date %s: %v", pair.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
 	if err != nil {
@@ -388,12 +421,13 @@ func TestPGSearcher_OrderByStateMeta(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -446,12 +480,13 @@ func TestPGSearcher_OrderByMetaEmptyTransitionLast(t *testing.T) {
 		t.Fatalf("patch transition e-has: %v", err)
 	}
 
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "y", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "transitionForLatestSave", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -485,7 +520,7 @@ func TestPGSearcher_OrderByNullsLast(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	// FilterNotNull on "present" matches all three entities (all have the field).
 	// Sorting by "score" ASC with NULLS LAST puts the null score last.
 	results, err := sr.Search(ctx,
@@ -493,6 +528,7 @@ func TestPGSearcher_OrderByNullsLast(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -522,12 +558,13 @@ func TestPGSearcher_OrderByTiebreaker(t *testing.T) {
 			t.Fatalf("Save %s: %v", id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -575,12 +612,13 @@ func TestPGSearcher_OrderByPointInTime(t *testing.T) {
 		}
 	}
 	pit, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	sr := store.(spi.Searcher)
+	sr := store
 	results, err := sr.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			PointInTime:  &pit,
 			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
@@ -602,6 +640,7 @@ func TestPGSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "person",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
 		})
 	if err == nil {
@@ -623,6 +662,7 @@ func TestPGSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "person",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -765,12 +805,11 @@ func TestPGSearcher_NeNumeric_MissingField(t *testing.T) {
 	}
 }
 
-// Compile-time guard mirrored as a runtime assertion for clarity.
+// Compile-time guard mirrored as a runtime assertion for clarity: Search is a
+// required spi.EntityStore method, so any *entityStore already satisfies it.
 func TestPGSearcher_ImplementsSearcher(t *testing.T) {
 	store, ctx := setupSearcher(t)
-	if _, ok := store.(spi.Searcher); !ok {
-		t.Fatal("postgres entityStore must implement spi.Searcher")
-	}
+	var _ spi.EntityStore = store
 	_ = ctx
 }
 
@@ -826,9 +865,9 @@ func pitSearchSetup(t *testing.T) (spi.EntityStore, context.Context, time.Time) 
 // ORDER BY entity_id over a derived table that only projected doc).
 func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 	store, ctx, base := pitSearchSetup(t)
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", PointInTime: &base, Limit: searcherBaseLimit}
 
-	active, err := store.(spi.Searcher).Search(ctx,
+	active, err := store.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "active", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search active@base: %v", err)
@@ -837,7 +876,7 @@ func TestPGSearcher_PointInTimeDefaultOrder(t *testing.T) {
 		t.Fatalf("status=active @base: want 1 (v1 snapshot), got %d", len(active))
 	}
 
-	inactive, err := store.(spi.Searcher).Search(ctx,
+	inactive, err := store.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "status", Source: spi.SourceData, Value: "inactive", Declared: []spi.DataType{spi.String}}, opts)
 	if err != nil {
 		t.Fatalf("Search inactive@base: %v", err)
@@ -871,7 +910,7 @@ func TestPGSearcher_OrderByNullsLastDesc(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 	// DESC on "score": "90" > "50" lexically, so order is high-score, has-score.
 	// no-score (NULL) must still be LAST. Without "NULLS LAST", DESC puts it
 	// FIRST — the assertion on the last element proves "NULLS LAST" is present.
@@ -880,6 +919,7 @@ func TestPGSearcher_OrderByNullsLastDesc(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
 		})
 	if err != nil {
@@ -911,7 +951,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 			t.Fatalf("Save %s: %v", e.id, err)
 		}
 	}
-	sr := store.(spi.Searcher)
+	sr := store
 
 	// ASC: false < true → f, t.
 	asc, err := sr.Search(ctx,
@@ -919,6 +959,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
 		})
 	if err != nil {
@@ -932,6 +973,7 @@ func TestPGSearcher_OrderByBool(t *testing.T) {
 		spi.SearchOptions{
 			ModelName:    "item",
 			ModelVersion: "1",
+			Limit:        searcherBaseLimit,
 			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
 		})
 	if err != nil {
@@ -1048,17 +1090,36 @@ func TestPGSearcher_AtLimitSucceeds(t *testing.T) {
 	}
 }
 
-// TestPGSearcher_UnboundedReturnsAll: Limit<=0 must never raise, and must
-// never substitute a default cap.
-func TestPGSearcher_UnboundedReturnsAll(t *testing.T) {
+// TestPGSearcher_ZeroLimitRejected and TestPGSearcher_NegativeLimitRejected:
+// Limit <= 0 is a contract violation, not "unbounded" — Search must reject it
+// with an error rather than substituting a default cap of its own. Exercised
+// here through the SQL-pushdown branch (boundedPushdownFilter has no
+// residual) specifically, on top of the generic coverage the shared spitest
+// conformance suite (spitest/searcher.go's BoundedOrFail/ZeroLimitRejected
+// and /NegativeLimitRejected) already provides, so the rejection is proven to
+// happen before runSearch builds any SQL at all — not merely somewhere along
+// the residual path.
+func TestPGSearcher_ZeroLimitRejected(t *testing.T) {
 	store, ctx := newBoundedSearchStore(t)
 	seedBoundedMatching(t, store, ctx, 3)
 	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(0))
-	if err != nil {
-		t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+	if err == nil {
+		t.Fatal("limit 0 is a contract violation, not \"unbounded\": expected an error, got nil")
 	}
-	if len(got) != 3 {
-		t.Fatalf("got %d, want 3", len(got))
+	if len(got) != 0 {
+		t.Fatalf("a rejected Limit must not also return a result: got %d entities", len(got))
+	}
+}
+
+func TestPGSearcher_NegativeLimitRejected(t *testing.T) {
+	store, ctx := newBoundedSearchStore(t)
+	seedBoundedMatching(t, store, ctx, 3)
+	got, err := searcherOf(t, store).Search(ctx, boundedPushdownFilter, boundedOpts(-1))
+	if err == nil {
+		t.Fatal("negative limit is a contract violation: expected an error, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("a rejected Limit must not also return a result: got %d entities", len(got))
 	}
 }
 
@@ -1073,11 +1134,7 @@ func TestPGSearcher_UnboundedReturnsAll(t *testing.T) {
 func TestPGSearcher_InTxOverLimitFails(t *testing.T) {
 	factory, tm := setupFCWTest(t)
 	ctx := ctxWithTenant("bounded-search-tx-tenant")
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, ctx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)

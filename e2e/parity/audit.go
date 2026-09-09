@@ -143,8 +143,8 @@ func RunAuditWorkflowEvents(t *testing.T, fixture BackendFixture) {
 
 // RunAuditPostTxIdMatchesWorkflowFinished verifies that the transactionId
 // returned by POST /entity can be used directly with
-// /audit/entity/{id}/workflow/{txId}/finished to look up the workflow result
-// (issue #20). This confirms the fix works across all storage backends.
+// /audit/entity/{id}/workflow/{txId}/finished to look up the workflow result.
+// This confirms the behaviour holds across all storage backends.
 func RunAuditPostTxIdMatchesWorkflowFinished(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)

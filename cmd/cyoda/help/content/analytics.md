@@ -225,7 +225,7 @@ The WebSocket API is served by Cyoda Cloud over STOMP. The concrete WebSocket en
 - `metaClassId` — UUID — which Entity Model to query
 - `path` — string — structural path / `uniformedPath` value of the target table
 - `domainCondition` — map of `ColumnCategory` → field key → condition; organized by category (`SPECIAL`, `ROOT`, `INDEX`, `DATA`)
-- `expressionCondition` — `GroupConditionDto` — alternative condition format using AND/OR groups
+- `expressionCondition` — `GroupConditionDto` — alternative condition format using `AND`/`OR`/`NOT` groups
 - `selectedFields` — optional list of value map keys to include; null returns all fields
 - `userId` — string — user ID for authenticated context and permission-filtered entity access
 
@@ -237,7 +237,7 @@ Condition pushdown by category:
 - `INDEX` — applied as in-memory predicates on array index values
 - `DATA` — applied as value map conditions, pushed to the storage layer
 
-Data is fetched in pages (default page size: 1000). Point-in-time is derived from the `POINT_TIME` condition or defaults to the current consistency time.
+Data is fetched in pages (default page size: 1000). Point-in-time is derived from the `POINT_TIME` condition; absent means the current committed state.
 
 Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
 see `cyoda help crud` ("Point-in-time semantics").

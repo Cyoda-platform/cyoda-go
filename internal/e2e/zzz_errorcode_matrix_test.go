@@ -35,7 +35,14 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	"deleteEntities": {
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 400, Code: "INVALID_FIELD_PATH"}, // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
+		{Status: 400, Code: "BAD_REQUEST"},        // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
+		// TestDeleteEntities_Batched_NonConvergence_409: the batched delete's
+		// progress guard. Produced on that test's own mount of this endpoint
+		// (the cycle budget has to be lowered to reach it), behind the same
+		// conformance validator — so the triple is recorded here like any
+		// other.
+		{Status: 409, Code: "DELETE_NOT_CONVERGED"},
 	},
 	// Stats / list / search ops (stats-audit-search slice, §7). Three read ops
 	// have a bounded, bidirectionally-checkable error surface — only
@@ -51,7 +58,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	//     full surface out of scope.
 	//   queryGroupedEntityStatisticsForModel: 404 MODEL_NOT_FOUND proven by
 	//     TestGroupedStats_UnknownModel_404 (grouped_stats_test.go); full surface
-	//     (MISSING_GROUP_BY, GROUP_CARDINALITY_EXCEEDED, NOT_IMPLEMENTED_BY_BACKEND)
+	//     (MISSING_GROUP_BY, GROUP_CARDINALITY_EXCEEDED)
 	//     out of scope for this slice.
 	"getAllEntities": {
 		{Status: 404, Code: "MODEL_NOT_FOUND"}, // TestGetAllEntities_UnknownModel_404
@@ -74,14 +81,20 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	// transition-error surface belongs to a follow-on.
 	// CONFLICT (409) is exempt from all rows: it is a retryable serialization
 	// abort emitted non-deterministically by any write op under concurrency and
-	// is therefore not a per-endpoint documented code (see universalConcurrencyCodes).
+	// is therefore not a per-endpoint documented code (see universalCrossCuttingCodes).
 	"create": {
-		{Status: 400, Code: "BAD_REQUEST"},        // invalid payload, transactionWindow out of range
-		{Status: 400, Code: "INCOMPATIBLE_TYPE"},  // payload type mismatches the model
+		{Status: 400, Code: "BAD_REQUEST"},       // invalid payload, transactionWindow out of range
+		{Status: 400, Code: "INCOMPATIBLE_TYPE"}, // payload type mismatches the model
+		// TestEntityCreate_UnaddressableFieldName_400: a write that would extend
+		// the model with a field name the wire jsonPath grammar cannot address.
+		{Status: 400, Code: "VALIDATION_FAILED"},
 		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
 		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric
+		// TestModelKindBranch_KeyedPathCannotGainAContainer: a STRUCTURAL write
+		// that would give a keyed path a container branch.
+		{Status: 422, Code: "INVALID_UNIQUE_KEY_DEFINITION"},
 	},
 	"createCollection": {
 		{Status: 400, Code: "BAD_REQUEST"},        // invalid JSON array or parameter
@@ -90,19 +103,27 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_CollectionPartialKeyCreate
 	},
 	"updateSingleWithLoopback": {
+		{Status: 400, Code: "BAD_REQUEST"},        // unparseable body, or a payload carrying U+0000 (TestEntity_NulInPayload_400)
+		{Status: 400, Code: "WORKFLOW_FAILED"},    // engine rejected the loopback — e.g. an unevaluable workflow selection criterion (TestWorkflowSelection_UnevaluableCriterionFailsClosedOnEveryDoor)
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_LoopbackUpdatePartialKey
-		// 409 CONFLICT is exempt (universalConcurrencyCodes)
+		// 409 CONFLICT is exempt (universalCrossCuttingCodes)
 	},
 	"updateSingle": {
 		{Status: 400, Code: "TRANSITION_NOT_FOUND"}, // named transition absent from the model
 		{Status: 400, Code: "WORKFLOW_FAILED"},      // workflow processor rejected the update
+		{Status: 400, Code: "BAD_REQUEST"},          // TestTransactionControl_InvalidParams400/UpdateSingle: invalid/joined transactionTimeoutMillis
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},     // entity UUID not found
 		{Status: 409, Code: "UNIQUE_VIOLATION"},     // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
 		{Status: 412, Code: "ENTITY_MODIFIED"},      // If-Match mismatch
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"},   // TestUniqueKeys_TransitionUpdatePartialKey
 	},
 	"patchSingleWithLoopback": {
+		{Status: 400, Code: "BAD_REQUEST"}, // TestTransactionControl_InvalidParams400/PatchSingleWithLoopback: invalid/joined transactionTimeoutMillis
+		// TestModelKindEnforcement_PatchRejectsKindMismatch: a patch is validated
+		// strictly — it must never widen the model — so a value whose kind the
+		// field does not declare fails against the registered model.
+		{Status: 400, Code: "VALIDATION_FAILED"},
 		{Status: 409, Code: "UNIQUE_VIOLATION"},       // TestUniqueKeys_LoopbackPatchDuplicate
 		{Status: 412, Code: "ENTITY_MODIFIED"},        // If-Match transactionId no longer matches
 		{Status: 415, Code: "UNSUPPORTED_MEDIA_TYPE"}, // non-JSON format or unrecognised Content-Type
@@ -136,25 +157,45 @@ func producibleGaps(matrix map[string][]codeCell, observed []openapivalidator.Er
 	return gaps
 }
 
-// universalConcurrencyCodes is the set of error codes that any write operation
-// may emit non-deterministically under concurrency. They are retryable,
-// cross-cutting serialization outcomes — not part of any endpoint's per-code
-// documented contract — and are exempt from the declared check.
+// universalCrossCuttingCodes is the set of error codes that are not part of any
+// endpoint's per-code documented contract — they arise from layers that sit in
+// front of, or underneath, every operation — and are exempt from the declared
+// check.
+//
 // CONFLICT (409) is a retryable SERIALIZABLE serialization abort: whichever
 // concurrent writer loses the optimistic-lock race emits it, so it can appear
 // on any write endpoint depending on timing and is not pin-able to a specific op.
-var universalConcurrencyCodes = map[string]bool{
-	"CONFLICT": true,
+//
+// UNAUTHORIZED (401) is emitted by the auth middleware before the request ever
+// reaches a handler, so it is producible on every authenticated route and
+// belongs to the middleware's contract rather than any one endpoint's. Its
+// coverage is pinned across representative routes by
+// TestAuth_MissingOrInvalidCredentials_401 (auth_failures_test.go).
+//
+// SERVER_ERROR (500) is the sanitized fallback for an internal fault (a
+// storage outage, a processor's context cancellation, any unclassified
+// error) — per error-handling.md, 5xx is deliberately generic (message +
+// correlation ticket, no domain detail) rather than a per-endpoint
+// documented contract the way 4xx is. Any operation can suffer an infra
+// fault, so — like CONFLICT and UNAUTHORIZED above — it is not pin-able to a
+// specific op's error table. Its coverage is exercised by the dedicated
+// storage-failure/fault-injection suites (lookup_storage_failure_e2e_test.go,
+// entity_read_storage_failure_e2e_test.go, storage_ceilings_e2e_test.go,
+// workflow_failure_test.go's TestWorkflowFailure_ProcessorContextCancelled).
+var universalCrossCuttingCodes = map[string]bool{
+	"CONFLICT":     true,
+	"UNAUTHORIZED": true,
+	"SERVER_ERROR": true,
 }
 
 // declaredGaps returns "op status code" strings for every observed error triple
 // whose operation is IN the matrix but whose (status, code) is undocumented.
-// Triples whose Code is in universalConcurrencyCodes are exempt: they are
-// cross-cutting, non-deterministic concurrency outcomes, not per-endpoint codes.
+// Triples whose Code is in universalCrossCuttingCodes are exempt: they belong
+// to the auth middleware or the concurrency layer, not to any one endpoint.
 func declaredGaps(matrix map[string][]codeCell, observed []openapivalidator.ErrorTriple) []string {
 	var gaps []string
 	for _, tr := range observed {
-		if universalConcurrencyCodes[tr.ErrorCode] {
+		if universalCrossCuttingCodes[tr.ErrorCode] {
 			continue // cross-cutting concurrency code; not endpoint-specific
 		}
 		cells, inScope := matrix[tr.Operation]

@@ -20,7 +20,7 @@ import (
 // version and the response must carry a JSON content-type — any deviation is
 // treated as a potentially hostile substitution and rejected.
 //
-// The cache is keyed on (issuer, kid) rather than kid alone (issue #97) so
+// The cache is keyed on (issuer, kid) rather than kid alone so
 // that if a future refactor ever accidentally shares a single source across
 // multiple issuers, a kid collision between them cannot cause key confusion.
 type httpJWKSSource struct {
@@ -33,8 +33,8 @@ type httpJWKSSource struct {
 	lastFetch time.Time
 }
 
-// jwksCacheKey binds a cached public key to the issuer it was fetched for.
-// See issue #97.
+// jwksCacheKey binds a cached public key to the issuer it was fetched for,
+// so a kid collision between issuers cannot cause key confusion.
 type jwksCacheKey struct {
 	issuer string
 	kid    string
@@ -167,7 +167,7 @@ func (s *httpJWKSSource) refreshCache() error {
 		return fmt.Errorf("failed to parse JWKS response: %w", err)
 	}
 
-	// Re-key by (issuer, kid) so the cache is issuer-bound (issue #97).
+	// Re-key by (issuer, kid) so the cache is issuer-bound.
 	cache := make(map[jwksCacheKey]*rsa.PublicKey, len(keysByKID))
 	for kid, key := range keysByKID {
 		cache[jwksCacheKey{issuer: s.issuer, kid: kid}] = key

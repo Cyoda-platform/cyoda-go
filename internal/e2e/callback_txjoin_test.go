@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// callback_txjoin_test.go — feature #287, spec §7 (SYNC callback) coverage-matrix
+// callback_txjoin_test.go — spec §7 (SYNC callback) coverage-matrix
 // rows "SYNC callback write is atomic with T" and "SYNC callback read sees T's
 // uncommitted cascade write", proven end-to-end over the full HTTP+gRPC stack
 // against real Postgres via the callback-capable compute member
@@ -35,7 +35,7 @@ const secondaryWorkflow = `{
 	}]
 }`
 
-// TestCallback_SyncWrite_AtomicWithTransition proves the core #287 invariant: a
+// TestCallback_SyncWrite_AtomicWithTransition proves the core invariant: a
 // SYNC processor whose callback CREATES a secondary entity has that write bound
 // to the primary transition's transaction T. On success both are durable; on
 // processor failure the secondary is rolled back atomically with T.
@@ -82,7 +82,8 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 			}
 		}]
 	}`)
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-create-ok writes `secondaryId`; the model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryId": ""`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -111,8 +112,8 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 
 	// Same-transaction assertion: the primary's processor-launching transition
 	// and the secondary create must carry the IDENTICAL transactionId. This is
-	// the unambiguous proof that the callback joined T — it would FAIL under the
-	// pre-#287 behaviour where the callback ran its own Begin/Commit.
+	// the unambiguous proof that the callback joined T — it would FAIL if the
+	// callback ran its own Begin/Commit.
 	primTxID := extractTxIDFromAudit(t, h, primaryID)
 	secTxID := extractTxIDFromAudit(t, h, secondaryID)
 	if primTxID == "" || secTxID == "" {
@@ -170,7 +171,7 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 
 	// THE ATOMICITY PROOF: the secondary the callback created inside T must be
 	// gone, because the primary transition aborted and T rolled back. If the
-	// callback had run in its own transaction (pre-#287), this GET would be 200.
+	// callback had run in its own transaction, this GET would be 200.
 	if st, code := h.GetEntityState(t, doomedSecondaryID); code == http.StatusOK {
 		t.Fatalf("rolled-back secondary %s is still present (state=%q, http 200) — callback write was NOT atomic with T",
 			doomedSecondaryID, st)
@@ -233,7 +234,10 @@ func TestCallback_SyncRead_SeesUncommittedCascadeWrite(t *testing.T) {
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, primaryWF)
+	// cb-read reports its joined read back through the primary's data; the
+	// model must declare those fields.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(
+		`"readbackStatus": 0, "readbackFound": false, "readbackMarker": "", "secondaryId": ""`), primaryWF)
 
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 	if status != http.StatusOK {
@@ -265,7 +269,7 @@ func TestCallback_SyncRead_SeesUncommittedCascadeWrite(t *testing.T) {
 // the callback harness and returns the first non-empty transactionId from
 // the audit response. Used to assert that the primary transition and the
 // secondary create share the same transactionId (same-transaction membership
-// proof for feature #287).
+// proof).
 func extractTxIDFromAudit(t *testing.T, h *callbackHarness, entityID string) string {
 	t.Helper()
 	resp := h.DoAuth(t, http.MethodGet, "/api/audit/entity/"+entityID, "", "")

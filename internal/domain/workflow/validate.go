@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -198,25 +197,54 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 	return nil
 }
 
-// validateCriterion rejects a criterion that is malformed in either of two
+// validateCriterion rejects a criterion that is malformed in any of four
 // ways:
-//   - a MATCHES_PATTERN operator carrying a regex that fails to compile.
+//   - a jsonPath that is not JSON Path nomenclature — a bare "amount" is not
+//     a path. Delegates to search.ValidateConditionJSONPath, the same grammar
+//     the search API boundary enforces: a criterion and a search condition are
+//     one model syntax and must agree on which paths exist.
+//   - an operatorType outside the canonical set, or an operand shape/arity
+//     violation (an object operand, or a BETWEEN with other than two
+//     entries). Delegates to search.ValidateCriterionCondition — the same
+//     operator table search.ValidateCondition enforces, minus the
+//     FUNCTION-clause rejection a criterion is exempt from (spec §4: "on
+//     every surface that carries a condition, workflow import included").
+//   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates
+//     to search.ValidatePatterns — the kernel's own derivation, the same call
+//     the search API boundary makes — so import accepts exactly the operands
+//     evaluation accepts. Checked last, so a bad path wins over a bad operand.
 //   - a lifecycle/meta clause that is type-unsound: an unknown meta field
-//     path, a non-comparison operator on a temporal field (creationDate,
-//     lastUpdateTime), or a non-offset-RFC3339 operand on a temporal field.
-//     Delegates to search.ValidateLifecycleCondition, the same validator the
-//     search API boundary enforces on ad-hoc queries — a workflow criterion
-//     and a search query use the identical meta-field vocabulary and
-//     evaluate through the same match.Match/matchLifecycle path, so both
-//     entry points reject the same malformed conditions.
+//     path, or a non-offset-RFC3339 operand on a temporal field
+//     (creationDate, lastUpdateTime). Delegates to
+//     search.ValidateLifecycleCondition, the same validator the search API
+//     boundary enforces on ad-hoc queries — a workflow criterion and a
+//     search query use the identical meta-field vocabulary and evaluate
+//     through the same match.Prepare/(Prepared).Match path, so both entry
+//     points reject the same malformed conditions.
 //
 // Criteria are stored opaquely (json.RawMessage) and previously were only
 // parsed at transition-evaluation time (engine.go's evaluateCriterion ->
-// match.Match -> matchLifecycle / operators.go's opMatchesPattern), so a
-// malformed criterion imported successfully and then errored (or silently
-// misbehaved) on every subsequent evaluation of that transition. This closes
-// that fail-open gap by validating both classes of malformation at import
-// time.
+// match.Prepare, whose leaf expansion — including MATCHES_PATTERN
+// compilation — happens inside spi.ExpandLeaf), so a malformed criterion
+// imported successfully and then errored (or silently misbehaved) on every
+// subsequent evaluation of that transition. A bad path was worse still: it
+// errored nowhere and simply resolved, so the criterion worked. An unknown
+// operator is worse again: it fails closed on every subsequent evaluation
+// with no error surfaced anywhere, so the transition it guards silently
+// never fires. These four checks are grammar-only and belong at import,
+// which a stored workflow crosses exactly once, rather than at evaluation,
+// where the failure would land on a save (or, for the unknown-operator case,
+// never surface at all).
+//
+// Import is NOT the only boundary a criterion crosses, though: whether the
+// model DECLARES a path this validator has already approved is checked
+// again at evaluation, in evaluateCriterion, not here. A model may
+// legitimately be declared after the workflow that references it, so
+// rejecting an undeclared field at import would refuse a criterion that
+// becomes valid the moment its model catches up. See
+// docs/cloud-parity/path-grammar.md §7 and
+// docs/cloud-parity/unevaluable-criterion-fails-save.md for why grammar and
+// model membership are checked at two different times rather than one.
 //
 // location names the workflow/state/transition the criterion belongs to, for
 // the error message. Empty/null criteria are skipped. A criterion that does
@@ -233,24 +261,71 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	if err != nil {
 		return nil
 	}
-	return walkCriterion(cond, location)
+	// Paths and lifecycle type-soundness first, then operator/operand shape,
+	// then pattern operands — a criterion naming a field that does not exist
+	// is reported as the path problem it is, not shadowed by a complaint
+	// about its operator or operand.
+	if err := walkCriterion(cond, location); err != nil {
+		return err
+	}
+	if err := search.ValidateCriterionCondition(cond); err != nil {
+		return fmt.Errorf("%s: %w", location, err)
+	}
+	if err := search.ValidatePatterns(cond); err != nil {
+		return fmt.Errorf("%s: %w", location, err)
+	}
+	return nil
 }
 
 // walkCriterion recurses into GroupCondition.Conditions and checks every
-// leaf condition: SimpleCondition / LifecycleCondition for a
-// non-compiling MATCHES_PATTERN regex, and LifecycleCondition additionally
-// for type-soundness (search.ValidateLifecycleCondition). Other condition
-// kinds (FunctionCondition, ArrayCondition) carry no OperatorType to check
-// and are silently skipped — in particular this is how a FUNCTION criterion
-// is exempted from these checks.
+// leaf condition:
+//
+//   - SimpleCondition — jsonPath grammar (search.ValidateConditionJSONPath).
+//   - ArrayCondition — jsonPath grammar PLUS the array clause's trailing-"[*]"
+//     shape rule (search.ValidateArrayClauseJSONPath). It is not a lifecycle
+//     clause.
+//   - LifecycleCondition — type-soundness
+//     (search.ValidateLifecycleCondition). Its Field names a member of the
+//     closed meta vocabulary directly, not a path, so the path grammar does
+//     not apply to it.
+//
+// Pattern operands are not checked here — validateCriterion runs them over the
+// whole tree afterwards, via search.ValidatePatterns.
+//
+// FunctionCondition carries neither a path nor an operator and is silently
+// skipped — that is how a FUNCTION criterion is exempted from these checks.
+//
+// SimpleCondition's path check uses search.ValidateConditionJSONPath, the
+// same grammar and the same implementation the search API boundary enforces
+// on an ad-hoc query. A criterion and a search condition are one model
+// syntax, so both entry points accept and reject the same paths. The
+// CONDITION variant is used, not the scalar one: a criterion evaluates in
+// memory (match.Prepare), which resolves an array subscript, so
+// "$.tags[*].name" and "$.arr[0]" stay valid for a SimpleCondition here.
+// ArrayCondition is narrower — path-grammar.md §8 restricts ITS path to a
+// trailing wildcard regardless of surface, so "$.arr[0]" (valid for a
+// SimpleCondition) is not valid as an ArrayCondition's path.
 func walkCriterion(cond predicate.Condition, location string) error {
 	switch c := cond.(type) {
 	case *predicate.SimpleCondition:
-		return compileMatchesPattern(c.OperatorType, c.Value, location)
-	case *predicate.LifecycleCondition:
-		if err := compileMatchesPattern(c.OperatorType, c.Value, location); err != nil {
-			return err
+		if err := search.ValidateConditionJSONPath(c.JsonPath); err != nil {
+			return fmt.Errorf("%s: %w", location, err)
 		}
+		return nil
+	case *predicate.ArrayCondition:
+		// ValidateArrayClauseJSONPath adds path-grammar.md §8's trailing-"[*]"
+		// clause-shape rule on top of the wire grammar — the same check
+		// search.ValidateCondition's ArrayCondition arm applies on the search
+		// surface, so a bare or positional-only array-clause path is rejected
+		// here too rather than importing cleanly and never resolving at
+		// evaluation. Section 7's "grammar only" exemption for a criterion is
+		// about the MODEL check, not this model-independent clause-shape
+		// rule.
+		if err := search.ValidateArrayClauseJSONPath(c.JsonPath); err != nil {
+			return fmt.Errorf("%s: %w", location, err)
+		}
+		return nil
+	case *predicate.LifecycleCondition:
 		if err := search.ValidateLifecycleCondition(c); err != nil {
 			return fmt.Errorf("%s: %w", location, err)
 		}
@@ -261,23 +336,6 @@ func walkCriterion(cond predicate.Condition, location string) error {
 				return err
 			}
 		}
-	}
-	return nil
-}
-
-// compileMatchesPattern compiles value as a regex exactly the way
-// the evaluator does — internal/match/operators.go's opMatchesPattern calls
-// regexp.MatchString(fmt.Sprintf("%v", expected), actual.String()), which
-// itself compiles via regexp.Compile. Mirroring the %v stringification
-// and Compile call here means a pattern accepted here is guaranteed
-// compilable at evaluation time, and vice versa — no accept/reject skew.
-func compileMatchesPattern(operatorType string, value any, location string) error {
-	if operatorType != "MATCHES_PATTERN" {
-		return nil
-	}
-	pattern := fmt.Sprintf("%v", value)
-	if _, err := regexp.Compile(pattern); err != nil {
-		return fmt.Errorf("%s: invalid MATCHES_PATTERN regex %q: %v", location, pattern, err)
 	}
 	return nil
 }
@@ -354,16 +412,16 @@ func validateWorkflows(workflows []spi.WorkflowDefinition, allowCycles bool) err
 // validateWorkflowStructure enforces the per-workflow structural rules
 // (H6.a–e, H4) plus the security-audit follow-ups M-1 (empty state-map
 // keys), L-1 (empty transition / processor names) and L-2 (identifier
-// length cap), plus criterion validation (regex compilability and
-// lifecycle/meta type-soundness). Any violation is a 4xx at import time —
+// length cap), plus criterion validation (jsonPath grammar, regex
+// compilability, lifecycle/meta type-soundness). Any violation is a 4xx at import time —
 // the engine would otherwise silently degrade at runtime (park entity in an
 // undefined state, shadow duplicate transitions, coerce typo'd
 // ExecutionMode to SYNC) or accept arbitrarily long identifiers into
-// operational logs and audit events. A malformed MATCHES_PATTERN regex or a
-// type-unsound lifecycle clause (unknown meta field, non-comparison
-// operator or non-timestamp operand on a temporal field) in a
-// workflow-level or transition-level criterion is rejected here rather than
-// at every subsequent transition-evaluation attempt.
+// operational logs and audit events. A criterion jsonPath outside JSON Path
+// nomenclature, a malformed MATCHES_PATTERN regex, or a type-unsound lifecycle
+// clause (unknown meta field, non-comparison operator or non-timestamp operand
+// on a temporal field) in a workflow-level or transition-level criterion is
+// rejected here rather than at every subsequent transition-evaluation attempt.
 func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	// H6.c — Name non-empty.
 	if wf.Name == "" {
@@ -383,9 +441,9 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 		return fmt.Errorf("workflow %q: initialState %q is not declared in states", wf.Name, wf.InitialState)
 	}
 
-	// Workflow-level criterion — reject a malformed MATCHES_PATTERN regex
-	// or a type-unsound lifecycle clause at import instead of failing (or
-	// silently misbehaving on) every evaluation.
+	// Workflow-level criterion — reject a non-JSON-Path jsonPath, a malformed
+	// MATCHES_PATTERN regex, or a type-unsound lifecycle clause at import
+	// instead of failing (or silently misbehaving on) every evaluation.
 	if err := validateCriterion(wf.Criterion, fmt.Sprintf("workflow %q", wf.Name)); err != nil {
 		return err
 	}
@@ -401,8 +459,9 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   L-2 — Processor Name length cap.
 	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
 	//   M1  — RetryPolicy ∈ {NONE, FIXED, ""}.
-	//   Transition.Criterion — a MATCHES_PATTERN regex, if present, must
-	//     compile; a lifecycle/meta clause, if present, must be type-sound.
+	//   Transition.Criterion — every data-addressing jsonPath must be JSON
+	//     Path; a MATCHES_PATTERN regex, if present, must compile; a
+	//     lifecycle/meta clause, if present, must be type-sound.
 	for stateName, stateDef := range wf.States {
 		if stateName == "" {
 			return fmt.Errorf("workflow %q: empty state name is not allowed in the states map",

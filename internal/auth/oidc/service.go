@@ -245,10 +245,10 @@ func (s *Service) Delete(ctx context.Context, tenant spi.TenantID, providerID st
 	return nil
 }
 
-// ReloadAll implements §5.6. Rebuilds the in-memory registry from KV and
-// broadcasts reload_all.
+// ReloadAll implements §5.6. Rebuilds the in-memory registry from KV,
+// force-warms the JWKS of every loaded provider, and broadcasts reload_all.
 func (s *Service) ReloadAll(ctx context.Context) error {
-	if err := s.registry.ReloadAll(ctx); err != nil {
+	if err := s.registry.ReloadAllAndWarm(ctx); err != nil {
 		return fmt.Errorf("oidc: reload-all: %w", err)
 	}
 	s.registry.broadcastOp("reload_all", "", "")
@@ -292,7 +292,7 @@ func (s *Service) emitOwnershipTransitionAndUpdateHistory(ctx context.Context, p
 			"new_provider_uuid", p.ID.String(),
 		)
 
-		// Layer 3 — Cross-tenant audience-overlap WARN (#284 Critical audit fix).
+		// Layer 3 — Cross-tenant audience-overlap WARN (Critical audit fix).
 		// If the registering provider and any prior/concurrent provider share an
 		// empty or overlapping ExpectedAudiences set, tokens will be rejected as
 		// ErrAmbiguousProvider at validation time. Emit a WARN so operators can

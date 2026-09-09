@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -35,9 +36,11 @@ func (f *noCloseFactory) Close() error { return nil }
 // The factory is wrapped in noCloseFactory so the harness's Close() call
 // is a no-op; the actual pool.Close() runs in t.Cleanup after all subtests
 // complete and goroutines have returned their connections.
-func newConformancePool(t *testing.T) spi.StoreFactory {
+// It also returns the underlying pool, so callers can read the DATABASE clock
+// (the clock this plugin stamps versions from) rather than the test process's.
+func newConformancePool(t *testing.T) (spi.StoreFactory, *pgxpool.Pool) {
 	t.Helper()
-	dbURL := skipIfNoPostgres(t)
+	dbURL := testDBURL(t)
 
 	// Migration pool: minimal, used only for Migrate/MigrateDown.
 	migPool, err := postgres.NewPool(context.Background(), postgres.DBConfig{
@@ -115,7 +118,7 @@ func newConformancePool(t *testing.T) spi.StoreFactory {
 
 	// Wrap factory so the harness's factory.Close() is a no-op; actual pool
 	// close is handled by the t.Cleanup above.
-	return &noCloseFactory{factory}
+	return &noCloseFactory{factory}, pool
 }
 
 // newTestFactory is kept for per-store test helpers that do not use the
@@ -144,20 +147,49 @@ func newTestFactory(t *testing.T) *postgres.StoreFactory {
 // refactor plugin timekeeping. The DB's monotonic wall clock satisfies the
 // harness contract under wall-clock advance at 1ms granularity.
 //
-// Harness.Now defaults to wall-clock time.Now which is consistent with
-// postgres DB-side timestamps.
+// Now is overridden to read the DATABASE clock. It must NOT be left at the
+// default (time.Now): the harness uses Now to capture as-at markers that are
+// compared against plugin-stamped version times, and this plugin stamps those
+// from postgres. Against a testcontainer that is the Docker VM's clock, which
+// was measured lagging the macOS host by 10–13 ms under CPU load — far more
+// than the 5 ms AdvanceClock floor below, so a host-clock marker would resolve
+// temporal subtests to the wrong version.
 //
 // Total wall-clock sleep overhead is ~30–50 ms across all temporal subtests.
 func TestConformance(t *testing.T) {
-	factory := newConformancePool(t)
+	factory, pool := newConformancePool(t)
 	spitest.StoreFactoryConformance(t, spitest.Harness{
 		Factory: factory,
+		Now: func() time.Time {
+			var now time.Time
+			if err := pool.QueryRow(context.Background(), `SELECT CURRENT_TIMESTAMP`).Scan(&now); err != nil {
+				// The harness calls this from its subtests' goroutines, so the
+				// outer t's FailNow would be invalid here — panic instead, which
+				// surfaces against whichever subtest is running.
+				panic(fmt.Sprintf("Harness.Now: read DB clock: %v", err))
+			}
+			return now
+		},
 		AdvanceClock: func(d time.Duration) {
 			// Postgres timestamp resolution on macOS can be coarser than 1 µs.
 			// Enforce a 5 ms floor so that DB clock_timestamp() calls separated
 			// by AdvanceClock(1ms) are reliably distinct.
 			if d < 5*time.Millisecond {
 				d = 5 * time.Millisecond
+			}
+			// Cap the ceiling too. Some subtests advance by an arbitrarily large
+			// duration on purpose — e.g. AsyncSearch's Claim/TerminalNeverClaimed
+			// advances 365 days "to rule out any staleAfter/limit edge case
+			// masking a store that claims terminal jobs" (spitest/asyncsearch.go)
+			// — not because the assertion needs real time to actually pass that
+			// far. Postgres has no virtual clock to fast-forward: it can only
+			// honour AdvanceClock by sleeping, and the harness's own contract
+			// (spitest.Harness.AdvanceClock godoc) only requires every subsequent
+			// DB timestamp to strictly dominate every earlier one — a requirement
+			// any positive sleep already satisfies. Sleeping the literal 365 days
+			// would hang the suite for a year for no correctness benefit.
+			if d > 100*time.Millisecond {
+				d = 100 * time.Millisecond
 			}
 			time.Sleep(d)
 		},

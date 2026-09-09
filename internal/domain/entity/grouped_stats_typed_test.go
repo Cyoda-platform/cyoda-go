@@ -10,25 +10,51 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// TestQueryGroupedStats_ResidualTypeDirectedWithFields proves the Task-8 wiring
-// on the grouped-stats streaming residual (tallyStreaming): the residual match
-// path is reached only for a non-pushable condition, so we wrap a plain-leaf
-// numeric comparison in an OR group alongside a wildcard leaf (the wildcard
-// makes ConditionToFilter reject the whole group, forcing the per-entity
-// match.Match residual). A non-nil fields map declaring `$.age` Integer makes the
-// GREATER_THAN comparison type-directed — only the entity whose age exceeds the
-// operand is tallied. The nil-fields companion (untyped leaf → comparison
-// degrades to non-match) yields no buckets, proving the loaded fields — not
-// lexical comparison — drove the residual closure.
-func TestQueryGroupedStats_ResidualTypeDirectedWithFields(t *testing.T) {
-	// The wildcard child makes the group non-pushdownable, forcing the residual;
-	// the plain-leaf `$.age` child is what type-directs inside the residual.
+// TestQueryGroupedStats_PushdownTypeDirectedWithFields proves the fields map
+// threaded into the grouped-stats pushdown (spi.ConditionToFilter) makes a
+// comparison type-directed the same way it does on the residual path: we
+// wrap a plain-leaf numeric comparison in an OR group alongside a wildcard
+// leaf. A non-nil fields map declaring `$.age` Integer makes the
+// GREATER_THAN comparison type-directed — only the entity whose age exceeds
+// the operand is tallied.
+//
+// The second child ($.tags[*] CONTAINS "zzz") is deliberately a STRING op,
+// declaration-independent regardless of what fields declares (see
+// TestApplyOperator_StringOpsAreDeclarationIndependent in internal/match) —
+// so whether the whole OR filter can be prepared at all depends only on
+// $.age's typing, isolating exactly the property this test is about.
+//
+// The nil-fields companion is no longer a graceful "comparison degrades to
+// non-match" — the hardened kernel (spi.Prepare) now REJECTS a Filter
+// carrying an unevaluable leaf outright, rather than partially evaluating an
+// OR/AND with a sibling it cannot type: an OR that silently dropped an
+// unevaluable leaf could answer true off a sibling and mask what a full,
+// fail-closed evaluation would have said. So with nil fields, $.age's
+// GREATER_THAN leaf has no declared type and the WHOLE query now fails
+// closed with an error, proving the loaded fields — not lexical comparison —
+// are what make the query evaluable at all, not merely what make it typed.
+//
+// This used to be named …ResidualTypeDirectedWithFields and exercise the
+// per-entity match.Prepare residual specifically: the wildcard child used to
+// make ConditionToFilter reject the whole group (non-pushdownable),
+// forcing tallyStreaming's residual guard. That premise is dead —
+// spi.ConditionToFilter now pushes a wildcard array path down like any
+// other (path-grammar.md §2/§8), so this whole OR group is pushable and the
+// SAME type-directed comparison now runs inside the pushed-down Filter
+// instead — see fakeIterable's doc comment for why that distinction is
+// visible to this test at all (a store that doesn't enforce the filter it's
+// handed can't tell the two mechanisms apart, and used to mask exactly this
+// kind of premise rot).
+func TestQueryGroupedStats_PushdownTypeDirectedWithFields(t *testing.T) {
+	// The wildcard child no longer forces a residual — spi.ConditionToFilter
+	// pushes it down like any other path — but $.age is still what
+	// type-directs the match, now inside the pushed-down Filter.
 	cond := json.RawMessage(`{
 		"type": "group",
 		"operator": "OR",
 		"conditions": [
 			{"type": "simple", "jsonPath": "$.age", "operatorType": "GREATER_THAN", "value": 5},
-			{"type": "simple", "jsonPath": "$.tags[*]", "operatorType": "EQUALS", "value": "zzz"}
+			{"type": "simple", "jsonPath": "$.tags[*]", "operatorType": "CONTAINS", "value": "zzz"}
 		]
 	}`)
 	rows := []*spi.Entity{
@@ -45,24 +71,23 @@ func TestQueryGroupedStats_ResidualTypeDirectedWithFields(t *testing.T) {
 
 	svc := entity.NewGroupedStatsService(10000)
 
-	// Typed: age 30 > 5 matches (e1), age 3 > 5 does not and no tag == "zzz"
-	// (e2) → one bucket, count 1.
+	// Typed: age 30 > 5 matches (e1), age 3 > 5 does not and no tag contains
+	// "zzz" (e2) → one bucket, count 1.
 	buckets, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, fields, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(buckets) != 1 || buckets[0].Count != 1 {
-		t.Fatalf("typed residual: buckets = %+v, want one bucket count=1", buckets)
+		t.Fatalf("typed pushdown: buckets = %+v, want one bucket count=1", buckets)
 	}
 
-	// Untyped control: identical request with nil fields → comparison degrades
-	// to non-match for both entities → no buckets.
-	buckets, err = svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
-	if err != nil {
-		t.Fatalf("unexpected error (nil fields): %v", err)
-	}
-	if len(buckets) != 0 {
-		t.Fatalf("untyped residual must degrade to non-match: buckets = %+v, want none", buckets)
+	// Untyped control: identical request with nil fields → $.age's
+	// comparison leaf has no declared type and cannot be evaluated, so the
+	// whole query fails closed rather than silently returning an
+	// under-matched result.
+	_, err = svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req)
+	if err == nil {
+		t.Fatal("untyped pushdown must fail closed (unevaluable $.age leaf), got nil error")
 	}
 }
 

@@ -157,7 +157,16 @@ curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
   }'
 ```
 
-**Configuration:** see `cyoda help config.auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
+**Configuration:** see `cyoda help config auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
+
+### Auth cache reconciliation
+
+The trusted-key and OIDC-provider caches push updates to peers on write and
+fall back to a periodic KV-reconcile if a broadcast is missed.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` | `60s` | Reconcile interval for the trusted-key / OIDC-provider caches; verification fails closed after 10× this without a successful KV reconcile. |
 
 ## Composite unique keys
 
@@ -208,9 +217,13 @@ Grammar: `[@]path[:asc|desc]` — a bare dotted path sorts by a scalar entity-da
 
 **Key cap:** `CYODA_SEARCH_MAX_SORT_KEYS` (default `16`) — see `cyoda help config` (Search and transaction internals).
 
+## Async search backpressure
+
+`POST /api/search/async/{entityName}/{modelVersion}` runs on a bounded worker pool rather than one goroutine per submission. `CYODA_SEARCH_ASYNC_WORKERS` (default `8`) sizes the pool; `CYODA_SEARCH_ASYNC_QUEUE` (default `256`) sizes its submit queue. Once both are exhausted, submission fails fast with a retryable `503 SEARCH_QUEUE_FULL` instead of queuing indefinitely or spawning unbounded goroutines. The pool is shared by every tenant, so `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` (default: the worker count; `0` disables) caps how many jobs one tenant may have in flight on a node — queued and running are counted together, so one tenant's burst can hold at most that many of the shared queue's slots and the rest stay available to other tenants, whose submissions are still accepted and served as workers free up. The cap applies to a single-tenant deployment too: with the defaults its accepted-in-flight ceiling is 8, not `workers + queue`. Results stream to storage incrementally as the scan runs. A running job stamps liveness every `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` (default `15s`), starting at submit time (queued or scanning), and the same poll observes a cross-node cancel or externally-recorded terminal status. A background reaper claims and re-executes any job whose heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default `5m`, must be >= 4x the heartbeat interval) — e.g. its owning node crashed — on a live node, on the heartbeat-interval ticker plus a startup sweep; a job is failed only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` (default `3`) executor losses. A graceful node shutdown or restart releases its in-flight jobs immediately, so they hand off to a peer (or the restarted node's own startup sweep) within one heartbeat interval rather than waiting to go stale. See `cyoda help config` (Search internals) and `cyoda help errors SEARCH_QUEUE_FULL`.
+
 ## Scheduled transitions
 
-A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config.scheduler` for the full topic.
+A workflow transition with a `schedule` fires automatically after a delay, driven by a coordinator-only scan loop rather than a manual trigger. The delay can be a static `delayMs`, or a `function` callout computing the firing time (and optional expiry) per entity at arm time — mutually exclusive with `delayMs`. See `cyoda help config scheduler` for the full topic.
 
 | Env var | Default | Effect |
 |---------|---------|--------|

@@ -77,10 +77,7 @@ func TestSearcher_EqFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op:       spi.FilterEq,
@@ -90,7 +87,7 @@ func TestSearcher_EqFilter(t *testing.T) {
 		Declared: []spi.DataType{spi.String},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -100,11 +97,42 @@ func TestSearcher_EqFilter(t *testing.T) {
 	}
 }
 
+// TestSearcher_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through Search: a leaf spi.Prepare genuinely cannot
+// evaluate (a LIKE pattern with a trailing unpaired escape, which will not
+// compile) must fail the search outright, not silently degrade to an empty
+// page. See .claude/rules/correctness-over-availability.md. Both malformed
+// operands `spitest`'s `Pattern/MalformedLike` conformance case requires an
+// error for (a trailing escape after a literal, and a bare trailing escape)
+// are exercised here too, pinning the same requirement at this plugin's own
+// Search boundary.
+func TestSearcher_RejectsUnevaluableFilter(t *testing.T) {
+	for _, operand := range []string{`a\`, `\`} {
+		t.Run(operand, func(t *testing.T) {
+			factory, ctx := setupSearcherTest(t)
+
+			store, _ := factory.EntityStore(ctx)
+			searcher := store
+
+			_, err := searcher.Search(ctx, spi.Filter{
+				Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+				Value: operand, Declared: []spi.DataType{spi.String},
+			}, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 100})
+			if err == nil {
+				t.Fatal("Search must fail on an unevaluable filter, not return an empty page")
+			}
+			if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+				t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+			}
+		})
+	}
+}
+
 func TestSearcher_GtFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op:       spi.FilterGt,
@@ -114,7 +142,7 @@ func TestSearcher_GtFilter(t *testing.T) {
 		Declared: []spi.DataType{spi.Integer},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -129,7 +157,7 @@ func TestSearcher_ContainsFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterContains,
@@ -138,7 +166,7 @@ func TestSearcher_ContainsFilter(t *testing.T) {
 		Value:  "li",
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -153,7 +181,7 @@ func TestSearcher_ANDFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterAnd,
@@ -163,7 +191,7 @@ func TestSearcher_ANDFilter(t *testing.T) {
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -181,7 +209,7 @@ func TestSearcher_ORFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx, spi.Filter{
 		Op: spi.FilterOr,
@@ -191,7 +219,7 @@ func TestSearcher_ORFilter(t *testing.T) {
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -206,7 +234,7 @@ func TestSearcher_PostFilterRegex(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Regex is not pushable, should post-filter. MATCHES_PATTERN is anchored to
 	// a whole-string match by the kernel (Cloud Pattern.matcher(x).matches()
@@ -219,7 +247,7 @@ func TestSearcher_PostFilterRegex(t *testing.T) {
 		Value:  "[A-C].*",
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -234,7 +262,7 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// AND with pushable eq(city) and non-pushable regex(name). MATCHES_PATTERN is
 	// anchored to a whole-string match (Cloud Pattern.matcher(x).matches()), so
@@ -247,7 +275,7 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 		},
 	}, spi.SearchOptions{
 		ModelName:    "person",
-		ModelVersion: "1",
+		ModelVersion: "1", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -265,25 +293,38 @@ func TestSearcher_MixedPushAndPostFilter(t *testing.T) {
 // installs no residual, so the query planner takes the LIMIT-in-SQL (LIMIT
 // limit+1) pushdown path — mutation-verified to actually reach that branch,
 // not merely share its name. Covers the full bounded-or-fail contract for it:
-// unbounded returns everything, exactly-at-limit succeeds, and a matched set
-// over the limit fails rather than truncating.
+// Limit <= 0 is rejected (a contract violation, not "unbounded"),
+// exactly-at-limit succeeds, and a matched set over the limit fails rather
+// than truncating.
 func TestSearcher_Bounded_NoResidual(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Pushable, leaf-exact filter matching all 5 seeded persons.
 	filter := spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData}
 
-	t.Run("Unbounded", func(t *testing.T) {
+	t.Run("ZeroLimitRejected", func(t *testing.T) {
 		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
 			ModelName: "person", ModelVersion: "1",
 		})
-		if err != nil {
-			t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
 		}
-		if len(got) != 5 {
-			t.Fatalf("got %d, want 5", len(got))
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
+		}
+	})
+
+	t.Run("NegativeLimitRejected", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: -1,
+		})
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
+		}
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
 		}
 	})
 
@@ -316,20 +357,32 @@ func TestSearcher_Bounded_NoResidual(t *testing.T) {
 func TestSearcher_Bounded_Residual(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// Non-pushable filter matching all 5 seeded persons.
 	filter := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
 
-	t.Run("Unbounded", func(t *testing.T) {
+	t.Run("ZeroLimitRejected", func(t *testing.T) {
 		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
 			ModelName: "person", ModelVersion: "1",
 		})
-		if err != nil {
-			t.Fatalf("limit 0 must be unbounded: unexpected err %v", err)
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
 		}
-		if len(got) != 5 {
-			t.Fatalf("got %d, want 5", len(got))
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
+		}
+	})
+
+	t.Run("NegativeLimitRejected", func(t *testing.T) {
+		got, err := searcher.Search(ctx, filter, spi.SearchOptions{
+			ModelName: "person", ModelVersion: "1", Limit: -1,
+		})
+		if err == nil {
+			t.Fatal("Limit <= 0 is a contract violation, not \"unbounded\"")
+		}
+		if len(got) != 0 {
+			t.Fatalf("got %d results, want none on a rejected search", len(got))
 		}
 	})
 
@@ -355,12 +408,17 @@ func TestSearcher_Bounded_Residual(t *testing.T) {
 	})
 }
 
-func TestSearcher_ScanBudgetExhausted(t *testing.T) {
+// TestSearcher_ResidualScanIsUnbounded_SparseMatches is the regression guard
+// for the removed residual-scan budget. Three decoys sort (by entity_id)
+// before two matches, so the scan examines every decoy before the first match
+// accumulates — the shape that used to fail the search outright. The residual
+// path now meters nothing: the scan runs to completion and returns both
+// matches.
+func TestSearcher_ResidualScanIsUnbounded_SparseMatches(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "budget_test.db")
+	dbPath := filepath.Join(dir, "sparse_residual_test.db")
 
-	// Create factory with a very low scan limit.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 3)
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("create factory: %v", err)
 	}
@@ -370,111 +428,8 @@ func TestSearcher_ScanBudgetExhausted(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
 	store, _ := factory.EntityStore(ctx)
 
-	// Save 10 entities.
-	for i := 0; i < 10; i++ {
-		_, err := store.Save(ctx, &spi.Entity{
-			Meta: spi.EntityMeta{
-				ID:       fmt.Sprintf("e%d", i),
-				ModelRef: ref,
-				State:    "NEW",
-			},
-			Data: []byte(fmt.Sprintf(`{"val":%d}`, i)),
-		})
-		if err != nil {
-			t.Fatalf("Save: %v", err)
-		}
-	}
-
-	searcher := store.(spi.Searcher)
-
-	// Use a non-pushable filter to force post-filtering (triggering scan budget).
-	_, err = searcher.Search(ctx, spi.Filter{
-		Op:     spi.FilterMatchesRegex,
-		Path:   "val",
-		Source: spi.SourceData,
-		Value:  ".*",
-	}, spi.SearchOptions{
-		ModelName:    "item",
-		ModelVersion: "1",
-	})
-
-	if err == nil {
-		t.Fatal("expected spi.ErrScanBudgetExhausted, got nil")
-	}
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("expected spi.ErrScanBudgetExhausted, got: %v", err)
-	}
-}
-
-// TestSearcher_ResultBoundTripsBeforeScanBudget_DenseMatches: the scan budget
-// and the result bound are independent checks over the residual path's
-// streamed rows, and whichever trips first wins. With matches dense enough to
-// exceed Limit long before SearchScanLimit rows have been examined, the
-// result bound must win: spi.ErrSearchResultLimitExceeded, not
-// spi.ErrScanBudgetExhausted, even though the scan budget is active.
-func TestSearcher_ResultBoundTripsBeforeScanBudget_DenseMatches(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "dense_bound_test.db")
-
-	// Scan budget of 5, comfortably above the 3 rows needed to exceed Limit=2.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5)
-	if err != nil {
-		t.Fatalf("create factory: %v", err)
-	}
-	defer factory.Close()
-
-	ctx := testCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
-	store, _ := factory.EntityStore(ctx)
-
-	// 5 matching rows, no decoys: the 3rd match already exceeds Limit=2,
-	// well before the scan budget (5) could be threatened.
-	for i := 0; i < 5; i++ {
-		if _, err := store.Save(ctx, &spi.Entity{
-			Meta: spi.EntityMeta{ID: fmt.Sprintf("d%d", i), ModelRef: ref, State: "NEW"},
-			Data: []byte(`{"val":"match"}`),
-		}); err != nil {
-			t.Fatalf("Save: %v", err)
-		}
-	}
-
-	searcher := store.(spi.Searcher)
-	// Non-pushable filter forces the residual path, where the scan budget is
-	// metered alongside the result bound.
-	_, err = searcher.Search(ctx, spi.Filter{
-		Op:     spi.FilterMatchesRegex,
-		Path:   "val",
-		Source: spi.SourceData,
-		Value:  ".*",
-	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 2})
-	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
-		t.Fatalf("dense matches must trip the result bound first: got err %v, want ErrSearchResultLimitExceeded", err)
-	}
-}
-
-// TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches: the converse
-// ordering — matches sparse enough (interleaved with decoys) that
-// SearchScanLimit rows are examined before enough matches accumulate to
-// threaten Limit. The scan budget must win: spi.ErrScanBudgetExhausted, not
-// spi.ErrSearchResultLimitExceeded, even though Limit has slack remaining.
-func TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "sparse_bound_test.db")
-
-	// Scan budget of 3: exhausted scanning the 3 decoys, before the scan ever
-	// reaches a match.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 3)
-	if err != nil {
-		t.Fatalf("create factory: %v", err)
-	}
-	defer factory.Close()
-
-	ctx := testCtx("tenant-1")
-	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
-	store, _ := factory.EntityStore(ctx)
-
-	// 3 decoys, scanned (in entity_id order) before 2 matches. "decoyN" sorts
-	// before "matchN" lexically, so the decoys are examined first.
+	// "decoyN" sorts before "matchN" lexically, so the decoys are examined
+	// first and the scan is deep before anything matches.
 	for i := 0; i < 3; i++ {
 		if _, err := store.Save(ctx, &spi.Entity{
 			Meta: spi.EntityMeta{ID: fmt.Sprintf("decoy%d", i), ModelRef: ref, State: "NEW"},
@@ -492,18 +447,58 @@ func TestSearcher_ScanBudgetTripsBeforeResultBound_SparseMatches(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
-	// "match" is a whole-string regex (MATCHES_PATTERN semantics), so it
-	// selects the 2 match rows and excludes the "no-match" decoys. Limit=5
-	// has ample slack over the 2 real matches.
-	_, err = searcher.Search(ctx, spi.Filter{
+	searcher := store
+	// FilterMatchesRegex is never pushed down, so this runs the residual path.
+	ids, err := searcher.Search(ctx, spi.Filter{
 		Op:     spi.FilterMatchesRegex,
 		Path:   "val",
 		Source: spi.SourceData,
 		Value:  "match",
 	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 5})
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("sparse matches must trip the scan budget first: got err %v, want ErrScanBudgetExhausted", err)
+	if err != nil {
+		t.Fatalf("residual scan must not be metered: got err %v, want nil", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d matches (%v), want 2", len(ids), ids)
+	}
+}
+
+// TestSearcher_ResultBoundStillTripsOnResidualPath: removing the scan budget
+// leaves the intrinsic bounded-or-fail result limit as the residual path's
+// only bound. Five matching rows against Limit=2 must still fail with
+// spi.ErrSearchResultLimitExceeded.
+func TestSearcher_ResultBoundStillTripsOnResidualPath(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "dense_bound_test.db")
+
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create factory: %v", err)
+	}
+	defer factory.Close()
+
+	ctx := testCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
+	store, _ := factory.EntityStore(ctx)
+
+	for i := 0; i < 5; i++ {
+		if _, err := store.Save(ctx, &spi.Entity{
+			Meta: spi.EntityMeta{ID: fmt.Sprintf("d%d", i), ModelRef: ref, State: "NEW"},
+			Data: []byte(`{"val":"match"}`),
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	searcher := store
+	_, err = searcher.Search(ctx, spi.Filter{
+		Op:     spi.FilterMatchesRegex,
+		Path:   "val",
+		Source: spi.SourceData,
+		Value:  ".*",
+	}, spi.SearchOptions{ModelName: "item", ModelVersion: "1", Limit: 2})
+	if !errors.Is(err, spi.ErrSearchResultLimitExceeded) {
+		t.Fatalf("result bound must still trip: got err %v, want ErrSearchResultLimitExceeded", err)
 	}
 }
 
@@ -534,11 +529,11 @@ func TestSearcher_TenantIsolation(t *testing.T) {
 		Data: []byte(`{"name":"Bob"}`),
 	})
 
-	searcherA := storeA.(spi.Searcher)
-	searcherB := storeB.(spi.Searcher)
+	searcherA := storeA
+	searcherB := storeB
 
 	filter := spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData}
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 10}
 
 	resultsA, err := searcherA.Search(ctxA, filter, opts)
 	if err != nil {
@@ -607,13 +602,13 @@ func TestSearcher_OrderByNumericData(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "n", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "n", Source: spi.SourceData, Kind: spi.OrderNumeric}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -658,13 +653,13 @@ func TestSearcher_OrderByCreationDateMeta(t *testing.T) {
 		clock.Advance(10 * time.Millisecond)
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -706,13 +701,13 @@ func TestSearcher_OrderByStateMeta(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "state", Source: spi.SourceMeta, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -752,14 +747,14 @@ func TestSearcher_OrderByNullsLast(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	// Filter by "present" so all 3 entities are returned; sort by "score" ASC.
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "present", Source: spi.SourceData, Value: true, Declared: []spi.DataType{spi.Boolean}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -796,13 +791,13 @@ func TestSearcher_OrderByTiebreaker(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "city", Source: spi.SourceData, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -846,14 +841,14 @@ func TestSearcher_OrderByPointInTime(t *testing.T) {
 	clock.Advance(10 * time.Millisecond) // → t2
 	t2 := clock.Now()
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "v", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			PointInTime:  &t2,
-			OrderBy:      []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
+			ModelVersion: "1", Limit: 10,
+			PointInTime: &t2,
+			OrderBy:     []spi.OrderSpec{{Path: "creationDate", Source: spi.SourceMeta, Kind: spi.OrderTemporal}},
 		})
 	if err != nil {
 		t.Fatalf("Search PIT: %v", err)
@@ -868,14 +863,14 @@ func TestSearcher_OrderByPointInTime(t *testing.T) {
 func TestSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	_, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "person",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "unknownMetaField", Source: spi.SourceMeta}},
 		})
 	if err == nil {
 		t.Fatal("expected error for unknown meta sort path, got nil")
@@ -891,14 +886,14 @@ func TestSearcher_ValidateOrderSpecsRejectsUnknownMetaPath(t *testing.T) {
 func TestSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "person",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta}},
 		})
 	if err != nil {
 		t.Fatalf("Search by meta id: %v", err)
@@ -917,14 +912,14 @@ func TestSearcher_OrderByMetaIDNoTiebreaker(t *testing.T) {
 func TestSearcher_OrderByDesc(t *testing.T) {
 	factory, ctx := setupSearcherTest(t)
 	store, _ := factory.EntityStore(ctx)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	results, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterNotNull, Path: "name", Source: spi.SourceData},
 		spi.SearchOptions{
 			ModelName:    "person",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "name", Source: spi.SourceData, Desc: true, Kind: spi.OrderText}},
 		})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -967,15 +962,15 @@ func TestSearcher_OrderByBool(t *testing.T) {
 		}
 	}
 
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	// ASC: false < true → f, t.
 	asc, err := searcher.Search(ctx,
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Kind: spi.OrderBool}},
 		})
 	if err != nil {
 		t.Fatalf("Search asc: %v", err)
@@ -987,8 +982,8 @@ func TestSearcher_OrderByBool(t *testing.T) {
 		spi.Filter{Op: spi.FilterEq, Path: "tag", Source: spi.SourceData, Value: "x", Declared: []spi.DataType{spi.String}},
 		spi.SearchOptions{
 			ModelName:    "item",
-			ModelVersion: "1",
-			OrderBy:      []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
+			ModelVersion: "1", Limit: 10,
+			OrderBy: []spi.OrderSpec{{Path: "active", Source: spi.SourceData, Desc: true, Kind: spi.OrderBool}},
 		})
 	if err != nil {
 		t.Fatalf("Search desc: %v", err)

@@ -65,10 +65,7 @@ func TestSqliteIterate_StreamsAllEntitiesForModel(t *testing.T) {
 		gsSave(t, ctx, store, fmt.Sprintf("e-%d", i), "available", map[string]any{"x": i})
 	}
 
-	it, ok := store.(spi.Iterable)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Iterable")
-	}
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -96,7 +93,7 @@ func TestSqliteIterate_FilterPushdown(t *testing.T) {
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Munich"})
 	gsSave(t, ctx, store, "c", "available", map[string]any{"city": "Berlin"})
 
-	it := store.(spi.Iterable)
+	it := store
 	filter := spi.Filter{
 		Op:       spi.FilterEq,
 		Source:   spi.SourceData,
@@ -122,12 +119,44 @@ func TestSqliteIterate_FilterPushdown(t *testing.T) {
 	}
 }
 
+// TestSqliteIterate_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through the non-tx Iterate path (planFor): a leaf
+// spi.Prepare genuinely cannot evaluate must fail Iterate outright, not
+// silently stream zero rows.
+func TestSqliteIterate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	it := store
+	iter, err := it.Iterate(ctx, gsModel, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.IterateOptions{})
+	// Drain and close defensively: if the guard under test regressed and
+	// Iterate wrongly succeeded, an undrained cursor would leak resources
+	// instead of failing cleanly right here.
+	if iter != nil {
+		for iter.Next() {
+		}
+		if err == nil {
+			err = iter.Err()
+		}
+		_ = iter.Close()
+	}
+	if err == nil {
+		t.Fatal("Iterate must fail on an unevaluable filter, not silently stream zero rows")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 func TestSqliteIterate_ResidualApplied(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"city": "Berlin", "tag": "x"})
 	gsSave(t, ctx, store, "b", "available", map[string]any{"city": "Berlin", "tag": "y"})
 
-	it := store.(spi.Iterable)
+	it := store
 	// MatchesRegex is non-pushable in sqlite planner — forces residual evaluation.
 	filter := spi.Filter{
 		Op: spi.FilterAnd,
@@ -161,7 +190,7 @@ func TestSqliteIterate_CtxCancellation(t *testing.T) {
 	}
 
 	cancelCtx, cancel := context.WithCancel(ctx)
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(cancelCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -210,7 +239,7 @@ func TestSqliteIterate_InTxOverlay(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -232,6 +261,47 @@ func TestSqliteIterate_InTxOverlay(t *testing.T) {
 	}
 	if seen["e-delete"] {
 		t.Errorf("e-delete should be hidden (tx.Deletes)")
+	}
+}
+
+// TestSqliteIterate_InTx_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through the in-transaction Iterate overlay branch,
+// which prepares the filter directly (no SQL plan at all — see Iterate's
+// tx-overlay branch): a leaf spi.Prepare genuinely cannot evaluate must
+// fail Iterate outright, not silently materialize an iterator that matches
+// nothing.
+func TestSqliteIterate_InTx_RejectsUnevaluableFilter(t *testing.T) {
+	factory, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "e-keep", "available", map[string]any{"name": "x"})
+
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	_, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	it := store
+	iter, iterErr := it.Iterate(txCtx, gsModel, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.IterateOptions{})
+	// Drain and close defensively — see TestSqliteIterate_RejectsUnevaluableFilter.
+	if iter != nil {
+		for iter.Next() {
+		}
+		if iterErr == nil {
+			iterErr = iter.Err()
+		}
+		_ = iter.Close()
+	}
+	if iterErr == nil {
+		t.Fatal("in-tx Iterate must fail on an unevaluable filter, not silently materialize an empty match set")
+	}
+	if !errors.Is(iterErr, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", iterErr)
 	}
 }
 
@@ -274,7 +344,7 @@ func TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation(t *testing.T) {
 	// non-PIT branch (TestSqliteIterate_InTxOverlay pins that path).
 	gsSave(t, txCtx, store, "e-buffered", "available", map[string]any{"x": 99})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{PointInTime: &pit})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -330,7 +400,7 @@ func TestSqliteGroupedAggregate_InTxBufferedWritesVisible(t *testing.T) {
 
 	// Iterate-driven tally: walk the iterator and tally by state — that's
 	// what the service-layer streaming fallback does inside a tx.
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(txCtx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -355,7 +425,7 @@ func TestSqliteIterate_CloseIdempotent(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{})
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -369,6 +439,34 @@ func TestSqliteIterate_CloseIdempotent(t *testing.T) {
 }
 
 // ---------- GroupedAggregate ----------
+
+// TestSqliteGroupedAggregate_RejectsUnevaluableFilter pins the propagation
+// of spi.Prepare's error through GroupedAggregate's planFor call: a leaf
+// spi.Prepare genuinely cannot evaluate must fail the aggregation outright,
+// not silently bucket zero entities.
+func TestSqliteGroupedAggregate_RejectsUnevaluableFilter(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"name": "x"})
+
+	ga, ok := store.(spi.GroupedAggregator)
+	if !ok {
+		t.Fatal("entityStore does not implement spi.GroupedAggregator")
+	}
+	_, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{
+			Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+			Value: `a\`, Declared: []spi.DataType{spi.String},
+		},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10},
+	)
+	if err == nil {
+		t.Fatal("GroupedAggregate must fail on an unevaluable filter, not silently bucket zero entities")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
 
 func TestSqliteGroupedAggregate_PushesCountByState(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
@@ -428,6 +526,75 @@ func TestSqliteGroupedAggregate_DeclinesStdev(t *testing.T) {
 	if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
 		t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
 	}
+}
+
+// TestSqliteGroupedAggregate_StdevClassification pins the ORDER in which
+// GroupedAggregate's two pre-checks fire when a stdev aggregation and a
+// malformed filter path arrive together.
+//
+// A malformed path is a client error and must be classified identically on
+// every backend. postgres validates the filter paths before it looks at the
+// aggregations (it has native STDDEV and declines nothing on that axis), so
+// sqlite must validate first too — otherwise the same request answers
+// "not pushdownable" here and "invalid filter path" there, and the service
+// layer's ErrAggregationNotPushdownable fallthrough would go on to stream a
+// filter it should have rejected outright.
+//
+// The valid-path half is the control: with a well-formed path, AggStdev must
+// still decline, because sqlite has no numerically-safe native STDDEV.
+func TestSqliteGroupedAggregate_StdevClassification(t *testing.T) {
+	stdev := []spi.AggregateExpr{{Op: spi.AggStdev, Field: "price", Alias: "stdev_price"}}
+
+	t.Run("MalformedPathBeatsStdevDecline", func(t *testing.T) {
+		_, store, ctx := gsNewStore(t)
+		gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0})
+
+		ga := store.(spi.GroupedAggregator)
+		_, err := ga.GroupedAggregate(ctx, gsModel,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "foo';x", Value: "y"},
+			spi.GroupedAggregationsOptions{MaxBuckets: 10, Aggregations: stdev},
+		)
+		if !errors.Is(err, spi.ErrInvalidFilterPath) {
+			t.Fatalf("got %v, want ErrInvalidFilterPath", err)
+		}
+		if errors.Is(err, spi.ErrAggregationNotPushdownable) {
+			t.Errorf("a malformed path must not be reported as a pushdown decline: %v", err)
+		}
+	})
+
+	t.Run("ValidPathStillDeclinesStdev", func(t *testing.T) {
+		_, store, ctx := gsNewStore(t)
+		gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0, "tag": "x"})
+
+		ga := store.(spi.GroupedAggregator)
+		_, err := ga.GroupedAggregate(ctx, gsModel,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "tag", Value: "x"},
+			spi.GroupedAggregationsOptions{MaxBuckets: 10, Aggregations: stdev},
+		)
+		if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
+			t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+		}
+	})
+
+	// PIT keeps precedence over path validation, matching postgres, which
+	// returns early on PointInTime before it validates.
+	t.Run("PointInTimeBeatsMalformedPath", func(t *testing.T) {
+		_, store, ctx := gsNewStore(t)
+		gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0})
+
+		at := time.Now()
+		ga := store.(spi.GroupedAggregator)
+		_, err := ga.GroupedAggregate(ctx, gsModel,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "foo';x", Value: "y"},
+			spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &at},
+		)
+		if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
+			t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+		}
+	})
 }
 
 func TestSqliteGroupedAggregate_DeclinesOnResidualFilter(t *testing.T) {
@@ -518,8 +685,8 @@ func TestSqliteGroupedAggregate_UsesNativeGroupByOnIsNullOnlyFilter(t *testing.T
 // re-check — and hand-tallies by state, pinning that the boundary rows are
 // correctly excluded from the final count. This is the count a memory
 // backend would also produce for the identical corpus+filter: memory's
-// Iterate has no SQL layer at all, it evaluates spi.MatchFilter directly per
-// entity (plugins/memory/grouped_stats.go msMatchFilter) — so "correct here"
+// Iterate has no SQL layer at all, it evaluates spi.Prepare(filter).Match
+// directly per entity (plugins/memory/grouped_stats.go) — so "correct here"
 // and "identical to memory" are the same claim.
 func TestSqliteGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
@@ -530,7 +697,7 @@ func TestSqliteGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary(
 
 	filter := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
 
-	it := store.(spi.Iterable)
+	it := store
 	iter, err := it.Iterate(ctx, gsModel, filter, spi.IterateOptions{})
 	if err != nil {
 		t.Fatalf("Iterate: %v", err)
@@ -809,5 +976,57 @@ func TestSqliteGroupedAggregate_NonScalarNestedPathCoercesToNull(t *testing.T) {
 	}
 	if nullCount != 1 {
 		t.Errorf("null count = %d, want 1 (object at nested path coerces to nil)", nullCount)
+	}
+}
+
+// TestSqliteGroupedAggregate_GroupAndAggregatePathsValidatedBeforeDeclines:
+// GroupExpr.Path and AggregateExpr.Field were validated inside
+// groupExprToSQL / aggregateExprToSQL, which the stdev and residual-filter
+// declines return before ever reaching. So a malformed group path plus a stdev
+// aggregation (or a residual filter) answered ErrAggregationNotPushdownable,
+// while the memory backend — which validates both unconditionally — answered
+// ErrInvalidFilterPath for the same request. The service layer then streams a
+// request it should have refused, and gjson resolves the malformed path to
+// nothing, bucketing every entity as null: a wrong-but-available answer to a
+// question the caller never asked.
+//
+// Validation now sits with validateFilterPaths, after the PIT early-return
+// (PointInTimeBeatsMalformedPath above pins that precedence) and before every
+// other decline.
+func TestSqliteGroupedAggregate_GroupAndAggregatePathsValidatedBeforeDeclines(t *testing.T) {
+	badGroup := []spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "foo';x"}}
+	goodGroup := []spi.GroupExpr{{Kind: spi.GroupExprState}}
+	stdev := []spi.AggregateExpr{{Op: spi.AggStdev, Field: "price", Alias: "s"}}
+	badAgg := []spi.AggregateExpr{{Op: spi.AggSum, Field: "pri ce", Alias: "s"}}
+	// Gt is pushable but only a SOUND SUPERSET, so planQuery installs a
+	// residual postFilter — the other decline that skipped validation.
+	residual := spi.Filter{Op: spi.FilterGt, Source: spi.SourceData, Path: "price", Value: 100.0, Declared: []spi.DataType{spi.Double}}
+
+	cases := []struct {
+		name   string
+		group  []spi.GroupExpr
+		filter spi.Filter
+		aggs   []spi.AggregateExpr
+	}{
+		{"malformed group path behind the stdev decline", badGroup, spi.Filter{}, stdev},
+		{"malformed group path behind the residual-filter decline", badGroup, residual, nil},
+		{"malformed aggregate field behind the stdev decline", goodGroup, spi.Filter{}, append(append([]spi.AggregateExpr{}, badAgg...), stdev...)},
+		{"malformed aggregate field behind the residual-filter decline", goodGroup, residual, badAgg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, store, ctx := gsNewStore(t)
+			gsSave(t, ctx, store, "a", "available", map[string]any{"price": 150.0})
+
+			ga := store.(spi.GroupedAggregator)
+			_, err := ga.GroupedAggregate(ctx, gsModel, tc.group, tc.filter,
+				spi.GroupedAggregationsOptions{MaxBuckets: 10, Aggregations: tc.aggs})
+			if !errors.Is(err, spi.ErrInvalidFilterPath) {
+				t.Fatalf("got %v, want ErrInvalidFilterPath", err)
+			}
+			if errors.Is(err, spi.ErrAggregationNotPushdownable) {
+				t.Errorf("a malformed path must not be reported as a pushdown decline: %v", err)
+			}
+		})
 	}
 }

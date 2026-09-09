@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 218 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 272 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -53,10 +53,22 @@ var allTests = []NamedTest{
 
 	// Phase 4a — entity CRUD (Task 4a.2)
 	{"EntityCreateAndGet", RunEntityCreateAndGet},
+	{"EntityNulPayloadRejected", RunEntityNulPayloadRejected},
+	{"EntityUnstorableTextRejected", RunEntityUnstorableTextRejected},
+	{"EntityEmptyDocumentRoundTrips", RunEntityEmptyDocumentRoundTrips},
+	{"EntityNumberOutOfRangeRejected", RunEntityNumberOutOfRangeRejected},
+	{"EntityDuplicateKeysRejected", RunEntityDuplicateKeysRejected},
 	{"EntityDelete", RunEntityDelete},
+	{"EntityDeleteAllPointInTime", RunEntityDeleteAllPointInTime},
+	{"EntityDeleteAllVerbose", RunEntityDeleteAllVerbose},
 	{"EntityListByModel", RunEntityListByModel},
 	{"EntityMetaShape", RunEntityMetaShape},
 	{"GetAllEntitiesAsAt", RunGetAllEntitiesAsAt},
+	// GetPage paging contract (task E5): determinism, page0++page1 ==
+	// double-wide page, and set-equality with the full model — deliberately
+	// NOT a specific cross-engine id sequence, since GetPage's canonical
+	// order is per-engine (documented on spi.EntityStore.GetPage).
+	{"ListEntitiesPagingConsistency", RunListEntitiesPagingConsistency},
 	{"EntityConditionalDeleteInTx", RunEntityConditionalDeleteInTx},
 	{"EntityUpdateCollectionHappyPath", RunEntityUpdateCollectionHappyPath},
 	{"EntityUpdateCollectionRollback", RunEntityUpdateCollectionRollback},
@@ -71,13 +83,20 @@ var allTests = []NamedTest{
 	{"AuditWorkflowEvents", RunAuditWorkflowEvents},
 	{"AuditPostTxIdMatchesWorkflowFinished", RunAuditPostTxIdMatchesWorkflowFinished},
 
+	// History reads (task E6): getEntityChangesMetadata's
+	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and
+	// getOneEntity's by-transaction lookup, both now backed by
+	// spi.EntityStore.GetVersionMetadata / GetVersionByTransaction.
+	{"HistoryReadsChangesMetadataAndTransactionLookup", RunHistoryReadsChangesMetadataAndTransactionLookup},
+
 	// Phase 4a — tenant isolation (Task 4a.5)
 	{"TenantIsolationEntities", RunTenantIsolationEntities},
 	{"TenantIsolationModels", RunTenantIsolationModels},
 	// v0.6.3 — temporal-query tenant isolation (existence-oracle pinning;
-	// companions to PR #161/#164/#165). Structurally guaranteed today;
+	// companions to the tenant-isolation helpers). Structurally guaranteed today;
 	// pinned here so a future refactor cannot silently regress.
 	{"TenantIsolationTransactionIDInvisible", RunTenantIsolationTransactionIDInvisible},
+	{"TenantIsolationTransitionsTransactionIDRejected", RunTenantIsolationTransitionsTransactionIDRejected},
 	{"TenantIsolationPointInTimeInvisible", RunTenantIsolationPointInTimeInvisible},
 	{"TenantIsolationChangesAtPITInvisible", RunTenantIsolationChangesAtPITInvisible},
 
@@ -86,7 +105,7 @@ var allTests = []NamedTest{
 	{"MessageDelete", RunMessageDelete},
 	{"MessageLargePayload", RunMessageLargePayload},
 
-	// Edge message — flat metaData round-trip (Task 7, #369 group 4)
+	// Edge message — flat metaData round-trip (Task 7, group 4)
 	{"MessageRoundTrip", RunMessageRoundTrip},
 
 	// Phase 4a — schema symmetry (Task 4a.7)
@@ -105,6 +124,8 @@ var allTests = []NamedTest{
 
 	// Phase 4b — search scenarios (Task 4b.6-8)
 	{"SearchSimpleCondition", RunSearchSimpleCondition},
+	{"SearchFunctionCondition400", RunSearchFunctionCondition400},
+	{"SearchFunctionConditionNestedInGroup400", RunSearchFunctionConditionNestedInGroup400},
 	{"SearchBoolCondition", RunSearchBoolCondition},
 	{"SearchLifecycleCondition", RunSearchLifecycleCondition},
 	{"SearchGroupCondition", RunSearchGroupCondition},
@@ -113,27 +134,69 @@ var allTests = []NamedTest{
 	{"SearchPointInTime", RunSearchPointInTime},
 	{"SearchDirectBoundedOrFail", RunSearchDirectBoundedOrFail},
 
-	// Temporal search filters (#423) — chronological date-typed meta
+	// Temporal search filters — chronological date-typed meta
 	// compare + meta-vocabulary reconciliation, cross-backend.
 	{"SearchTemporalCreationDate", RunSearchTemporalCreationDate},
 	{"SearchTemporalLastUpdateTime", RunSearchTemporalLastUpdateTime},
 	{"SearchUnknownMetaField400", RunSearchUnknownMetaField400},
+
+	// Field-path spelling and resolution. A jsonPath is JSON Path
+	// nomenclature — the "$." leader is required on every path surface a
+	// request carries — while an array-subscripted path stays served by the
+	// in-memory fallback; and the storage layer's own _meta block is not
+	// addressable as entity data. All were backend-visible, so all belong
+	// here rather than in a single-backend test.
+	{"SearchPathRequiresJSONPathLeader", RunSearchPathRequiresJSONPathLeader},
+	{"SearchArraySubscriptPathStillServed", RunSearchArraySubscriptPathStillServed},
+	{"SearchPathTypeMismatch400", RunSearchPathTypeMismatch400},
+	// The same grammar governs a workflow/transition criterion, enforced at
+	// workflow import; and a path addressing one array element by position
+	// resolves to that element on every surface. Both are per-backend claims:
+	// a criterion is stored per backend and re-read on every write, and which
+	// plan a subscripted query takes differs per backend.
+	{"WorkflowCriterionPathRequiresJSONPathLeader", RunWorkflowCriterionPathRequiresJSONPathLeader},
+	{"PositionalSubscriptPathResolves", RunPositionalSubscriptPathResolves},
+	// ...and a path whose LAST hop is a wildcard addresses the array's
+	// ELEMENTS, not its length, on both surfaces.
+	{"SearchTrailingWildcardPathResolves", RunSearchTrailingWildcardPathResolves},
+	{"GroupedStatsPathRequiresJSONPathLeader", RunGroupedStatsPathRequiresJSONPathLeader},
+	{"SearchMetaBlockNotMatchableAsDataPath", RunSearchMetaBlockNotMatchableAsDataPath},
 	{"SearchStringMetaVocabulary", RunSearchStringMetaVocabulary},
 	{"SearchBetweenArity400", RunSearchBetweenArity400},
+	// Group-identity contract: an explicit empty AND matches everything, an
+	// explicit empty OR matches nothing — standalone and nested. The SQL
+	// planners previously pushed a childless OR as an empty WHERE fragment,
+	// flipping "match nothing" into "match everything".
+	{"SearchEmptyGroupIdentities", RunSearchEmptyGroupIdentities},
 	// Type-directed contract: a scalar comparison on a PURE-container path (a
 	// known structural interior with substructure but no scalar observation)
 	// is rejected with HTTP 400 INVALID_FIELD_PATH uniformly across backends —
 	// fail-closed rather than the pre-fix silent empty-result degradation.
 	{"SearchScalarOnContainerPath400", RunSearchScalarOnContainerPath400},
 
-	// Phase 4b — workflow selection (Task 4b.7)
+	// Path grammar — addressing rules (docs/cloud-parity/path-grammar.md
+	// §§3-5, 8). ArrayClausePositional reproduces the original defect: an
+	// "array" clause's positional leaf resolved to a DOTTED index, which a
+	// dotted numeric segment is a field name (not an index) for — memory's
+	// evaluator matched anyway, both SQL backends did not. Only a scenario
+	// asserting an exact count across all three backends catches that
+	// asymmetry. PathAddressingByDeclaredShape and PathVacuity are the
+	// union rule and the presence/nullness table, which apply to the array
+	// clause's desugared form the same as to every other path.
+	{"ArrayClausePositional", RunArrayClausePositional},
+	{"PathAddressingByDeclaredShape", RunPathAddressingByDeclaredShape},
+	{"PathVacuity", RunPathVacuity},
+
+	// Phase 4b — workflow selection (Task 4b.7). Selection applies on every
+	// engine door, so the post-creation doors are pinned alongside creation.
 	{"WorkflowCriteriaSelectingWorkflow", RunWorkflowCriteriaSelectingWorkflow},
+	{"WorkflowSelectionAfterCreation", RunWorkflowSelectionAfterCreation},
 
 	// Phase 4b — distributed-safety contracts (Tasks 4b.9-10)
 	{"ConcurrentConflictingUpdate", RunConcurrentConflictingUpdate},
 	{"ConcurrentTransitionsDifferentEntities", RunConcurrentTransitionsDifferentEntities},
 
-	// Compute-node callback transaction-join (#287) — backend-agnostic join
+	// Compute-node callback transaction-join — backend-agnostic join
 	// invariants driven through the callback-capable compute-test-client.
 	// Concurrency/torn-write cases are intentionally NOT here (isolated e2e).
 	{"CallbackTxJoin_SyncWriteAtomic", RunCallbackSyncWriteAtomic},
@@ -144,6 +207,7 @@ var allTests = []NamedTest{
 	{"CallbackTxJoin_EmptyTokenStandalone", RunCallbackEmptyTokenStandalone},
 	{"CallbackTxJoin_CBDPostJoinsTxPost", RunCallback_CBDPostJoinsTxPost},
 	{"CallbackTxJoin_AsyncNewTxDiscardOnFailure", RunCallback_AsyncNewTxDiscardOnFailure},
+	{"CallbackTxJoin_PITCommittedOnly", RunPITCommittedOnlyInJoinedTx},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},
@@ -151,6 +215,7 @@ var allTests = []NamedTest{
 	{"NumericClassificationLargeInteger", RunNumericClassificationLargeInteger},
 	{"NumericClassificationIntegerSchemaAcceptsInteger", RunNumericClassificationIntegerSchemaAcceptsInteger},
 	{"NumericClassificationIntegerSchemaRejectsDecimal", RunNumericClassificationIntegerSchemaRejectsDecimal},
+	{"NumericClassificationDoubleSchemaAcceptsWholeNumber", RunNumericClassificationDoubleSchemaAcceptsWholeNumber},
 
 	// Schema extensions — sequential fold across requests
 	{"SchemaExtensionsSequentialFoldAcrossRequests", RunSchemaExtensionsSequentialFoldAcrossRequests},
@@ -160,8 +225,26 @@ var allTests = []NamedTest{
 	{"SchemaExtensionSavepointOnLockFoldEquivalence", RunSchemaExtensionSavepointOnLockFoldEquivalence},
 	{"SchemaExtensionLocalCacheInvalidationOnCommit", RunSchemaExtensionLocalCacheInvalidationOnCommit},
 	{"SchemaExtensionByteIdentityProperty", RunSchemaExtensionByteIdentityProperty},
+	{"SchemaNumericFoldCarveout", RunSchemaNumericFoldCarveout},
 
-	// Phase 9.2 — OIDC CRUD + authz (#284)
+	// Type admission (design §4-9): one traversal judging each value against
+	// the stored model, rather than converting the document to a throwaway
+	// model and comparing labels. See type_admission.go.
+	{"TypeAdmissionHeldValueUnchanged", RunTypeAdmissionHeldValueUnchanged},
+	{"TypeAdmissionHeldThenFound", RunTypeAdmissionHeldThenFound},
+	{"TypeAdmissionDoubleCeiling", RunTypeAdmissionDoubleCeiling},
+	{"TypeAdmissionMixedKindArray", RunTypeAdmissionMixedKindArray},
+	{"TypeAdmissionSearchEqualsTrailingZeros", RunTypeAdmissionSearchEqualsTrailingZeros},
+	{"TypeAdmissionRegistrationYieldsStringLocalDate", RunTypeAdmissionRegistrationYieldsStringLocalDate},
+	{"TypeAdmissionStrictNeverMorePermissiveThanArrayLength", RunTypeAdmissionStrictNeverMorePermissiveThanArrayLength},
+	{"TypeAdmissionLongerArrayHeldAtEveryLevel", RunTypeAdmissionLongerArrayHeldAtEveryLevel},
+
+	{"ModelFieldNameRejected", RunModelFieldNameRejected},
+	{"ModelKindEnforcementRejected", RunModelKindEnforcementRejected},
+	{"ModelKindBranchExtension", RunModelKindBranchExtension},
+	{"ModelSampleDataCollectionImport", RunModelSampleDataCollectionImport},
+
+	// Phase 9.2 — OIDC CRUD + authz
 	// Rows 1-6: CRUD happy-path.
 	{"OidcRegister", RunOidcRegister},
 	{"OidcListAll", RunOidcListAll},
@@ -187,7 +270,7 @@ var allTests = []NamedTest{
 	{"OidcNonAdminDelete", RunOidcNonAdminDelete},
 	{"OidcNonAdminReload", RunOidcNonAdminReload},
 
-	// Phase 9.3 — OIDC validation + rotation + isolation (rows 17-27) (#284)
+	// Phase 9.3 — OIDC validation + rotation + isolation (rows 17-27)
 	// JWT validation integration (rows 17-20): register mock IdP, sign JWT,
 	// assert accept/reject across lifecycle state changes.
 	{"OidcJWTValidation_RegisterAndAccept", RunOidcJWTValidation_RegisterAndAccept},
@@ -196,6 +279,9 @@ var allTests = []NamedTest{
 	{"OidcJWTValidation_DeletePermanent", RunOidcJWTValidation_DeletePermanent},
 	// Issuer-list update affects validation (row 21).
 	{"OidcJWTValidation_IssuerListUpdate", RunOidcJWTValidation_IssuerListUpdate},
+	// Reload endpoint keeps warm key sources in service.
+	{"OidcReload_PreservesTokenAcceptance", RunOidcReload_PreservesTokenAcceptance},
+	{"OidcReload_AfterReactivateKeepsTokenAcceptance", RunOidcReload_AfterReactivateKeepsTokenAcceptance},
 	// Key rotation/revocation (rows 22-26b).
 	{"OidcKeyRotation_NewKidAccepted", RunOidcKeyRotation_NewKidAccepted},
 	{"OidcKeyRotation_OldKidStillAccepted", RunOidcKeyRotation_OldKidStillAccepted},
@@ -206,7 +292,7 @@ var allTests = []NamedTest{
 	// Multi-provider isolation (row 27).
 	{"OidcMultiProvider_Isolation", RunOidcMultiProvider_Isolation},
 
-	// Phase 9.4 — OIDC divergences (rows 28-46) (#284)
+	// Phase 9.4 — OIDC divergences (rows 28-46)
 	// D5 inactive-update (row 28).
 	{"OidcInactiveUpdate_Returns409Conflict", RunOidcInactiveUpdate_Returns409Conflict},
 	// Tenant isolation (rows 29-30).
@@ -239,7 +325,7 @@ var allTests = []NamedTest{
 	{"OidcD18_ReloadInvalidateSerializeLocally", RunOidcD18_ReloadInvalidateSerializeLocally},
 	{"OidcD18_ReloadAllSerializesWithReloadOne", RunOidcD18_ReloadAllSerializesWithReloadOne},
 
-	// Phase 9.5 — OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E (rows 47-68) (#284)
+	// Phase 9.5 — OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E (rows 47-68)
 	// D10 SSRF (rows 47-49).
 	{"OidcD10_SSRF_FetchTimeDNSRebind", RunOidcD10_SSRF_FetchTimeDNSRebind},
 	{"OidcD10_SSRF_IPv6BlockedRanges", RunOidcD10_SSRF_IPv6BlockedRanges},
@@ -278,12 +364,12 @@ var allTests = []NamedTest{
 	{"OidcE2E_TokenValidation", RunOidcE2E_TokenValidation},
 	{"OidcE2E_MultiNodeEviction", RunOidcE2E_MultiNodeEviction},
 
-	// Phase 9.6 — Audit fixes (#284)
+	// Phase 9.6 — Audit fixes
 	// Critical: non-deterministic cross-tenant routing fix (audience disambiguation).
 	{"OidcCriticalAuditFix_AudienceDisambiguatesSharedIdP", RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP},
 	{"OidcCriticalAuditFix_AmbiguousProviderRejected_Skip", RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip},
 
-	// Phase 9.7 — Audit fixes round 2 (#284)
+	// Phase 9.7 — Audit fixes round 2
 	// I-1: reactivateKeys=false cache-preservation (unit-level coverage; skipped at parity level).
 	{"OidcReactivate_KeysFalse_PreservesCache_Skip", RunOidcReactivate_KeysFalse_PreservesCache_Skip},
 
@@ -390,9 +476,26 @@ var allTests = []NamedTest{
 	{"SearchPolymorphicIntStringExpansion", RunSearchPolymorphicIntStringExpansion},
 	{"SearchNumericBucketRounding", RunSearchNumericBucketRounding},
 	{"SearchLikeAnchoredEscapedGlob", RunSearchLikeAnchoredEscapedGlob},
+	{"SearchMalformedPatternRejected", RunSearchMalformedPatternRejected},
 	{"SearchStringOpsCaseSensitivityAndNonTextual", RunSearchStringOpsCaseSensitivityAndNonTextual},
 	{"SearchNegativeOpOnAbsentField", RunSearchNegativeOpOnAbsentField},
 	{"SearchIsNullAbsentVsPresentNull", RunSearchIsNullAbsentVsPresentNull},
+
+	// Task 1 fix (cyoda-go-spi eval_leaf.go): an unsatisfiable comparison
+	// answers by operator polarity rather than a blanket false, including the
+	// polymorphic [INTEGER, String] carve-out. See negation.go.
+	{"SearchUnsatisfiableComparisonPolarity", RunSearchUnsatisfiableComparisonPolarity},
+
+	// NOT-node plan Task 13: cross-backend NOT scenarios. See negation.go.
+	{"SearchNotOverSimpleCondition", RunSearchNotOverSimpleCondition},
+	{"SearchNotOverAndGroup", RunSearchNotOverAndGroup},
+	{"SearchNotOverOrGroup", RunSearchNotOverOrGroup},
+	{"SearchNotUniversalQuantifierOverWildcard", RunSearchNotUniversalQuantifierOverWildcard},
+	{"SearchNotVsNegativeTwinDiffer", RunSearchNotVsNegativeTwinDiffer},
+	{"SearchNotOverAbsentField", RunSearchNotOverAbsentField},
+	{"SearchNotIsNullDiffersFromNotNullOnWildcard", RunSearchNotIsNullDiffersFromNotNullOnWildcard},
+	{"DeleteConditionalNotOverCondition", RunDeleteConditionalNotOverCondition},
+	{"SearchBadPathInsideNot", RunSearchBadPathInsideNot},
 
 	// Spec §4 — data-field temporal (subsumes the earlier standalone
 	// temporal-search-on-data-fields work). Model discovery content-sniffs
@@ -402,6 +505,12 @@ var allTests = []NamedTest{
 	// resolves that same operand to `> 2024` (imprecise-floor op mutation) —
 	// matching 2025, not 2024. See search_type_directed.go.
 	{"SearchDataFieldTemporalResolution", RunSearchDataFieldTemporalResolution},
+
+	// Async-search result ordering (task E7.2, design §9 row 19): per-backend
+	// deterministic order respecting the requested sort key, with entity-ID
+	// tie-break — set+pairwise-key assertions, no cross-engine sequence
+	// compare (see async_ordering.go's doc comment).
+	{"AsyncOrderingRespected", RunAsyncOrderingRespected},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

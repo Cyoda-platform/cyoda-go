@@ -74,6 +74,14 @@ type KeyStore interface {
 	Reactivate(kid string, validFrom, validTo time.Time) error
 }
 
+// ErrTrustedKeyNotFound is returned by a TrustedKeyStore's Delete / Invalidate
+// / Reactivate when the KID is not registered for the calling tenant. Adapters
+// classify with errors.Is: it is the one failure of those three that means 404.
+// Anything else is the store failing, not the key being absent — a distinction
+// that has to survive, or a storage outage reads to the caller as "your key is
+// gone".
+var ErrTrustedKeyNotFound = errors.New("trusted key not found")
+
 // TrustedKeyStore manages trusted external public keys.
 type TrustedKeyStore interface {
 	Register(tk *TrustedKey, opts RotateOptions) error
@@ -378,7 +386,9 @@ func (s *InMemoryTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
 }
 
 // ListForVerification returns keys still within their validity window across
-// all tenants. Used to populate the JWKS endpoint during grace periods.
+// all tenants. Used by the grant-verification path (token exchange / JWT
+// bearer assertion, see verification.go's getTrustedKeyByKID) — NOT the
+// JWKS endpoint, which is served from KeyStore, not TrustedKeyStore.
 func (s *InMemoryTrustedKeyStore) ListForVerification() []*TrustedKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -399,7 +409,7 @@ func (s *InMemoryTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) erro
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("trusted key not found: %s", kid)
+		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	delete(s.keys, kid)
 	return nil
@@ -412,7 +422,7 @@ func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, 
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("trusted key not found: %s", kid)
+		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	expiry := time.Now().Add(time.Duration(gracePeriodSec) * time.Second)
 	tk.Active = false
@@ -427,7 +437,7 @@ func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, 
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("trusted key not found: %s", kid)
+		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	if validTo.IsZero() {
 		return fmt.Errorf("validTo required for reactivation")

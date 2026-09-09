@@ -16,22 +16,24 @@ import (
 //
 // The contract under test (query_planner.go's doc comment on sqlPlan): the
 // SQL WHERE fragment planQuery produces is a best-effort NARROWING that must
-// return a SUPERSET of spi.MatchFilter's true matches (never under-select);
-// the kernel re-check (postFilter, applied inside Search/Iterate) then
-// narrows that candidate set back down to the exact result. This file proves
-// the invariant holds, isolated to the sqlite backend, over a fixed corpus
-// and a fixed (deterministic — no randomness) condition table covering
-// eq/ne/ordering/between/contains/like/isnull across numeric, string,
-// temporal, and polymorphic (multi-Declared-type) fields.
+// return a SUPERSET of spi.Prepare/PreparedFilter.Match's true matches
+// (never under-select); the kernel re-check (postFilter, applied inside
+// Search/Iterate) then narrows that candidate set back down to the exact
+// result. This file proves the invariant holds, isolated to the sqlite
+// backend, over a fixed corpus and a fixed (deterministic — no randomness)
+// condition table covering eq/ne/ordering/between/contains/like/isnull
+// across numeric, string, temporal, and polymorphic (multi-Declared-type)
+// fields.
 //
 // Two assertions per condition:
 //  1. candidateIDs (the raw SQL WHERE result, BEFORE any Go-side re-check,
 //     via sqlite.SearchCandidateIDsForTest) ⊇ oracleIDs (the kernel's true
-//     matches, computed directly via spi.MatchFilter over the corpus — this
-//     is exactly what the memory backend's Iterate/Search does, since memory
-//     has no SQL layer at all: plugins/memory/searcher.go calls
-//     spi.MatchFilter per entity, uncached, unnarrowed). No false negatives
-//     survive to the re-check stage.
+//     matches, computed directly via spi.Prepare/PreparedFilter.Match over
+//     the corpus — this is exactly what the memory backend's Iterate/Search
+//     does, since memory has no SQL layer at all:
+//     plugins/memory/grouped_stats.go and searcher.go both call
+//     spi.Prepare(filter).Match per entity, uncached, unnarrowed). No false
+//     negatives survive to the re-check stage.
 //  2. store.Search(...) (the FULL pipeline: WHERE narrowing + postFilter
 //     kernel re-check) == oracleIDs exactly. This is the "backend result ==
 //     memory backend result" equality proxy the task calls out as the
@@ -149,8 +151,9 @@ func buildSoundnessCorpus(t *testing.T, ctx context.Context, store spi.EntitySto
 			t.Fatalf("save %s: %v", row.id, err)
 		}
 		// The oracle entity's meta must reflect exactly what Save() persisted
-		// (CreationDate stamped from the store's clock) so spi.MatchFilter
-		// evaluates the SAME creationDate the backend's SQL sees.
+		// (CreationDate stamped from the store's clock) so
+		// spi.Prepare/PreparedFilter.Match evaluates the SAME creationDate the
+		// backend's SQL sees.
 		out = append(out, &spi.Entity{
 			Meta: spi.EntityMeta{ID: row.id, ModelRef: gsModel, State: row.state, CreationDate: wantCreation},
 			Data: raw,
@@ -257,13 +260,18 @@ var soundnessConditions = []struct {
 	},
 }
 
-// oracleIDs computes the TRUE match set directly via spi.MatchFilter over
+// oracleIDs computes the TRUE match set directly via spi.Prepare(f).Match over
 // the in-process corpus — exactly the memory backend's Iterate/Search
 // algorithm (no SQL, no narrowing).
-func oracleIDs(corpus []*spi.Entity, f spi.Filter) map[string]bool {
+func oracleIDs(t *testing.T, corpus []*spi.Entity, f spi.Filter) map[string]bool {
+	t.Helper()
 	out := map[string]bool{}
+	pf, err := spi.Prepare(f)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range corpus {
-		if spi.MatchFilter(f, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			out[e.Meta.ID] = true
 		}
 	}
@@ -302,11 +310,11 @@ func sortedKeys(m map[string]bool) []string {
 func TestSqlitePushdownSoundnessProperty(t *testing.T) {
 	factory, store, ctx, clock := newSoundnessStore(t)
 	corpus := buildSoundnessCorpus(t, ctx, store, clock)
-	searcher := store.(spi.Searcher)
+	searcher := store
 
 	for _, tc := range soundnessConditions {
 		t.Run(tc.name, func(t *testing.T) {
-			oracle := oracleIDs(corpus, tc.f)
+			oracle := oracleIDs(t, corpus, tc.f)
 
 			// Assertion 1: SQL pre-recheck candidates ⊇ kernel matches (no
 			// under-select survives to the re-check stage).
@@ -325,7 +333,7 @@ func TestSqlitePushdownSoundnessProperty(t *testing.T) {
 			// Assertion 2: full pipeline (WHERE + postFilter re-check) == kernel
 			// matches exactly — the "backend result == memory backend result"
 			// equality proxy.
-			results, err := searcher.Search(ctx, tc.f, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+			results, err := searcher.Search(ctx, tc.f, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 			if err != nil {
 				t.Fatalf("Search: %v", err)
 			}
@@ -361,8 +369,8 @@ func TestSqlitePushdownSoundness_PolymorphicIntStringUnderSelects(t *testing.T) 
 
 	filter := fPoly(spi.FilterEq, "code", "30")
 
-	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	searcher := store
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -390,12 +398,16 @@ func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
 
 	// Kernel oracle: the string field holds "30", the operand normalizes to the
 	// text "30" -> a match.
-	if !spi.MatchFilter(filter, []byte(`{"code":"30"}`), spi.EntityMeta{}) {
+	oraclePF, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	if !oraclePF.Match([]byte(`{"code":"30"}`), spi.EntityMeta{}) {
 		t.Fatalf("test setup invalid: kernel must match STRING \"30\" against numeric-looking operand 30")
 	}
 
-	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	searcher := store
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -410,16 +422,17 @@ func TestSqlitePushdownSoundness_MonomorphicStringNumericOperand(t *testing.T) {
 // plugins/sqlite/query_planner.go's leafToSQL, case spi.FilterLike, escaped
 // EVERY '%'/'_' in the operand via escapeLike before binding it to SQL
 // `LIKE ? ESCAPE '\'` — turning a genuine wildcard pattern into a literal
-// string match at the SQL layer. The kernel (spi.MatchFilter -> eval_leaf.go
-// likeToRegex) does the opposite: it treats an unescaped '%' as "match any
-// run of characters" and '_' as "match any one character" — the standard
-// LIKE-wildcard reading.
+// string match at the SQL layer. The kernel (spi.Prepare/PreparedFilter.Match
+// -> like_pattern.go) does the opposite: it treats an unescaped '%'
+// as "match any run of characters" and '_' as "match any one character" —
+// the standard LIKE-wildcard reading.
 //
 // Fixed by removing FilterLike from isPushable: Like is now residual-only,
-// so the kernel (spi.MatchFilter) evaluates it directly with the correct
-// wildcard semantics — no SQL WHERE narrowing, no under-select risk. A sound
-// SQL-LIKE translation that aligns SQL LIKE to Cloud's LIKE grammar (so Like
-// can be pushed again) is deferred to a dedicated follow-up; leafToSQL's
+// so the kernel (spi.Prepare/PreparedFilter.Match) evaluates it directly with
+// the correct wildcard semantics — no SQL WHERE narrowing, no under-select
+// risk. A sound SQL-LIKE translation that aligns SQL LIKE to Cloud's LIKE
+// grammar (so Like can be pushed again) is deferred to a dedicated
+// follow-up; leafToSQL's
 // FilterLike branch is kept in query_planner.go, unreachable via isPushable
 // like Ne, for mirror totality with postgres.
 func TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T) {
@@ -428,13 +441,17 @@ func TestSqlitePushdownSoundness_LikeWildcardUnderSelects_KNOWNBUG(t *testing.T)
 
 	filter := spi.Filter{Op: spi.FilterLike, Source: spi.SourceData, Path: "desc", Value: "foo%baz"}
 
-	oracle := spi.MatchFilter(filter, []byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
+	oraclePF, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
+	oracle := oraclePF.Match([]byte(`{"desc":"foobarbaz"}`), spi.EntityMeta{})
 	if !oracle {
 		t.Fatalf("test setup invalid: kernel oracle must match wildcard pattern 'foo%%baz' against 'foobarbaz'")
 	}
 
-	searcher := store.(spi.Searcher)
-	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion})
+	searcher := store
+	results, err := searcher.Search(ctx, filter, spi.SearchOptions{ModelName: gsModel.EntityName, ModelVersion: gsModel.ModelVersion, Limit: 100})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

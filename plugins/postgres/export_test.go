@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,12 +29,33 @@ func ValidateInChunksForTest(
 var DropSchemaForTest = dropSchema
 
 // MigrateDownForTest exposes migrateDown to test files via the export_test.go
-// idiom. Use only in tests; never in production code.
-var MigrateDownForTest = migrateDown
+// idiom, at the shipped lock-timeout default — a fixture rolls back a database
+// nothing else is touching, so its lock waits are uncontended. Use only in
+// tests; never in production code.
+func MigrateDownForTest(pool *pgxpool.Pool) error {
+	return migrateDown(pool, defaultMigrateLockTimeout)
+}
+
+// BeginGuardedForTest exposes beginGuarded (tx_guard_test.go) to the external
+// postgres_test package, so both test packages in this directory reach the same
+// guard rather than each keeping a copy of it.
+var BeginGuardedForTest = beginGuarded
 
 // ClassifyErrorForTest exposes classifyError to allow unit-testing of the
 // serialization/deadlock classification logic without requiring a live database.
 var ClassifyErrorForTest = classifyError
+
+// txResidue reports which pieces of per-transaction bookkeeping are still held
+// for txID: the pgx handle in the registry, the tenant, the origin and the
+// txState (which carries the read and write sets). All four must be gone once a
+// transaction has ended, however it ended.
+func (tm *TransactionManager) txResidue(txID string) (registry, tenant, origin, state bool) {
+	_, registry = tm.registry.Lookup(txID)
+	_, tenant = tm.lookupTenant(txID)
+	_, origin = tm.lookupOrigin(txID)
+	_, state = tm.lookupTxState(txID)
+	return
+}
 
 // HasTxState reports whether the given txID has an active txState entry.
 func HasTxState(tm *TransactionManager, txID string) bool {
@@ -110,6 +132,24 @@ func PoolForTest(f *StoreFactory) *pgxpool.Pool {
 	return f.pool
 }
 
+// GetPageCurrentQueryForTest and GetVersionByTransactionQueryForTest hand the
+// EXPLAIN plan tests (entity_page_plan_test.go) the PRODUCTION SQL rather than
+// a re-typed copy of it, so a plan assertion can only ever describe the query
+// that actually runs. See getPageCurrentQuery's doc comment for why a copy is
+// not good enough — those tests carry a sanctioned coverage waiver, and a
+// waiver resting on a test that can silently rot is worse than no waiver.
+const (
+	GetPageCurrentQueryForTest          = getPageCurrentQuery
+	GetVersionByTransactionQueryForTest = getVersionByTransactionQuery
+)
+
+// GetResultIDsQueryForTest is the exact SQL GetResultIDs executes, exported
+// for the same reason as the two above: search_job_results_index_test.go's
+// EXPLAIN assertion must plan the query that ACTUALLY runs, not a simplified
+// re-typing of it — the real one is a CTE feeding a LEFT JOIN LATERAL, whose
+// plan shape a hand-copied flat SELECT cannot stand in for.
+const GetResultIDsQueryForTest = getResultIDsQuery
+
 // SearchCandidateIDsForTest returns the entity IDs the SQL WHERE fragment
 // planQuery(filter) produces BEFORE any Go-side postFilter re-check — i.e.
 // the raw pushdown candidate set exactly as searchCommitted would scan it,
@@ -120,10 +160,10 @@ func PoolForTest(f *StoreFactory) *pgxpool.Pool {
 // equality proxy that store.Search() (which DOES apply the residual)
 // provides.
 func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID spi.TenantID, entityName, modelVersion string, filter spi.Filter) ([]string, error) {
-	s := &entityStore{q: pool, tenantID: tenantID}
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
+	s := &entityStore{q: pool, pool: pool, tenantID: tenantID}
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, err
 	}
 	baseQuery, baseArgs := s.searchBaseQuery(entityName, modelVersion, nil)
 	if plan.where != "" {
@@ -149,4 +189,38 @@ func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID
 		ids = append(ids, e.Meta.ID)
 	}
 	return ids, rows.Err()
+}
+
+// NewStoreFactoryWithAcquireTimeoutForTest builds a factory whose stores carry a
+// custom connection-acquire deadline, so a test can observe pool saturation in
+// milliseconds instead of waiting out the shipped 10s default. Test-only; the
+// production path constructs its config through parseConfig.
+func NewStoreFactoryWithAcquireTimeoutForTest(pool *pgxpool.Pool, d time.Duration) *StoreFactory {
+	cfg := defaultStoreConfig()
+	cfg.AcquireTimeout = d
+	return newStoreFactoryWithConfig(pool, cfg)
+}
+
+// RegisterPoolMetricsForTest exposes registerPoolMetrics to the external
+// postgres_test package. metrics_test.go must live in postgres_test to reuse
+// newTestPool (migrate_test.go), which carries the pgx v5.9.1
+// HealthCheckPeriod-hang workaround around pool.Close — duplicating that
+// workaround for an internal-package test is worse than reaching the
+// unexported production symbol through this idiom. Test-only; never call
+// from production code.
+var RegisterPoolMetricsForTest = registerPoolMetrics
+
+// MeterNameForTest exposes meterName for the same reason.
+const MeterNameForTest = meterName
+
+// NewStoreFactoryWithTMAndAcquireTimeoutForTest wires a TransactionManager AND a
+// custom connection-acquire deadline onto one factory. The point-in-time acquire
+// tests need both: a real transaction to hold a pooled connection (which is what
+// makes an in-transaction committed-only read hold-and-wait), and a deadline
+// short enough to observe in milliseconds rather than the shipped 10s default.
+// Test-only.
+func NewStoreFactoryWithTMAndAcquireTimeoutForTest(pool *pgxpool.Pool, tm *TransactionManager, d time.Duration) *StoreFactory {
+	f := NewStoreFactoryWithAcquireTimeoutForTest(pool, d)
+	f.setTransactionManager(tm)
+	return f
 }

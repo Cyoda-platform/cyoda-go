@@ -12,9 +12,10 @@ import (
 )
 
 // Locking-discipline race tests for the remaining six tx-path operations
-// in plugins/memory/entity_store.go. PR #153 (v0.6.3) fixed Save and
-// CompareAndSave; issue #176 covers Get, GetAll, Delete, DeleteAll,
-// Exists, and Count.
+// in plugins/memory/entity_store.go. v0.6.3 fixed Save and
+// CompareAndSave; this covers Get, Search, Delete, DeleteAll,
+// Exists, and Count (Search's tx-path replaces the GetAll tx-path this
+// suite originally covered).
 //
 // Each operation reads tx.RolledBack and at least one of
 // tx.Buffer / tx.WriteSet / tx.Deletes / tx.ReadSet. Commit and Rollback
@@ -26,7 +27,7 @@ import (
 // Each test runs many iterations to give the scheduler chances to
 // interleave the in-flight op with Rollback. Tolerated errors are the
 // legitimate outcomes of a tx that closed mid-op, recognised via
-// errors.Is against the SPI tx-state sentinels (issue #200):
+// errors.Is against the SPI tx-state sentinels:
 //   - spi.ErrTxTerminated      ("already completed" / "rolled back")
 //   - spi.ErrTxNotFound        ("not found")
 //   - spi.ErrTxCommitInProgress ("already being committed")
@@ -134,16 +135,18 @@ func TestGet_VsRollback_NoRace(t *testing.T) {
 	)
 }
 
-// TestGetAll_VsRollback_NoRace flags the missing tx.OpMu.RLock around
-// GetAll's reads of tx.RolledBack, tx.Buffer, tx.Deletes, and writes
-// to tx.ReadSet.
-func TestGetAll_VsRollback_NoRace(t *testing.T) {
-	runOpVsRollback(t, "GetAll",
+// TestSearch_VsRollback_NoRace flags the missing tx.OpMu.RLock around
+// Search's reads of tx.RolledBack, tx.Buffer, tx.Deletes, and writes
+// to tx.ReadSet — the same tx-state fields the deleted GetAll read.
+func TestSearch_VsRollback_NoRace(t *testing.T) {
+	runOpVsRollback(t, "Search",
 		func(t *testing.T, ctx context.Context, store spi.EntityStore) {
-			raceSeedOne(t, ctx, store, "e-getall")
+			raceSeedOne(t, ctx, store, "e-search")
 		},
 		func(txCtx context.Context, store spi.EntityStore) error {
-			_, err := store.GetAll(txCtx, raceModelRef)
+			_, err := store.Search(txCtx, spi.Filter{}, spi.SearchOptions{
+				ModelName: raceModelRef.EntityName, ModelVersion: raceModelRef.ModelVersion, Limit: 100,
+			})
 			return err
 		},
 	)
@@ -192,8 +195,8 @@ func TestExists_VsRollback_NoRace(t *testing.T) {
 }
 
 // TestCount_VsRollback_NoRace flags the missing tx.OpMu.RLock in
-// Count's tx-path. Count delegates to GetAll, so the race lives in
-// GetAll; this test pins that delegation correctness.
+// Count's tx-path (countTx), the same tx.RolledBack/tx.Buffer/tx.Deletes
+// race shape the other tx-path reads in this file guard against.
 func TestCount_VsRollback_NoRace(t *testing.T) {
 	runOpVsRollback(t, "Count",
 		func(t *testing.T, ctx context.Context, store spi.EntityStore) {
@@ -207,8 +210,8 @@ func TestCount_VsRollback_NoRace(t *testing.T) {
 }
 
 // TestGetAsAt_VsRollback_NoRace flags the missing tx.OpMu.RLock in
-// GetAsAt's tx-path. Surfaced by code review on PR #198 as the same
-// race-shape defect issue #176 fixes for the six core ops: GetAsAt
+// GetAsAt's tx-path. Surfaced by code review as the same
+// race-shape defect fixed for the six core ops: GetAsAt
 // reads tx.RolledBack and writes tx.ReadSet inside an entityMu.RLock
 // region without tx.OpMu.RLock, AND has an inverted lock order
 // (entityMu before tx.OpMu). The fix takes tx.OpMu.RLock first when a

@@ -75,14 +75,18 @@ func renderMillis(d time.Duration) string {
 func defaultFor(c app.Config) map[string]string {
 	return map[string]string{
 		// --- server ---
-		"CYODA_HTTP_PORT":           strconv.Itoa(c.HTTPPort),
-		"CYODA_CONTEXT_PATH":        c.ContextPath,
-		"CYODA_ERROR_RESPONSE_MODE": c.ErrorResponseMode,
-		"CYODA_LOG_LEVEL":           c.LogLevel,
-		"CYODA_STARTUP_TIMEOUT":     renderDuration(c.StartupTimeout),
-		"CYODA_MAX_STATE_VISITS":    strconv.Itoa(c.MaxStateVisits),
-		"CYODA_MODEL_CACHE_LEASE":   renderDuration(c.ModelCacheLease),
-		"CYODA_STORAGE_BACKEND":     c.StorageBackend,
+		"CYODA_HTTP_PORT":                strconv.Itoa(c.HTTPPort),
+		"CYODA_HTTP_READ_HEADER_TIMEOUT": renderDuration(c.HTTP.ReadHeaderTimeout),
+		"CYODA_HTTP_READ_TIMEOUT":        renderDuration(c.HTTP.ReadTimeout),
+		"CYODA_HTTP_WRITE_TIMEOUT":       renderDuration(c.HTTP.WriteTimeout),
+		"CYODA_HTTP_IDLE_TIMEOUT":        renderDuration(c.HTTP.IdleTimeout),
+		"CYODA_CONTEXT_PATH":             c.ContextPath,
+		"CYODA_ERROR_RESPONSE_MODE":      c.ErrorResponseMode,
+		"CYODA_LOG_LEVEL":                c.LogLevel,
+		"CYODA_STARTUP_TIMEOUT":          renderDuration(c.StartupTimeout),
+		"CYODA_MAX_STATE_VISITS":         strconv.Itoa(c.MaxStateVisits),
+		"CYODA_MODEL_CACHE_LEASE":        renderDuration(c.ModelCacheLease),
+		"CYODA_STORAGE_BACKEND":          c.StorageBackend,
 
 		// --- admin ---
 		"CYODA_ADMIN_PORT":           strconv.Itoa(c.Admin.Port),
@@ -92,15 +96,16 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_OTEL_ENABLED":         strconv.FormatBool(c.OTelEnabled),
 
 		// --- search ---
-		"CYODA_SEARCH_SNAPSHOT_TTL":  renderDuration(c.SearchSnapshotTTL),
-		"CYODA_SEARCH_REAP_INTERVAL": renderDuration(c.SearchReapInterval),
-		"CYODA_SEARCH_MAX_SORT_KEYS": strconv.Itoa(c.SearchMaxSortKeys),
-		"CYODA_STATS_GROUP_MAX":      strconv.Itoa(c.StatsGroupMax),
-
-		// --- tx ---
-		"CYODA_TX_TTL":           renderDuration(c.Cluster.TxTTL),
-		"CYODA_TX_REAP_INTERVAL": renderDuration(c.Cluster.TxReapInterval),
-		"CYODA_TX_OUTCOME_TTL":   renderDuration(c.Cluster.OutcomeTTL),
+		"CYODA_SEARCH_SNAPSHOT_TTL":           renderDuration(c.SearchSnapshotTTL),
+		"CYODA_SEARCH_REAP_INTERVAL":          renderDuration(c.SearchReapInterval),
+		"CYODA_SEARCH_MAX_SORT_KEYS":          strconv.Itoa(c.SearchMaxSortKeys),
+		"CYODA_STATS_GROUP_MAX":               strconv.Itoa(c.StatsGroupMax),
+		"CYODA_SEARCH_ASYNC_WORKERS":          strconv.Itoa(c.SearchAsync.Workers),
+		"CYODA_SEARCH_ASYNC_QUEUE":            strconv.Itoa(c.SearchAsync.QueueLen),
+		"CYODA_SEARCH_ASYNC_MAX_PER_TENANT":   strconv.Itoa(c.SearchAsync.MaxPerTenant),
+		"CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL": renderDuration(c.SearchJobHeartbeatInterval),
+		"CYODA_SEARCH_JOB_STALE_AFTER":        renderDuration(c.SearchJobStaleAfter),
+		"CYODA_SEARCH_JOB_MAX_ATTEMPTS":       strconv.Itoa(c.SearchJobMaxAttempts),
 
 		// --- cluster ---
 		"CYODA_CLUSTER_ENABLED":          strconv.FormatBool(c.Cluster.Enabled),
@@ -134,6 +139,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES":   strconv.Itoa(c.IAM.TrustedKeyMaxJWKProperties),
 		"CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS":    strconv.Itoa(c.IAM.KeypairDefaultValidityDays),
 		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":           strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
+		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":        renderDuration(c.IAM.AuthCacheReconcileInterval),
 		"CYODA_BOOTSTRAP_CLIENT_ID":                  c.Bootstrap.ClientID,
 		"CYODA_BOOTSTRAP_CLIENT_SECRET":              "", // secret
 		"CYODA_BOOTSTRAP_TENANT_ID":                  c.Bootstrap.TenantID,

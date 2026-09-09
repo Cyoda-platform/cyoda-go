@@ -13,7 +13,7 @@ import (
 )
 
 func init() {
-	// External API scenario suite — issue #228 audit-shape contract.
+	// External API scenario suite — audit-shape contract.
 	parity.Register(
 		parity.NamedTest{
 			Name: "ExternalAPI_05_TransitionAbortedAuditEventPaired",
@@ -23,7 +23,7 @@ func init() {
 }
 
 // RunExternalAPI_05_TransitionAbortedAuditEventPaired pins the audit-
-// trail shape from issue #228: when a single PUT against an entity
+// trail shape: when a single PUT against an entity
 // fails its ifMatch precondition (stale txID), the entry-side
 // STATE_MACHINE_START is paired with a TRANSITION_ABORTED event whose
 // data payload references reason=ENTITY_MODIFIED, expectedTxId=<stale>,

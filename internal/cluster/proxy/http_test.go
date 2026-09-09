@@ -3,12 +3,15 @@ package proxy_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -350,5 +353,91 @@ func TestHTTPProxy_SSRFGuard_AllowsLoopbackWhenPermitted(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "reached" {
 		t.Fatalf("expected 'reached', got %q", body)
+	}
+}
+
+// TestProxy_PreservesQueryString is a characterization test pinning
+// load-bearing behavior for spec D7: transaction-control query params
+// (e.g. transactionTimeoutMillis, transactionSize) must reach the executing
+// peer verbatim so that peer's own validation can reject them with 400. If
+// the proxy's director ever started rewriting or dropping the query string,
+// that rejection would silently stop happening. It should pass immediately —
+// that is expected and acceptable for a characterization test guarding a
+// contract, not driving new behavior.
+func TestProxy_PreservesQueryString(t *testing.T) {
+	var gotRawQuery string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "remote")
+	}))
+	defer remote.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: remote.URL, Alive: true},
+	)
+
+	tok, err := signer.Issue("node-2", "tx-query-string", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mw := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)
+	handler := mw(localHandler())
+
+	const rawQuery = "transactionTimeoutMillis=5000&transactionSize=2&x=%20y"
+	req := httptest.NewRequest(http.MethodGet, "/api/test?"+rawQuery, nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if gotRawQuery != rawQuery {
+		t.Fatalf("query string not preserved across the forwarded hop: got %q, want %q", gotRawQuery, rawQuery)
+	}
+}
+
+// An upstream that hangs up mid-body makes ReverseProxy panic with
+// http.ErrAbortHandler. Under Recovery that must stay a silent abort: the
+// node's health flag is untouched.
+func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler) // closes the upstream connection short
+	}))
+	defer upstream.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: upstream.URL, Alive: true},
+	)
+
+	tok, err := signer.Issue("node-2", "tx-hangup", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+	h := middleware.Recovery(healthFlag)(proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true)(localHandler()))
+	srv := httptest.NewServer(h) // a real server, so the re-raised sentinel reaches net/http
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/test", nil)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	if !healthFlag.Load() {
+		t.Fatal("a proxied client hang-up latched the node unhealthy")
 	}
 }

@@ -15,7 +15,7 @@ import (
 )
 
 // scheduled_function_test.go is Task 9.1's E2E layer for the scheduled-
-// transition Function feature (issue #419, design
+// transition Function feature (design
 // docs/superpowers/specs/2026-07-17-scheduled-transition-function-design.md):
 // import-time validation of the schedule.function shape, and arm-time happy
 // paths through the full HTTP stack.
@@ -400,8 +400,8 @@ func TestScheduledFunction_DispatchTimeout_Returns503(t *testing.T) {
 
 	h.RegisterFunction("calcSlow", func(rc *reqCtx) (string, map[string]any, error) {
 		// Comfortably past responseTimeoutMs so dispatchCalloutToMember's
-		// <-time.After(timeout) branch wins the select — DISPATCH_TIMEOUT,
-		// not a late-but-successful dispatch.
+		// response-deadline branch wins the select — DISPATCH_TIMEOUT, not a
+		// late-but-successful dispatch.
 		time.Sleep(600 * time.Millisecond)
 		return "Schedule", map[string]any{"fireAfterMs": int64(60_000)}, nil
 	})

@@ -280,7 +280,7 @@ func TestExportModel_ClassifiesModelStoreErrors(t *testing.T) {
 // re-import targeting a LOCKED model surfaces the dictionary-aligned
 // `MODEL_ALREADY_LOCKED` code rather than the generic `CONFLICT`. The state
 // precondition (expected UNLOCKED, actual LOCKED) is identical to the relock
-// branch, so it shares the code. See #128.
+// branch, so it shares the code.
 func TestImportModel_OnLockedModel_ReturnsModelAlreadyLocked(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
 	locked := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
@@ -681,7 +681,7 @@ func TestImportModel_KeyReferencesAbsentField_Rejected(t *testing.T) {
 // attempt returns the dictionary-aligned `MODEL_ALREADY_LOCKED` code rather
 // than the generic `CONFLICT`. cyoda-cloud's dictionary asserts the specific
 // failure mode (cf. EntityModelFacadeIT.kt's class-name regex), and the
-// generic code discards information the dictionary preserves. See #128.
+// generic code discards information the dictionary preserves.
 func TestLockModel_AlreadyLocked_ReturnsSpecificCode(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
 	locked := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}

@@ -1,5 +1,5 @@
 // Package scheduledfunction provides cross-backend parity scenarios for the
-// scheduled-transition Function runtime (issue #419, design
+// scheduled-transition Function runtime (design
 // docs/superpowers/specs/2026-07-17-scheduled-transition-function-design.md):
 // the `schedule.function` transition shape, which computes its
 // scheduledTime/timeoutMs by dispatching a generic Function callout to a

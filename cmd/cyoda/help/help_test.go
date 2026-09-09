@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -584,7 +585,7 @@ func TestErrCode_Parity(t *testing.T) {
 
 // Phrases that MUST appear somewhere under cli/*.md or config/*.md
 // after the printHelp() migration. Pins content that the env-var
-// grep (test #11) alone doesn't cover.
+// grep alone doesn't cover.
 var printHelpMustAppearPhrases = []string{
 	"_FILE",          // secret-from-file pattern
 	"--force",        // cyoda init flag
@@ -945,5 +946,103 @@ func TestDefaultTree_ConfigClusterSubtopic(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("config see_also missing %s (got %q)", want, joined)
 		}
+	}
+}
+
+// hexColourPattern matches a CSS-style hex colour such as "#118080" used by
+// the terminal renderer's style table. These are legitimate "#" + digits
+// tokens and are excluded from the issue-reference scan below.
+var hexColourPattern = regexp.MustCompile(`#[0-9a-fA-F]{6}\b`)
+
+// keywordIssueRefPattern matches a reference an issue/PR keyword introduces
+// (the words "issue", "see", "PR" and the like followed by a number), or one
+// standing alone in a parenthetical. Both read as tracker references however
+// few digits they carry, so they are flagged before the ordinal exemption
+// applies.
+var keywordIssueRefPattern = regexp.MustCompile(`(?i)(?:\b(?:issue|issues|pr|closes|closed|fixes|fixed|resolves|see)\b[ ]*|\()#[0-9]+\b`)
+
+// ordinalRefPattern matches a one-digit reference that names the thing
+// immediately before it — a numbered fixture, finding, close, receive, or a
+// spec-section citation. Source uses these as ordinals and citations, not as
+// tracker references, so the scan exempts them. Nothing multi-digit, nothing
+// keyword-introduced and nothing parenthesised reaches this exemption.
+var ordinalRefPattern = regexp.MustCompile(`[0-9A-Za-z_](?:-|\s)#[0-9]\b`)
+
+// sourceScanDirs are the trees TestSource_NoIssueNumbers walks. docs/ and
+// .claude/ are deliberately absent — issue references are legitimate there.
+var sourceScanDirs = []string{"api", "app", "cmd", "e2e", "internal", "plugins"}
+
+// TestSource_NoIssueNumbers is the exit check for the project rule "no issue
+// IDs in shipped artefacts": GitHub issue/PR numbers belong in PR bodies,
+// commit messages and design specs — never in source, comments, or the
+// OpenAPI document. The rationale a comment gives must survive; only the
+// reference goes.
+//
+// The matcher is issueRefPattern, the same one TestHelpContent_NoIssueIDs
+// applies to the embedded help topics, so source and shipped content share one
+// definition of "issue reference": it catches single-digit issues and
+// /issues/NNN URLs while leaving genuine tokens such as PKCS#8 alone. The
+// embedded *.md tree belongs to TestHelpContent_NoIssueIDs and is not walked
+// here.
+//
+// Two things are excluded before the match, and a real reference sharing the
+// line is still caught either way: hex colours ("#" + exactly six hex digits),
+// and the one-digit ordinals and citations that source — unlike help prose —
+// uses constantly (see ordinalRefPattern).
+func TestSource_NoIssueNumbers(t *testing.T) {
+	root := repoRoot(t)
+
+	var offenders []string
+	check := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			stripped := hexColourPattern.ReplaceAllString(line, "")
+			m := keywordIssueRefPattern.FindString(stripped)
+			if m == "" {
+				m = issueRefPattern.FindString(ordinalRefPattern.ReplaceAllString(stripped, ""))
+			}
+			if m != "" {
+				offenders = append(offenders, rel+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line)+" (matched "+strings.TrimSpace(m)+")")
+			}
+		}
+	}
+
+	for _, dir := range sourceScanDirs {
+		base := filepath.Join(root, dir)
+		err := filepath.WalkDir(base, func(p string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fs.SkipDir
+				}
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(p, ".go") {
+				return nil
+			}
+			check(p)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", base, err)
+		}
+	}
+
+	check(filepath.Join(root, "api/openapi.yaml"))
+
+	if len(offenders) > 0 {
+		sort.Strings(offenders)
+		t.Errorf("issue/PR references must not appear in shipped source, comments or OpenAPI "+
+			"(%d occurrence(s)); keep the reason, drop the reference:\n%s",
+			len(offenders), strings.Join(offenders, "\n"))
 	}
 }

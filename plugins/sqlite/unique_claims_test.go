@@ -453,3 +453,62 @@ func TestUniqueClaims_SameTxReclaimBeforeDelete_AcceptedAtCommit(t *testing.T) {
 		t.Errorf("c with b's value: expected ErrUniqueViolation, got %v", err)
 	}
 }
+
+// A CompareAndSave inside a transaction writes to the same buffer Save does
+// and must record the declared unique keys with it. Keys are captured at
+// buffer time — the flush has one context and cannot recover them — so a
+// compare-and-save that skipped the capture would commit its entity with no
+// claim row, and the value it should hold would stay free for anyone else.
+func TestUniqueClaims_CompareAndSaveInTxRecordsClaims(t *testing.T) {
+	dir := t.TempDir()
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), filepath.Join(dir, "cas-claims.db"))
+	if err != nil {
+		t.Fatalf("NewStoreFactoryForTest: %v", err)
+	}
+	t.Cleanup(func() { _ = factory.Close() })
+
+	baseCtx := testCtx("uc-tenant")
+	store, err := factory.EntityStore(baseCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	tm, err := factory.TransactionManager(baseCtx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+
+	// CompareAndSave never creates, so the entity is seeded first — with no
+	// unique keys declared, so it holds no claim yet and the claim asserted
+	// below can only have come from the compare-and-save.
+	const seedTxID = "tx-seed"
+	seed := ucEntity("e1", "seed@x.com")
+	seed.Meta.TransactionID = seedTxID
+	if _, err := store.Save(baseCtx, seed); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	txID, txCtx, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := store.CompareAndSave(
+		spi.WithUniqueKeys(txCtx, emailKeys()), ucEntity("e1", "a@x.com"), seedTxID); err != nil {
+		t.Fatalf("CompareAndSave: %v", err)
+	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// A second transaction claiming the same value for a different entity
+	// must lose at commit, exactly as it would against a committed Save.
+	txID2, txCtx2, err := tm.Begin(baseCtx)
+	if err != nil {
+		t.Fatalf("Begin (second): %v", err)
+	}
+	if _, err := store.Save(spi.WithUniqueKeys(txCtx2, emailKeys()), ucEntity("e2", "a@x.com")); err != nil {
+		t.Fatalf("buffered Save: %v", err)
+	}
+	if err := tm.Commit(txCtx2, txID2); !errors.Is(err, spi.ErrUniqueViolation) {
+		t.Fatalf("e2 with e1's value: expected ErrUniqueViolation at commit, got %v", err)
+	}
+}

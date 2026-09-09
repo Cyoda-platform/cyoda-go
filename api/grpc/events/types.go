@@ -689,7 +689,7 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 
 type EntityCreatePayloadJson struct {
 	// Payload data.
-	Data interface{} `json:"data" yaml:"data" mapstructure:"data"`
+	Data json.RawMessage `json:"data" yaml:"data" mapstructure:"data"`
 
 	// Entity model to use for this payload.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
@@ -1048,9 +1048,6 @@ type EntityDeleteAllRequestJson struct {
 	// Information about the model.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
 
-	// Page size.
-	PageSize int `json:"pageSize,omitempty" yaml:"pageSize,omitempty" mapstructure:"pageSize,omitempty"`
-
 	// point in time, i.e. delete all that existed prior to this point in time
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
@@ -1058,7 +1055,7 @@ type EntityDeleteAllRequestJson struct {
 	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
 
 	// Transaction size.
-	TransactionSize int `json:"transactionSize,omitempty" yaml:"transactionSize,omitempty" mapstructure:"transactionSize,omitempty"`
+	TransactionSize *int `json:"transactionSize,omitempty" yaml:"transactionSize,omitempty" mapstructure:"transactionSize,omitempty"`
 
 	// Include the list of entity ids deleted in the response
 	Verbose bool `json:"verbose,omitempty" yaml:"verbose,omitempty" mapstructure:"verbose,omitempty"`
@@ -1118,14 +1115,8 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &plain); err != nil {
 		return err
 	}
-	if v, ok := raw["pageSize"]; !ok || v == nil {
-		plain.PageSize = 10.0
-	}
 	if v, ok := raw["success"]; !ok || v == nil {
 		plain.Success = true
-	}
-	if v, ok := raw["transactionSize"]; !ok || v == nil {
-		plain.TransactionSize = 1000.0
 	}
 	if v, ok := raw["verbose"]; !ok || v == nil {
 		plain.Verbose = false
@@ -1135,7 +1126,8 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 }
 
 type EntityDeleteAllResponseJson struct {
-	// IDs of the removed entities.
+	// IDs the delete attempted, when verbose was requested; an id whose delete failed
+	// also appears in errorsById. Empty when verbose is false.
 	EntityIds []string `json:"entityIds" yaml:"entityIds" mapstructure:"entityIds"`
 
 	// Error details (if present).
@@ -2594,7 +2586,7 @@ type EntityPatchPayloadJson struct {
 	IfMatch *string `json:"ifMatch,omitempty" yaml:"ifMatch,omitempty" mapstructure:"ifMatch,omitempty"`
 
 	// The patch document (RFC 7386 merge patch).
-	Patch interface{} `json:"patch" yaml:"patch" mapstructure:"patch"`
+	Patch json.RawMessage `json:"patch" yaml:"patch" mapstructure:"patch"`
 
 	// Transition to apply, or omit for loopback.
 	Transition *string `json:"transition,omitempty" yaml:"transition,omitempty" mapstructure:"transition,omitempty"`
@@ -3062,7 +3054,11 @@ type EntitySearchRequestJsonOrderByElem struct {
 	// Desc corresponds to the JSON schema field "desc".
 	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
 
-	// Path corresponds to the JSON schema field "path".
+	// A dotted scalar path in the entity data (`price`, `address.city`; the `$.`
+	// leader is optional) or, with `source: "meta"`, a canonical meta field name.
+	// Array subscripts and projections (`items[*].name`, `items[0].name`) are
+	// rejected — an ordering needs a single scalar — as is any character outside
+	// `A-Za-z0-9_-`. Refused paths answer `INVALID_FIELD_PATH`.
 	Path string `json:"path" yaml:"path" mapstructure:"path"`
 
 	// Source corresponds to the JSON schema field "source".
@@ -3220,7 +3216,11 @@ type EntitySnapshotSearchRequestJsonOrderByElem struct {
 	// Desc corresponds to the JSON schema field "desc".
 	Desc bool `json:"desc,omitempty" yaml:"desc,omitempty" mapstructure:"desc,omitempty"`
 
-	// Path corresponds to the JSON schema field "path".
+	// A dotted scalar path in the entity data (`price`, `address.city`; the `$.`
+	// leader is optional) or, with `source: "meta"`, a canonical meta field name.
+	// Array subscripts and projections (`items[*].name`, `items[0].name`) are
+	// rejected — an ordering needs a single scalar — as is any character outside
+	// `A-Za-z0-9_-`. Refused paths answer `INVALID_FIELD_PATH`.
 	Path string `json:"path" yaml:"path" mapstructure:"path"`
 
 	// Source corresponds to the JSON schema field "source".
@@ -4083,7 +4083,7 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 
 type EntityUpdatePayloadJson struct {
 	// Entity payload data.
-	Data interface{} `json:"data" yaml:"data" mapstructure:"data"`
+	Data json.RawMessage `json:"data" yaml:"data" mapstructure:"data"`
 
 	// ID of the entity.
 	EntityID string `json:"entityId" yaml:"entityId" mapstructure:"entityId"`

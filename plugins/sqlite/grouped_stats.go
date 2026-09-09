@@ -10,12 +10,12 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// This file implements spi.Iterable and spi.GroupedAggregator on
+// This file implements spi.EntityStore.Iterate and spi.GroupedAggregator on
 // *entityStore for the grouped entity statistics query endpoint
 // (POST /api/entity/stats/{name}/{version}/query).
 //
 // Design (spec §6.2):
-//   - Iterate reuses the existing planQuery() WHERE-pushdown machinery and
+//   - Iterate reuses the existing planFor()/planQuery() WHERE-pushdown machinery and
 //     evaluateFilter() residual evaluator from searcher.go, exactly mirroring
 //     Search's pre-filter + post-filter pattern. The only structural
 //     difference is that results are streamed through an Iterator wrapper
@@ -38,13 +38,11 @@ import (
 // portability across SQL dialects — even where sqlite would accept alias
 // references, we don't rely on it.
 
-// Compile-time interface checks.
-var (
-	_ spi.Iterable          = (*entityStore)(nil)
-	_ spi.GroupedAggregator = (*entityStore)(nil)
-)
+// Compile-time interface check. The spi.EntityStore assertion in
+// entity_store.go covers Iterate.
+var _ spi.GroupedAggregator = (*entityStore)(nil)
 
-// Iterate implements spi.Iterable.
+// Iterate implements spi.EntityStore.Iterate.
 //
 // Returns an iterator over entities in the model matching filter. Pushable
 // filter parts go into SQL WHERE; the residual is applied inside Next() via
@@ -54,9 +52,9 @@ var (
 // time, matching the convention used by searchPointInTimeBase.
 //
 // In-tx semantics (D11 RYW): when a transaction is active and PointInTime
-// is NOT set, the iterator materializes via getAllTx — the same overlay
-// (entity_versions @ tx.SnapshotTime + tx.Buffer − tx.Deletes) used by
-// GetAll's in-tx branch. Without this branch, grouped-stats would query
+// is NOT set, the iterator streams the same overlay
+// (entity_versions @ tx.SnapshotTime + tx.Buffer − tx.Deletes) through one
+// cursor (tx_overlay.go). Without this branch, grouped-stats would query
 // the `entities` table directly and miss buffered writes / fail to mask
 // buffered deletes, violating read-your-writes promised by spec D11.
 //
@@ -65,6 +63,13 @@ var (
 // the tx-buffer overlay. PIT semantics are historical-read by definition,
 // so the in-flight buffer is a tier-2 concern; documented in the
 // grouped-stats help-topic (cmd/cyoda/help/content/crud.md).
+//
+// OrderBy: empty means order is unspecified (a deterministic entity_id
+// order is still emitted — a conformant choice within "unspecified"); a
+// non-empty OrderBy is honoured via orderByClause (shared with Search) on
+// the non-tx/PIT SQL paths. A non-empty OrderBy with an ambient transaction
+// is unsupported per the EntityStore.Iterate doc — rejected up front, before either
+// tx branch below runs.
 func (s *entityStore) Iterate(
 	ctx context.Context,
 	model spi.ModelRef,
@@ -74,32 +79,26 @@ func (s *entityStore) Iterate(
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
-
-	// In-tx, non-PIT: materialize via tx-overlay then iterate the slice.
-	// Mirrors plugins/memory/grouped_stats.go's buildSnapshot pattern.
-	if tx := spi.GetTransaction(ctx); tx != nil && opts.PointInTime == nil {
-		tx.OpMu.RLock()
-		defer tx.OpMu.RUnlock()
-		if tx.RolledBack {
-			return nil, fmt.Errorf("Iterate: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
-		}
-		entities, err := s.getAllTx(ctx, tx, model)
-		if err != nil {
-			return nil, err
-		}
-		return &sqliteSliceIter{
-			ctx:      ctx,
-			snapshot: entities,
-			filter:   filter,
-		}, nil
+	if err := validateOrderSpecs(opts.OrderBy); err != nil {
+		return nil, err
 	}
 
-	// Zero-value Filter means "match all" per the spi.Iterable contract.
-	// Skip planQuery — it would treat the empty Op as non-pushable and
-	// install the zero filter as a residual, breaking evaluateFilter.
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
+	tx := spi.GetTransaction(ctx)
+	if len(opts.OrderBy) > 0 && tx != nil {
+		return nil, fmt.Errorf("Iterate: ordered iteration inside a transaction is unsupported")
+	}
+
+	// In-tx, non-PIT: one overlay cursor (committed snapshot on readDB merged
+	// with the buffer, deletes suppressed), residual applied inside the
+	// stream — never a materialised merged view. See tx_overlay.go.
+	if tx != nil && opts.PointInTime == nil {
+		return s.iterateTx(ctx, tx, model, filter, opts.TrackingRead)
+	}
+
+	// Zero-value Filter means "match all" per the spi.EntityStore.Iterate contract.
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Iterate: %w", err)
 	}
 
 	searchOpts := spi.SearchOptions{
@@ -121,84 +120,37 @@ func (s *entityStore) Iterate(
 		baseQuery += " AND (" + plan.where + ")"
 		baseArgs = append(baseArgs, plan.args...)
 	}
+	if pointInTime {
+		baseQuery += orderByClause(opts.OrderBy, "ev")
+	} else {
+		baseQuery += orderByClause(opts.OrderBy, "")
+	}
 
-	rows, err := s.db.QueryContext(ctx, baseQuery, baseArgs...)
+	// Non-tx iteration streams from the dedicated reader connection (readDB),
+	// not the writer db: an Iterate caller may hold rows open across an
+	// arbitrary number of Next() calls, and pinning that to the writer's
+	// single-connection pool would starve concurrent writes (e.g. a streamed
+	// async-search SaveResults chunk) for as long as the iterator stays open.
+	rows, err := s.readDB.QueryContext(ctx, baseQuery, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("iterate query: %w", err)
 	}
 	return &sqliteIter{
-		ctx:         ctx,
-		rows:        rows,
-		postFilter:  plan.postFilter,
-		pointInTime: pointInTime,
+		ctx:                ctx,
+		rows:               rows,
+		preparedPostFilter: plan.preparedPostFilter,
+		pointInTime:        pointInTime,
 	}, nil
-}
-
-// sqliteSliceIter walks a pre-built snapshot from getAllTx, applying the
-// filter inside Next() via the same evaluateFilter() the streaming path
-// uses. Used by the in-tx Iterate branch to honour D11 RYW. Per the SPI
-// iterator contract: Err() is sticky, Close() is idempotent, ctx
-// cancellation is observed.
-type sqliteSliceIter struct {
-	ctx      context.Context
-	snapshot []*spi.Entity
-	filter   spi.Filter
-	idx      int
-	cur      *spi.Entity
-	err      error
-	closed   bool
-}
-
-func (it *sqliteSliceIter) Next() bool {
-	if it.err != nil || it.closed {
-		return false
-	}
-	if err := it.ctx.Err(); err != nil {
-		it.err = err
-		return false
-	}
-	for it.idx < len(it.snapshot) {
-		e := it.snapshot[it.idx]
-		it.idx++
-		// Zero-value Filter (empty Op) matches everything — short-circuit
-		// before evaluateFilter, which expects a populated Op.
-		if it.filter.Op != "" {
-			ok, ferr := evaluateFilter(it.filter, e)
-			if ferr != nil {
-				it.err = fmt.Errorf("filter evaluation: %w", ferr)
-				return false
-			}
-			if !ok {
-				continue
-			}
-		}
-		it.cur = e
-		return true
-	}
-	return false
-}
-
-func (it *sqliteSliceIter) Entity() *spi.Entity { return it.cur }
-func (it *sqliteSliceIter) Err() error          { return it.err }
-
-func (it *sqliteSliceIter) Close() error {
-	if it.closed {
-		return nil
-	}
-	it.closed = true
-	it.snapshot = nil
-	it.cur = nil
-	return nil
 }
 
 // sqliteIter wraps sql.Rows, applying any residual filter inside Next()
 // before yielding each row. Err() is sticky; Close() is idempotent;
 // ctx cancellation is observed.
 type sqliteIter struct {
-	ctx         context.Context
-	rows        *sql.Rows
-	postFilter  *spi.Filter
-	pointInTime bool
+	ctx                context.Context
+	rows               *sql.Rows
+	preparedPostFilter *spi.PreparedFilter
+	pointInTime        bool
 
 	cur    *spi.Entity
 	err    error
@@ -231,15 +183,8 @@ func (it *sqliteIter) Next() bool {
 			it.err = serr
 			return false
 		}
-		if it.postFilter != nil {
-			ok, ferr := evaluateFilter(*it.postFilter, e)
-			if ferr != nil {
-				it.err = fmt.Errorf("post-filter evaluation: %w", ferr)
-				return false
-			}
-			if !ok {
-				continue
-			}
+		if it.preparedPostFilter != nil && !evaluateFilter(*it.preparedPostFilter, e) {
+			continue
 		}
 		it.cur = e
 		return true
@@ -276,6 +221,36 @@ func (s *entityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
+	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
+	// (which does support PIT) handles it without per-query SQL plumbing.
+	if opts.PointInTime != nil {
+		return nil, spi.ErrAggregationNotPushdownable
+	}
+
+	// Path validation runs BEFORE the stdev decline below, matching postgres,
+	// which validates immediately after its own PIT early-return. A malformed
+	// path is a client error and must be classified the same way on every
+	// backend; declining first would report an invalid path as
+	// ErrAggregationNotPushdownable whenever the request also asked for stdev,
+	// and the service layer would then stream a filter it should have refused.
+	if err := validateFilterPaths(filter); err != nil {
+		return nil, err
+	}
+	// Group-by and aggregation paths are held to the same grammar, and
+	// validated HERE rather than only inside groupExprToSQL /
+	// aggregateExprToSQL: those run after the declines below, so a request
+	// that also asked for stdev or carried a residual filter had its malformed
+	// path reported as ErrAggregationNotPushdownable. The service layer takes
+	// that as "stream it instead" and the streaming tally resolves the
+	// malformed path to nothing, bucketing every entity as null — a
+	// wrong-but-available answer, and the same input classified differently per
+	// backend (memory validates both unconditionally). The checks inside the
+	// two translators stay: they are the injection guard at the point of
+	// interpolation, not the client-error classification.
+	if err := validateGroupAndAggregatePaths(groupBy, opts.Aggregations); err != nil {
+		return nil, err
+	}
+
 	// D9: sqlite has no native STDDEV and the single-pass formula is
 	// numerically unsafe. Decline so service layer uses Welford in-memory.
 	for _, a := range opts.Aggregations {
@@ -283,20 +258,10 @@ func (s *entityStore) GroupedAggregate(
 			return nil, spi.ErrAggregationNotPushdownable
 		}
 	}
-
-	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
-	// (which does support PIT) handles it without per-query SQL plumbing.
-	if opts.PointInTime != nil {
-		return nil, spi.ErrAggregationNotPushdownable
-	}
-
-	if err := validateFilterPaths(filter); err != nil {
-		return nil, err
-	}
-	// Zero-value Filter means "match all" (same convention as Iterable).
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
+	// Zero-value Filter means "match all" (same convention as Iterate).
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("GroupedAggregate: %w", err)
 	}
 	if plan.postFilter != nil {
 		// A SQL GROUP BY can't safely apply a residual filter after the

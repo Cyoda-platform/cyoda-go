@@ -34,7 +34,19 @@ func getEntityState(t *testing.T, entityID string) string {
 // getSMAuditEvents retrieves state machine audit events for an entity.
 func getSMAuditEvents(t *testing.T, entityID string) []map[string]any {
 	t.Helper()
+	// The endpoint's default page size is 20; callers that need the whole
+	// history of a write-heavy entity use getSMAuditEventsWithLimit.
+	return getSMAuditEventsWithLimit(t, entityID, 0)
+}
+
+// getSMAuditEventsWithLimit is getSMAuditEvents with an explicit page size.
+// limit <= 0 leaves the endpoint's default in place.
+func getSMAuditEventsWithLimit(t *testing.T, entityID string, limit int) []map[string]any {
+	t.Helper()
 	path := fmt.Sprintf("/api/audit/entity/%s?eventType=StateMachine", entityID)
+	if limit > 0 {
+		path += fmt.Sprintf("&limit=%d", limit)
+	}
 	resp := doAuth(t, http.MethodGet, path, "")
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -55,7 +67,15 @@ func getSMAuditEvents(t *testing.T, entityID string) []map[string]any {
 // setupModelWithWorkflow imports a model, locks it, and imports a workflow.
 func setupModelWithWorkflow(t *testing.T, entityName string, workflowJSON string) {
 	t.Helper()
-	importModelE2E(t, entityName, 1)
+	setupModelSampleWithWorkflow(t, entityName, workflowSampleModel, workflowJSON)
+}
+
+// setupModelSampleWithWorkflow is setupModelWithWorkflow from a CUSTOM sample,
+// used when the workflow's processors write fields workflowSampleModel does not
+// declare (see workflowSampleWith).
+func setupModelSampleWithWorkflow(t *testing.T, entityName, sample, workflowJSON string) {
+	t.Helper()
+	importModelSampleE2E(t, entityName, 1, sample)
 	lockModelE2E(t, entityName, 1)
 	status, body := importWorkflowE2E(t, entityName, 1, workflowJSON)
 	if status != http.StatusOK {
@@ -204,7 +224,12 @@ func TestWorkflowProc_ProcessorModifiesData(t *testing.T) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// compute-total writes `total` = amount*1.1 in float64, which carries 17
+	// significant digits and therefore classifies BIG_DECIMAL. The sample
+	// declares that type with a neutral 16-digit decimal — a bare 0 (or 0.0,
+	// which strips to 0) would type the field INTEGER and the processor's
+	// write would be rejected as a narrowing.
+	setupModelSampleWithWorkflow(t, model, workflowSampleWith(`"total": 0.1234567890123456`), wf)
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
 
@@ -257,7 +282,8 @@ func TestWorkflowProc_MultipleProcessorsSameTransition(t *testing.T) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// step-1/step-2 write `step1`/`step2`; the model must declare them.
+	setupModelSampleWithWorkflow(t, model, workflowSampleWith(`"step1": false, "step2": false`), wf)
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":10,"status":"new"}`)
 
@@ -356,7 +382,7 @@ func createEntityE2EWithTxID(t *testing.T, entityName string, modelVersion int, 
 	return entityID, txID
 }
 
-// --- Test: PUT /entity/{id}/{transition} with COMMIT_BEFORE_DISPATCH durably commits TX_post (issue #27, Task 13) ---
+// --- Test: PUT /entity/{id}/{transition} with COMMIT_BEFORE_DISPATCH durably commits TX_post (Task 13) ---
 
 // TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState verifies
 // that an UpdateEntity-driven cascade containing a COMMIT_BEFORE_DISPATCH
@@ -399,7 +425,9 @@ func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// cbd-enrich writes `enriched`/`enrichedAmount`; the model must declare them.
+	setupModelSampleWithWorkflow(t, model,
+		workflowSampleWith(`"enriched": false, "enrichedAmount": 0`), wf)
 
 	// Create — lands in PENDING via the automated init.
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
@@ -432,7 +460,7 @@ func TestWorkflowProc_UpdateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 	}
 }
 
-// --- Test: PUT /entity/{id}/{transition} with stale If-Match aborts CBD cascade BEFORE dispatch (issue #27, Task 15) ---
+// --- Test: PUT /entity/{id}/{transition} with stale If-Match aborts CBD cascade BEFORE dispatch (Task 15) ---
 
 // TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch is the e2e
 // counterpart to engine_ifmatch_test.go's
@@ -481,7 +509,9 @@ func TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch(t *testing.
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// cbd-enrich-counted writes `enriched`; the model must declare it so the
+	// only reason this transition can fail is the stale If-Match under test.
+	setupModelSampleWithWorkflow(t, model, workflowSampleWith(`"enriched": false`), wf)
 
 	// Create — lands in PENDING via the automated init.
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
@@ -526,7 +556,7 @@ func TestWorkflowProc_UpdateWithCBD_StaleIfMatchAbortsBeforeDispatch(t *testing.
 	}
 }
 
-// --- Test: POST /entity txId works with /audit/entity/{id}/workflow/{txId}/finished (issue #20) ---
+// --- Test: POST /entity txId works with /audit/entity/{id}/workflow/{txId}/finished ---
 
 func TestWorkflowProc_PostTxIdMatchesAuditEndpoint(t *testing.T) {
 	const model = "e2e-wfproc-txid"
@@ -619,7 +649,9 @@ func TestWorkflowProc_CreateWithCBD_DurablyCommitsPostCascadeState(t *testing.T)
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// cbd-enrich-create writes `enriched`/`enrichedAmount`; declare both.
+	setupModelSampleWithWorkflow(t, model,
+		workflowSampleWith(`"enriched": false, "enrichedAmount": 0`), wf)
 
 	// POST — drives the create cascade through both segments.
 	entityID, txID := createEntityE2EWithTxID(t, model, 1, `{"name":"Test","amount":50,"status":"new"}`)
@@ -703,7 +735,8 @@ func TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten(t *testing
 			}
 		}]
 	}`
-	h.SetupModelWithWorkflow(t, primary, wf)
+	// cbd-true-proc writes `secondaryId`; the model must declare it.
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"secondaryId": ""`), wf)
 
 	// Create entity — automated init lands it in PENDING.
 	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"anchor","amount":100,"status":"new"}`)
@@ -762,12 +795,12 @@ func TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten(t *testing
 // classification of 409 retryable is covered by the entity service unit
 // tests.
 //
-// TODO(issue-27, Task 18): build a concurrent-client harness that suppresses
+// TODO(concurrent-client-harness): build a concurrent-client harness that suppresses
 // the doAuth retry helper for this test only and uses a synchronisation
 // channel between client goroutines and the dispatch fake to enforce
 // overlap.
 func TestWorkflowProc_UpdateWithCBD_HotEntityConcurrent(t *testing.T) {
-	t.Skip("requires concurrent-client harness without doAuth retry-recovery; see issue #27 Task 18 TODO")
+	t.Skip("requires concurrent-client harness without doAuth retry-recovery; see the concurrent-client-harness TODO above")
 }
 
 // --- Spec §16 case D (concurrent search across segment boundary) ---
@@ -817,7 +850,8 @@ func TestWorkflowProc_SearchSeesPreCalloutStateDuringDispatch(t *testing.T) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// cbd-blocker writes `enriched`; the model must declare it.
+	setupModelSampleWithWorkflow(t, model, workflowSampleWith(`"enriched": false`), wf)
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
 	if state := getEntityState(t, entityID); state != "PENDING" {
@@ -826,12 +860,13 @@ func TestWorkflowProc_SearchSeesPreCalloutStateDuringDispatch(t *testing.T) {
 
 	// Driver goroutine: fires the PUT that triggers the CBD cascade. It
 	// will block in the dispatch fake until releaseDispatch is closed.
+	driverCtx := e2eCtx(t)
 	driverDone := make(chan struct{})
+	var driverRes httpResult
 	go func() {
 		defer close(driverDone)
 		path := fmt.Sprintf("/api/entity/JSON/%s/approve", entityID)
-		resp := doAuth(t, http.MethodPut, path, `{"name":"Test","amount":100,"status":"approved"}`)
-		readBody(t, resp)
+		driverRes = resultOf(doAuthRaw(driverCtx, http.MethodPut, path, `{"name":"Test","amount":100,"status":"approved"}`))
 	}()
 
 	// Wait until the dispatch fake has been entered — TX_pre is committed
@@ -855,6 +890,12 @@ func TestWorkflowProc_SearchSeesPreCalloutStateDuringDispatch(t *testing.T) {
 	// will return.
 	close(releaseDispatch)
 	<-driverDone
+	if driverRes.err != nil {
+		t.Fatalf("driver PUT: %v", driverRes.err)
+	}
+	if driverRes.status != http.StatusOK {
+		t.Fatalf("driver PUT: status=%d body=%s", driverRes.status, driverRes.body)
+	}
 
 	// Post-cascade durability: the cascade has fully committed.
 	if state := getEntityState(t, entityID); state != "APPROVED" {
@@ -906,7 +947,8 @@ func TestWorkflowProc_UpdateWithoutCBD_RegressionBound(t *testing.T) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// sync-enrich writes `enriched`; the model must declare it.
+	setupModelSampleWithWorkflow(t, model, workflowSampleWith(`"enriched": false`), wf)
 
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
 
@@ -1039,7 +1081,9 @@ func TestWorkflowProc_LoopbackWithCBD(t *testing.T) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, model, wf)
+	// cbd-loopback-enrich writes `enriched`/`upgradedBy`; declare both.
+	setupModelSampleWithWorkflow(t, model,
+		workflowSampleWith(`"enriched": false, "upgradedBy": ""`), wf)
 
 	// Create with amount=50 — criterion fails, entity rests in PENDING_BIG.
 	entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":50,"status":"new"}`)
@@ -1091,10 +1135,10 @@ func TestWorkflowProc_LoopbackWithCBD(t *testing.T) {
 // TX_post.Commit, TX_pre's state is durable by definition of the commit
 // boundary).
 //
-// TODO(issue-27, Task 23): if a fault-injection hook is added to the
+// TODO(engine-fault-injection-hook): if a fault-injection hook is added to the
 // engine in a future change, replace this skip with a real test that
 // triggers the hook between TX_pre.Commit and dispatch and asserts
 // durability via a fresh GET.
 func TestWorkflowProc_UpdateWithCBD_EngineCrashLeavesEntityInPreCalloutState(t *testing.T) {
-	t.Skip("requires engine-side fault-injection hook — pre-callout durability is structurally guaranteed by TX_pre commit boundary, covered at engine layer by TestEngine_CommitBeforeDispatch_AuditEventPlacement; see issue #27 Task 23 TODO")
+	t.Skip("requires engine-side fault-injection hook — pre-callout durability is structurally guaranteed by TX_pre commit boundary, covered at engine layer by TestEngine_CommitBeforeDispatch_AuditEventPlacement; see the engine-fault-injection-hook TODO above")
 }

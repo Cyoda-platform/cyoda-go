@@ -93,8 +93,10 @@ func RunConcurrentTransitionsDifferentEntities(t *testing.T, fixture BackendFixt
 	const modelVersion = 1
 	const N = 10 // CI-friendly concurrency level
 
-	// Setup with tag-with-foo processor on create transition.
-	if err := c.ImportModel(t, modelName, modelVersion, `{"index":0}`); err != nil {
+	// Setup with tag-with-foo processor on create transition. The sample seeds
+	// a zero-valued "tag" so the model DECLARES the field the processor writes
+	// — processor output passes the same model checks a client write does.
+	if err := c.ImportModel(t, modelName, modelVersion, `{"index":0,"tag":""}`); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
 	if err := c.LockModel(t, modelName, modelVersion); err != nil {
@@ -149,14 +151,14 @@ func RunConcurrentTransitionsDifferentEntities(t *testing.T, fixture BackendFixt
 
 // --- Deferred tests (Tasks 4b.11-13) ---
 
-// TODO(#172): RunProcessorDisconnectMidFlight — requires crash-on-receive
+// TODO(processor-fault-injection-harness): RunProcessorDisconnectMidFlight — requires crash-on-receive
 // catalog entry that kills the compute client process, plus fixture support
 // for RestartComputeClient. Deferred to v2.
 
-// TODO(#172): RunProcessorAsyncNewTxRollback — requires update-and-fail-async
+// TODO(processor-fault-injection-harness): RunProcessorAsyncNewTxRollback — requires update-and-fail-async
 // catalog entry AND ASYNC_NEW_TX workflow semantics (savepoint). The
 // ASYNC_NEW_TX semantics are not fully tested yet. Deferred to v2.
 
-// TODO(#172): RunProcessorTimeoutBoundary — requires slow-configurable with
+// TODO(processor-fault-injection-harness): RunProcessorTimeoutBoundary — requires slow-configurable with
 // duration close to the dispatch timeout, and per-workflow timeout
 // configuration. Timeout behavior may differ across backends. Deferred to v2.

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -15,33 +16,6 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
-
-// Default keep-alive configuration. Override with SetKeepAliveConfig.
-var (
-	DefaultKeepAliveInterval = 10 * time.Second
-	DefaultKeepAliveTimeout  = 30 * time.Second
-)
-
-// SetKeepAliveConfig overrides the default keep-alive interval and timeout for
-// this service instance.
-func (s *CloudEventsServiceImpl) SetKeepAliveConfig(interval, timeout time.Duration) {
-	s.keepAliveInterval = interval
-	s.keepAliveTimeout = timeout
-}
-
-func (s *CloudEventsServiceImpl) keepAliveInterval_() time.Duration {
-	if s.keepAliveInterval > 0 {
-		return s.keepAliveInterval
-	}
-	return DefaultKeepAliveInterval
-}
-
-func (s *CloudEventsServiceImpl) keepAliveTimeout_() time.Duration {
-	if s.keepAliveTimeout > 0 {
-		return s.keepAliveTimeout
-	}
-	return DefaultKeepAliveTimeout
-}
 
 // StartStreaming implements the bidirectional streaming RPC for calculation
 // member lifecycle management. It expects a ROLE_M2M-authorized user, a
@@ -91,15 +65,13 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 		return status.Errorf(codes.PermissionDenied, "tenant mismatch")
 	}
 
-	// 5. Register member.
-	sendFn := func(ce *cepb.CloudEvent) error {
-		return stream.Send(ce)
-	}
-	memberID := s.registry.Register(tenantID, joinEvent.Tags, sendFn)
-	defer s.registry.Unregister(memberID)
-	slog.Info("member joined", "pkg", "grpc", "memberId", memberID, "tenantId", string(tenantID), "tags", joinEvent.Tags)
-
-	// 6. Send GreetEvent.
+	// 5. Build the greet and register. Register publishes the member and
+	// then starts its writer with the greet as the first event on the wire,
+	// so the member is already visible when the client holds the greet, and
+	// a dispatch routed the instant the member is visible still queues
+	// behind the greet. The raw stream.Send closure below is the ONLY raw
+	// write on this stream, and only the writer ever calls it.
+	memberID := uuid.NewString()
 	greetPayload := events.CalculationMemberGreetEventJson{
 		ID:                  memberID,
 		MemberID:            memberID,
@@ -110,49 +82,37 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to create greet event: %v", err)
 	}
-	if err := stream.Send(greetCE); err != nil {
-		slog.Error("failed to send greet", "pkg", "grpc", "memberId", memberID, "error", err)
-		return err
-	}
-	slog.Info("member greeted", "pkg", "grpc", "memberId", memberID)
+	member := s.registry.Register(memberID, tenantID, joinEvent.Tags, func(ce *cepb.CloudEvent) error {
+		return stream.Send(ce)
+	}, greetCE)
+	defer s.registry.Unregister(member)
+	slog.Info("member joined", "pkg", "grpc", "memberId", memberID, "tenantId", string(tenantID), "tags", joinEvent.Tags)
 
-	// 7. Start keep-alive goroutine. The timeoutCh is closed when the member
-	// exceeds the keep-alive timeout, which terminates the receive loop.
-	timeoutCh := make(chan struct{})
-	keepAliveCtx, keepAliveCancel := context.WithCancel(ctx)
-	defer keepAliveCancel()
-	go s.keepAliveLoop(keepAliveCtx, memberID, timeoutCh)
+	// 6. Keep-alive loop and receive goroutine. Both evict the member to end
+	// the stream; neither ever blocks on it.
+	kaCtx, kaCancel := context.WithCancel(ctx)
+	defer kaCancel()
+	go s.keepAliveLoop(kaCtx, member)
+	recvCh := make(chan *cepb.CloudEvent)
+	go s.receiveLoop(stream, member, recvCh)
 
-	// 8. Receive loop. We run Recv in a goroutine so we can also select on
-	// the timeout channel.
-	type recvResult struct {
-		msg *cepb.CloudEvent
-		err error
-	}
-
+	// 7. Main loop. Eviction — by keep-alive timeout, write stall, send
+	// failure, client close, or a contained panic — is the only exit.
+	// Returning is what makes grpc-go cancel the stream and unblock a raw
+	// send stuck in the HTTP/2 write window.
 	for {
-		recvCh := make(chan recvResult, 1)
-		go func() {
-			msg, err := stream.Recv()
-			recvCh <- recvResult{msg, err}
-		}()
-
 		select {
-		case <-timeoutCh:
-			slog.Info("member timed out", "pkg", "grpc", "memberId", memberID)
-			return status.Errorf(codes.DeadlineExceeded, "keep-alive timeout")
-		case res := <-recvCh:
-			if res.err != nil {
-				slog.Info("member disconnected", "pkg", "grpc", "memberId", memberID, "reason", "stream closed")
-				return res.err
-			}
-
-			evtType, evtPayload, err := ParseCloudEvent(res.msg)
+		case <-member.Evicted():
+			err := member.EvictErr()
+			slog.Info("member stream ended", "pkg", "grpc", "memberId", memberID, "reason", err)
+			return err
+		case msg := <-recvCh:
+			evtType, evtPayload, err := ParseCloudEvent(msg)
 			if err != nil {
 				slog.Warn("malformed CloudEvent from member", "pkg", "grpc", "memberId", memberID, "error", err)
-				continue // skip malformed messages
+				continue
 			}
-			slog.Debug("CloudEvent received from member", "pkg", "grpc", "memberId", memberID, "type", evtType, "ceId", res.msg.Id, "payload", logging.PayloadPreview(evtPayload, 200))
+			slog.Debug("CloudEvent received from member", "pkg", "grpc", "memberId", memberID, "type", evtType, "ceId", msg.Id, "payload", logging.PayloadPreview(evtPayload, 200))
 
 			switch evtType {
 			case CalculationMemberKeepAliveEvent:
@@ -162,31 +122,18 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 				// against a client that also echoes inbound keep-alives produces
 				// a zero-delay, unbounded ping-pong storm pinning both processes
 				// at 100% CPU.
-				slog.Debug("keep-alive received", "pkg", "grpc", "memberId", memberID)
-				member := s.registry.Get(memberID)
-				if member != nil {
-					member.UpdateLastSeen()
-				}
-
+				member.UpdateLastSeen()
 			case EntityProcessorCalculationResponse:
-				s.handleProcessorResponse(memberID, evtPayload)
-				slog.Debug("processor response routed", "pkg", "grpc", "memberId", memberID)
-
+				member.UpdateLastSeen()
+				handleProcessorResponse(member, evtPayload)
 			case EntityCriteriaCalculationResponse:
-				s.handleCriteriaResponse(memberID, evtPayload)
-				slog.Debug("criteria response routed", "pkg", "grpc", "memberId", memberID)
-
+				member.UpdateLastSeen()
+				handleCriteriaResponse(member, evtPayload)
 			case EntityFunctionCalculationResponse:
-				s.handleFunctionResponse(memberID, evtPayload)
-				slog.Debug("function response routed", "pkg", "grpc", "memberId", memberID)
-
+				member.UpdateLastSeen()
+				handleFunctionResponse(member, evtPayload)
 			case EventAckResponse:
-				// Client acknowledged a server event — proves liveness.
-				member := s.registry.Get(memberID)
-				if member != nil {
-					member.UpdateLastSeen()
-				}
-
+				member.UpdateLastSeen()
 			default:
 				slog.Warn("unknown event type from member", "pkg", "grpc", "memberId", memberID, "type", evtType)
 			}
@@ -194,43 +141,73 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	}
 }
 
-// keepAliveLoop periodically checks that the member is still alive and sends
-// keep-alive events. If the member times out, it closes timeoutCh to signal
-// the receive loop to terminate.
-func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, memberID string, timeoutCh chan struct{}) {
-	interval := s.keepAliveInterval_()
-	timeout := s.keepAliveTimeout_()
+// receiveLoop is the one goroutine that reads the member's stream. Every
+// Recv error, including a clean close, evicts the member with that error so
+// the stream handler returns it. A panic here is contained by ticket and
+// evicts; it does not latch the node, because this goroutine does no engine
+// or store work and the member simply reconnects.
+func (s *CloudEventsServiceImpl) receiveLoop(stream googlegrpc.BidiStreamingServer[cepb.CloudEvent, cepb.CloudEvent], member *Member, recvCh chan<- *cepb.CloudEvent) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			member.Evict(panicStatus(rec, "StartStreaming.receive"))
+		}
+	}()
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			member.Evict(err)
+			return
+		}
+		select {
+		case recvCh <- msg:
+		case <-member.Evicted():
+			return
+		}
+	}
+}
 
-	ticker := time.NewTicker(interval)
+// keepAliveLoop pings the member every interval and evicts it when it has
+// shown no inbound activity for timeout, OR when one write has been in
+// flight for longer than timeout — a member whose own keep-alive goroutine
+// keeps pinging while its application has stopped reading is still frozen,
+// and write progress is the signal that catches it. The loop never blocks on
+// the stream: a ping the writer cannot take right now is skipped.
+func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, member *Member) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			member.Evict(panicStatus(rec, "keepAliveLoop"))
+		}
+	}()
+	ticker := time.NewTicker(s.keepAliveInterval)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-member.Evicted():
+			return
 		case <-ticker.C:
-			member := s.registry.Get(memberID)
-			if member == nil {
+			if time.Since(member.LastSeen()) > s.keepAliveTimeout {
+				slog.Info("member timed out", "pkg", "grpc", "memberId", member.ID)
+				member.Evict(status.Error(codes.DeadlineExceeded, "keep-alive timeout"))
 				return
 			}
-			if time.Since(member.LastSeen()) > timeout {
-				close(timeoutCh)
+			if since := member.WriteInFlightSince(); !since.IsZero() && time.Since(since) > s.keepAliveTimeout {
+				slog.Warn("member not draining", "pkg", "grpc", "memberId", member.ID, "stalledFor", time.Since(since))
+				member.Evict(status.Error(codes.DeadlineExceeded, "member not draining"))
 				return
 			}
-			kaPayload := events.CalculationMemberKeepAliveEventJson{
-				ID:       memberID,
-				MemberID: memberID,
-				Success:  true,
-			}
-			kaCE, err := NewCloudEvent(CalculationMemberKeepAliveEvent, kaPayload)
+			kaCE, err := NewCloudEvent(CalculationMemberKeepAliveEvent, events.CalculationMemberKeepAliveEventJson{
+				ID: member.ID, MemberID: member.ID, Success: true,
+			})
 			if err != nil {
-				slog.Error("failed to create keep-alive event", "pkg", "grpc", "memberId", memberID, "error", err)
+				slog.Error("failed to create keep-alive event", "pkg", "grpc", "memberId", member.ID, "error", err)
 				continue
 			}
-			if err := member.Send(kaCE); err != nil {
-				slog.Error("failed to send keep-alive", "pkg", "grpc", "memberId", memberID, "error", err)
+			if member.TrySend(kaCE) {
+				slog.Debug("keep-alive sent", "pkg", "grpc", "memberId", member.ID)
 			} else {
-				slog.Debug("keep-alive sent", "pkg", "grpc", "memberId", memberID)
+				slog.Debug("writer busy, ping skipped", "pkg", "grpc", "memberId", member.ID)
 			}
 		}
 	}
@@ -238,7 +215,7 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, memberID str
 
 // handleProcessorResponse routes a processor calculation response to the
 // pending request on the given member.
-func (s *CloudEventsServiceImpl) handleProcessorResponse(memberID string, payload json.RawMessage) {
+func handleProcessorResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
@@ -250,12 +227,7 @@ func (s *CloudEventsServiceImpl) handleProcessorResponse(memberID string, payloa
 		Payload  json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal processor response", "pkg", "grpc", "memberId", memberID, "error", err)
-		return
-	}
-
-	member := s.registry.Get(memberID)
-	if member == nil {
+		slog.Warn("failed to unmarshal processor response", "pkg", "grpc", "memberId", member.ID, "error", err)
 		return
 	}
 
@@ -276,7 +248,7 @@ func (s *CloudEventsServiceImpl) handleProcessorResponse(memberID string, payloa
 
 // handleCriteriaResponse routes a criteria calculation response to the
 // pending request on the given member.
-func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload json.RawMessage) {
+func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID string `json:"requestId"`
 		Success   bool   `json:"success"`
@@ -289,12 +261,7 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal criteria response", "pkg", "grpc", "memberId", memberID, "error", err)
-		return
-	}
-
-	member := s.registry.Get(memberID)
-	if member == nil {
+		slog.Warn("failed to unmarshal criteria response", "pkg", "grpc", "memberId", member.ID, "error", err)
 		return
 	}
 
@@ -317,7 +284,7 @@ func (s *CloudEventsServiceImpl) handleCriteriaResponse(memberID string, payload
 
 // handleFunctionResponse routes a function calculation response to the
 // pending request on the given member.
-func (s *CloudEventsServiceImpl) handleFunctionResponse(memberID string, payload json.RawMessage) {
+func handleFunctionResponse(member *Member, payload json.RawMessage) {
 	var resp struct {
 		RequestID  string           `json:"requestId"`
 		Success    bool             `json:"success"`
@@ -330,12 +297,7 @@ func (s *CloudEventsServiceImpl) handleFunctionResponse(memberID string, payload
 		Warnings []string `json:"warnings"`
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", memberID, "error", err)
-		return
-	}
-
-	member := s.registry.Get(memberID)
-	if member == nil {
+		slog.Warn("failed to unmarshal function response", "pkg", "grpc", "memberId", member.ID, "error", err)
 		return
 	}
 

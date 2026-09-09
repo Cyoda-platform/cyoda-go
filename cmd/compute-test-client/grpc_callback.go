@@ -16,7 +16,7 @@ import (
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 )
 
-// grpc_callback.go — feature #287 gRPC-transport callback for the
+// grpc_callback.go — gRPC-transport callback for the
 // compute-test-client. A processor may issue its joined callback as a gRPC
 // EntityManage(EntityCreateRequest) instead of an HTTP POST, presenting the
 // signed cyodatxtoken as the "tx-token" gRPC metadata key. When that call lands

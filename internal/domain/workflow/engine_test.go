@@ -482,7 +482,7 @@ func TestAuditEventsRecorded(t *testing.T) {
 }
 
 // TestExecuteUsesCallerTxID verifies that Execute uses the caller-provided
-// transaction ID for all state-machine audit events (issue #20). The caller's
+// transaction ID for all state-machine audit events. The caller's
 // txID is the entity-write transaction ID — it must match what the audit
 // endpoint expects so clients can look up /audit/entity/{id}/workflow/{txId}/finished
 // using the transactionId returned by POST /entity.
@@ -550,7 +550,7 @@ func TestExecuteUsesCallerTxID(t *testing.T) {
 }
 
 // TestManualTransitionUsesCallerTxID verifies ManualTransition uses the
-// caller-provided txID (same issue #20 pattern as Execute).
+// caller-provided txID (same pattern as Execute).
 func TestManualTransitionUsesCallerTxID(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -612,7 +612,7 @@ func TestManualTransitionUsesCallerTxID(t *testing.T) {
 }
 
 // TestLoopbackUsesCallerTxID verifies Loopback uses the caller-provided
-// txID (same issue #20 pattern as Execute and ManualTransition).
+// txID (same pattern as Execute and ManualTransition).
 func TestLoopbackUsesCallerTxID(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -1097,6 +1097,13 @@ func TestProcessorDispatchModifiesEntityData(t *testing.T) {
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-mod", ModelVersion: "1.0"}
+
+	// enrich-proc's output passes the same model checks a client write does:
+	// declare the entity's own `x` and the `enriched` field it writes.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":        schema.Integer,
+		"enriched": schema.Boolean,
+	})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "ModWF", InitialState: "INITIAL", Active: true,
@@ -1641,6 +1648,15 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-fail-test", ModelVersion: "1.0"}
 
+	// sync-proc's output passes the same model checks a client write does:
+	// declare the entity's own `original` and the `modified` field it writes.
+	// (async-fail-proc's return is discarded by ASYNC_NEW_TX, so it adds
+	// nothing to the model's contract.)
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"original": schema.Boolean,
+		"modified": schema.String,
+	})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "AsyncFailWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -1766,6 +1782,16 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cumulative-test", ModelVersion: "1.0"}
 
+	// Each processor's output passes the same model checks a client write
+	// does. Every processor adds a key named after itself, so the model
+	// declares the entity's own `base` plus one field per processor.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"base":   schema.Boolean,
+		"first":  schema.Boolean,
+		"second": schema.Boolean,
+		"third":  schema.Boolean,
+	})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CumulativeWF", InitialState: "INITIAL", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -1826,6 +1852,13 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 	engine := NewEngine(factory, uuids, nil)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-sees-sync", ModelVersion: "1.0"}
+
+	// sync-modifier's output passes the same model checks a client write does:
+	// declare the entity's own `original` and the `sync` field it writes.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"original": schema.Boolean,
+		"sync":     schema.String,
+	})
 
 	var asyncReceivedData []byte
 	engine.extProc = &mockExternalProcessing{
@@ -2087,6 +2120,13 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-false", ModelVersion: "1.0"}
 
+	// cbd-proc's output passes the same model checks a client write does:
+	// declare the entity's own `x` and the `enriched` field it writes.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":        schema.Integer,
+		"enriched": schema.Boolean,
+	})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CbdFalseWF", InitialState: "S_pre", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -2263,6 +2303,13 @@ func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "single-seg", ModelVersion: "1.0"}
 
+	// p1 echoes the entity back, and that output still passes the same model
+	// checks a client write does — so the model must declare the entity's
+	// own `x`.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x": schema.Integer,
+	})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "SingleSegWF", InitialState: "S1", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -2348,6 +2395,17 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-cas-conflict", ModelVersion: "1.0"}
+
+	// The cascade's intended result passes the same model checks a client
+	// write does, so the model declares every field this test stores: the
+	// entity's own `x`, the `cascade` field the processor returns, and the
+	// `interloper` field the competing writer commits. With all of them
+	// declared, the CAS conflict is the ONLY thing that can fail the cascade.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":          schema.Integer,
+		"cascade":    schema.Boolean,
+		"interloper": schema.Boolean,
+	})
 
 	mock := &mockExternalProcessing{
 		dispatchFunc: func(_ context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
@@ -2530,6 +2588,15 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-true", ModelVersion: "1.0"}
 
+	// The anchor mutation cbd-proc returns passes the same model checks a
+	// client write does. The processor also saves a SECONDARY entity under
+	// this same model, so `y` is declared too.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":        schema.Integer,
+		"enriched": schema.Boolean,
+		"y":        schema.Integer,
+	})
+
 	tt := true
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CbdTrueWF", InitialState: "S_pre", Active: true,
@@ -2615,27 +2682,28 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 	// engine pending the Task 12/13 handler refactor that wires the final
 	// commit. Once that lands, this test should be extended to assert that
 	// an independent reader sees both entities post-cascade.
-	// TODO(issue-27, Task 13): assert durability of e1 in S_post and e2
+	// TODO(handler-final-txpost-commit): assert durability of e1 in S_post and e2
 	// once the handler commits the engine's final TX_post.
 }
 
-// TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins
-// documents (does NOT endorse) the last-writer-wins outcome when a
-// startNewTxOnDispatch=true processor writes the cascade-anchor entity
-// itself AND returns mutations for it.
+// TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteConflicts pins the
+// outcome when a startNewTxOnDispatch=true processor writes the
+// cascade-anchor entity itself AND returns mutations for it.
 //
-// Per spec §10.3, this pattern is forbidden by existing best-practice
-// across SYNC, ASYNC_SAME_TX, and COMMIT_BEFORE_DISPATCH (true). The engine
-// does NOT detect or prevent the violation — the processor's intra-TX_post
-// write is silently overwritten by the engine's apply-result CAS.
+// Per spec §10.3 this pattern is forbidden by existing best-practice across
+// SYNC, ASYNC_SAME_TX and COMMIT_BEFORE_DISPATCH (true). The engine applies
+// its result with a CAS against TX_pre's transaction ID, and a write
+// compares against its own transaction's view: the processor's intra-TX_post
+// write has already superseded that ID, so the CAS conflicts. The violation
+// is refused rather than resolved last-writer-wins.
 //
-// This test exists so the LWW outcome is pinned down (not "undefined")
-// and so a future engine change that accidentally REVERSES the order
-// (processor's write wins) would surface as a test failure for review.
+// This is the answer on every backend. Postgres has always given it — its
+// CAS reads the transaction's own connection, so the processor's uncommitted
+// row is visible — and memory and sqlite now do too.
 //
-// Asserts the in-memory entity after Execute, NOT durable state: TX_post
-// is left open by the engine pending the Task 12/13 handler refactor.
-func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *testing.T) {
+// Asserts the error from Execute, NOT durable state: TX_post is rolled back
+// by the segment guard on this path.
+func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteConflicts(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -2671,6 +2739,17 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *t
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-true-lww", ModelVersion: "1.0"}
+
+	// The processor writes the anchor twice — once directly through the store
+	// (`processor_wrote`) and once as its returned mutation
+	// (`engine_applied`), the latter going through the same model checks a
+	// client write does. Declare both, plus the entity's own `x`, so the LWW
+	// ordering is what this test observes.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":               schema.Integer,
+		"processor_wrote": schema.Boolean,
+		"engine_applied":  schema.Boolean,
+	})
 
 	tt := true
 	wf := spi.WorkflowDefinition{
@@ -2709,19 +2788,15 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_DoubleWriteIsLastWriterWins(t *t
 		Data: []byte(`{"x":0}`),
 	}
 
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
-		t.Fatalf("Execute failed: %v", err)
+	_, err = engine.Execute(txCtx, entity, "")
+	if !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("Execute: err = %v, want a conflict — the processor's intra-TX_post write supersedes the ID the apply-result CAS compares against", err)
 	}
-
-	// Engine's apply-result wins: the in-memory entity carries the engine's
-	// data, NOT the processor's intra-TX_post write.
-	if string(entity.Data) != `{"engine_applied":true}` {
-		t.Errorf("LWW expected engine apply-result to win, got: %s", entity.Data)
+	// The conflict landed past TX_pre's commit, so a batching caller must not
+	// try to isolate this item into the transaction it would continue in.
+	if !errors.Is(err, ErrPostSegmentConflict) {
+		t.Errorf("Execute: err = %v, want it to carry ErrPostSegmentConflict", err)
 	}
-
-	// TODO(issue-27, Task 13): once the handler refactor commits TX_post,
-	// add a durable-read assertion confirming the engine's data is what hits
-	// the committed store. Until then, only in-memory entity is asserted.
 }
 
 // TestEngine_CommitBeforeDispatch_AuditEventPlacement pins down spec §8's
@@ -2784,6 +2859,12 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-audit", ModelVersion: "1.0"}
+
+	// p1's returned data (`{"x":42}`) passes the same model checks a client
+	// write does; `x` is also the entity's own field.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x": schema.Integer,
+	})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CbdAuditWF", InitialState: "S1", Active: true,
@@ -2929,6 +3010,13 @@ func TestEngine_Execute_ReturnsFinalSegmentTxOnCBDCascade(t *testing.T) {
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-final-tx", ModelVersion: "1.0"}
+
+	// cbd-proc's output passes the same model checks a client write does:
+	// declare the entity's own `x` and the `enriched` field it writes.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":        schema.Integer,
+		"enriched": schema.Boolean,
+	})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CbdFinalTxWF", InitialState: "S_pre", Active: true,
@@ -3138,7 +3226,7 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 // TestEngine_CascadeSkipsScheduled_RestsInState verifies that when a state has
 // ONLY a scheduled transition as its exit, the automated cascade silently skips
 // the scheduled transition and the entity rests in its source state. Until the
-// scheduled-task runtime ships (#251), scheduled transitions are invisible to
+// scheduled-task runtime ships, scheduled transitions are invisible to
 // the cascade — they wait for their timer.
 func TestEngine_CascadeSkipsScheduled_RestsInState(t *testing.T) {
 	engine, factory := setupEngine(t)

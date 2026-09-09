@@ -165,7 +165,7 @@ func TestNewMessageAndGet(t *testing.T) {
 		t.Errorf("expected contentEncoding=UTF-8, got %v", got)
 	}
 
-	// Verify content is an embedded JSON object (not a string — see #21 JSON-in-string defect).
+	// Verify content is an embedded JSON object (not a string — the JSON-in-string defect).
 	content, ok := msg["content"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected content to be a JSON object, got %T: %v", msg["content"], msg["content"])
@@ -335,7 +335,7 @@ func TestNewMessageWithoutMetadata(t *testing.T) {
 		t.Fatalf("failed to parse GET response: %v", err)
 	}
 
-	// Content should be an embedded JSON object (not a string — see #21 JSON-in-string defect).
+	// Content should be an embedded JSON object (not a string — the JSON-in-string defect).
 	content, ok := msg["content"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected content to be a JSON object, got %T: %v", msg["content"], msg["content"])
@@ -533,7 +533,7 @@ func TestResponseShape(t *testing.T) {
 	}
 
 	// Must have header, metaData, and content as an embedded JSON object
-	// (not a string — see #21 JSON-in-string defect).
+	// (not a string — the JSON-in-string defect).
 	if _, ok := getResult["header"].(map[string]any); !ok {
 		t.Error("expected header object in get response")
 	}

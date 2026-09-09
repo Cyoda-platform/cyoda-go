@@ -1,6 +1,6 @@
 package parity
 
-// OIDC provider management parity scenarios — Phases 9.2–9.5 (#284).
+// OIDC provider management parity scenarios — Phases 9.2–9.5.
 //
 // Rows 1-6:   CRUD happy-path (register, list-all, list-active-only,
 //              update-issuers, invalidate, delete).
@@ -1073,7 +1073,7 @@ func assertErrCodeOptional(t *testing.T, raw []byte, wantCode string) {
 	}
 }
 
-// --- Phase 9.4 — OIDC divergences (rows 28-46) (#284) ---
+// --- Phase 9.4 — OIDC divergences (rows 28-46) ---
 //
 // These scenarios cover cyoda-go-specific behaviours (D5, D17, D3, D6, D11,
 // D8, D18) that diverge from or go beyond the cyoda-cloud reference. Several
@@ -1875,7 +1875,7 @@ func RunOidcD18_ReloadInvalidateSerializeLocally(t *testing.T, fix BackendFixtur
 	}
 }
 
-// --- Phase 9.5 — SSRF / D19 / D20 / D23 / D25 / D21 / I9 / state / E2E (rows 47-68) (#284) ---
+// --- Phase 9.5 — SSRF / D19 / D20 / D23 / D25 / D21 / I9 / state / E2E (rows 47-68) ---
 
 // RunOidcD18_ReloadAllSerializesWithReloadOne verifies D18 row 46: a
 // reload_all broadcast serializes with concurrent reload(T, uri) calls.
@@ -2920,10 +2920,10 @@ func RunOidcD10_MaliciousDiscoveryJWKSURI_Skip(t *testing.T, _ BackendFixture) {
 	t.Skip("covered by internal/auth/oidc unit test TestRegistry_MaliciousDiscoveryJWKSURISSRFBlocked — parity subprocess has CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true which would bypass the safeDialContext blocklist check")
 }
 
-// --- Phase 9.6 — Audit fixes (#284) ---
+// --- Phase 9.6 — Audit fixes ---
 
 // RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP verifies the Critical
-// audit fix (#284): two tenants register the same IdP URI with distinct
+// audit fix: two tenants register the same IdP URI with distinct
 // ExpectedAudiences; tokens route to the correct tenant deterministically.
 //
 // Scenario:
@@ -3178,4 +3178,84 @@ func RunOidcReactivateAudiencesRoundTrip(t *testing.T, fix BackendFixture) {
 	if reactivated.RolesClaim == nil || *reactivated.RolesClaim != wantRoles {
 		t.Errorf("rolesClaim after reactivate: got %v, want %q", reactivated.RolesClaim, wantRoles)
 	}
+}
+
+// RunOidcReload_PreservesTokenAcceptance verifies that POST
+// /oauth/oidc/providers/reload against a healthy, warm provider does not
+// break token validation: a fresh token minted after the reload is still
+// accepted. Guards the reload path against reverting to a cache flush.
+func RunOidcReload_PreservesTokenAcceptance(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	if _, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	}); err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	// Baseline: fresh token accepted.
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("baseline ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	if err := adminC.ReloadOidcProviders(t); err != nil {
+		t.Fatalf("ReloadOidcProviders: %v", err)
+	}
+
+	// A fresh token minted after the reload must still be accepted.
+	token = idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC = client.NewClient(fix.BaseURL(), token)
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("post-reload ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+}
+
+// RunOidcReload_AfterReactivateKeepsTokenAcceptance runs the full
+// invalidate → reactivate → reload lifecycle and verifies a fresh token is
+// accepted at the end: the reload must not undo the reactivation's re-warm.
+func RunOidcReload_AfterReactivateKeepsTokenAcceptance(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("baseline ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	if err := adminC.InvalidateOidcProvider(t, p.ID); err != nil {
+		t.Fatalf("InvalidateOidcProvider: %v", err)
+	}
+	if _, err := adminC.ReactivateOidcProviderWithKeys(t, p.ID, true); err != nil {
+		t.Fatalf("ReactivateOidcProviderWithKeys: %v", err)
+	}
+	if err := adminC.ReloadOidcProviders(t); err != nil {
+		t.Fatalf("ReloadOidcProviders: %v", err)
+	}
+
+	token = idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC = client.NewClient(fix.BaseURL(), token)
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("post-lifecycle ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
 }

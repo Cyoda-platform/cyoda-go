@@ -48,7 +48,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ```json
 {
-  "version": "1.3",
+  "version": "1.4",
   "name": "prize-lifecycle",
   "desc": "State machine for Nobel Prize entities",
   "initialState": "NEW",
@@ -139,6 +139,8 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 ## PROCESSORS
 
+A processor may return modified entity data. That data is governed by the model exactly as a client's write is: it must be storable, and it must satisfy the schema. Introducing a field the model does not declare requires the model's `changeLevel` to permit it; otherwise the transition fails with `WORKFLOW_FAILED` and rolls back, leaving neither the entity nor any schema change behind.
+
 **ProcessorDefinition fields:**
 
 - `type` — string — execution-location axis; see below for valid values
@@ -169,7 +171,7 @@ Any value other than `"internalized"` (including the empty string, the canonical
 **`COMMIT_BEFORE_DISPATCH` workflow-author requirements:**
 
 - **Idempotency.** A `COMMIT_BEFORE_DISPATCH` processor must be **idempotent or have an external mechanism for detecting prior completion** (e.g., a write-once external resource ID). Replays can fire from two distinct places: (a) CAS conflict during continuation — the caller's retry of the same API call restarts the cascade and re-dispatches the processor; (b) engine crash between segments — the entity is durable in the pre-callout state, the in-flight orchestration is gone, the caller retries, the cascade re-fires from the beginning, the processor is re-dispatched. The engine cannot deduplicate replays; idempotency is the workflow author's responsibility.
-- **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetAll`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
+- **Visibility of segment-boundary states.** States on a segment boundary (the pre-callout state of a `COMMIT_BEFORE_DISPATCH` processor) are **publicly observable** to readers between segments. A concurrent transaction's `Get`/`GetPage`/`Iterate`/`Search`/`Count` will see the entity in the pre-callout state, and a second cascade may decide to fire criteria-driven transitions based on that observed state. Workflow authors using `COMMIT_BEFORE_DISPATCH` must treat segment-boundary states as committed states — design state-machine criteria, transition guards, and external monitoring accordingly. If invisibility of an intermediate state is required, model it as a workflow-level `DRAFT` parent state with sub-stages in payload, or do not expose the entity until a designated terminal state.
 - **Attribution handover with `startNewTxOnDispatch=false`.** With no transaction context supplied, the dispatched processor's callback writes are ordinary independent requests — the platform tracks no causal chain for them. Each is attributed to whatever identity it presents (its own service credentials, or an OBO user token it forwards). The dispatch's AuthContext (`authtype`/`authid`/`authclaims`) carries the causal principal so the application can self-attribute if it wants user-level attribution; the platform supplies no separate carrier for this mode.
 - **Best-practice: a processor must not save the entity it is processing for.**
   Processors with TX-callback access (SYNC, ASYNC_SAME_TX, COMMIT_BEFORE_DISPATCH
@@ -363,12 +365,17 @@ evaluation and of any other API call touching the entity.
   currently dispatchable from the caller's POV." The entity remains
   in the source state. To allow early firing, give the state an
   ordinary manual transition alongside the scheduled one.
-- **Audit trail.** Arming, firing, expiry, and cancellation (the
-  entity leaving the source state before the timer fires) each emit a
+- **Audit trail.** Arming, firing, expiry, and cancellation each emit a
   dedicated event: `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`
   (alongside the ordinary `TRANSITION_MAKE`), `SCHEDULED_TRANSITION_EXPIRE`,
   `SCHEDULED_TRANSITION_CANCEL`. A loopback that re-arms the same state
-  emits only `ARM`, not `CANCEL`.
+  emits only `ARM`, not `CANCEL`. `CANCEL` has two causes: the entity left
+  the source state before the timer fired, or the task came due and the
+  workflow now selected for the entity does not declare it as a scheduled
+  transition of that state (see *Workflow-level selection*). A task that is
+  both obsolete and past its `timeoutMs` grace band records `EXPIRE`, not
+  `CANCEL` — expiry is decided from the stored task and the clock alone,
+  before the workflow is consulted.
 
 **One-shot vs. polling.** The criterion is evaluated once per fire —
 there is no built-in retry-until-true. Three shapes cover the common
@@ -410,15 +417,21 @@ fire time. Use only for workflows whose cyclicity is intentional.
 
 ## CRITERIA
 
-Criteria on workflows and transitions use the same `Condition` DSL as search. All four condition types are supported: `simple`, `lifecycle`, `group`, `array`. Criteria are evaluated in-memory against the entity's JSON payload and lifecycle metadata.
+Criteria on workflows and transitions use the same `Condition` DSL as search — five condition types are supported: `simple`, `lifecycle`, `group`, `array`, `function`. All but `function` are evaluated in-memory against the entity's JSON payload and lifecycle metadata; a `function` criterion is dispatched to a compute member and must be the whole criterion — one nested inside a `group` fails the evaluation. See `cyoda help search` for the per-type JSON shapes.
 
-`simple` criteria match entity data fields via JSONPath. `lifecycle` criteria match `state`, `creationDate`, or `previousTransition` from entity metadata.
+`simple` and `array` criteria address entity data fields by `jsonPath`, under the same grammar a search condition obeys — the `$.` leader is required, and a path outside it is rejected at **import** with `400 VALIDATION_FAILED` rather than at every later evaluation. Write `$.amount`, not `amount`. **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — are valid (`$.tags[*].name`, `$.arr[0]`): criteria are evaluated in memory, which resolves them. A path ending in `[*]` addresses every element, so the criterion fires when **some** element satisfies it (`$.arr[*] GREATER_THAN 50`), and never on an empty array. Any other bracket spelling (`$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`) is malformed and is rejected at import with the same `400 VALIDATION_FAILED` — previously it imported cleanly and the criterion then silently never fired, because no evaluator resolves those spellings. See `cyoda help search` for the grammar.
+
+**Import checks the path's grammar, not whether the model declares it.** A model may legitimately be declared after the workflow that references it, so a criterion naming a field the model does not yet declare imports cleanly. The model check happens instead when the criterion is **evaluated**: a query never executes against a field the model does not declare, so if the field is still undeclared at evaluation time, the save that triggered the evaluation is **aborted and rolled back** with `400 WORKFLOW_FAILED` — no entity write, no state transition, no partial effect. This applies to all 26 operators, not only the ones that need a declared type. A field that no entity has ever written must be declared explicitly through `POST /model/import/...`; the model does not grow from a criterion alone. See `errors.WORKFLOW_FAILED` and `docs/cloud-parity/unevaluable-criterion-fails-save.md`.
+
+`group` criteria combine conditions with `AND`, `OR`, or `NOT`. `NOT` takes **exactly one** child condition (`NOT(A AND B)` is written by nesting, not as a two-entry list); zero entries or two-or-more is rejected at import with `400 VALIDATION_FAILED`. Over a wildcard path `NOT` is a universal quantifier where the leaf beneath it is existential — `NOT($.tags[*] EQUALS "red")` fires when no element equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some element differs) — and `NOT` over an empty list, an explicit `null`, or an absent field fires, because the inner leaf is false. See `cyoda help search` for the full contract.
+
+`lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search.
 
 A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
 
 ### Workflow-level selection
 
-When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on every `Execute` / `ManualTransition` / `Loopback` (no caching across calls):
+When a model has more than one imported workflow definition, the engine picks the workflow per entity at execution time using these rules — applied in order on **every** door onto the engine, with no caching across calls: entity creation, a named transition, a loopback re-evaluation, a scheduled transition firing, and `GET /entity/{entityId}/transitions`:
 
 1. Iterate workflows in their stored declaration order. (Storage preserves the order from the most recent import; MERGE inserts new workflows at the tail.)
 2. Skip any workflow whose `active` flag is `false`. Inactive workflows are invisible to selection, regardless of their criterion.
@@ -429,6 +442,17 @@ When a model has more than one imported workflow definition, the engine picks th
 Place a `null`-criterion (or otherwise unconditional) workflow last in the import array if you want it to act as a catch-all. Any active workflows declared after it are unreachable for the same reason an unguarded automated transition shadows successors at the transition level.
 
 Workflow-level selection is independent of transition-level selection: once a workflow is chosen, the engine then applies the transition-evaluation rules above against that workflow's `states` map.
+
+Because selection is re-evaluated per call, editing an entity's payload can re-bind it to a different definition. If its current state is not declared in the newly selected workflow, the engine does **not** fall through to another definition that happens to declare it: a named transition is rejected with `400 WORKFLOW_FAILED`, and a loopback settles as a no-op.
+
+A pending scheduled task the newly selected workflow no longer declares as a scheduled transition of that state is **not** cancelled by the write that caused the re-bind: cancellation on re-arm only removes tasks for a state the entity has left, and this one names the state the entity is still in. The task is discarded when it next comes due — the fire door re-resolves the workflow, finds no such scheduled transition, deletes the row and records `SCHEDULED_TRANSITION_CANCEL`. Nothing wrong fires in the meantime, but a timer retired this way is reported at its scheduled time, not at the write, and is attributed to the system principal.
+
+Two consequences worth designing for:
+
+- **Select on fields the caller cannot rewrite.** The criterion is evaluated against the payload of the request being served, so a criterion over a client-writable field lets one request choose which definition's guards apply to itself. Where definitions differ in what they permit, select on immutable fields or on lifecycle metadata.
+- **Select on something that stays true for the entity's whole lifetime.** A criterion over a field that changes mid-flow can strand an entity in a state its new definition does not declare, and can silently retire a scheduled transition that was acting as a time-based control.
+
+Selection is audited: each skipped workflow records a `WORKFLOW_SKIP` event (with the criterion's rejection reason) and the chosen one a `WORKFLOW_FOUND` event, under the transaction driving the call. `GET /entity/{entityId}/transitions` is a pure read and records nothing.
 
 ## IMPORT REQUEST
 
@@ -465,6 +489,10 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Unknown `retryPolicy` value on any processor (allowed: `NONE`, `FIXED`, or empty).
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
+- A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
+- A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
+- A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
+- A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
@@ -518,7 +546,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 
 ## ERRORS
 
-- `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the current state's workflow
+- `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the current state's workflow
 - `errors.WORKFLOW_NOT_FOUND` — `404` — no workflows found for the model (export endpoint)
 - `errors.WORKFLOW_FAILED` — workflow engine encountered an unrecoverable error during execution
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — no registered calculation node matches the required `calculationNodesTags`
@@ -538,7 +566,7 @@ curl -s -X POST \
     "importMode": "MERGE",
     "workflows": [
       {
-        "version": "1.3",
+        "version": "1.4",
         "name": "prize-lifecycle",
         "initialState": "NEW",
         "active": true,
@@ -590,7 +618,7 @@ curl -s -X POST \
     "importMode": "REPLACE",
     "workflows": [
       {
-        "version": "1.3",
+        "version": "1.4",
         "name": "simple-wf",
         "initialState": "OPEN",
         "active": true,

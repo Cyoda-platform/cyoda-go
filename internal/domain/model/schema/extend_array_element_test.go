@@ -1,7 +1,7 @@
 package schema
 
 import (
-	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -16,42 +16,44 @@ import (
 // and its TypeSet without any error or change-level check.
 //
 // Expected: same contract as root-level kind mismatch — reject with a
-// clear error, with the same isNullOnlyLeaf carve-out.
+// clear error, with the same nullable-marker carve-out.
 func TestExtend_ArrayElementKindMismatch_Rejected(t *testing.T) {
 	cases := []struct {
 		name         string
 		existingElem *ModelNode
-		incomingElem *ModelNode
+		itemsDoc     []any // the "items" document array whose element kind mismatches existingElem
 	}{
 		{
 			name:         "OBJECT elem vs LEAF[String] elem",
 			existingElem: NewObjectNode(),
-			incomingElem: NewLeafNode(String),
+			itemsDoc:     []any{"hello"},
 		},
 		{
 			name:         "LEAF[String] elem vs OBJECT elem",
 			existingElem: NewLeafNode(String),
-			incomingElem: NewObjectNode(),
+			itemsDoc:     []any{map[string]any{}},
 		},
 		{
 			name:         "OBJECT elem vs ARRAY elem",
 			existingElem: NewObjectNode(),
-			incomingElem: NewArrayNode(NewLeafNode(String)),
+			itemsDoc:     []any{[]any{"a"}},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			existing := NewObjectNode()
 			existing.SetChild("items", NewArrayNode(tc.existingElem))
-			incoming := NewObjectNode()
-			incoming.SetChild("items", NewArrayNode(tc.incomingElem))
+			doc := map[string]any{"items": tc.itemsDoc}
 
-			_, err := Extend(existing, incoming, spi.ChangeLevelType)
+			// Below STRUCTURAL, adding a kind to the element is refused —
+			// as a level violation that names the level which resolves it,
+			// not as a shape the model can never hold.
+			_, err := Extend(existing, doc, spi.ChangeLevelType)
 			if err == nil {
-				t.Fatal("array element kind mismatch must reject, not silently absorb")
+				t.Fatal("array element gaining a kind must reject below STRUCTURAL, not silently absorb")
 			}
-			if !errors.Is(err, ErrPolymorphicSlot) {
-				t.Errorf("unexpected error: %v; want ErrPolymorphicSlot", err)
+			if !strings.Contains(err.Error(), "STRUCTURAL") {
+				t.Errorf("the rejection must name the level that resolves it: %v", err)
 			}
 		})
 	}
@@ -65,32 +67,31 @@ func TestExtend_ArrayElementNullableMarker_Accepted(t *testing.T) {
 	existing := NewObjectNode()
 	existing.SetChild("items", NewArrayNode(NewObjectNode()))
 
-	incoming := NewObjectNode()
-	incoming.SetChild("items", NewArrayNode(NewLeafNode(Null)))
+	doc := map[string]any{"items": []any{nil, nil}}
 
-	got, err := Extend(existing, incoming, spi.ChangeLevelType)
+	got, err := Extend(existing, doc, spi.ChangeLevelType)
 	if err != nil {
 		t.Fatalf("ARRAY[OBJECT] + ARRAY[LEAF[NULL]] must succeed (nullable marker): %v", err)
 	}
-	items := got.Child("items")
-	if items == nil || items.Kind() != KindArray {
+	items := got.Object().Child("items")
+	if items == nil || items.Array() == nil {
 		t.Fatalf("items child missing or wrong kind: %v", items)
 	}
-	elem := items.Element()
+	elem := items.Array().Element()
 	if elem == nil {
 		t.Fatal("array element nil after merge")
 	}
-	if elem.Kind() != KindObject {
-		t.Errorf("merged element kind = %s, want %s", elem.Kind(), KindObject)
+	if elem.Object() == nil {
+		t.Errorf("merged element kinds = %v, want the object branch", elem.Kinds())
 	}
 	hasNull := false
-	for _, dt := range elem.Types().Types() {
+	for _, dt := range elem.DeclaredTypes() {
 		if dt == Null {
 			hasNull = true
 			break
 		}
 	}
 	if !hasNull {
-		t.Errorf("element TypeSet = %v, want NULL after nullable-marker merge", elem.Types().Types())
+		t.Errorf("element TypeSet = %v, want NULL after nullable-marker merge", elem.DeclaredTypes())
 	}
 }

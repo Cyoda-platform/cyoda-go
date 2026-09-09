@@ -12,8 +12,8 @@ import (
 )
 
 // Locking-discipline race tests for Savepoint, RollbackToSavepoint, and
-// Join in plugins/sqlite/txmanager.go. Issue #199 PR-C1 mirrors PR-A
-// (#201) for the sqlite plugin: pre-fix, Savepoint and RollbackToSavepoint
+// Join in plugins/sqlite/txmanager.go. The sqlite plugin mirrors the memory
+// plugin here: before the fix, Savepoint and RollbackToSavepoint
 // hold m.mu only and never tx.OpMu, racing against Commit's flush phase
 // (which iterates tx.Buffer / tx.Deletes outside m.mu but under
 // tx.OpMu.Lock). Join reads tx.RolledBack and tx.Closed under m.mu only,
@@ -359,7 +359,7 @@ func TestRollbackToSavepoint_VsSave_NoRace(t *testing.T) {
 //
 // Matches the three-way disjunction of transaction-state sentinels defined
 // in cyoda-go-spi, plus bare ErrNotFound because in-read ops
-// (Get/GetAll/Exists/Delete) can legitimately surface entity-level not-found
+// (Get/GetPage/Exists/Delete) can legitimately surface entity-level not-found
 // when a concurrent Rollback or Commit changes visibility mid-op — that is
 // a tolerated race outcome, not a defect.
 func isToleratedTxClosedErr(err error) bool {

@@ -121,7 +121,7 @@ func TestSearch_ORGroup(t *testing.T) {
 // errorCode (not the generic BAD_REQUEST) when a search condition references
 // a JSONPath that is absent from the model's locked schema. Programmatic
 // clients branch on this code to distinguish unknown-field errors from
-// other 400s (malformed JSON, type mismatch). See PR #162 / issue #77.
+// other 400s (malformed JSON, type mismatch).
 func TestSearch_UnknownFieldPath_Returns400_InvalidFieldPath(t *testing.T) {
 	const model = "e2e-search-invalid-field-path"
 	setupSearchModel(t, model)
@@ -311,6 +311,23 @@ func TestAsyncSearch_Cancel_AlreadyCompleted(t *testing.T) {
 	// Response must mention the current status.
 	if !strings.Contains(body, "SUCCESSFUL") {
 		t.Errorf("expected 400 body to contain current status 'SUCCESSFUL'; body: %s", body)
+	}
+	// ...and carry the documented errorCode / props (cmd/cyoda/help/content/
+	// errors/SEARCH_JOB_ALREADY_TERMINAL.md, search.md ERRORS).
+	var pd struct {
+		Props map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(body), &pd); err != nil {
+		t.Fatalf("problem detail is not JSON: %v; body=%s", err, body)
+	}
+	if code, _ := pd.Props["errorCode"].(string); code != "SEARCH_JOB_ALREADY_TERMINAL" {
+		t.Errorf("errorCode = %q, want SEARCH_JOB_ALREADY_TERMINAL; body=%s", code, body)
+	}
+	if got, _ := pd.Props["currentStatus"].(string); got != "SUCCESSFUL" {
+		t.Errorf("properties.currentStatus = %q, want SUCCESSFUL; body=%s", got, body)
+	}
+	if got, _ := pd.Props["snapshotId"].(string); got != jobID {
+		t.Errorf("properties.snapshotId = %q, want %s; body=%s", got, jobID, body)
 	}
 }
 
@@ -642,6 +659,16 @@ func TestSearchSort_Sync_InvalidSort_Returns400(t *testing.T) {
 		// Deduplication and cap errors (ParseSortParam).
 		{"duplicate_key", model, []string{"name:asc", "name:desc"}},
 		{"too_many_keys", model, tooManyKeys},
+		// Path grammar. HTTP refuses these in the query-string parser, before
+		// the shared resolver ever sees them; the gRPC door builds its
+		// OrderKey from the client's path verbatim and is held to the same
+		// grammar by resolveOrderBy (internal/grpc/search_sort_path_test.go).
+		// The rows are here so the transports cannot drift apart again: a
+		// path that is not a dotted scalar is 400 on both.
+		{"array_projection", arrayModel, []string{"tags[*]"}},
+		{"positional_subscript", arrayModel, []string{"tags[0]"}},
+		{"space_in_path", model, []string{"first name"}},
+		{"pipe_in_path", model, []string{"na|me"}},
 	}
 
 	for _, tc := range tests {
@@ -715,103 +742,6 @@ func setupSortModelWithAmountAndArray(t *testing.T, model string) {
 	}`)
 	if status != http.StatusOK {
 		t.Fatalf("workflow import for %s: expected 200, got %d: %s", model, status, body)
-	}
-}
-
-// TestSearchSort_PushdownFallbackAgree verifies that the SQL pushdown path
-// (spi.Searcher) and the in-memory fallback path (GetAll + sortEntities)
-// produce identical entity-id sequences for the same sort key on the same
-// entity set.
-//
-// Forcing the fallback: the Postgres plugin implements spi.Searcher, so the
-// only HTTP-expressible way to bypass it is an untranslatable condition —
-// specifically a SimpleCondition whose JSONPath contains a character that
-// ConditionToFilter's stripDollarDot rejects (e.g. '[').  The condition
-// "$.tags[*] NOT_NULL" satisfies all three requirements:
-//
-//	(1) passes path validation ($.tags[*] is in the schema FieldsMap for
-//	    array-field models);
-//	(2) fails ConditionToFilter (stripDollarDot rejects '[');
-//	(3) match.Match handles it correctly: convertJSONPath("$.tags[*]") →
-//	    gjson path "tags.#" (array count), which is NOT_NULL for any entity
-//	    that carries the tags field.
-//
-// This is an isolated single-backend e2e test (Postgres only). It is not in
-// the shared cross-backend parity suite because it asserts Postgres-specific
-// pushdown-vs-fallback behaviour; the parity suite is for backend-agnostic
-// behaviour that must hold consistently across all backends.
-func TestSearchSort_PushdownFallbackAgree(t *testing.T) {
-	const model = "e2e-search-sort-pushdown-fallback"
-
-	// Model has name (string), amount (numeric, sortable), tags (array —
-	// provides $.tags[*] in the FieldsMap for the fallback condition below).
-	setupSortModelWithAmountAndArray(t, model)
-
-	// Seed four entities with amounts chosen so that numeric order differs from
-	// lexical order: numeric asc = 9,10,20,100; lexical asc = "10","100","20","9".
-	// Any path that sorts by string comparison rather than numeric value will
-	// produce a different sequence and fail the wantIDs assertion below.
-	// All carry tags so that NOT_NULL on $.tags[*] returns true for each.
-	id1 := createEntityE2E(t, model, 1, `{"name":"D","amount":100,"tags":["x"]}`)
-	id2 := createEntityE2E(t, model, 1, `{"name":"B","amount":9,"tags":["x"]}`)
-	id3 := createEntityE2E(t, model, 1, `{"name":"C","amount":20,"tags":["x"]}`)
-	id4 := createEntityE2E(t, model, 1, `{"name":"A","amount":10,"tags":["x"]}`)
-
-	sortKeys := []string{"amount:asc"}
-
-	// --- Pushdown path ---
-	// matchAllCond is an empty AND group, which ConditionToFilter translates
-	// to a tautology filter. The Postgres Searcher executes
-	// "ORDER BY (data->>'amount')::float ASC" directly in SQL.
-	status, pushdownResults := directSearchSorted(t, model, 1, matchAllCond, sortKeys)
-	if status != http.StatusOK {
-		t.Fatalf("pushdown: expected 200, got %d", status)
-	}
-	if len(pushdownResults) != 4 {
-		t.Fatalf("pushdown: expected 4 results, got %d", len(pushdownResults))
-	}
-
-	// --- Fallback path ---
-	// "$.tags[*] NOT_NULL" passes path validation ($.tags[*] is in the
-	// FieldsMap) but fails ConditionToFilter (stripDollarDot rejects '['),
-	// forcing the GetAll + in-memory sortEntities path.
-	const fallbackCond = `{"type":"simple","jsonPath":"$.tags[*]","operatorType":"NOT_NULL","value":null}`
-	status, fallbackResults := directSearchSorted(t, model, 1, fallbackCond, sortKeys)
-	if status != http.StatusOK {
-		t.Fatalf("fallback: expected 200, got %d", status)
-	}
-	if len(fallbackResults) != 4 {
-		t.Fatalf("fallback: expected 4 results, got %d", len(fallbackResults))
-	}
-
-	// Extract entity IDs in search-result order from both paths.
-	pushdownIDs := make([]string, len(pushdownResults))
-	for i, r := range pushdownResults {
-		pushdownIDs[i] = resultMetaID(t, r)
-	}
-	fallbackIDs := make([]string, len(fallbackResults))
-	for i, r := range fallbackResults {
-		fallbackIDs[i] = resultMetaID(t, r)
-	}
-
-	// Both paths must agree on every position.
-	for i := range pushdownIDs {
-		if pushdownIDs[i] != fallbackIDs[i] {
-			t.Errorf("result[%d] mismatch: pushdown=%s fallback=%s\n pushdownIDs: %v\n fallbackIDs:  %v",
-				i, pushdownIDs[i], fallbackIDs[i], pushdownIDs, fallbackIDs)
-		}
-	}
-
-	// Additionally verify that both paths return the expected numeric amount-ascending
-	// order, so we catch "both wrong but consistently so" divergences.
-	// amounts: id2=9, id4=10, id3=20, id1=100
-	// Lexical order would be: id4("10"), id1("100"), id3("20"), id2("9") — different.
-	wantIDs := []string{id2, id4, id3, id1}
-	for i, wantID := range wantIDs {
-		if pushdownIDs[i] != wantID {
-			t.Errorf("pushdown result[%d]: got id %s, want %s (expected numeric amount-asc order: 9,10,20,100)",
-				i, pushdownIDs[i], wantID)
-		}
 	}
 }
 

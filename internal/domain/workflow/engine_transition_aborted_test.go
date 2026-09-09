@@ -11,7 +11,7 @@ import (
 )
 
 // TestManualTransitionWithIfMatch_CBDCascadeStaleEmitsTransitionAborted is the
-// reviewer S1 fix (issue #228 follow-up): when the engine's CBD first-segment
+// Compensating-audit contract: when the engine's CBD first-segment
 // flush detects a stale IfMatch and aborts via ErrConflict, it MUST emit a
 // compensating TRANSITION_ABORTED audit event so downstream consumers see a
 // paired entry+abort sequence and can correlate the failure cleanly.

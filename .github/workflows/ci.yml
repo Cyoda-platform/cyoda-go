@@ -26,12 +26,10 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Service container for the plugins/postgres step below. The plugin's
-    # tests skip themselves when CYODA_TEST_DB_URL is unset (they have no
-    # testcontainers bootstrap of their own — that lives in the root
-    # module's e2e/parity fixtures), so without this service the postgres
-    # plugin step was silently green while exercising none of its
-    # DB-backed tests.
+    # Service container for the plugins/postgres step below, published to it
+    # as CYODA_TEST_DB_URL. The plugin's TestMain starts a testcontainer when
+    # that variable is unset, so the suite has a database either way; this
+    # service is the faster path on a runner that already has one.
     services:
       postgres:
         image: postgres:17-alpine
@@ -53,8 +51,35 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # scripts/testreport turns the -json stream into a summary plus verbatim
+      # failures, and — the reason it exists — FAILS when a package that was
+      # required to execute tests executed none. `go test` reports a TestMain
+      # that calls os.Exit(0) as `ok  pkg  2.80s` with zero tests run, which no
+      # amount of reading the log distinguishes from a pass. The root-module
+      # step below builds its own copy through the Makefile; this one is for
+      # the plugin steps, which run in their own modules.
+      - name: Build test reporter
+        run: go build -o "$RUNNER_TEMP/testreport" ./scripts/testreport
+
+      # The root module goes through the Makefile rather than a hand-written
+      # `go test ./...`, so CI and a developer's pre-PR run are the same
+      # command. What the target adds: the parity suites run in a SECOND
+      # invocation with -count=1, because their fixture builds the server in a
+      # subprocess the test cache cannot see and Go would otherwise replay a
+      # stale pass over a server built from old code; the timeouts and the
+      # -must-run suite list live in one place instead of being copied here to
+      # drift. test-root is test-full's root half — the plugin submodules are
+      # the steps below, each with its own working directory.
+      #
+      # The target's `preflight` requires postgres:17-alpine to be present
+      # locally and never pulls it; on this runner the `services:` block above
+      # is what puts it there. Bumping that tag means bumping
+      # scripts/preflight-docker.sh's PROBE_IMAGE with it, or pre-flight fails
+      # on an image the job just downloaded under a different tag.
       - name: Run tests
-        run: go test ./... -v
+        run: |
+          set -o pipefail
+          make test-root
 
       # Race detector. Scoped via `make race` to exclude `internal/e2e` —
       # see Makefile and `.claude/rules/race-testing.md` for rationale.
@@ -66,20 +91,28 @@ jobs:
       # does not recurse into them. Run tests inside each module so CI does
       # not miss regressions (issue #46). The postgres plugin's DB-backed
       # tests connect via CYODA_TEST_DB_URL (job-level postgres service
-      # above) and skip when it is unset.
+      # above) and skip when it is unset — which is why the postgres step
+      # requires its package to have executed tests rather than trusting a
+      # green that a wholly-skipped suite also produces.
       - name: Run plugins/memory tests
         working-directory: plugins/memory
-        run: go test -v ./...
+        run: |
+          set -o pipefail
+          go test -json ./... | "$RUNNER_TEMP/testreport" -must-run 'plugins/memory'
 
       - name: Run plugins/sqlite tests
         working-directory: plugins/sqlite
-        run: go test -v ./...
+        run: |
+          set -o pipefail
+          go test -json ./... | "$RUNNER_TEMP/testreport" -must-run 'plugins/sqlite'
 
       - name: Run plugins/postgres tests
         working-directory: plugins/postgres
         env:
           CYODA_TEST_DB_URL: postgres://cyoda:cyoda@localhost:5432/cyoda_test?sslmode=disable
-        run: go test -v ./...
+        run: |
+          set -o pipefail
+          go test -json ./... | "$RUNNER_TEMP/testreport" -must-run 'plugins/postgres'
 
       - name: Build
         run: go build -o bin/cyoda ./cmd/cyoda
@@ -122,10 +155,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # The runner image ships shellcheck, so the common path needs no network
+      # at all. Installing it unconditionally made every run depend on an apt
+      # mirror, and a mirror hiccup failed the job in 12s with nothing linted.
       - name: Run shellcheck
-        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+          shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh scripts/preflight-docker.sh
 
   # Continuous security gates (issue #67):
   #   - govulncheck scans the call graph for exploitable stdlib and third-party CVEs,

@@ -14,7 +14,10 @@ see_also:
   - errors.INCOMPATIBLE_TYPE
   - errors.CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
+  - errors.TRANSACTION_TIMEOUT
   - errors.TRANSITION_NOT_FOUND
+  - errors.WORKFLOW_FAILED
+  - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.UNIQUE_VIOLATION
   - errors.INVALID_UNIQUE_KEY
   - messages
@@ -67,8 +70,7 @@ Body size limit on all write endpoints: 10 MiB.
 - `entityName` (path): string — model name
 - `modelVersion` (path): int32
 - `transactionWindow` (query, optional): int32, default `100`, max `1000` — applies only when the request body is a JSON array. Maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Array bodies exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is then an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
-- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 If the request body is a JSON array, each element is treated as a separate entity of the same model and the collection-create chunking contract applies (see `transactionWindow` above and the `POST /api/entity/{format}` partial-success shape below).
 
@@ -85,8 +87,7 @@ Response: `200 OK`, `application/json`. Single-object body returns a one-element
 
 - `format` (path): `JSON` or `XML`
 - `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order.
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
 
@@ -163,8 +164,7 @@ Response: `200 OK`, `application/json`:
 - `format` (path): `JSON` or `XML`
 - `entityId` (path): UUID
 - `If-Match` (header, optional): transaction ID of last read — optimistic concurrency; if the entity was modified since, returns `412 Precondition Failed`
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 Request body: updated entity JSON/XML payload.
 
@@ -183,8 +183,7 @@ Response: `200 OK`, `application/json`:
 - `entityId` (path): UUID
 - `transition` (path): string — transition name defined in the model's workflow
 - `If-Match` (header, optional): transaction ID
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 Response: `200 OK`, same shape as loopback update.
 
@@ -192,8 +191,7 @@ Response: `200 OK`, same shape as loopback update.
 
 - `format` (path): `JSON` (only supported format today; single-item PUT endpoints still accept XML)
 - `transactionWindow` (query, optional): int32, default `100`, max `1000` — maximum entities per transactional batch. Values outside (0, 1000] are rejected with `400 BAD_REQUEST`. Collections exceeding the window are split into multiple transactional batches committed sequentially; each chunk is one transaction. The response is an array with one element per chunk in commit order; chunks committed before any later failure remain durable.
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 **IMPORTANT — `payload` is a JSON-encoded string, not an object.**
 
@@ -253,8 +251,7 @@ Response: `200 OK`, `application/json`, `EntityTransactionResponse` array — on
 - `entityId` (path): UUID
 - `Content-Type` (header, required): `application/merge-patch+json` (RFC 7386 merge patch, implemented) or `application/json-patch+json` (RFC 6902, returns `501 Not Implemented`); any other value ⇒ `415 Unsupported Media Type`
 - `If-Match` (header, required in some form): see the three-state list below
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 Request body: a sparse JSON object (the patch document). The patch is applied to the **stored** entity payload using RFC 7386 merge semantics:
 
@@ -281,8 +278,7 @@ Response: `200 OK`, same shape as the single-item PUT update.
 - `transition` (path): string — transition name defined in the model's workflow
 - `Content-Type` (header, required): same two-value list as the loopback form
 - `If-Match` (header, required in some form): same three-state list as the loopback form
-- `transactionTimeoutMillis` (query, optional): int64, default `10000` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
-- `waitForConsistencyAfter` (query, optional): boolean, default `false` — accepted for Cyoda Cloud parity; parsed but currently has no behavioural effect in cyoda-go.
+- `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the first commit. Exceeding it rolls back and fails with `408 errors.TRANSACTION_TIMEOUT`; nothing is committed. On a chunked write, only the first chunk is covered — expiry after that surfaces as a `TRANSACTION_TIMEOUT` element in the per-chunk response, not a 408. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 The merge patch is applied first; the named transition's processors then run on the merged state and may further mutate the entity. Response: `200 OK`, same shape as the loopback form.
 
@@ -323,9 +319,9 @@ Response: `200 OK`, `application/json`:
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `transactionSize` (query, optional): int32, default `1000` — maximum entities to delete per transaction
-- `pointInTime` (query, optional): RFC 3339 — select entities for deletion as at this instant
-- `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every deleted entity ID; for a delete-all (empty body) `ids` is always empty
+- `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
+- `pointInTime` (query, optional): RFC 3339 — select the entities that existed at this instant (committed state; the ambient transaction is ignored) and delete their current rows. Absent means the current committed state. An entity selected at the instant but already gone is reported in `deleteResult.idToError`.
+- `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every entity ID the delete attempted (an empty body lists them too); an ID whose delete failed also appears in `deleteResult.idToError`; on a large model this enumerates every entity of the model in one response.
 
 Request body: optional `AbstractConditionDto` (same condition DSL as `/search/*`). When the body is absent or empty, all entities of the model are deleted.
 
@@ -355,7 +351,7 @@ Response: `200 OK`, `application/json`:
 - `pageNumber` (query, optional): int32, default `0`
 - `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive)
 
-Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
+Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant. Order is stable and deterministic; the specific order is storage-engine-specific (entity-ID based) — see `docs/plugins/*.md` for each backend's canonical order.
 
 **GET /api/entity/{entityId}/changes** — Get entity change history metadata
 
@@ -388,11 +384,13 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 - `entityId` (path): UUID
 - `pointInTime` (query, optional): RFC 3339
-- `transactionId` (query, optional): UUID — derive point-in-time from transaction submit time
+- `transactionId` (query, optional): UUID — derive point-in-time from transaction submit time. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID returns `400 BAD_REQUEST`.
 
 `pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`. When neither is provided, the current time is used.
 
 Response: `200 OK`, `application/json`, array of available transition names (as returned by the workflow engine).
+
+The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated, `503 NO_COMPUTE_MEMBER_FOR_TAG` when the cause is specifically an unavailable compute member for a `function` criterion's tags. The request fails rather than answering from a different workflow. The read records no audit events.
 
 **GET /api/platform-api/entity/fetch/transitions** — List available transitions (platform-api format)
 
@@ -465,8 +463,8 @@ Request body: `application/json`. Body size limit: 10 MiB (shared with `/search/
 
 Request fields:
 
-- `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath. Order in the request determines order in the response's `groupKey` array. Duplicate entries (after normalization) → 400 `DUPLICATE_GROUP_BY`. Array projections (`[*]`, `[0]`) → 400 `INVALID_GROUP_BY_PATH`.
-- `condition` (optional): the existing search `Condition` DSL (SimpleCondition, LifecycleCondition, GroupCondition with `AND`/`OR`, ArrayCondition, FunctionCondition). Omitted → match-all. See the `search` topic for the full DSL.
+- `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath (with the required `$.` leader). Order in the request determines order in the response's `groupKey` array. Duplicate entries → 400 `DUPLICATE_GROUP_BY`. A path outside the grammar below → 400 `INVALID_GROUP_BY_PATH`.
+- `condition` (optional): the existing search `Condition` DSL (SimpleCondition, LifecycleCondition, GroupCondition with `AND`/`OR`/`NOT`, ArrayCondition). Omitted → match-all. A FunctionCondition at any depth → 400 `INVALID_CONDITION`; it is a criterion shape, not a search shape. See the `search` topic for the full DSL.
 - `aggregations` (optional, 0..N): per entry, `op` ∈ {`sum`, `avg`, `min`, `max`, `stdev`}; `field` is a scalar JSONPath into the entity payload; optional `as` alias for the response key. When `as` is omitted the server synthesizes `<op>_<field>` with the leading `$.` stripped from the field (for example, `field: "$.costPrice"` → alias `sum_costPrice`). The server dedupes identical `(op, field)` pairs. Two aliases colliding on distinct `(op, field)` pairs → 400 `DUPLICATE_AGGREGATION_ALIAS`.
 - `pointInTime` (optional RFC 3339): historical snapshot; default = now.
 - `limit` (optional positive int): top-N. Must be `≤ CYODA_STATS_GROUP_MAX` (default 10000); `> CYODA_STATS_GROUP_MAX` → 400 `INVALID_LIMIT`. Default = unlimited (up to the cardinality ceiling).
@@ -498,7 +496,18 @@ Each bucket's `aggregations` map is keyed by either the explicit `as` alias or t
 
 Sort order is backend-independent: primary key is `count` descending; tiebreaker is `groupKey` lex order (element-wise; `null` sorts before any string; strings compared bytes-wise).
 
-**JSONPath restrictions.** Every JSONPath in `groupBy` and aggregation `field` is scalar-only. Bracket-quoted property access (`$['my.field']`) is accepted. Array projections (`$.items[*]`, `$.items[0]`) are rejected at validation time with 400 `INVALID_GROUP_BY_PATH` (for `groupBy`) or 400 `INVALID_AGGREGATION_FIELD` (for aggregations). The reserved token `"state"` is accepted in `groupBy` only; it has no leading `$.` and refers to lifecycle state.
+**JSONPath grammar.** Every JSONPath in `groupBy` and aggregation `field` is scalar-only, and is checked at the API boundary — before any storage backend runs — against:
+
+```
+path    = "$." segment ( "." segment )*
+segment = 1*( ALPHA / DIGIT / "_" / "-" )      ; ASCII only
+```
+
+The `$.` leader is **required**: these are JSON Paths, and a bare `variantId` is not one. Everything outside the grammar is rejected with 400 `INVALID_GROUP_BY_PATH` (for `groupBy`) or 400 `INVALID_AGGREGATION_FIELD` (for aggregations): a missing leader, bracket-quoted property access (`$['country']`, `$.['country']` — write `$.country`), array subscripts of any form (`$.items[*]`, `$.items[0]`), recursive descent (`$..name`), filter expressions, leading/trailing/doubled dots, `$` on its own, whitespace, quotes, control bytes, and non-ASCII characters. There is no dotted spelling for an array position either: `$.items.0` is a valid path, but it names the field literally called `0` inside `items` — a field name may be entirely digits — not an array element. An array position is not addressable by `groupBy` or an aggregation `field` at all; group or aggregate on a scalar path instead.
+
+This is the same grammar every storage backend enforces on its own query paths, so a request is accepted or rejected identically whichever execution path it takes. A `condition`'s `jsonPath` obeys a superset of this grammar: it additionally permits array subscripts (`$.items[*]`, `$.items[0]`), which a storage backend pushes down where it can and otherwise evaluates itself — see `cyoda help search`. A path is validated, never rewritten: the response's `groupKey` path echoes exactly what the request sent.
+
+The reserved token `"state"` is accepted in `groupBy` only; it is a token, not a path, so it has no leading `$.` and refers to lifecycle state. There is no defined aggregate over lifecycle state, so `"state"` as an aggregation `field` is just an identifier missing its leader and is rejected.
 
 **Aggregation operators.** Five operators: `sum`, `avg`, `min`, `max`, `stdev`. `stdev` is the sample standard deviation (divisor `n − 1`); when `n < 2`, the value is `null` on both the pushdown and streaming paths. `sum`, `avg`, and `stdev` treat non-numeric and absent field values as NULL (the value is skipped, not zero). `min` and `max` are lexicographic over text values and numeric over numeric values; the comparison ordering matches the underlying backend's collation for the pushed-down path.
 
@@ -514,15 +523,12 @@ The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes)
 
 **Non-scalar runtime values.** When a `groupBy` JSONPath resolves to a JSON object or array at runtime, the bucket key for that dimension is `null`. Numbers and booleans group by their canonical text representation (for example the integer `42` and the string `"42"` both bucket under `"42"`).
 
-**In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via the SPI `Iterable` interface. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
+**In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via `EntityStore.Iterate`. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
 
-- **memory** — `Iterate` captures a snapshot under the read lock, overlays `tx.Buffer` (buffered saves), and masks `tx.Deletes` (buffered deletes). The iteration runs lock-free. RYW-correct.
-- **sqlite** — the iterator dispatches by `(in-tx, point-in-time)`. Non-tx, non-PIT queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved). Non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. In-tx, non-PIT materializes via the same `getAllTx` overlay that `GetAll` uses inside a tx (entity_versions snapshot at `tx.SnapshotTime`, plus `tx.Buffer` overlay, minus `tx.Deletes`), then iterates the slice; RYW-correct, with buffered writes visible and buffered deletes hidden. In-tx with `pointInTime` falls through to the plain PIT path — reads `entity_versions` at the supplied snapshot WITHOUT applying the tx-buffer overlay; PIT is historical-read by definition, so the in-flight buffer is a documented limitation, and the result reflects committed history rather than the caller's uncommitted edits at the requested instant. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx by the SPI dispatcher so the service falls through to the streaming tally over `Iterate`, which now honours RYW.
+- **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. In-tx with `pointInTime` falls through to the plain PIT path — reads `entity_versions` at the supplied snapshot WITHOUT applying the tx-buffer overlay; PIT is historical-read by definition, so the in-flight buffer is a documented limitation, and the result reflects committed history rather than the caller's uncommitted edits at the requested instant. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx by the SPI dispatcher so the service falls through to the streaming tally over `Iterate`, which now honours RYW.
 - **postgres** — `Iterate` selects from the bi-temporal `entity_versions` table with `valid_time <= tx.SnapshotTime AND transaction_time <= CURRENT_TIMESTAMP`, and adds `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE` to skip deletion-marker versions. The `GroupedAggregate` pushdown is skipped in-tx.
 
 **Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.
-
-**Backend capability.** The endpoint requires the storage backend to implement at least one of the optional SPI interfaces `Iterable` or `GroupedAggregator`. The three plugins shipped in this repository (`memory`, `sqlite`, `postgres`) implement both. Backends that implement neither return 501 `NOT_IMPLEMENTED_BY_BACKEND`.
 
 **Index guidance — postgres.**
 
@@ -548,21 +554,18 @@ ON entities (json_extract(data, '$.variantId'));
 Error codes (response carries RFC 9457 problem+json with `properties.errorCode` set to the machine-readable code below):
 
 - `MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant
-- `MALFORMED_REQUEST` — `400` — JSON parse failed
+- `MALFORMED_REQUEST` — `400` — body unreadable, not valid JSON, carrying an unrecognised top-level field (decoding is strict), or carrying a `pointInTime` that is not RFC 3339
 - `MISSING_GROUP_BY` — `400` — `groupBy` empty or missing
-- `INVALID_GROUP_BY_PATH` — `400` — empty entry, or array projection in a `groupBy` JSONPath
-- `DUPLICATE_GROUP_BY` — `400` — duplicate entries after normalization
+- `INVALID_GROUP_BY_PATH` — `400` — `groupBy` JSONPath outside the grammar above (missing `$.` leader, bracket-quoted access, array projection, recursive descent, disallowed character)
+- `DUPLICATE_GROUP_BY` — `400` — duplicate `groupBy` entries
 - `INVALID_AGGREGATION_OP` — `400` — `op` outside the set {`sum`, `avg`, `min`, `max`, `stdev`}
-- `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` empty or contains array projection
+- `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` outside the same JSONPath grammar
 - `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
-- `INVALID_OPERATOR` — `400` — `condition` operator outside the canonical list (propagated from search validator)
-- `INVALID_CONDITION` — `400` — `condition` malformed or unknown `type` (propagated from search validator)
-- `INVALID_FIELD_PATH` — `400` — `condition` JSONPath absent from the locked schema (propagated from search validator)
+- `INVALID_CONDITION` — `400` — `condition` malformed, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
+- `INVALID_FIELD_PATH` — `400` — a `condition` `jsonPath` is not valid JSON Path, names an unknown meta field, or is absent from the locked schema (propagated from search validator)
 - `CONDITION_TYPE_MISMATCH` — `400` — `condition` value type incompatible with the locked DataType (propagated from search validator)
-- `INVALID_POINT_IN_TIME` — `400` — `pointInTime` not parseable as RFC 3339
 - `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`
 - `GROUP_CARDINALITY_EXCEEDED` — `422` — result buckets would exceed `CYODA_STATS_GROUP_MAX`
-- `NOT_IMPLEMENTED_BY_BACKEND` — `501` — backend implements neither `Iterable` nor `GroupedAggregator`
 - Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.
 
 ## POINT-IN-TIME SEMANTICS
@@ -635,9 +638,11 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.UNIQUE_VIOLATION` — `409` — a declared composite unique key already holds this field-value combination
 - `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
-- `errors.TRANSITION_NOT_FOUND` — `404` — named transition does not exist in the workflow
+- `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the workflow
+- `errors.WORKFLOW_FAILED` — `400` — the workflow engine rejected the operation: a transition criterion did not match, a processor failed, the workflow selected for the entity does not declare its current state, or a workflow selection criterion could not be evaluated. Reachable on create, a named transition, a transition-less (loopback) update, and both transitions reads — selection runs on every door
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — a `function` criterion or processor needs a compute member for its tags and none is connected. Reachable on the transitions reads too, since they evaluate workflow selection criteria
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
-- Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_POINT_IN_TIME`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_OPERATOR`, `INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`; `501 NOT_IMPLEMENTED_BY_BACKEND` when the storage backend implements neither `Iterable` nor `GroupedAggregator`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
+- Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
 
 ## EXAMPLES
 
@@ -702,7 +707,7 @@ curl -s -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1"
 
-# Delete only VALIDATED entities and list the deleted IDs:
+# Delete only VALIDATED entities and list the attempted IDs:
 curl -s -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \

@@ -217,7 +217,7 @@ func TestJoinConcurrentOperationAndCommit(t *testing.T) {
 }
 
 // TestJoinRejectsNilUserContext verifies that Join rejects callers with no
-// UserContext (#199 PR-C2 review L-3). Memory's Join was permissive on
+// UserContext. Memory's Join was permissive on
 // nil UC pre-fix: it accepted any caller as long as no tenant mismatch
 // could be detected. That's a tenant-isolation gap because a caller that
 // somehow bypassed authentication middleware (or an internal helper that

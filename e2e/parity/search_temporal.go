@@ -11,8 +11,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// Cross-backend parity scenarios for chronological temporal search filters
-// (issue #423): creationDate/lastUpdateTime compared via epoch-ms flooring
+// Cross-backend parity scenarios for chronological temporal search filters:
+// creationDate/lastUpdateTime compared via epoch-ms flooring
 // (spi.ParseTemporalMillis / cyoda_epoch_millis), not lexical string
 // equality. These prove memory/sqlite/postgres (+ commercial) agree on the
 // same chronological ordering and the same millisecond-floor semantics.
@@ -230,9 +230,10 @@ func RunSearchUnknownMetaField400(t *testing.T, fixture BackendFixture) {
 // rejected with HTTP 400 and errorCode BAD_REQUEST on every backend — before
 // the fix, this diverged catastrophically: postgres panicked indexing an
 // empty spi.Filter.Values (500), sqlite's BETWEEN fallback emitted a
-// match-all "1=1" (200, wrong result set), and only memory's spi.MatchFilter
-// happened to exclude correctly. Companion to RunSearchUnknownMetaField400 —
-// both prove the SearchService validation boundary (ValidateCondition) runs
+// match-all "1=1" (200, wrong result set), and only memory's
+// spi.Prepare/PreparedFilter.Match happened to exclude correctly. Companion to
+// RunSearchUnknownMetaField400 — both prove the SearchService validation
+// boundary (ValidateCondition) runs
 // identically across backends before any store is touched.
 func RunSearchBetweenArity400(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)

@@ -17,18 +17,30 @@ import (
 // parity tests in e2e/parity/ can assert identical pushable/residual splits.
 //
 // SQL-pushdown soundness contract: the pushed SQL WHERE is a best-effort
-// NARROWING — the kernel (spi.MatchFilter, re-run over the candidates the SQL
-// returns) is authoritative. The invariant is that the pushed SQL returns a
-// SUPERSET of the kernel's matches (it never misses one). A leaf is EXACT when
-// its SQL matches the kernel bit-for-bit (only IsNull/NotNull — see leafExact);
-// every other pushed leaf is at best a SOUND SUPERSET (float8/text SQL can
-// over-select relative to the precise bignum/temporal kernel, so the kernel
-// must re-check). The SQL LIMIT/OFFSET/GROUP-BY fast path (gated on
-// postFilter == nil) is allowed ONLY when the whole plan is exact.
+// NARROWING — the kernel (spi.Prepare/PreparedFilter.Match, re-run over the
+// candidates the SQL returns) is authoritative. The invariant is that the
+// pushed SQL returns a SUPERSET of the kernel's matches (it never misses
+// one). A leaf is EXACT when its SQL matches the kernel bit-for-bit (only
+// IsNull/NotNull — see leafExact); every other pushed leaf is at best a
+// SOUND SUPERSET (float8/text SQL can over-select relative to the precise
+// bignum/temporal kernel, so the kernel must re-check). The SQL
+// LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil) is allowed
+// ONLY when the whole plan is exact.
 type sqlPlan struct {
 	where      string
 	args       []any
 	postFilter *spi.Filter
+	// preparedPostFilter is postFilter compiled for per-row evaluation. It is
+	// non-nil EXACTLY when postFilter is non-nil.
+	//
+	// postFilter itself stays a *spi.Filter and stays the field the planner's
+	// own predicates read, because its NIL-NESS is what gates LIMIT pushdown
+	// (searcher.go:211), native GROUP BY (grouped_stats.go:223) and the
+	// collection-loop shape (searcher.go:226). A zero spi.PreparedFilter means
+	// match-all, not absent, so replacing the field outright — or pairing a
+	// value with a bool — would put that invariant back in play at every
+	// consumer. Row loops read this field; planner decisions read postFilter.
+	preparedPostFilter *spi.PreparedFilter
 }
 
 // leafExact reports whether a pushed leaf's SQL matches the kernel bit-for-bit.
@@ -47,6 +59,13 @@ func leafExact(op spi.FilterOp) bool {
 func allPushedExact(f spi.Filter) bool {
 	switch f.Op {
 	case spi.FilterAnd, spi.FilterOr:
+		// An empty group is never EXACT: exactness is a claim about leaves and
+		// an empty group has none — its identity semantics (empty AND = true,
+		// empty OR = false) are the kernel's to apply. Unreachable by
+		// construction (dissect never pushes an empty group); fails safe.
+		if len(f.Children) == 0 {
+			return false
+		}
 		for _, c := range f.Children {
 			if !allPushedExact(c) {
 				return false
@@ -56,6 +75,25 @@ func allPushedExact(f spi.Filter) bool {
 	default:
 		return leafExact(f.Op)
 	}
+}
+
+// planFor is the entry point every search path plans through. It adds the
+// match-all guard planQuery cannot make on its own: a zero-value spi.Filter
+// means "match all", but planQuery treats the empty Op as a non-pushable leaf
+// and would install the zero filter as its own residual. That residual matches
+// everything, so results stay correct while LIMIT pushdown and native GROUP BY
+// are silently lost. Mirrors the guard in the sqlite plugin.
+//
+// The error return is spi.Prepare's: a leaf the kernel genuinely cannot
+// evaluate (an operand fitting no declared type, a pattern that will not
+// compile, ...) makes the whole filter unplannable, wrapping
+// spi.ErrUnevaluableLeaf. Callers propagate it rather than degrading to a
+// plan that matches nothing.
+func planFor(filter spi.Filter) (sqlPlan, error) {
+	if filter.Op == "" {
+		return sqlPlan{}, nil
+	}
+	return planQuery(filter)
 }
 
 // planQuery translates a spi.Filter tree into a SQL WHERE clause and an
@@ -71,7 +109,31 @@ func allPushedExact(f spi.Filter) bool {
 // leaf satisfies leafExact — the FULL original filter is installed as postFilter
 // so the kernel re-checks every candidate the narrowing SQL returns. This also
 // disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
-func planQuery(filter spi.Filter) sqlPlan {
+//
+// Callers go through planFor, not here: planQuery has no match-all guard.
+//
+// The error return propagates spi.Prepare's — see planFor's doc comment.
+// Evaluability is checked UNCONDITIONALLY, on the whole input filter, before
+// dissection ever runs — never as a by-product of preparing the residual.
+// Only IsNull/NotNull are leafExact, so a filter built entirely from those
+// (e.g. a single bogus-path IsNull leaf, or an AND/OR of two IsNull/NotNull
+// leaves where one addresses a path spi.Prepare cannot resolve) plans fully
+// pushable and EXACT: postFilter stays nil and no residual is ever prepared.
+// Gating the spi.Prepare call on "postFilter != nil" would let that shape
+// skip the check entirely and push SQL that means something else — IS NULL
+// on a JSON key that never exists is true for EVERY row, so an unevaluable
+// filter would silently select everything (fail-open), while the memory
+// backend correctly rejects the same filter — a three-backend divergence
+// this project treats as a defect. Preparing the full filter up front closes
+// that gap for every plan shape, and its result is reused below instead of
+// preparing the same full filter a second time when it also becomes the
+// residual.
+func planQuery(filter spi.Filter) (sqlPlan, error) {
+	preparedFull, err := spi.Prepare(filter)
+	if err != nil {
+		return sqlPlan{}, err
+	}
+
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
 	if pushed != nil {
@@ -84,8 +146,9 @@ func planQuery(filter spi.Filter) sqlPlan {
 	if residual != nil || (pushed != nil && !allPushedExact(*pushed)) {
 		full := filter
 		plan.postFilter = &full
+		plan.preparedPostFilter = &preparedFull
 	}
-	return plan
+	return plan, nil
 }
 
 // dissect splits a filter tree into a pushable portion and a residual portion.
@@ -143,6 +206,14 @@ func dissectAnd(f spi.Filter) (*spi.Filter, *spi.Filter) {
 // dissectOr implements conservative OR dissection: only push if ALL children
 // are fully pushable, otherwise the entire OR is residual.
 func dissectOr(f spi.Filter) (*spi.Filter, *spi.Filter) {
+	// An explicit empty OR is the OR identity (false, matches nothing) — a
+	// shape toSQL cannot express: joining zero fragments yields no predicate
+	// at all (i.e. TRUE, matches everything). Route it to the residual so the
+	// kernel applies the identity. Note the asymmetry with the empty AND,
+	// whose identity (true) IS what dissectAnd's (nil, nil) means.
+	if len(f.Children) == 0 {
+		return nil, &f
+	}
 	for _, child := range f.Children {
 		if !isFullyPushable(child) {
 			return nil, &f
@@ -155,6 +226,13 @@ func dissectOr(f spi.Filter) (*spi.Filter, *spi.Filter) {
 func isFullyPushable(f spi.Filter) bool {
 	switch f.Op {
 	case spi.FilterAnd, spi.FilterOr:
+		// Empty groups are identity shapes (empty AND = true, empty OR =
+		// false) that toSQL cannot express — joinChildren over zero children
+		// emits "" standalone and a malformed "()" nested. Never pushable;
+		// the enclosing OR goes residual and the kernel applies the identity.
+		if len(f.Children) == 0 {
+			return false
+		}
 		for _, c := range f.Children {
 			if !isFullyPushable(c) {
 				return false
@@ -185,10 +263,46 @@ func isLeafPushable(f spi.Filter) bool {
 	if !isPushable(f.Op) {
 		return false
 	}
+	if pathHasWildcard(f.Path) {
+		return false
+	}
 	if f.Coercion == spi.CoerceTemporal && f.Source == spi.SourceData && isComparisonOp(f.Op) {
 		return false
 	}
 	return true
+}
+
+// pathHasWildcard reports whether path contains a "[*]" array subscript
+// anywhere along its hops. There is no SQL form for a wildcard leaf until a
+// quantifier node exists — pushing it as a scalar comparison would silently
+// drop every matching row, and a narrowing WHERE cannot be recovered by the
+// residual re-check. Detected structurally via spi.ParseFilterPath and
+// PathSub.Wildcard, never by matching the literal "[*]" substring: the parse
+// is the one place that knows what is a subscript versus what merely looks
+// like one. Mirrors sqlite's pathHasWildcard.
+//
+// f.Path reaching isLeafPushable has already passed validateFilterPaths at
+// the Search()/GroupedAggregate() boundary, so a parse error here is not
+// expected in practice. But the default direction still matters: treating
+// an unparseable path as "definitely not a wildcard" would let
+// isLeafPushable push it down as a scalar comparison, which for an ACTUAL
+// wildcard drops every matching row with no way for the residual re-check
+// to recover them (the exact hazard this function's own doc above
+// describes). true — "might be a wildcard, don't push" — is the fail-closed
+// default, matching .claude/rules/correctness-over-availability.md.
+func pathHasWildcard(path string) bool {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return true
+	}
+	for _, hop := range hops {
+		for _, sub := range hop.Subs {
+			if sub.Wildcard {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isComparisonOp reports whether op is a scalar comparison (Eq/Ne/Gt/Lt/Gte/
@@ -214,15 +328,18 @@ func isComparisonOp(op spi.FilterOp) bool {
 // is inclusive [lo,hi], a sound superset of the inclusive kernel between (and,
 // by float8 monotonicity, of any value the kernel matches).
 //
-// Like is deliberately NOT pushable (as of this commit): SQL LIKE's '%'/'_'
-// wildcards do not line up with Cloud's LIKE grammar (spi.MatchFilter's
-// likeToRegex), so a naive pushdown either escapes the wildcards into a
-// literal match (under-selecting real wildcard patterns) or pushes them
-// through unescaped (over-selecting/misinterpreting SQL-LIKE-specific
-// escaping). A sound SQL-LIKE translation that aligns SQL LIKE to Cloud's
-// grammar is deferred to a dedicated follow-up; until then Like is
-// residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
-// branch is kept below (unreachable via isPushable, like Ne) for mirror
+// Like is deliberately NOT pushable (as of this commit), but the ORIGINAL reason
+// no longer holds and is recorded here so it is not repeated: the kernel used to
+// translate LIKE into a regex, whose grammar SQL LIKE could not be aligned to.
+// The kernel now matches LIKE as a glob whose grammar IS SQL's — see
+// cyoda-go-spi like_pattern.go and the FilterLike godoc, which names
+// `LIKE ... ESCAPE '\'` as the reference. What still blocks a pushdown is
+// collation, not grammar: postgres's LIKE is case-sensitive but differs from
+// the kernel on non-ASCII folding, and SQLite's is ASCII-case-INsensitive by
+// default (an over-select, so sound only while the residual re-check is kept).
+// Enabling it needs its own soundness argument per backend; until one exists
+// Like stays residual-only so the kernel evaluates it correctly. leafToSQL's
+// LIKE branch is kept below (unreachable via isPushable, like Ne) for mirror
 // totality with sqlite.
 //
 // IMPORTANT: this set MUST match sqlite's isPushable exactly. Adding or
@@ -241,7 +358,10 @@ func isPushable(op spi.FilterOp) bool {
 }
 
 // toSQL recursively converts a (fully pushable) filter tree to a SQL WHERE
-// fragment and bound arguments. argCounter is a monotonically increasing
+// fragment and bound arguments. The tree must contain no empty groups —
+// joining zero fragments renders "" standalone and a malformed "()" nested;
+// dissect guarantees none reach here (empty groups are identity shapes the
+// kernel owns). argCounter is a monotonically increasing
 // placeholder index used to generate $1, $2, ... — it MUST be shared across
 // the whole tree so each leaf gets a unique placeholder number.
 func toSQL(f spi.Filter, argCounter *int) (string, []any) {
@@ -326,38 +446,98 @@ func fieldExpr(f spi.Filter) string {
 	return jsonbExtractText("doc", f.Path)
 }
 
-// jsonbExtractText returns a SQL expression that extracts the dotted path as
-// text from a JSONB root expression. For a single segment, uses ->>; for
-// multiple segments, uses -> for all but the last and ->> for the last.
+// jsonbExtractText returns a SQL expression that extracts the filter path as
+// text from a JSONB root expression, rendered hop by hop over
+// spi.ParseFilterPath rather than a "." split: a name hop renders as
+// ->'name', and a "[N]" subscript renders as an INTEGER accessor ->N — never
+// ->>'N' — because a text key against a JSONB array yields null (see
+// docs/cloud-parity/path-grammar.md section 9). Every accessor but the final
+// one uses ->; the final one uses ->> so the result comes back as text.
+//
+// path is assumed already validated by validateJSONPath (or
+// validateFilterPaths/validateGroupAndAggregatePaths/validateOrderSpecs) at
+// the Search()/GroupedAggregate() boundary, so the parse below cannot
+// practically fail; an unparseable path renders as root->>"" (an empty text
+// key, == no path was given) rather than panicking, keeping this function
+// total for a defensively-reached unvalidated caller.
 func jsonbExtractText(root, path string) string {
-	segments := strings.Split(path, ".")
-	if len(segments) == 1 {
-		return fmt.Sprintf("%s->>'%s'", root, segments[0])
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return fmt.Sprintf("%s->>''", root)
+	}
+	steps := pathAccessors(hops)
+	if len(steps) == 0 {
+		return fmt.Sprintf("%s->>''", root)
 	}
 	var b strings.Builder
 	b.WriteString(root)
-	for i, seg := range segments {
-		if i == len(segments)-1 {
-			fmt.Fprintf(&b, "->>'%s'", seg)
-		} else {
-			fmt.Fprintf(&b, "->'%s'", seg)
+	for i, step := range steps {
+		op := "->"
+		if i == len(steps)-1 {
+			op = "->>"
 		}
+		b.WriteString(op)
+		b.WriteString(step)
 	}
 	return b.String()
 }
 
-// jsonbExtractJSONB returns a SQL expression that extracts the dotted path
-// as JSONB (NOT text) from a JSONB root expression — every segment uses ->.
-// Used to feed jsonb_typeof for D4 non-scalar coercion in grouped-stats
-// group-key expressions; jsonb_typeof needs a jsonb input, not text.
+// jsonbExtractJSONB returns a SQL expression that extracts the filter path
+// as JSONB (NOT text) from a JSONB root expression — every accessor uses ->,
+// including the final one. Used to feed jsonb_typeof for D4 non-scalar
+// coercion in grouped-stats group-key expressions; jsonb_typeof needs a
+// jsonb input, not text. Hop rendering mirrors jsonbExtractText: a "[N]"
+// subscript is an INTEGER accessor, never a quoted text key.
 func jsonbExtractJSONB(root, path string) string {
-	segments := strings.Split(path, ".")
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return root
+	}
 	var b strings.Builder
 	b.WriteString(root)
-	for _, seg := range segments {
-		fmt.Fprintf(&b, "->'%s'", seg)
+	for _, step := range pathAccessors(hops) {
+		b.WriteString("->")
+		b.WriteString(step)
 	}
 	return b.String()
+}
+
+// pathAccessors flattens a parsed filter path's hops into the ordered
+// sequence of "->" accessor operands jsonbExtractText/jsonbExtractJSONB
+// chain together: a hop's name contributes a single-quoted text-key operand,
+// and each of its "[N]" subscripts contributes an unquoted integer operand.
+// The grammar guarantees a name holds no quote, so the single-quoting here
+// is never escaped and never needs to be.
+//
+// A "[*]" subscript has no accessor form — postgres's -> operator has no
+// wildcard spelling — so it is not expected to reach here: isLeafPushable
+// (query_planner.go) refuses a wildcard filter leaf before it can be pushed,
+// and validateGroupAndAggregatePaths/validateOrderSpecs refuse one on the
+// group-by/aggregate/sort surfaces, so every legitimate caller path is
+// guarded before this function ever sees a wildcard hop.
+//
+// A defensively-reached wildcard returns nil (steps so far discarded, not
+// just the subscript) rather than continuing with the name it belongs to:
+// jsonbExtractText/jsonbExtractJSONB treat nil the same safe way they treat
+// an unparseable path (root->>"" / root unchanged) — a non-match, not a
+// value. Dropping only the subscript used to leave the hop's name in the
+// chain, so jsonbExtractText("doc", "tags[*]") rendered doc->>'tags' — the
+// whole array's text form, a real but WRONG value, exactly the
+// wrong-but-available answer class path-grammar.md §9/§10 close everywhere
+// else. A rejection (degrading to "no path") is the safe response here; a
+// silent drop that renders the container is not.
+func pathAccessors(hops []spi.PathHop) []string {
+	var steps []string
+	for _, hop := range hops {
+		steps = append(steps, "'"+hop.Name+"'")
+		for _, sub := range hop.Subs {
+			if sub.Wildcard {
+				return nil
+			}
+			steps = append(steps, strconv.Itoa(sub.Index))
+		}
+	}
+	return steps
 }
 
 // isNumericValue reports whether v is a Go numeric type (int*/uint*/float*)
@@ -481,6 +661,18 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		// as a numeric-looking string (e.g. "30") coerces and matches — intentional, matching
 		// sqlite's type-coercing comparison and the S4 numeric-equality intent; string operands
 		// use plain text comparison.
+		//
+		// No COLLATE "C" needed here (unlike orderingOp/BETWEEN below): "="/"!="
+		// don't order, they test identity, and every collation this plugin can
+		// produce — including one created with LOCALE_PROVIDER 'icu' — is
+		// DETERMINISTIC (Postgres's default; nondeterministic collations, which
+		// can equate byte-distinct strings, require opting in with `deterministic
+		// = false` at CREATE COLLATION/DATABASE time, which nothing here does). A
+		// deterministic collation still tie-breaks on codepoint identity, so its
+		// notion of "equal" is exactly byte equality — the same one the kernel's
+		// Go `==` uses. Only the ordering operators (Gt/Lt/Gte/Lte, BETWEEN) are
+		// collation-sensitive, because ICU orders letters differently from byte
+		// value even where it still calls two byte-distinct strings unequal.
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
 			p := nextPlaceholder(counter)
@@ -490,6 +682,8 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		p := nextPlaceholder(counter)
 		return fmt.Sprintf("(%s IS NOT NULL AND %s = %s)", col, col, p), []any{textArg(f.Value)}
 	case spi.FilterNe:
+		// See FilterEq above: no COLLATE "C" needed — "!=" is equality's
+		// negation, not an ordering comparison.
 		if isNumericValue(f.Value) {
 			col := orderExpr(f, true)
 			p := nextPlaceholder(counter)
@@ -545,6 +739,11 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		// (FilterBetween) the inclusive SQL is a strict superset (kernel re-check
 		// enforces the open bounds). float8 rounding is monotonic, so a value the
 		// kernel matches always falls within the float8 [lo,hi] the SQL tests.
+		//
+		// BETWEEN is an ordering comparison (col >= lo AND col <= hi under the
+		// hood), so the text branch needs COLLATE "C" for the same reason
+		// orderingOp does: byte order, matching the kernel's strings.Compare and
+		// orderByFieldExpr's ORDER BY collation (searcher.go).
 		if len(f.Values) >= 2 {
 			numeric := isNumericValue(f.Values[0]) && isNumericValue(f.Values[1])
 			col := orderExpr(f, numeric)
@@ -554,15 +753,27 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 				return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s::float8 AND %s::float8)",
 					col, col, p1, p2), []any{numericArg(f.Values[0]), numericArg(f.Values[1])}
 			}
-			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s AND %s)",
+			return fmt.Sprintf("(%s IS NOT NULL AND (%s) COLLATE \"C\" BETWEEN %s AND %s)",
 				col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
 		}
-		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
-		// every row, matching memory's spi.MatchFilter semantics. Validation
-		// upstream (search.validateBetweenArity) rejects this shape before it
-		// ever reaches a plugin; this is defense-in-depth only.
+		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
+		// function only runs on the pushed half planQuery's dissect produces,
+		// and planQuery calls spi.Prepare on the WHOLE filter first — Prepare
+		// now errors on a range leaf without exactly 2 bounds
+		// (ExpandLeaf/expandBetween), so a malformed BETWEEN never survives to
+		// reach dissect/leafToSQL at all. search.validateBetweenArity rejects
+		// the same shape even earlier, at the request boundary. The "false"
+		// this arm returns can no longer be produced by any live caller; it
+		// stays as the closed-fail default rather than a panic, in case that
+		// ever changes.
 		return "false", nil
 	}
+	// Unreachable: leafToSQL only ever receives a genuine leaf (dissect never
+	// pushes a branch op into it). FilterNot is the first branch op whose
+	// accidental arrival here would have been silently absorbed as this
+	// match-all default instead of failing loudly — AND/OR never risked it,
+	// since a group either stayed fully residual or was flattened per-child
+	// before reaching this function.
 	return "1=1", nil
 }
 
@@ -592,8 +803,9 @@ func temporalLeafToSQL(f spi.Filter, counter *int) (string, []any) {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {
 			// Malformed BETWEEN (not exactly 2 operands) fails closed —
-			// exclude every row, matching memory's spi.MatchFilter
-			// semantics, and never index f.Values out of range. Validation
+			// exclude every row, matching memory's
+			// spi.Prepare/PreparedFilter.Match semantics, and never index
+			// f.Values out of range. Validation
 			// upstream (search.validateBetweenArity) rejects this shape
 			// before it ever reaches a plugin; this is defense-in-depth only.
 			return "false", nil
@@ -639,7 +851,13 @@ func sqlOpForTemporal(op spi.FilterOp) string {
 
 // orderingOp emits a comparison clause for Gt/Lt/Gte/Lte. Numeric values
 // route through cyoda_try_float8 with a ::float8 cast on the placeholder;
-// string values use plain text comparison.
+// string values use plain text comparison under COLLATE "C" — byte-order
+// comparison, mirroring orderByFieldExpr's ORDER BY collation (searcher.go)
+// so this WHERE-clause comparison agrees with both it and the kernel's
+// strings.Compare. Without it, a narrowing WHERE range under a non-C
+// database collation can disagree with the kernel's full-filter re-check
+// and drop a row the kernel would have matched — unrecoverably, since a row
+// the WHERE excludes is never fetched for the re-check to save.
 func orderingOp(f spi.Filter, sqlOp string, counter *int) (string, []any) {
 	numeric := isNumericValue(f.Value)
 	col := orderExpr(f, numeric)
@@ -647,7 +865,7 @@ func orderingOp(f spi.Filter, sqlOp string, counter *int) (string, []any) {
 	if numeric {
 		return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s::float8)", col, col, sqlOp, p), []any{numericArg(f.Value)}
 	}
-	return fmt.Sprintf("(%s IS NOT NULL AND %s %s %s)", col, col, sqlOp, p), []any{textArg(f.Value)}
+	return fmt.Sprintf("(%s IS NOT NULL AND (%s) COLLATE \"C\" %s %s)", col, col, sqlOp, p), []any{textArg(f.Value)}
 }
 
 // escapeLike escapes LIKE wildcards (%, _, \) in a user-provided value

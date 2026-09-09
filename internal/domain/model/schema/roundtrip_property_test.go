@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema/gentree"
 )
@@ -23,11 +22,7 @@ func TestRoundtripCatalog(t *testing.T) {
 			if old == nil {
 				old = schema.NewObjectNode()
 			}
-			incomingNode, err := importer.Walk(f.Incoming)
-			if err != nil {
-				t.Fatalf("Walk: %v", err)
-			}
-			extended, extErr := schema.Extend(old, incomingNode, f.Level)
+			extended, extErr := schema.Extend(old, f.Incoming, f.Level)
 			if f.ExpectError {
 				if extErr == nil {
 					t.Fatalf("%s: Extend unexpectedly succeeded at level %q", f.Name, f.Level)
@@ -49,6 +44,10 @@ func TestRoundtripCatalog(t *testing.T) {
 func TestRoundtripRandomSeeds(t *testing.T) {
 	cfg := gentree.DefaultConfig()
 	cfg.TargetLevel = spi.ChangeLevelStructural
+	// Let the generator propose a kind the node does not declare, so this
+	// property covers add_kind_branch and not only the three ops that
+	// existed when it was written.
+	cfg.KindMutationRate = 0.3
 	const N = 1000
 	for i := 0; i < N; i++ {
 		seed := int64(i + 1)
@@ -56,11 +55,7 @@ func TestRoundtripRandomSeeds(t *testing.T) {
 			r := gentree.NewRNG(seed)
 			old := gentree.GenModelNode(r, cfg.MaxDepth, cfg.MaxWidth, cfg)
 			incoming := gentree.GenExtensionPair(r, old, cfg.TargetLevel, cfg)
-			incomingNode, err := importer.Walk(incoming)
-			if err != nil {
-				t.Fatalf("Walk: %v", err)
-			}
-			extended, err := schema.Extend(old, incomingNode, cfg.TargetLevel)
+			extended, err := schema.Extend(old, incoming, cfg.TargetLevel)
 			if err != nil {
 				// Additive extension at Structural should not fail for
 				// well-formed generator output.

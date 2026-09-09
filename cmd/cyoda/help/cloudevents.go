@@ -15,7 +15,7 @@ import (
 
 // emitCloudEventsJSON is the CLI action for `cyoda help cloudevents json`.
 // Emits the embedded JSON Schema tree as a single JSON document whose
-// shape is pinned by issue #113:
+// shape is pinned as:
 //
 //	{ schema: 1, version, specVersion, baseId, schemas: { <path>: {...} } }
 //
@@ -98,7 +98,7 @@ func loadEmbeddedSchemas() (map[string]json.RawMessage, error) {
 		// coercing to float64 — no current schema carries values above
 		// 2^53, but a future `multipleOf` or long-integer default would
 		// silently lose precision through a naive float round-trip
-		// (same class as issue #79). Remarshal of json.Number preserves
+		// (the same class of defect). Remarshal of json.Number preserves
 		// the original lexical form byte-for-byte.
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.UseNumber()

@@ -22,14 +22,14 @@ func setupTestDispatcher(t *testing.T) (*ProcessorDispatcher, *MemberRegistry, s
 	t.Helper()
 	registry := NewMemberRegistry()
 	sentCh := make(chan *cepb.CloudEvent, 10)
-	memberID := registry.Register(testTenantID, []string{"python"}, func(ce *cepb.CloudEvent) error {
+	member := registry.Register("member-test", testTenantID, []string{"python"}, func(ce *cepb.CloudEvent) error {
 		sentCh <- ce
 		return nil
-	})
+	}, nil)
 	uuids := common.NewTestUUIDGenerator()
 	signer, _ := token.NewSigner(make32(t))
 	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
-	return dispatcher, registry, memberID, sentCh
+	return dispatcher, registry, member.ID, sentCh
 }
 
 func testContext() context.Context {
@@ -210,7 +210,11 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 		Name: "my-proc",
 		Config: spi.ProcessorConfig{
 			CalculationNodesTags: "python",
-			ResponseTimeoutMs:    1, // 1ms timeout
+			// Long enough that the enqueue always succeeds and the response
+			// deadline is what fires: a 1ms budget can expire before the
+			// request reaches the writer, which reports "member not draining"
+			// instead and loses the race with the assertion below.
+			ResponseTimeoutMs: 50,
 		},
 	}
 
@@ -231,7 +235,7 @@ func TestDispatchProcessor_Timeout(t *testing.T) {
 	if !appErr.Retryable {
 		t.Error("expected timeout error to be retryable")
 	}
-	if got := appErr.Error(); got != "DISPATCH_TIMEOUT: processor dispatch timed out after 1ms" {
+	if got := appErr.Error(); got != "DISPATCH_TIMEOUT: processor dispatch timed out after 50ms: no response" {
 		t.Errorf("unexpected message: %s", got)
 	}
 }
@@ -697,7 +701,7 @@ func TestDispatchCalloutToMember_SuccessAndTimeout(t *testing.T) {
 }
 
 // TestDispatchCalloutToMember_MemberDisconnects guards that a member
-// disconnecting mid-request (FailAllPending, e.g. on stream drop/Unregister)
+// disconnecting mid-request (evicted, e.g. on stream drop/Unregister)
 // surfaces a distinguishable 503 COMPUTE_MEMBER_DISCONNECTED to the waiting
 // dispatch, not a generic failure that maps to 400.
 func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
@@ -706,11 +710,11 @@ func TestDispatchCalloutToMember_MemberDisconnects(t *testing.T) {
 	member := registry.Get(memberID)
 
 	// Simulate the stream dropping mid-flight: once the request is sent
-	// (and therefore tracked), fail all pending requests as Unregister does
-	// on disconnect, instead of ever completing the request normally.
+	// (and therefore tracked), evict the member as Unregister does on
+	// disconnect, instead of ever completing the request normally.
 	go func() {
 		<-sentCh
-		member.FailAllPending("compute member disconnected")
+		member.Evict(errors.New("compute member disconnected"))
 	}()
 
 	req := map[string]any{"requestId": "req-disconnect"}
@@ -1033,6 +1037,109 @@ func TestDispatchFunction_NoMember(t *testing.T) {
 	}
 }
 
+// TestDispatchCalloutToMember_AbandonOnCtxCancel guards spec D11: when the
+// caller's context is cancelled while dispatchCalloutToMember is waiting on
+// the ctx.Done() arm, the tracked pending-request entry must be cleared
+// before return. Otherwise a late compute-node reply finds a dangling
+// channel and the entry leaks in the member's pending map forever.
+func TestDispatchCalloutToMember_AbandonOnCtxCancel(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	ctx, cancel := context.WithCancel(testContext())
+
+	// Cancel only once the request has actually been sent (and therefore
+	// tracked), so the cancellation races the ctx.Done() arm rather than a
+	// pre-send failure.
+	go func() {
+		<-sentCh
+		cancel()
+	}()
+
+	req := map[string]any{"requestId": "req-ctx-cancel"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-ctx-cancel", "tx-1", 5000, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if got := member.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after ctx cancellation, got %d entries", got)
+	}
+}
+
+// TestDispatchCalloutToMember_AbandonOnTimeout guards spec D11 for the
+// response-deadline arm: a dispatch that times out because nobody answers must
+// not leave the requestID behind in the member's pending map.
+func TestDispatchCalloutToMember_AbandonOnTimeout(t *testing.T) {
+	dispatcher, registry, memberID, _ := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	ctx := testContext()
+
+	req := map[string]any{"requestId": "req-timeout-abandon"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-timeout-abandon", "tx-1", 1, "processor", "my-proc")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if got := member.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after timeout, got %d entries", got)
+	}
+}
+
+// TestDispatchCalloutToMember_AbandonOnWriterFailure guards spec D11 for the
+// writer-failure path: a request whose write to the stream fails is evicted
+// by the writer (Member.write), so the dispatch observes it as the member
+// going away — COMPUTE_MEMBER_DISCONNECTED via the response arm's
+// resp.Disconnected case, not a raw "send failed" error — and must still
+// have its (pre-registered) tracking entry cleared.
+func TestDispatchCalloutToMember_AbandonOnWriterFailure(t *testing.T) {
+	registry := NewMemberRegistry()
+	member := registry.Register("member-send-fail", testTenantID, []string{"python"}, func(_ *cepb.CloudEvent) error {
+		return fmt.Errorf("send boom")
+	}, nil)
+	uuids := common.NewTestUUIDGenerator()
+	signer, _ := token.NewSigner(make32(t))
+	dispatcher := NewProcessorDispatcher(registry, uuids, signer, "node-test", time.Minute)
+	ctx := testContext()
+
+	req := map[string]any{"requestId": "req-send-fail"}
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest, req, "req-send-fail", "tx-1", 5000, "processor", "my-proc")
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeComputeMemberDisconnected {
+		t.Fatalf("err = %v, want COMPUTE_MEMBER_DISCONNECTED", err)
+	}
+	if got := member.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after send failure, got %d entries", got)
+	}
+}
+
+// TestMember_LateResponseAfterAbandon_NoOp guards the far side of spec D11:
+// once a pending-request entry has been abandoned (dispatch already
+// returned via timeout/ctx-cancel/send-failure), a late compute-node reply
+// for that requestID must be a no-op — no panic, and nothing delivered to
+// the now-unread channel the abandoned caller is no longer waiting on.
+func TestMember_LateResponseAfterAbandon_NoOp(t *testing.T) {
+	reg := NewMemberRegistry()
+	m := reg.Register("m-1", "tenant-1", []string{"a"}, noopSend, nil)
+
+	ch, err := m.TrackRequest("req-1")
+	if err != nil {
+		t.Fatalf("TrackRequest: %v", err)
+	}
+	m.AbandonRequest("req-1")
+
+	if got := m.PendingCount(); got != 0 {
+		t.Fatalf("expected pending map empty after abandon, got %d entries", got)
+	}
+
+	// Late response: must not panic and must not deliver to the abandoned
+	// channel.
+	m.CompleteRequest("req-1", &ProcessingResponse{Success: true})
+
+	select {
+	case resp := <-ch:
+		t.Fatalf("expected no delivery to abandoned channel, got %v", resp)
+	default:
+	}
+}
+
 func TestBuildEntityPayload(t *testing.T) {
 	e := &spi.Entity{Meta: spi.EntityMeta{
 		ID: "e1", State: "S1", TransactionID: "tx1",
@@ -1052,4 +1159,109 @@ func TestBuildEntityPayload(t *testing.T) {
 	if meta["state"] != "S1" {
 		t.Fatalf("state = %v", meta["state"])
 	}
+}
+
+// A member unregistered after it was chosen but before the request is
+// tracked yields COMPUTE_MEMBER_DISCONNECTED at once, not DISPATCH_TIMEOUT
+// after the full response timeout.
+func TestDispatch_MemberGoneBeforeTrack_IsDisconnectedImmediately(t *testing.T) {
+	dispatcher, registry, memberID, _ := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	registry.Unregister(member)
+
+	start := time.Now()
+	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
+		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("took %v; should not wait out the response timeout", time.Since(start))
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeComputeMemberDisconnected {
+		t.Fatalf("err = %v, want COMPUTE_MEMBER_DISCONNECTED", err)
+	}
+}
+
+// A writer that never drains makes the enqueue itself time out, reported as
+// DISPATCH_TIMEOUT with the "member not draining" message, within the
+// dispatch's own timeout.
+func TestDispatch_EnqueueTimeout_IsDispatchTimeoutNotDraining(t *testing.T) {
+	dispatcher, member := newWedgedDispatcher(t)
+
+	start := time.Now()
+	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
+		map[string]any{"requestId": "r1"}, "r1", "", 100, "processor", "p")
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeDispatchTimeout {
+		t.Fatalf("err = %v, want DISPATCH_TIMEOUT", err)
+	}
+	if !strings.Contains(appErr.Message, "member not draining") {
+		t.Fatalf("message %q should say the member is not draining", appErr.Message)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("dispatcher blocked %v on a wedged member; the 100ms deadline should have released it", d)
+	}
+}
+
+// A parent context cancelled during the enqueue wait is reported as the
+// caller's cancellation, never as a timeout.
+func TestDispatch_ParentCancelDuringEnqueue_IsCtxErr(t *testing.T) {
+	dispatcher, member := newWedgedDispatcher(t)
+
+	ctx, cancel := context.WithCancel(testContext())
+	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
+	_, err := dispatcher.dispatchCalloutToMember(ctx, member, EntityProcessorCalculationRequest,
+		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// A member evicted while a dispatcher is parked in Send behind a wedged
+// writer is reported as COMPUTE_MEMBER_DISCONNECTED promptly — the genuine
+// Send-error arm, as opposed to the race in
+// TestDispatchCalloutToMember_AbandonOnWriterFailure where Send returns nil
+// before the writer's own failure evicts the member.
+func TestDispatch_MemberEvictedDuringEnqueue_IsDisconnectedPromptly(t *testing.T) {
+	dispatcher, member := newWedgedDispatcher(t)
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		member.Evict(errors.New("member disconnected"))
+	}()
+
+	start := time.Now()
+	_, err := dispatcher.dispatchCalloutToMember(testContext(), member, EntityProcessorCalculationRequest,
+		map[string]any{"requestId": "r1"}, "r1", "", 30_000, "processor", "p")
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeComputeMemberDisconnected {
+		t.Fatalf("err = %v, want COMPUTE_MEMBER_DISCONNECTED", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("dispatcher blocked %v after eviction; should return promptly", d)
+	}
+}
+
+// newWedgedDispatcher builds a dispatcher over a member whose writer is parked
+// in a raw send that never returns, so the writer cannot take another event and
+// the next enqueue has nowhere to go. The parked send is released on cleanup.
+func newWedgedDispatcher(t *testing.T) (*ProcessorDispatcher, *Member) {
+	t.Helper()
+	registry := NewMemberRegistry()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	member := registry.Register("m-wedged", testTenantID, []string{"python"},
+		func(*cepb.CloudEvent) error { <-release; return nil }, nil)
+	t.Cleanup(func() { registry.Unregister(member) })
+	_ = member.Send(context.Background(), mustCE(t)) // wedge the writer
+	signer, _ := token.NewSigner(make32(t))
+	return NewProcessorDispatcher(registry, common.NewTestUUIDGenerator(), signer, "node-test", time.Minute), member
+}
+
+func mustCE(t *testing.T) *cepb.CloudEvent {
+	t.Helper()
+	ce, err := NewCloudEvent(CalculationMemberKeepAliveEvent, map[string]any{"success": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ce
 }

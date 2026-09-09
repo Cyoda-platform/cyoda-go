@@ -8,6 +8,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // ScheduledOutcome reports how FireScheduledTransition resolved a single
@@ -35,8 +36,8 @@ const (
 
 // firePrincipalSystemID identifies the platform system principal the fire
 // path executes as and attributes legacy (zero-ArmedBy) rows to. Deliberately
-// the same identity (ID and Kind) as scheduler.SystemPrincipal()/
-// scheduler.SystemUserContext() — attribution must see one system principal
+// the same identity (ID and Kind) as common.SystemPrincipal()/
+// common.SystemUserContext() — attribution must see one system principal
 // regardless of which subsystem drove the write — but defined locally rather
 // than imported: internal/domain/workflow must not import internal/scheduler.
 const firePrincipalSystemID = "system"
@@ -109,6 +110,9 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	}
 	ctx = spi.WithAmbientOrigin(ctx, seeded) // zero -> no seed -> origin falls through to the system UserContext
 
+	// A storage-unavailable Begin failure stays inspectable through the %w wrap,
+	// but there is no status to map it to here: this path answers to the
+	// scheduler, which logs the outcome and re-arms. No HTTP/gRPC surface.
 	txID, txCtx, err := e.txMgr.Begin(ctx)
 	if err != nil {
 		return OutcomeDropped, fmt.Errorf("failed to begin scheduled-fire transaction: %w", err)
@@ -119,8 +123,8 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	// its cascade commits the entry segment (TX_pre) and opens a new one
 	// (TX_post); every non-commit exit after that point must roll back the
 	// segment curTxID NOW names, not the (already-committed, rollback-is-a-
-	// no-op) entry txID — mirrors rollbackOwned(finalCtx, finalTxID) in
-	// internal/domain/entity/service.go.
+	// no-op) entry txID — the same cursor txScope.Advance maintains for the
+	// entity write flows (internal/domain/entity/txscope.go).
 	curCtx, curTxID := txCtx, txID
 	committed := false
 	defer func() {
@@ -128,9 +132,20 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 			// Best-effort: if curTxID's segment already committed further
 			// down (e.g. this fires before a later CBD-segment commit is
 			// reflected here), Rollback is a safe, ignored no-op (same
-			// pattern as rollbackOpenSegmentOnFailure elsewhere in this
-			// package).
-			_ = e.txMgr.Rollback(curCtx, curTxID)
+			// pattern as rollbackSegment elsewhere in this package).
+			//
+			// common.RollbackContext for the same reason every other rollback
+			// site uses it: the caller's values without the caller's
+			// cancellation, under the shared 5s budget. Both callers of this
+			// path derive from common.SystemUserContext on
+			// context.Background(), so the cancelled-context hazard is not
+			// reachable here — but a rollback that runs on an unbounded context
+			// is one dependency change away from hanging the scan loop, and one
+			// spelling for "how a rollback is issued" is worth more than the
+			// argument for an exception.
+			rbCtx, cancel := common.RollbackContext(curCtx)
+			defer cancel()
+			_ = e.txMgr.Rollback(rbCtx, curTxID)
 		}
 	}()
 
@@ -206,8 +221,13 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	if err != nil {
 		if errors.Is(err, spi.ErrNotFound) {
 			// The entity is gone (hard-deleted); the task is stale.
-			// Self-heal silently — no audit, nothing left to retry.
-			_, _ = sts.Delete(txCtx, task.ID)
+			// Self-heal silently — no audit, nothing left to retry. The
+			// delete's error is checked, not swallowed: committing after a
+			// failed delete would leave the row live for endless
+			// re-dispatch.
+			if _, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
+				return OutcomeDropped, fmt.Errorf("failed to delete scheduled task for a deleted entity: %w", delErr)
+			}
 			committed = true
 			return OutcomeDropped, e.txMgr.Commit(ctx, txID)
 		}
@@ -217,8 +237,11 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		// The entity already left sourceState — transitioned out, or
 		// already fired by a racing worker. Silent drop, no audit (design
 		// §5.3 step 2; §8 Cancelled is reserved for the explicit-exit
-		// reconcile, not this guard).
-		_, _ = sts.Delete(txCtx, task.ID)
+		// reconcile, not this guard). The delete's error is checked for the
+		// same reason as the branch above.
+		if _, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
+			return OutcomeDropped, fmt.Errorf("failed to delete scheduled task for an entity that moved on: %w", delErr)
+		}
 		committed = true
 		return OutcomeDropped, e.txMgr.Commit(ctx, txID)
 	}
@@ -231,32 +254,25 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 		return OutcomeDropped, nil
 	}
 
-	// --- Resolve the workflow + transition (design §5.2) ---
-	wfStore, err := e.factory.WorkflowStore(txCtx)
-	if err != nil {
-		return OutcomeDropped, fmt.Errorf("failed to get workflow store: %w", err)
-	}
-	workflows, err := wfStore.Get(txCtx, entity.Meta.ModelRef)
-	if err != nil && !errors.Is(err, spi.ErrNotFound) {
-		return OutcomeDropped, fmt.Errorf("failed to load workflows: %w", err)
-	}
-	wf := e.findWorkflowForState(workflows, entity.Meta.State)
-	transition := findTransitionInState(wf, entity.Meta.State, cur.Transition)
-	if transition == nil {
-		// The workflow was re-imported and the state or transition this
-		// task references no longer exists. The task is obsolete — drop it
-		// rather than retry forever.
-		slog.DebugContext(txCtx, "scheduled task references a transition no longer present in the workflow; dropping",
-			slog.String("pkg", "workflow"),
-			slog.String("entityId", cur.EntityID),
-			slog.String("sourceState", cur.SourceState),
-			slog.String("transition", cur.Transition))
-		_, _ = sts.Delete(txCtx, task.ID)
-		committed = true
-		return OutcomeDropped, e.txMgr.Commit(ctx, txID)
-	}
-
 	// --- Grace-band lateness gate (design §5.5) ---
+	//
+	// Ordered BEFORE workflow resolution deliberately. Expiry is a pure
+	// function of the durable row and the clock — it needs nothing from the
+	// workflow — so gating it behind resolution would make a task
+	// unexpirable and unreclaimable for exactly as long as its workflow
+	// criterion cannot be evaluated (e.g. the compute member serving a
+	// FUNCTION criterion's tag is down): resolution fails, the row survives,
+	// and the coordinator re-dispatches it every backoff interval forever.
+	// Resolving first would also mean a criterion callout — and, on the
+	// grace-band branch, a rolled-back one — for a task that is not going to
+	// fire at all.
+	//
+	// It also keeps the fire door's audit contract intact: the three guards
+	// that resolve a task silently (row gone, entity moved on, re-armed to
+	// the future) plus expiry all complete before selection records
+	// anything, so WORKFLOW_SKIP / WORKFLOW_FOUND appear only on an attempt
+	// that genuinely reached the definition. See
+	// docs/cloud-parity/scheduled-transitions.md §6.
 	lateness := nowMs - cur.ScheduledTime
 	if cur.TimeoutMs != nil {
 		if lateness > *cur.TimeoutMs+e.expiryGraceMs {
@@ -276,6 +292,49 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 			// scan resolves it once past the band (design §5.5, §15 F4).
 			return OutcomeDropped, nil
 		}
+	}
+
+	// --- Resolve the workflow + transition (design §5.2) ---
+	//
+	// Selection is criterion-based, exactly as on the client-facing doors
+	// (Engine.resolveWorkflow): a scheduled fire must run the definition the
+	// entity is bound to now, not whichever one happens to declare its
+	// source state. A resolution failure — including a workflow criterion
+	// that cannot be evaluated — leaves the task in place and is retried on
+	// the next scan; it never falls through to another definition.
+	wf, err := e.resolveWorkflow(txCtx, entity, auditStore, txID)
+	if err != nil {
+		return OutcomeDropped, fmt.Errorf("failed to resolve workflow for scheduled fire: %w", err)
+	}
+	transition := findFireableTransitionInState(wf, entity.Meta.State, cur.Transition)
+	if transition == nil {
+		// The selected workflow no longer declares this state/transition as
+		// a scheduled one — either it was re-imported, or the entity's data
+		// changed and re-bound it to a different definition. The task is
+		// obsolete: drop it rather than retry forever.
+		//
+		// Audited, not silent. A scheduled transition is often a time-based
+		// control (auto-expire, escalate-if-not-approved); a client write
+		// that re-binds the entity can make one vanish, and a vanished timer
+		// must be attributable. The guards above stay silent because they
+		// are self-healing race outcomes, not lifecycle events.
+		slog.DebugContext(txCtx, "scheduled task references a transition the selected workflow does not declare as scheduled; dropping",
+			slog.String("pkg", "workflow"),
+			slog.String("entityId", cur.EntityID),
+			slog.String("workflowName", wf.Name),
+			slog.String("sourceState", cur.SourceState),
+			slog.String("transition", cur.Transition))
+		if removed, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
+			return OutcomeDropped, fmt.Errorf("failed to delete obsolete scheduled task: %w", delErr)
+		} else if removed {
+			e.recordEvent(auditStore, txCtx, entity.Meta.ID, txID, entity.Meta.State,
+				spi.SMEventScheduledTransitionCancelled,
+				fmt.Sprintf("Scheduled transition %q cancelled (not a scheduled transition of state %q in the selected workflow %q)",
+					cur.Transition, cur.SourceState, wf.Name),
+				map[string]any{"transition": cur.Transition, "sourceState": cur.SourceState, "workflowName": wf.Name})
+		}
+		committed = true
+		return OutcomeDropped, e.txMgr.Commit(ctx, txID)
 	}
 
 	// --- Anchor stamp: attribute the fire's write to the arming principal
@@ -316,10 +375,48 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	// --- Fire (design §5.2/§5.3) ---
 	// expectedTxID is "the txID read in this fire transaction" (design
 	// §5.3): the entity's last-committed TransactionID as of the Get above.
-	// Captured before fireTransition/cascadeAutomated run — neither mutates
-	// entity.Meta.TransactionID — so it stays valid as the CAS precondition
-	// for the final persist below, whether or not the cascade segments.
+	// Captured — a string, by value — before fireTransition/cascadeAutomated
+	// run, so it stays valid as the CAS precondition for the final persist
+	// below whether or not the cascade segments, and regardless of a
+	// backend writing its own stamp back into entity.Meta along the way
+	// (postgres does; see its save()).
 	expectedTxID := entity.Meta.TransactionID
+	if expectedTxID == "" {
+		// Fail closed: CompareAndSave rejects an empty expectedTxID, so there
+		// is no precondition to fire under. Refusing here rather than at the
+		// terminal persist is load-bearing — a COMMIT_BEFORE_DISPATCH
+		// processor segments the fire, and the first segment's flush would
+		// already be committed by the time the terminal persist ran, leaving
+		// the entity advanced by a fire that could not be guarded.
+		//
+		// The task is DELETED rather than left for a later scan. Nothing
+		// rewrites a stored transaction ID on its own, so the condition is
+		// permanent for as long as the entity sits untouched, and leaving the
+		// row would re-dispatch and re-refuse it every scan — the lateness
+		// gate above cannot reclaim it either, since that is conditional on
+		// the transition declaring a TimeoutMs. Any write that WOULD make it
+		// fireable runs reconcileScheduledTasks, which re-arms this
+		// transition out of the entity's current state, so deleting loses
+		// nothing that can still fire.
+		slog.Error("scheduled fire refused: stored entity carries no transaction ID to guard against",
+			"pkg", "workflow", "taskID", cur.ID, "entityID", cur.EntityID)
+		// Audited, not silent — the same rule the obsolete-task drop above
+		// follows, and for the same reason: this destroys a timer
+		// permanently, and a vanished timer must be attributable to
+		// something an operator can find later. A log line on whichever node
+		// happened to pick the task up is not that.
+		if removed, delErr := sts.Delete(txCtx, task.ID); delErr != nil {
+			return OutcomeDropped, fmt.Errorf("failed to delete unguardable scheduled task: %w", delErr)
+		} else if removed {
+			e.recordEvent(auditStore, txCtx, entity.Meta.ID, txID, entity.Meta.State,
+				spi.SMEventScheduledTransitionCancelled,
+				fmt.Sprintf("Scheduled transition %q cancelled (entity carries no committed transaction ID, so the fire cannot be guarded)",
+					cur.Transition),
+				map[string]any{"transition": cur.Transition, "sourceState": cur.SourceState})
+		}
+		committed = true
+		return OutcomeDropped, e.txMgr.Commit(ctx, txID)
+	}
 	fireCtx := withIfMatch(txCtx, expectedTxID)
 
 	newCtx, newTxID, matched, fireErr := e.fireTransition(fireCtx, entity, wf, transition, auditStore, txID)
@@ -426,9 +523,23 @@ func (e *Engine) FireScheduledTransition(ctx context.Context, task spi.Scheduled
 	return OutcomeFired, e.txMgr.Commit(ctx, finalTxID)
 }
 
-// findTransitionInState returns the named transition from wf's given state,
-// or nil if wf, the state, or the transition itself is absent.
-func findTransitionInState(wf *spi.WorkflowDefinition, state, transitionName string) *spi.TransitionDefinition {
+// findFireableTransitionInState returns the named transition from wf's given
+// state, but only if the scheduler is allowed to fire it: it must carry a
+// Schedule and be neither manual nor disabled. Returns nil if wf, the state,
+// or the transition is absent, or if a transition of that name exists but is
+// not scheduler-fireable.
+//
+// The eligibility test is the exact complement of the arm-side filter in
+// reconcileScheduledTasks (`tr.Schedule == nil || tr.Manual || tr.Disabled`
+// → skip). Arm and fire MUST agree: a name match alone would let the
+// scheduler fire a MANUAL transition — running its processors and moving the
+// entity with no client asking for it — whenever the definition holding the
+// name changed under a live task. That is reachable through the ordinary
+// API, because a write that changes the entity's data can re-bind it to a
+// definition where the same name is manual, and a task armed for the
+// entity's CURRENT state is not cancelled by reconcile (which only cancels
+// rows whose SourceState the entity has left).
+func findFireableTransitionInState(wf *spi.WorkflowDefinition, state, transitionName string) *spi.TransitionDefinition {
 	if wf == nil {
 		return nil
 	}
@@ -437,9 +548,14 @@ func findTransitionInState(wf *spi.WorkflowDefinition, state, transitionName str
 		return nil
 	}
 	for i := range stateDef.Transitions {
-		if stateDef.Transitions[i].Name == transitionName {
-			return &stateDef.Transitions[i]
+		tr := &stateDef.Transitions[i]
+		if tr.Name != transitionName {
+			continue
 		}
+		if tr.Schedule == nil || tr.Manual || tr.Disabled {
+			return nil
+		}
+		return tr
 	}
 	return nil
 }

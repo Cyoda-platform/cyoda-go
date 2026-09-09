@@ -92,8 +92,19 @@ func ent(id, data string) *spi.Entity {
 	}
 }
 
+// testSearchLimit bounds every plugin Search call this suite makes directly
+// (bypassing search.SearchService.Search, which normally resolves a
+// caller-omitted limit before calling). EntityStore.Search's contract
+// requires Limit >= 1 — Limit <= 0 is a contract violation the
+// implementation MUST reject (see the Search doc comment) — so every
+// scenario needs an explicit bound. Comfortably above the largest seeded
+// set any scenario in this file uses (a handful of rows) without being
+// close enough to the bounded-or-fail assertions (runTiebreakOrder's
+// Limit: 3/4 over 4 matches) to interact with them.
+const testSearchLimit = 1000
+
 func opts() spi.SearchOptions {
-	return spi.SearchOptions{ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion}
+	return spi.SearchOptions{ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, Limit: testSearchLimit}
 }
 
 // idsSorted returns the entity ids of a result slice, sorted (for id-set
@@ -118,8 +129,8 @@ func idsInOrder(es []*spi.Entity) []string {
 }
 
 // begin opens a transaction on the factory and returns the tx-scoped store,
-// searcher, tx context, and a rollback cleanup.
-func begin(t *testing.T, f spi.StoreFactory, baseCtx context.Context) (spi.EntityStore, spi.Searcher, context.Context) {
+// tx context, and a rollback cleanup.
+func begin(t *testing.T, f spi.StoreFactory, baseCtx context.Context) (spi.EntityStore, context.Context) {
 	t.Helper()
 	tm, err := f.TransactionManager(baseCtx)
 	if err != nil {
@@ -134,11 +145,54 @@ func begin(t *testing.T, f spi.StoreFactory, baseCtx context.Context) (spi.Entit
 	if err != nil {
 		t.Fatalf("EntityStore(tx): %v", err)
 	}
-	sr, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatalf("store does not implement spi.Searcher")
+	return store, txCtx
+}
+
+// latestCommittedTime returns the newest server-stamped LastModifiedDate among
+// the committed entities of personRef — a point-in-time boundary expressed on
+// the backend's own clock rather than the test process's.
+func latestCommittedTime(t *testing.T, f spi.StoreFactory, baseCtx context.Context) time.Time {
+	t.Helper()
+	store, err := f.EntityStore(baseCtx)
+	if err != nil {
+		t.Fatalf("EntityStore(latestCommittedTime): %v", err)
 	}
-	return store, sr, txCtx
+	all := drainAll(t, store, baseCtx, nil)
+	if len(all) == 0 {
+		t.Fatal("latestCommittedTime: no committed entities")
+	}
+	latest := all[0].Meta.LastModifiedDate
+	for _, e := range all[1:] {
+		if e.Meta.LastModifiedDate.After(latest) {
+			latest = e.Meta.LastModifiedDate
+		}
+	}
+	if latest.IsZero() {
+		t.Fatal("latestCommittedTime: LastModifiedDate not populated by the backend")
+	}
+	return latest
+}
+
+// drainAll reads every entity of personRef through Iterate with a zero-value
+// filter. Parity suites cannot import cyoda-go internals, so this is the
+// local twin of internal/common/commontest.DrainAll.
+func drainAll(t *testing.T, store spi.EntityStore, ctx context.Context, asAt *time.Time) []*spi.Entity {
+	t.Helper()
+	it, err := store.Iterate(ctx, personRef, spi.Filter{}, spi.IterateOptions{PointInTime: asAt})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	var out []*spi.Entity
+	for it.Next() {
+		out = append(out, it.Entity())
+	}
+	if err := it.Close(); err != nil {
+		t.Fatalf("Iterate Close: %v", err)
+	}
+	if err := it.Err(); err != nil {
+		t.Fatalf("Iterate Err: %v", err)
+	}
+	return out
 }
 
 // seed saves the committed baseline through a fresh (non-tx) store.
@@ -155,37 +209,49 @@ func seed(t *testing.T, f spi.StoreFactory, baseCtx context.Context, rows ...*sp
 	}
 }
 
-// assertRYWOracle is the genuine oracle: an in-tx Search must return exactly
-// the id-set (and per-id data) that GetAll(txCtx) + spi.MatchFilter produces
-// for the same tx state — computed through the SAME tx-scoped store, so the
-// comparison is a real cross-check, not a tautology.
-func assertRYWOracle(t *testing.T, store spi.EntityStore, sr spi.Searcher, txCtx context.Context, filter spi.Filter, o spi.SearchOptions) []*spi.Entity {
+// assertRYWOracle is the oracle: an in-tx Search must return exactly the
+// id-set (and per-id data) that an unfiltered in-tx Iterate +
+// spi.Prepare(filter).Match produces for the same tx state — computed
+// through the SAME tx-scoped store, so the comparison is a real cross-check,
+// not a tautology.
+//
+// It is a WEAKER cross-check than it was. The oracle read the model through
+// GetAll, a structurally separate path from Search; with GetAll gone it reads
+// through Iterate, which on memory shares the merge/snapshot machinery Search
+// uses. A defect in that shared machinery can now move both sides of the
+// comparison together. What still catches it is the hardcoded expectation
+// each scenario carries — the wantPresent/wantAbsent id-sets below are the
+// cross-backend contract, and they are written out, not derived. Read the two
+// together: the oracle checks Search against the store's own view, the
+// hardcoded sets check that view against the contract.
+func assertRYWOracle(t *testing.T, store spi.EntityStore, txCtx context.Context, filter spi.Filter, o spi.SearchOptions) []*spi.Entity {
 	t.Helper()
-	all, err := store.GetAll(txCtx, personRef)
+	all := drainAll(t, store, txCtx, nil)
+	prepared, err := spi.Prepare(filter)
 	if err != nil {
-		t.Fatalf("GetAll(tx): %v", err)
+		t.Fatalf("spi.Prepare(filter): %v", err)
 	}
 	wantIDs := []string{}
 	wantData := map[string]string{}
 	for _, e := range all {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if prepared.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 			wantData[e.Meta.ID] = string(e.Data)
 		}
 	}
 	sort.Strings(wantIDs)
 
-	got, err := sr.Search(txCtx, filter, o)
+	got, err := store.Search(txCtx, filter, o)
 	if err != nil {
 		t.Fatalf("Search(tx): %v", err)
 	}
 	gotIDs := idsSorted(got)
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("RYW oracle mismatch: Search=%v, GetAll+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("RYW oracle mismatch: Search=%v, Iterate+Prepare.Match=%v", gotIDs, wantIDs)
 	}
 	for _, e := range got {
 		if wd, ok := wantData[e.Meta.ID]; ok && string(e.Data) != wd {
-			t.Errorf("id %s data mismatch: Search=%s GetAll=%s", e.Meta.ID, e.Data, wd)
+			t.Errorf("id %s data mismatch: Search=%s Iterate=%s", e.Meta.ID, e.Data, wd)
 		}
 	}
 	return got
@@ -227,7 +293,7 @@ func runCoreMatrix(t *testing.T, b backend) {
 		ent("u6_munich", `{"city":"Munich","note":"committed"}`),
 	)
 
-	store, sr, txCtx := begin(t, f, baseCtx)
+	store, txCtx := begin(t, f, baseCtx)
 
 	// (1) create a new matching entity in T.
 	if _, err := store.Save(txCtx, ent("u7_new", `{"city":"Berlin","note":"buffered-new"}`)); err != nil {
@@ -253,7 +319,7 @@ func runCoreMatrix(t *testing.T, b backend) {
 		t.Fatalf("supersede u5: %v", err)
 	}
 
-	got := assertRYWOracle(t, store, sr, txCtx, cityBerlin, opts())
+	got := assertRYWOracle(t, store, txCtx, cityBerlin, opts())
 
 	// Hardcoded RYW-semantics oracle (independent of the Search implementation).
 	wantPresent := []string{"u1_untouched", "u4_delsave", "u5_supersede", "u7_new"}
@@ -295,7 +361,7 @@ func runTiebreakOrder(t *testing.T, b backend) {
 		ent("p3", `{"city":"Berlin","rank":5}`),
 		ent("p5", `{"city":"Berlin","rank":5}`),
 	)
-	store, sr, txCtx := begin(t, f, baseCtx)
+	store, txCtx := begin(t, f, baseCtx)
 	// Buffered add ties on rank; its id (p2) interleaves between p1 and p3.
 	if _, err := store.Save(txCtx, ent("p2", `{"city":"Berlin","rank":5}`)); err != nil {
 		t.Fatalf("buffered add p2: %v", err)
@@ -304,8 +370,8 @@ func runTiebreakOrder(t *testing.T, b backend) {
 	order := []spi.OrderSpec{{Path: "rank", Source: spi.SourceData, Kind: spi.OrderNumeric}}
 
 	// Full ordered set: all rank=5 → pure entity_id-asc tiebreak.
-	full, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: order,
+	full, err := store.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: order, Limit: testSearchLimit,
 	})
 	if err != nil {
 		t.Fatalf("Search(full): %v", err)
@@ -319,7 +385,7 @@ func runTiebreakOrder(t *testing.T, b backend) {
 	// in-tx buffered add pushing the merged count over the cap fails
 	// identically everywhere; per-plugin tests cover the same case but not
 	// from this shared table.
-	_, err = sr.Search(txCtx, cityBerlin, spi.SearchOptions{
+	_, err = store.Search(txCtx, cityBerlin, spi.SearchOptions{
 		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion,
 		OrderBy: order, Limit: 3,
 	})
@@ -328,7 +394,7 @@ func runTiebreakOrder(t *testing.T, b backend) {
 	}
 
 	// Limit exactly at the merged count → succeeds, same order as unbounded.
-	atLimit, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
+	atLimit, err := store.Search(txCtx, cityBerlin, spi.SearchOptions{
 		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion,
 		OrderBy: order, Limit: 4,
 	})
@@ -351,15 +417,15 @@ func runNullsLastOrder(t *testing.T, b backend) {
 		ent("n1", `{"city":"Berlin","score":10}`),
 		ent("n3_null", `{"city":"Berlin"}`), // no score → sorts last
 	)
-	store, sr, txCtx := begin(t, f, baseCtx)
+	store, txCtx := begin(t, f, baseCtx)
 	// Buffered add with a score; sits adjacent to the NULL row under asc.
 	if _, err := store.Save(txCtx, ent("n2", `{"city":"Berlin","score":20}`)); err != nil {
 		t.Fatalf("buffered add n2: %v", err)
 	}
 
 	asc := []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Kind: spi.OrderNumeric}}
-	got, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: asc,
+	got, err := store.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: asc, Limit: testSearchLimit,
 	})
 	if err != nil {
 		t.Fatalf("Search(asc): %v", err)
@@ -369,8 +435,8 @@ func runNullsLastOrder(t *testing.T, b backend) {
 	}
 
 	desc := []spi.OrderSpec{{Path: "score", Source: spi.SourceData, Desc: true, Kind: spi.OrderNumeric}}
-	gotDesc, err := sr.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: desc,
+	gotDesc, err := store.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: personRef.EntityName, ModelVersion: personRef.ModelVersion, OrderBy: desc, Limit: testSearchLimit,
 	})
 	if err != nil {
 		t.Fatalf("Search(desc): %v", err)
@@ -382,9 +448,10 @@ func runNullsLastOrder(t *testing.T, b backend) {
 
 // runInTxPIT covers invariant 8: an in-tx Search with PointInTime BEFORE the
 // tx's writes returns the committed-as-at snapshot only — buffered creates and
-// buffered updates are excluded — identical to GetAllAsAt(pit)+MatchFilter and
-// identical across backends. Uses wall-clock separation (works uniformly on all
-// three backends without backend-specific time surgery).
+// buffered updates are excluded — identical to Iterate(asAt=pit)+spi.Prepare(filter).Match and
+// identical across backends. The boundary is read back from the store rather
+// than taken from the test process's clock, so it works uniformly on all three
+// backends without backend-specific time surgery.
 func runInTxPIT(t *testing.T, b backend) {
 	f, baseCtx, cleanup := b.open(t)
 	defer cleanup()
@@ -395,12 +462,17 @@ func runInTxPIT(t *testing.T, b backend) {
 		ent("b2", `{"city":"Berlin","note":"committed"}`),
 	)
 
-	// pit strictly AFTER the committed writes and strictly BEFORE any tx write.
-	time.Sleep(20 * time.Millisecond)
-	pit := time.Now()
+	// pit covers the committed writes and excludes every later tx write. It is
+	// the newest committed version's OWN timestamp (inclusive <= includes it),
+	// read back from the store rather than taken from time.Now(): the postgres
+	// backend stamps versions from the database clock, which on a testcontainer
+	// is not the test process's clock. See e2e/parity/pit_time.go.
+	pit := latestCommittedTime(t, f, baseCtx)
+
+	// Separate the buffered tx writes below into a strictly later instant.
 	time.Sleep(20 * time.Millisecond)
 
-	store, sr, txCtx := begin(t, f, baseCtx)
+	store, txCtx := begin(t, f, baseCtx)
 	// Buffered create postdating pit — must be excluded from the PIT snapshot.
 	if _, err := store.Save(txCtx, ent("b3", `{"city":"Berlin","note":"buffered-new"}`)); err != nil {
 		t.Fatalf("buffered create b3: %v", err)
@@ -415,23 +487,24 @@ func runInTxPIT(t *testing.T, b backend) {
 	o.PointInTime = &pit
 	o.TrackingRead = true // PIT must still record nothing (postgres readSet isn't exposed here; see per-plugin tests)
 
-	got, err := sr.Search(txCtx, cityBerlin, o)
+	got, err := store.Search(txCtx, cityBerlin, o)
 	if err != nil {
 		t.Fatalf("in-tx PIT Search: %v", err)
 	}
 
-	// Oracle: committed-as-at snapshot via GetAllAsAt on the committed store.
+	// Oracle: committed-as-at snapshot via Iterate(asAt) on the committed store.
 	baseStore, err := f.EntityStore(baseCtx)
 	if err != nil {
 		t.Fatalf("EntityStore(base): %v", err)
 	}
-	all, err := baseStore.GetAllAsAt(baseCtx, personRef, pit)
+	all := drainAll(t, baseStore, baseCtx, &pit)
+	prepared, err := spi.Prepare(cityBerlin)
 	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
+		t.Fatalf("spi.Prepare(cityBerlin): %v", err)
 	}
 	wantIDs := []string{}
 	for _, e := range all {
-		if spi.MatchFilter(cityBerlin, e.Data, e.Meta) {
+		if prepared.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 		}
 	}
@@ -439,7 +512,7 @@ func runInTxPIT(t *testing.T, b backend) {
 
 	gotIDs := idsSorted(got)
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("in-tx PIT oracle mismatch: Search=%v, GetAllAsAt+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("in-tx PIT oracle mismatch: Search=%v, Iterate(asAt)+Prepare.Match=%v", gotIDs, wantIDs)
 	}
 	// Hardcoded: only the committed Berlin rows as-at pit; buffered b3 excluded,
 	// buffered Munich update to b1 ignored (committed-only).

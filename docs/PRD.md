@@ -30,7 +30,7 @@ Scale envelope depends on the active storage plugin:
 - **`memory`** — single process, bounded by host RAM.
 - **`sqlite`** — single node, persistent; throughput bounded by local
   disk. No clustering.
-- **`postgres`** — small compute clusters (3–10 stateless Go nodes)
+- **`postgres`** — small compute clusters (2–20 stateless Go nodes)
   behind a load balancer, sharing a primary PostgreSQL. Active-active
   HA; any node serves any request. Write throughput bounded by the
   PostgreSQL primary.
@@ -120,7 +120,7 @@ a past fact adds a new version with earlier `valid_time` and current
 **Point-in-time reads run at the same performance class as current
 reads.** Current-state reads are primary-key lookups on a
 materialised `entities` table (one row per live entity). Historical
-reads (`GetAsAt`, `GetAllAsAt`) are indexed seeks against a dedicated
+reads (`GetAsAt`, `GetPage(asAt)`, `Iterate(pointInTime)`) are indexed seeks against a dedicated
 bi-temporal composite index (`idx_ev_bitemporal` on
 `(tenant_id, entity_id, valid_time DESC, transaction_time DESC)` in
 the postgres plugin). Both are constant-time index operations — no
@@ -191,7 +191,7 @@ UNLOCKED ──lock──► LOCKED ──unlock──► UNLOCKED
 | `STRUCTURAL` | New fields added to schema |
 | `TYPE` | Leaf type widening (e.g., int to float) |
 | `ARRAY_ELEMENTS` | Array element type widening |
-| `ARRAY_LENGTH` | Array width changes only |
+| `ARRAY_LENGTH` | Nothing — the floor of the ladder; an array's length is not part of the model |
 
 **Export Formats:** `JSON_SCHEMA` (standard JSON Schema) and `SIMPLE_VIEW` (lossless internal representation).
 
@@ -246,7 +246,7 @@ have changed.
 | Type | Evaluation | Description |
 |------|-----------|-------------|
 | **Simple** | Local | JSONPath expression + operator + value against entity data |
-| **Lifecycle** | Local | Predicate on entity metadata (state, creationDate, previousTransition) |
+| **Lifecycle** | Local | Predicate on entity metadata (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id) |
 | **Group** | Local | AND/OR composition with arbitrary nesting depth |
 | **Array** | Local | Positional matching against array elements |
 | **Function** | Remote | Delegated to external compute node via gRPC CloudEvents |
@@ -316,7 +316,7 @@ BEGIN ──► READ/WRITE ──► COMMIT
   │                        │
   │         conflict ◄─────┘
   │            │
-  └──► ROLLBACK ◄──── timeout (TTL reaper)
+  └──► ROLLBACK ◄──── deferred release / DB ceiling
 ```
 
 1. **Begin** — Snapshot established. Each plugin captures its own snapshot primitive (committed-log watermark for memory/sqlite; PostgreSQL transaction snapshot under `REPEATABLE READ`).
@@ -341,9 +341,9 @@ postgres uses row-level locks plus a commit-time re-validation pass;
 the commercial cassandra plugin uses its proprietary coordinator —
 but the contract is the same. See `docs/CONSISTENCY.md` for depth.
 
-### Transaction Timeout and Reaper
+### Transaction Timeouts
 
-Transactions have a configurable TTL (default: 60 seconds, set via `CYODA_TX_TTL`). A background reaper goroutine periodically scans for expired transactions and rolls them back. For the PostgreSQL plugin, the TTL should align with the server-side `idle_in_transaction_session_timeout`.
+A transaction's lifetime is bounded on every exit path, including a panic. Each entity write flow opens its transaction inside a deferred scope that releases it — commits if the flow succeeded, rolls back otherwise — no matter how the flow returns; the workflow engine applies the same deferred-release discipline to the segments it opens for `COMMIT_BEFORE_DISPATCH` cascades. Underneath that application-side guarantee, the PostgreSQL plugin sets a server-side ceiling: `statement_timeout` bounds any single SQL statement and `idle_in_transaction_session_timeout` bounds a connection sitting idle inside an open transaction (both default to 5 minutes, via `CYODA_POSTGRES_STATEMENT_TIMEOUT` / `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`). An operation that cannot acquire a pooled connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default 10s) fails `503 STORAGE_UNAVAILABLE`, retryable, rather than queuing indefinitely — a write, or a read that needs a second connection while the caller's transaction already holds one.
 
 ### Multi-Node Transaction Affinity
 
@@ -444,10 +444,10 @@ above.
 | Type | Description |
 |------|-------------|
 | **Simple** | JSONPath + operator + value against entity data |
-| **Lifecycle** | Predicate on entity metadata (state, creationDate, previousTransition) |
+| **Lifecycle** | Predicate on entity metadata (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id) |
 | **Group** | AND/OR composition with arbitrary nesting |
 | **Array** | Positional matching against array elements |
-| **Function** | Delegated to external compute node via gRPC |
+| **Function** | Criteria only — a search body carrying one is rejected `400 INVALID_CONDITION` (no per-entity compute dispatch in the search path) |
 
 ---
 
@@ -606,7 +606,7 @@ gRPC calls authenticate via `Authorization` metadata. The same JWT validation ap
 
 ### Overview
 
-Cyoda-Go operates as a cluster of 3-10 stateless Go nodes behind a load balancer (nginx). Every node is identical — no leader election, no shard ownership. PostgreSQL is the single coordination layer.
+Cyoda-Go operates as a cluster of 2–20 stateless Go nodes behind a load balancer (nginx). Every node is identical — no leader election, no shard ownership. PostgreSQL is the single coordination layer.
 
 ### Node Discovery: Gossip (SWIM Protocol)
 
@@ -683,7 +683,7 @@ In a multi-node cluster, a calculation member's gRPC stream terminates at one no
 
 | Area | Endpoints | Description |
 |------|-----------|-------------|
-| **Health** | `GET /health` | Readiness probe |
+| **Health** | `GET /health` | Health summary; readiness is `/readyz` on the admin listener |
 | **Entity CRUD** | `POST/GET/PUT/DELETE /entity/...` | Create, read, update, delete (single and batch) |
 | **Entity Stats** | `GET /entity/stats/...` | Count, state distribution per model |
 | **Model Management** | `POST/GET/DELETE /model/...` | Import, export, lock, unlock, delete, validate, changeLevel |
@@ -761,7 +761,7 @@ A running binary has exactly one active storage plugin. Per-store routing (mixin
 |--------|--------------|----------|
 | **memory** (default) | None — in-process Go maps | Rapid development, agent-driven application engineering, embedded/test usage. Single-node only; data is lost on restart. |
 | **sqlite** | None — WASM SQLite embedded in the binary | Persistent single-node storage for desktop, edge, and containerised single-node production. Single-process only (flock-guarded); no NFS. |
-| **postgres** | PostgreSQL 14+ | Production durability; single-node or multi-node clusters (3–10 nodes) behind a load balancer. All cluster state flows through PostgreSQL as the consistency authority. |
+| **postgres** | PostgreSQL 14+ | Production durability; single-node or multi-node clusters (2–20 nodes) behind a load balancer. All cluster state flows through PostgreSQL as the consistency authority. |
 
 ### Commercial Plugin (available from Cyoda)
 
@@ -855,10 +855,10 @@ own envelope (contact Cyoda).
 
 | Dimension | Sweet Spot | Upper Bound | Notes |
 |-----------|-----------|-------------|-------|
-| Cluster size | 3–5 nodes | 10–20 nodes | Beyond 10, gossip metadata grows and proxy hop probability increases |
+| Cluster size | 2–20 nodes (DD-4) | No enforced limit | The range is a judgement, not a derived bound. What rises with cluster size is the probability that a request lands on a node other than the transaction owner and has to be proxied |
 | Concurrent transactions | 50–250 | ~750 (3 nodes × 25 PG connections) | Bounded by PG connection pool × node count |
 | Entity volume | Up to millions per model | Bounded by PG storage | Version history grows monotonically (append-only, no compaction) |
-| Transaction duration | < 1 second (ideal) | 60 seconds (default TTL) | Each second of transaction duration consumes one PG connection |
+| Transaction duration | < 1 second (ideal) | 5 minutes idle between statements (`CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`) | Each second of transaction duration consumes one PG connection |
 | Write throughput | 50–200 entity creates/s per node | Bounded by PG primary throughput | Contention on same entities triggers SI+FCW conflicts + retries |
 | Compute processor latency | < 500 ms | 30s (default timeout) | Processor duration dominates transaction duration |
 

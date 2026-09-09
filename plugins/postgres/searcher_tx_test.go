@@ -1,7 +1,7 @@
 package postgres_test
 
 // searcher_tx_test.go — in-transaction Search behaviour for the PostgreSQL
-// backend (issue #420, Task 10).
+// backend (Task 10).
 //
 // DESIGN NOTE — postgres has no in-process tx buffer.
 //
@@ -16,12 +16,13 @@ package postgres_test
 // populated. Consequently the only tx-specific behaviour Search must add over
 // the committed pushdown is READ-SET RECORDING: when opts.TrackingRead is set,
 // each returned committed entity's id+observed-version must enter the tx read-set
-// so commit-time first-committer-wins validates it (matching Get/GetAll, which
+// so commit-time first-committer-wins validates it (matching Get/GetPage, which
 // record unconditionally; Search records only when asked).
 //
-// These tests assert (a) RYW parity with GetAll+spi.MatchFilter for buffered
-// create/update/delete and delete-then-save, and (b) the TrackingRead read-set
-// contract (records returned ids ⇒ conflicting concurrent commit aborts;
+// These tests assert (a) RYW parity with Iterate+spi.Prepare(filter).Match for
+// buffered create/update/delete and delete-then-save, and (b) the
+// TrackingRead read-set contract (records returned ids ⇒ conflicting
+// concurrent commit aborts;
 // records nothing when false ⇒ concurrent commit does not abort).
 
 import (
@@ -38,8 +39,14 @@ import (
 
 var searchTxModel = spi.ModelRef{EntityName: "txperson", ModelVersion: "1"}
 
+// searchTxLimit is generously above every seed+buffered-write count this file
+// exercises — these tests are about RYW/TrackingRead behaviour, not the
+// bounded-or-fail cap itself, so the Limit only needs to never be the thing
+// that trips.
+const searchTxLimit = 100
+
 func searchTxOpts() spi.SearchOptions {
-	return spi.SearchOptions{ModelName: searchTxModel.EntityName, ModelVersion: searchTxModel.ModelVersion}
+	return spi.SearchOptions{ModelName: searchTxModel.EntityName, ModelVersion: searchTxModel.ModelVersion, Limit: searchTxLimit}
 }
 
 // setupSearchTx wires a factory+TM (so transactions are available), seeds the
@@ -78,28 +85,25 @@ func idsOf(es []*spi.Entity) []string {
 	return out
 }
 
-// assertSearchMatchesGetAll is the RYW oracle: Search inside the tx must return
-// exactly the id set that GetAll + spi.MatchFilter produces for the same tx
-// state. Both sides run on the same tx-scoped store/ctx.
-func assertSearchMatchesGetAll(t *testing.T, store spi.EntityStore, ctx context.Context, filter spi.Filter, opts spi.SearchOptions) []string {
+// assertSearchMatchesIterate is the RYW oracle: Search inside the tx must return
+// exactly the id set that Iterate + spi.Prepare(filter).Match produces for the
+// same tx state. Both sides run on the same tx-scoped store/ctx.
+func assertSearchMatchesIterate(t *testing.T, store spi.EntityStore, ctx context.Context, filter spi.Filter, opts spi.SearchOptions) []string {
 	t.Helper()
-	sr, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("store does not implement spi.Searcher")
-	}
-	got, err := sr.Search(ctx, filter, opts)
+	got, err := store.Search(ctx, filter, opts)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	gotIDs := idsOf(got)
 
-	all, err := store.GetAll(ctx, spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion})
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, ctx, store, spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}, nil)
 	wantIDs := make([]string, 0, len(all))
+	pf, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range all {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 		}
 	}
@@ -113,13 +117,13 @@ func assertSearchMatchesGetAll(t *testing.T, store spi.EntityStore, ctx context.
 		wantIDs = []string{}
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("RYW parity mismatch: Search=%v, GetAll+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("RYW parity mismatch: Search=%v, Iterate+Prepare/Match=%v", gotIDs, wantIDs)
 	}
 	return gotIDs
 }
 
 // TestSearchTx_RYWParity_CreateUpdateDelete: buffered create + update + delete
-// inside a tx must be reflected in Search identically to GetAll+MatchFilter.
+// inside a tx must be reflected in Search identically to Iterate+spi.Prepare(filter).Match.
 func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	factory, tm, _ := setupSearchTx(t, map[string]string{
 		"e1": `{"city":"Berlin"}`,
@@ -127,11 +131,7 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 		"e3": `{"city":"Berlin"}`,
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, baseCtx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -155,27 +155,23 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	}
 
 	berlin := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
-	got := assertSearchMatchesGetAll(t, store, txCtx, berlin, searchTxOpts())
+	got := assertSearchMatchesIterate(t, store, txCtx, berlin, searchTxOpts())
 	if !reflect.DeepEqual(got, []string{"e1", "e2", "e4"}) {
 		t.Fatalf("city=Berlin in tx: got %v, want [e1 e2 e4]", got)
 	}
 	// match-all
-	assertSearchMatchesGetAll(t, store, txCtx, spi.Filter{}, searchTxOpts())
+	assertSearchMatchesIterate(t, store, txCtx, spi.Filter{}, searchTxOpts())
 }
 
 // TestSearchTx_DeleteThenSavePresent: delete-then-save within one tx must leave
 // the entity PRESENT in Search results (postgres Save's UPSERT clears the
-// soft-delete), matching GetAll.
+// soft-delete), matching Iterate.
 func TestSearchTx_DeleteThenSavePresent(t *testing.T) {
 	factory, tm, _ := setupSearchTx(t, map[string]string{
 		"e1": `{"city":"Berlin"}`,
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, baseCtx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -191,12 +187,12 @@ func TestSearchTx_DeleteThenSavePresent(t *testing.T) {
 		t.Fatalf("tx re-save e1: %v", err)
 	}
 
-	got := assertSearchMatchesGetAll(t, store, txCtx, spi.Filter{}, searchTxOpts())
+	got := assertSearchMatchesIterate(t, store, txCtx, spi.Filter{}, searchTxOpts())
 	if !reflect.DeepEqual(got, []string{"e1"}) {
 		t.Fatalf("delete-then-save: got %v, want [e1] present", got)
 	}
 	// The resurrected row must carry the new data.
-	res, err := store.(spi.Searcher).Search(txCtx,
+	res, err := store.Search(txCtx,
 		spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Hamburg", Declared: []spi.DataType{spi.String}}, searchTxOpts())
 	if err != nil {
 		t.Fatalf("Search Hamburg: %v", err)
@@ -208,17 +204,13 @@ func TestSearchTx_DeleteThenSavePresent(t *testing.T) {
 
 // TestSearchTx_PositiveSupersession: an in-tx update must supersede the
 // committed snapshot — the entity moves out of its old predicate bucket and
-// into the new one, identically to GetAll+MatchFilter.
+// into the new one, identically to Iterate+spi.Prepare(filter).Match.
 func TestSearchTx_PositiveSupersession(t *testing.T) {
 	factory, tm, _ := setupSearchTx(t, map[string]string{
 		"e2": `{"city":"Munich"}`,
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
-	txID, txCtx, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	_, txCtx := beginGuarded(t, tm, baseCtx)
 	store, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -233,10 +225,10 @@ func TestSearchTx_PositiveSupersession(t *testing.T) {
 
 	munich := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Munich", Declared: []spi.DataType{spi.String}}
 	berlin := spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
-	if got := assertSearchMatchesGetAll(t, store, txCtx, munich, searchTxOpts()); len(got) != 0 {
+	if got := assertSearchMatchesIterate(t, store, txCtx, munich, searchTxOpts()); len(got) != 0 {
 		t.Fatalf("supersession: city=Munich should be empty, got %v", got)
 	}
-	if got := assertSearchMatchesGetAll(t, store, txCtx, berlin, searchTxOpts()); !reflect.DeepEqual(got, []string{"e2"}) {
+	if got := assertSearchMatchesIterate(t, store, txCtx, berlin, searchTxOpts()); !reflect.DeepEqual(got, []string{"e2"}) {
 		t.Fatalf("supersession: city=Berlin should be [e2], got %v", got)
 	}
 }
@@ -253,18 +245,14 @@ func TestSearchTx_TrackingReadRecordsReturnedIds(t *testing.T) {
 	baseCtx := ctxWithTenant("searchtx-tenant")
 
 	// Tx A: Search with TrackingRead=true.
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
 	}
 	opts := searchTxOpts()
 	opts.TrackingRead = true
-	got, err := storeA.(spi.Searcher).Search(txCtxA, spi.Filter{}, opts)
+	got, err := storeA.Search(txCtxA, spi.Filter{}, opts)
 	if err != nil {
 		t.Fatalf("Tx A Search: %v", err)
 	}
@@ -284,20 +272,15 @@ func TestSearchTx_TrackingReadRecordsReturnedIds(t *testing.T) {
 	}
 
 	// Tx B: concurrently update e2 (a returned id) and commit → bumps e2 to v2.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e2", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Hamburg"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save e2: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {
@@ -323,17 +306,13 @@ func TestSearchTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	})
 	baseCtx := ctxWithTenant("searchtx-tenant")
 
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
 	}
 	// TrackingRead defaults to false.
-	got, err := storeA.(spi.Searcher).Search(txCtxA, spi.Filter{}, searchTxOpts())
+	got, err := storeA.Search(txCtxA, spi.Filter{}, searchTxOpts())
 	if err != nil {
 		t.Fatalf("Tx A Search: %v", err)
 	}
@@ -353,20 +332,15 @@ func TestSearchTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	}
 
 	// Tx B updates e2 and commits.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "e2", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Hamburg"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save e2: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {
@@ -379,15 +353,15 @@ func TestSearchTx_NoTrackingReadRecordsNothing(t *testing.T) {
 	}
 }
 
-// TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt is the RED driver for in-tx
-// point-in-time (PIT) Search (Task 11, issue #420): a Search issued INSIDE a
+// TestSearchTxPIT_CommittedOnlyMatchesIterateAsAt is the RED driver for in-tx
+// point-in-time (PIT) Search (Task 11): a Search issued INSIDE a
 // transaction with opts.PointInTime set must return the committed-as-at-PIT
-// snapshot — identical to GetAllAsAt + spi.MatchFilter run through the same
-// tx-scoped store/ctx — never a buffered/overlaid current-state view. The
-// entity's status flip (active -> inactive) is pinned to a valid_time AFTER
+// snapshot — identical to a committed-only Iterate(pit) + spi.Prepare(filter).Match run through
+// the same tx-scoped store/ctx — never a buffered/overlaid current-state view.
+// The entity's status flip (active -> inactive) is pinned to a valid_time AFTER
 // the pit, so it must not be visible: only the historical v1 (active) may
 // come back.
-func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
+func TestSearchTxPIT_CommittedOnlyMatchesIterateAsAt(t *testing.T) {
 	const (
 		tenant = "searchtx-pit-tenant"
 		baseTS = "2026-03-01 00:00:00+00"
@@ -432,11 +406,7 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 		t.Fatalf("parse pit: %v", err)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtx, txID) }()
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	txStore, err := factory.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore (tx): %v", err)
@@ -446,7 +416,7 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 	opts.PointInTime = &pit
 	opts.TrackingRead = true // must NOT produce a read-set entry for PIT (asserted below)
 
-	got, err := txStore.(spi.Searcher).Search(txCtx, spi.Filter{}, opts)
+	got, err := txStore.Search(txCtx, spi.Filter{}, opts)
 	if err != nil {
 		t.Fatalf("in-tx PIT Search: %v", err)
 	}
@@ -457,15 +427,17 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 		t.Fatalf("in-tx PIT Search data: got %s, want v1 {\"status\":\"active\"} (v2 committed after pit)", got[0].Data)
 	}
 
-	// Oracle: GetAllAsAt + spi.MatchFilter, run through the SAME tx-scoped
-	// store/ctx, must agree exactly with Search's committed-as-at-PIT result.
-	all, err := txStore.GetAllAsAt(txCtx, searchTxModel, pit)
-	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
-	}
+	// Oracle: a committed-only Iterate(pit) + spi.Prepare(filter).Match, run
+	// through the SAME tx-scoped store/ctx, must agree exactly with Search's
+	// committed-as-at-PIT result.
+	all := drainAll(t, txCtx, txStore, searchTxModel, &pit)
 	var wantIDs []string
+	pf, err := spi.Prepare(spi.Filter{})
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range all {
-		if spi.MatchFilter(spi.Filter{}, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			wantIDs = append(wantIDs, e.Meta.ID)
 		}
 	}
@@ -478,7 +450,7 @@ func TestSearchTxPIT_CommittedOnlyMatchesGetAllAsAt(t *testing.T) {
 		gotIDs = []string{}
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("PIT parity mismatch: Search=%v, GetAllAsAt+MatchFilter=%v", gotIDs, wantIDs)
+		t.Fatalf("PIT parity mismatch: Search=%v, Iterate(pit)+Prepare/Match=%v", gotIDs, wantIDs)
 	}
 
 	// No read-set recorded for a PIT search, even with TrackingRead=true:
@@ -534,11 +506,7 @@ func TestSearchTxPIT_TrackingReadNoConflictOnConcurrentWrite(t *testing.T) {
 	}
 
 	// Tx A: PIT Search with TrackingRead=true.
-	txA, txCtxA, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx A Begin: %v", err)
-	}
-	defer func() { _ = tm.Rollback(txCtxA, txA) }()
+	txA, txCtxA := beginGuarded(t, tm, baseCtx)
 	storeA, err := factory.EntityStore(txCtxA)
 	if err != nil {
 		t.Fatalf("Tx A EntityStore: %v", err)
@@ -546,7 +514,7 @@ func TestSearchTxPIT_TrackingReadNoConflictOnConcurrentWrite(t *testing.T) {
 	opts := searchTxOpts()
 	opts.PointInTime = &pit
 	opts.TrackingRead = true
-	got, err := storeA.(spi.Searcher).Search(txCtxA, spi.Filter{}, opts)
+	got, err := storeA.Search(txCtxA, spi.Filter{}, opts)
 	if err != nil {
 		t.Fatalf("Tx A PIT Search: %v", err)
 	}
@@ -567,20 +535,15 @@ func TestSearchTxPIT_TrackingReadNoConflictOnConcurrentWrite(t *testing.T) {
 
 	// Tx B: concurrently update pc-e2 (a PIT-returned id) and commit, bumping
 	// its current-state version.
-	txB, txCtxB, err := tm.Begin(baseCtx)
-	if err != nil {
-		t.Fatalf("Tx B Begin: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, baseCtx)
 	storeB, err := factory.EntityStore(txCtxB)
 	if err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B EntityStore: %v", err)
 	}
 	if _, err := storeB.Save(txCtxB, &spi.Entity{
 		Meta: spi.EntityMeta{ID: "pc-e2", ModelRef: searchTxModel, State: "CHANGED"},
 		Data: []byte(`{"city":"Hamburg"}`),
 	}); err != nil {
-		_ = tm.Rollback(txCtxB, txB)
 		t.Fatalf("Tx B Save: %v", err)
 	}
 	if err := tm.Commit(baseCtx, txB); err != nil {

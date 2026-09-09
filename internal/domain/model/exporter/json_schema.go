@@ -30,23 +30,47 @@ func (e *JSONSchemaExporter) Export(node *schema.ModelNode) ([]byte, error) {
 	return json.Marshal(envelope)
 }
 
+// convert renders a node as the union of the branches it carries. A field
+// observed as both a scalar and a container declares — and enforces — both
+// kinds, so describing it by any one of them would drop the others.
 func (e *JSONSchemaExporter) convert(node *schema.ModelNode) map[string]any {
-	switch node.Kind() {
-	case schema.KindObject:
-		return e.convertObject(node)
-	case schema.KindArray:
-		return e.convertArray(node)
-	case schema.KindLeaf:
+	if node.Object() == nil && node.Array() == nil {
 		return e.convertLeaf(node)
-	default:
+	}
+
+	branches := make([]any, 0, 3)
+	if node.Object() != nil {
+		branches = append(branches, e.convertObject(node))
+	}
+	if node.Array() != nil {
+		branches = append(branches, e.convertArray(node))
+	}
+	// A node carrying a scalar branch alongside a container was also observed
+	// holding a bare scalar. NULL alone is the nullable marker, not a scalar
+	// observation, and it opens no scalar branch to render.
+	if sc := node.Scalar(); sc != nil {
+		for _, dt := range sc.Types() {
+			branches = append(branches, jsonSchemaType(dt))
+		}
+	}
+	// A scalar branch with no types contributes no branch, so a node carrying
+	// only that beside a container renders as the container alone — the same
+	// answer the field walk gives.
+
+	switch len(branches) {
+	case 0:
 		return map[string]any{}
+	case 1:
+		return branches[0].(map[string]any)
+	default:
+		return map[string]any{"anyOf": branches}
 	}
 }
 
 func (e *JSONSchemaExporter) convertObject(node *schema.ModelNode) map[string]any {
 	props := make(map[string]any)
 	// Sort children keys for deterministic output.
-	children := node.Children()
+	children := node.Object().Children()
 	keys := make([]string, 0, len(children))
 	for k := range children {
 		keys = append(keys, k)
@@ -66,27 +90,29 @@ func (e *JSONSchemaExporter) convertArray(node *schema.ModelNode) map[string]any
 	result := map[string]any{
 		"type": "array",
 	}
-	if elem := node.Element(); elem != nil {
+	if elem := node.Array().Element(); elem != nil {
 		result["items"] = e.convert(elem)
 	}
 	return result
 }
 
 func (e *JSONSchemaExporter) convertLeaf(node *schema.ModelNode) map[string]any {
-	ts := node.Types()
-	types := ts.Types()
+	types := node.DeclaredTypes()
 	if len(types) == 0 {
 		return map[string]any{}
 	}
 	if len(types) == 1 {
 		return jsonSchemaType(types[0])
 	}
-	// Polymorphic: use oneOf
-	oneOf := make([]any, 0, len(types))
+	// Polymorphic: any of the observed types is acceptable. NOT oneOf —
+	// two DataTypes can render the same JSON Schema shape (Integer and Long
+	// both map to {"type":"integer"}), and oneOf requires EXACTLY one branch
+	// to match, so it would reject a value the model admits.
+	anyOf := make([]any, 0, len(types))
 	for _, dt := range types {
-		oneOf = append(oneOf, jsonSchemaType(dt))
+		anyOf = append(anyOf, jsonSchemaType(dt))
 	}
-	return map[string]any{"oneOf": oneOf}
+	return map[string]any{"anyOf": anyOf}
 }
 
 // jsonSchemaType maps a DataType to a JSON Schema type descriptor.

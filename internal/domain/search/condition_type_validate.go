@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
 // ValidateConditionValueTypes walks a condition tree and checks that each
@@ -73,15 +74,55 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 		return nil
 	case *predicate.LifecycleCondition:
 		return validateLifecycleType(c)
-	case *predicate.ArrayCondition, *predicate.FunctionCondition:
+	case *predicate.ArrayCondition:
+		// An array clause's positional values become EQUALS leaves once
+		// desugared, each folding back to the wildcard key
+		// validateSimpleConditionType already resolves declared types
+		// through (schema.CanonicalFieldPath). Routing through the same
+		// desugar spi.ConditionToFilter uses, rather than writing a second
+		// type check here, keeps the two definitions of the clause's
+		// semantics from drifting apart.
+		return walkConditionTypes(fm, spi.DesugarCondition(c), depth+1)
+	case *predicate.FunctionCondition:
 		return nil
 	default:
 		return nil
 	}
 }
 
+// maxTruncatedOperandRunes bounds how much of a rejected operand this
+// package's error paths echo back to the caller, mirroring the SPI kernel's
+// own truncateOperand convention (spi.ExpandLeaf, eval_leaf.go): search
+// request bodies are capped far larger than this, so echoing a mismatched
+// operand verbatim would let a single oversized-but-otherwise-ordinary
+// request inflate a 400 body (and the WARN log line that repeats it) to
+// request size.
+const maxTruncatedOperandRunes = 64
+
+// truncateOperand renders v for inclusion in a client-facing error message,
+// capped to maxTruncatedOperandRunes runes with a trailing "…" marker so a
+// reader can tell truncation happened rather than mistaking the cut string
+// for the operand in full.
+func truncateOperand(v any) string {
+	s := fmt.Sprintf("%v", v)
+	r := []rune(s)
+	if len(r) <= maxTruncatedOperandRunes {
+		return s
+	}
+	return string(r[:maxTruncatedOperandRunes]) + "…"
+}
+
 func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predicate.SimpleCondition) error {
-	fd, ok := fm[c.JsonPath]
+	// FieldsMap keys carry the "$." prefix and spell every array hop "[*]"; a
+	// condition may legitimately omit the prefix, and may address one array
+	// element positionally ("$.arr[0]"). Looking either up raw made the type
+	// check silently skip such a leaf, so an operand that should be rejected 400
+	// CONDITION_TYPE_MISMATCH was accepted and evaluated to an empty page
+	// instead — and the wildcard and positional spellings of one path
+	// disagreed. Only the LOOKUP is canonicalised: every diagnostic below names
+	// c.JsonPath, the spelling the request actually sent.
+	key := schema.CanonicalFieldPath(normalisePath(c.JsonPath))
+	fd, ok := fm[key]
 	if !ok {
 		// Not a leaf. In a schema'd model (non-empty FieldsMap), a path that is
 		// a KNOWN CONTAINER — a strict prefix of one or more leaf paths, but not
@@ -94,7 +135,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		// never reaches this branch. A genuinely-unknown (non-container) path
 		// carries no type constraint here; the separate field-path validation
 		// pass classifies it.
-		if len(fm) > 0 && carriesScalarOperand(mapOperator(c.OperatorType)) && isKnownContainerPath(c.JsonPath, fm) {
+		if len(fm) > 0 && carriesScalarOperand(spi.MapOperator(c.OperatorType)) && isKnownContainerPath(key, fm) {
 			return fmt.Errorf("field %q is a container with substructure and cannot be compared to a scalar; navigate to a leaf sub-path: %w",
 				c.JsonPath, errInvalidFieldPath)
 		}
@@ -116,7 +157,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	// Only the comparison/range family constrains the operand's type. String
 	// operators and the null-presence tests parse any operand — they evaluate
 	// to a (non-)match, never a type error (spec §6, parse-based).
-	if !isParseConstrainedOp(mapOperator(c.OperatorType)) {
+	if !isParseConstrainedOp(spi.MapOperator(c.OperatorType)) {
 		return nil
 	}
 
@@ -135,15 +176,15 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 				continue
 			}
 			if !operandParsesDeclared(fd.Types, elem) {
-				return fmt.Errorf("value[%d] %v parses into none of field %q's declared types %v: %w",
-					i, elem, c.JsonPath, fd.Types, errConditionTypeMismatch)
+				return fmt.Errorf("value[%d] %s parses into none of field %q's declared types %v: %w",
+					i, truncateOperand(elem), c.JsonPath, fd.Types, errConditionTypeMismatch)
 			}
 		}
 		return nil
 	default:
 		if !operandParsesDeclared(fd.Types, v) {
-			return fmt.Errorf("operand %v parses into none of field %q's declared types %v: %w",
-				v, c.JsonPath, fd.Types, errConditionTypeMismatch)
+			return fmt.Errorf("operand %s parses into none of field %q's declared types %v: %w",
+				truncateOperand(v), c.JsonPath, fd.Types, errConditionTypeMismatch)
 		}
 		return nil
 	}
@@ -178,11 +219,17 @@ func carriesScalarOperand(op spi.FilterOp) bool {
 }
 
 // isKnownContainerPath reports whether p names a KNOWN CONTAINER in fm — a
-// strict prefix of one or more leaf paths, without being a leaf itself. It
-// mirrors the prefix probe in path_validate.go's isPathKnown, but is used to
-// REJECT a scalar comparison on the interior node rather than to accept the
-// path. p is assumed absent from fm as a direct leaf (the caller checks that
-// first). Both dot- and wildcard-delimited descents count as substructure.
+// strict prefix of one or more leaf paths, without being a leaf itself. Both
+// dot- and wildcard-delimited descents count as substructure: FieldsMap
+// records an array's element under the "[*]" key and never the container, so
+// omitting the "[" form would miss every array container. p is assumed absent
+// from fm as a direct leaf (both callers check that first).
+//
+// It is the single container predicate for the two questions that need it, and
+// they read the answer oppositely: path_validate.go's pathOrContainerKnown
+// ACCEPTS the path (the structural field exists), while the caller above
+// REJECTS a scalar comparison ON the interior node. One predicate, so the two
+// cannot disagree about what a container is.
 func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 	dotPrefix := p + "."
 	arrPrefix := p + "["
@@ -202,10 +249,10 @@ func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 // and declared set, not the operator), so FilterEq is a faithful oracle that
 // also applies per array element, where a range operator cannot be expanded in
 // isolation. The operand is normalised with spi.OperandString — the single
-// shared operand→string form the evaluators (internal/match, spi.MatchFilter)
-// feed the kernel — so validation and evaluation agree. A Void expansion
-// (parses but every bucket dropped, e.g. EQUALS 12.5 on [INTEGER]) is NOT a
-// mismatch — it is accepted and evaluates to non-match.
+// shared operand→string form the evaluators (internal/match's Prepare,
+// spi.Prepare) feed the kernel — so validation and evaluation agree. A Void
+// expansion (parses but every bucket dropped, e.g. EQUALS 12.5 on [INTEGER])
+// is NOT a mismatch — it is accepted and evaluates to non-match.
 func operandParsesDeclared(declared []schema.DataType, v any) bool {
 	_, err := spi.ExpandLeaf(spi.FilterEq, spi.OperandString(v), nil, declared)
 	return err == nil
@@ -248,11 +295,21 @@ var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 //   - the field must be a known meta filter field (sortableMetaFields key,
 //     or the previousTransition alias) — otherwise errInvalidFieldPath.
 //   - for fields the meta vocabulary classifies as temporal (creationDate,
-//     lastUpdateTime), a comparison/range operand must parse into a temporal
-//     type — otherwise errConditionTypeMismatch. There is NO operator-class
-//     rejection: a string operator (CONTAINS, ...) on a temporal field parses
-//     and is accepted (the kernel evaluates it to a non-match), and a coarse
-//     operand upscales rather than being rejected.
+//     lastUpdateTime), the operator must be one of the ten
+//     match.IsTemporalOperator admits (the eight comparison/range operators
+//     plus the two null tests) — otherwise ErrInvalidCondition. A string or
+//     pattern operator on a temporal field answered two ways depending on
+//     the query plan: the SPI kernel's pushdown re-check bridges the field
+//     to its RFC3339 text and matches lexically, while internal/match's
+//     prepareLifecycle guards the identical case to a never-match on field
+//     identity. Both evaluators' own "KNOWN DIVERGENCE" comments name this
+//     exact fix — reject the predicate here, at the boundary every surface
+//     funnels through, which makes both evaluators' behaviour unreachable
+//     rather than aligning them (operator-semantics.md §7,
+//     path-grammar.md §10).
+//   - for an operator that survives that check, a comparison/range operand
+//     must parse into a temporal type — otherwise errConditionTypeMismatch.
+//     A coarse operand upscales rather than being rejected.
 //
 // Non-temporal meta fields (state, transitionForLatestSave, transactionId,
 // id) carry no further constraint here: they compare as their stored
@@ -278,9 +335,19 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	if !isTemporalMetaField(field) {
 		return nil
 	}
-	// String operators and null-presence tests on a temporal meta field parse
-	// any operand and are accepted (eval decides a non-match) — spec §6.
-	if !isParseConstrainedOp(mapOperator(c.OperatorType)) {
+	// A string or pattern operator on a temporal field is not a supported
+	// predicate — reject it here rather than letting either evaluator answer
+	// it two different ways (see the doc comment above). Reuses
+	// match.IsTemporalOperator's set rather than a second copy.
+	if !match.IsTemporalOperator(c.OperatorType) {
+		return fmt.Errorf(
+			"operator %q is not valid on temporal meta field %q; only comparison, range and null-presence operators are supported: %w",
+			c.OperatorType, c.Field, ErrInvalidCondition)
+	}
+	// The two null tests skip operand parsing (the value is unused); every
+	// other operator that survived the check above is one of the eight
+	// comparison/range operators and requires a temporal-parsing operand.
+	if !isParseConstrainedOp(spi.MapOperator(c.OperatorType)) {
 		return nil
 	}
 	for i, elem := range operandElements(c.Value) {
@@ -288,8 +355,8 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 			continue
 		}
 		if !operandParsesDeclared(metaTemporalDeclared, elem) {
-			return fmt.Errorf("operand[%d] %v parses into no temporal type for field %q: %w",
-				i, elem, c.Field, errConditionTypeMismatch)
+			return fmt.Errorf("operand[%d] %s parses into no temporal type for field %q: %w",
+				i, truncateOperand(elem), c.Field, errConditionTypeMismatch)
 		}
 	}
 	return nil
@@ -306,52 +373,127 @@ func operandElements(v any) []any {
 }
 
 // loadModelNode fetches and parses the model schema for ref, returning the
-// *schema.ModelNode used for condition-type validation. Returns nil when
-// the store lookup fails, the descriptor has no schema bound, or the schema
-// fails to parse — callers treat this as "no type constraints available"
-// rather than failing the search on a schema-load hiccup. EnsureModelRegistered
-// has already confirmed the model exists by the time this runs, so in the
-// normal case the node is present.
-func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) *schema.ModelNode {
+// *schema.ModelNode used for condition-type validation.
+//
+// A load or parse FAILURE is an error, not an absent node: the schema is what
+// the check needs, and answering the request without it is the fail-open this
+// function used to perform. A (nil, nil) return means something different and
+// benign — the descriptor carries no schema, so the model declares no typed
+// fields and there is no constraint to apply. EnsureModelRegistered has
+// already confirmed the model exists by the time this runs.
+func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
+	// Reuse the store's cached parse when it has one; see loadFieldsMap.
+	if p, ok := store.(schemaNodeProvider); ok {
+		return p.SchemaNode(ctx, ref)
+	}
 	desc, err := store.Get(ctx, ref)
-	if err != nil || desc == nil || len(desc.Schema) == 0 {
-		return nil
-	}
-	node, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return node
+	if desc == nil || len(desc.Schema) == 0 {
+		return nil, nil
+	}
+	return schema.Unmarshal(desc.Schema)
+}
+
+// classifyConditionTypeErrCode maps a ValidateConditionValueTypes error to
+// its 400 error code: errInvalidFieldPath → INVALID_FIELD_PATH (the field
+// itself is unknown), ErrInvalidCondition → INVALID_CONDITION (an operator
+// that is not a supported predicate for the field it's applied to — e.g. a
+// string/pattern operator on a temporal meta field, operator-semantics.md
+// §4/§7), anything else → CONDITION_TYPE_MISMATCH (the value is
+// type-incompatible with a known field/operator).
+//
+// Shared by every caller of ValidateConditionValueTypes —
+// validateConditionTypes below (SearchService), and grouped stats' handler
+// and service layers (internal/domain/entity) via ClassifyConditionTypeErrCode
+// — so the four call sites cannot drift on what code an operator-class
+// rejection answers the way they had before this function existed.
+func classifyConditionTypeErrCode(err error) string {
+	switch {
+	case errors.Is(err, errInvalidFieldPath):
+		return common.ErrCodeInvalidFieldPath
+	case errors.Is(err, ErrInvalidCondition):
+		return common.ErrCodeInvalidCondition
+	default:
+		return common.ErrCodeConditionTypeMismatch
+	}
+}
+
+// ClassifyConditionTypeErrCode is the exported entry point for
+// classifyConditionTypeErrCode, for callers outside this package that
+// validate a condition via the exported ValidateConditionValueTypes —
+// currently entity.Handler's grouped-stats and conditional-delete paths,
+// which hold their own model/schema plumbing and so call
+// ValidateConditionValueTypes directly rather than through Search. Mirrors
+// the StructuralConditionErrCode/structuralConditionErrCode exported-wrapper
+// shape already used in this package (service.go).
+func ClassifyConditionTypeErrCode(err error) string {
+	return classifyConditionTypeErrCode(err)
 }
 
 // validateConditionTypes is the single boundary enforcing condition
 // type-soundness for every SearchService entry point (HTTP, gRPC, and any
 // future transport funnel through Search/SubmitAsync). It loads the model
 // schema and delegates to ValidateConditionValueTypes, mapping the returned
-// sentinel error to the appropriate 400-classified *common.AppError:
-// errInvalidFieldPath → INVALID_FIELD_PATH (the field itself is unknown),
-// anything else → CONDITION_TYPE_MISMATCH (the value is type-incompatible
-// with a known field/operator).
+// sentinel error to the appropriate 400-classified *common.AppError via
+// classifyConditionTypeErrCode.
 //
-// A schema-load hiccup (see loadModelNode) returns nil — the search proceeds
-// without pre-rejecting type-unsound conditions rather than 5xx-ing on an infra
-// flake. This is safe, not a wrong-but-available result: with no model the eval
-// path stamps empty Declared too, so comparison leaves degrade to non-match
-// (empty results, never a wrong match), and existence is already gated upstream
-// by EnsureModelRegistered. It is deliberately more lenient here than the
-// workflow engine (which fails closed on the same load error) — a search
-// prefers empty-on-flake to a 5xx.
+// A schema-load failure fails the request. The previous behaviour — skip the
+// check and search anyway — was justified in a comment here as "empty results,
+// never a wrong match", on the reasoning that a missing model leaves every leaf
+// with an empty Declared and so degrades uniformly. That reasoning is wrong,
+// and spi.ConditionToFilter's own godoc says why: an empty declared set
+// annihilates the eight comparison and ordering leaves to a non-match while the
+// other eighteen — the presence tests, the string and pattern operators, and
+// the whole case-insensitive family — keep evaluating normally. The result set
+// is skewed, not empty, and it is returned as though it were complete.
+//
+// The workflow engine already fails closed on the same load error; search now
+// matches it, per .claude/rules/correctness-over-availability.md.
 func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
-	node := loadModelNode(ctx, modelStore, modelRef)
-	if node == nil {
-		return nil
+	// Gate the model READ on whether cond addresses any data path — a
+	// lifecycle-only condition needs no schema to validate (mirrors
+	// workflow/engine.go's evaluateCriterion, Task 7) — but never gate the
+	// VALIDATION CALL itself on whether that read was attempted, succeeded,
+	// or found a schema. This used to return nil without calling
+	// ValidateConditionValueTypes at all in two cases — an unreadable
+	// schema paired with a lifecycle-only condition, and a model that
+	// loaded cleanly but carries no schema yet — and both silently skipped
+	// its model-independent half too: validateLifecycleType, the one check
+	// that refuses a text or pattern operator on a temporal meta field
+	// (creationDate/lastUpdateTime). Left unrejected, that predicate reaches
+	// internal/match's deliberate temporal-meta never-match guard
+	// unvalidated, and a NOT wrapping it inverts that guard into matching
+	// every entity — the exact fail-open Task 7 already closed for the
+	// workflow-criterion path. ValidateConditionValueTypes tolerates a nil
+	// model by design (its own doc: the model-independent checks still run),
+	// so calling it unconditionally here, with node possibly nil, is always
+	// safe and never a behaviour change for a condition with a genuine data
+	// path against a loadable schema.
+	var node *schema.ModelNode
+	if len(extractFieldPaths(cond)) > 0 {
+		var err error
+		node, err = loadModelNode(ctx, modelStore, modelRef)
+		if err != nil {
+			return common.Internal("failed to load model schema for condition type validation", err)
+		}
 	}
 	if err := ValidateConditionValueTypes(node, cond); err != nil {
-		code := common.ErrCodeConditionTypeMismatch
-		if errors.Is(err, errInvalidFieldPath) {
-			code = common.ErrCodeInvalidFieldPath
-		}
-		return common.Operational(http.StatusBadRequest, code, err.Error())
+		return common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(err), err.Error())
 	}
 	return nil
+}
+
+// LoadModelNode fetches and parses the model schema for ref.
+//
+// Exported for callers outside this package that must run
+// [ValidateConditionValueTypes] against the real model rather than against nil
+// — currently the grouped-stats handler, whose type check was schema-blind
+// while every other condition surface's was not. Failure policy is the one
+// stated on the unexported loader: a load or parse failure is an error, while
+// (nil, nil) means the descriptor carries no schema and there is no type
+// constraint to apply.
+func LoadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
+	return loadModelNode(ctx, store, ref)
 }

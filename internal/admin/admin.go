@@ -46,7 +46,7 @@ func NewHandler(opts Options) http.Handler {
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if err := opts.Readiness(); err != nil {
-			// Generic client message; full detail logged server-side (#68 item 14).
+			// Generic client message; full detail logged server-side.
 			// Readiness probe errors may surface connection details, secrets, or
 			// stack traces from the underlying probe — never reflect them.
 			slog.Warn("readiness probe failed", "err", err.Error())

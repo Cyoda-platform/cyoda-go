@@ -78,7 +78,7 @@ func TestValidationError_ErrKindIncompatibleType_LeafTypeMismatch(t *testing.T) 
 
 // TestValidationError_ErrKindIncompatibleType_LeafTypeMismatchTable broadens
 // coverage of the INCOMPATIBLE_TYPE classification across additional
-// scalar combinations the reviewer flagged for PR #129: BOOLEAN-vs-INTEGER,
+// scalar combinations the reviewer flagged: BOOLEAN-vs-INTEGER,
 // DOUBLE-vs-STRING, and STRING-vs-BOOLEAN. Each case asserts the
 // downstream-relevant fields the entity handler renders into RFC 9457
 // problem-detail Props (`fieldPath`, `expectedType`, `actualType`).
@@ -168,10 +168,10 @@ func TestValidationError_ErrKindIncompatibleType_UnionExpectedTypes(t *testing.T
 	// are non-numeric so the collapse rule preserves both members; the
 	// TypeSet sorts by DataType-iota order (STRING=7 < BOOLEAN=17).
 	leaf := NewLeafNode(String)
-	leaf.Types().Add(Boolean)
-	if !leaf.Types().IsPolymorphic() {
-		t.Fatalf("precondition: expected polymorphic TypeSet, got %v",
-			leaf.Types().Types())
+	leaf.AddScalarTypes(Boolean)
+	if len(leaf.DeclaredTypes()) != 2 {
+		t.Fatalf("precondition: expected two declared types, got %v",
+			leaf.DeclaredTypes())
 	}
 
 	model := NewObjectNode()

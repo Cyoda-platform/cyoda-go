@@ -45,36 +45,56 @@ predicates — operator catalog and evaluation semantics for the `Condition` DSL
 
 **Not supported:** `IS_CHANGED`/`IS_UNCHANGED` are change-generation operators, not search predicates — cyoda-go does not implement them.
 
+## GROUP OPERATORS
+
+`AND`, `OR`, and `NOT` combine conditions (`GroupCondition`, see `cyoda help search`). `NOT` takes **exactly one** child condition — `NOT(c)` is true exactly when `c` is false — and is never rewritten by De Morgan into a leaf's negative twin: `NOT(EQUALS)` is not `NOT_EQUAL`, and `NOT(IS_NULL)` is not `NOT_NULL`. Over a wildcard path `NOT` is a universal quantifier where the leaf beneath it is existential — `NOT($.tags[*] EQUALS "red")` means no element equals `"red"`, a different question from `$.tags[*] NOT_EQUAL "red"` (some element differs). See `cyoda help search` for the full contract, including the one-condition rule and the absent-field/presence-test asymmetries.
+
 ## TYPE-DIRECTED COMPARISON
 
-A condition's operand is compared against the target field's **declared type(s)** (a leaf may carry more than one, e.g. a field seen as both an integer and a string across entities). The operand is treated as a string and parse-tested against every declared type — a numeric-looking string operand (`"30"`) and a JSON number operand (`30`) are parsed identically and are **treated the same**. There is no cross-type coincidental matching: an operand that parses as a number only compares against numerically-stored values; an operand that parses only as a string compares against string-stored values. Numbers compare precisely (arbitrary-precision, not `float64` — correct beyond 2^53). Comparing against `MATCHES_PATTERN`/`LIKE` and string ops evaluate against textual stored values only; a string op against a non-textual stored value is a non-match, not an error.
+A condition's operand is compared against the target field's **declared type(s)** (a leaf may carry more than one, e.g. a field seen as both an integer and a string across entities). The operand is treated as a string and parse-tested against every declared type — a numeric-looking string operand (`"30"`) and a JSON number operand (`30`) are parsed identically and are **treated the same**. There is no cross-type coincidental matching: an operand that parses as a number only compares against numerically-stored values; an operand that parses only as a string compares against string-stored values. Numbers compare precisely (arbitrary-precision, not `float64` — correct beyond 2^53). String and pattern operators apply to text fields only.
+
+**An unsatisfiable comparison follows operator polarity.** This applies only once an operand has been accepted — it parses into at least one of the field's declared types (see `errors.CONDITION_TYPE_MISMATCH`). Evaluation still runs per stored-value type family: when a given family's declared type produced no surviving sub-condition for that operand, a **positive** operator (`EQUALS`, `GREATER_THAN`, the string operators, …) answers non-match for an entity in that family, and a **negative** operator (`NOT_EQUAL`, `NOT_CONTAINS`, `INOT_*`, …) answers match instead. `$.n NOT_EQUAL 12.5` on an `INTEGER` field matches every entity holding a number there, because no integer equals `12.5` — the same answer PostgreSQL gives for `5::int <> 12.5`. This is a determinate answer about the entity, not a rejection, and null/absent values are unaffected (see NULL SEMANTICS below). An operand that parses into none of a known field's declared types at all is rejected before evaluation instead (`400 CONDITION_TYPE_MISMATCH`). A field carrying no declared type at all is a different failure with a different code: there is no declared-type check to run, so the operand is accepted here and the leaf instead fails at preparation with `400 INVALID_CONDITION`.
 
 ## NULL SEMANTICS
 
 A missing (absent) or JSON-`null` leaf **never matches any binary operator — including negatives**. `NOT_EQUAL`, `NOT_CONTAINS`, `INOT_*`, and every other negated op are **null-guarded to non-match**, not `!positive` — a null/absent field does not satisfy a negative condition just because it fails the positive one. `IS_NULL` / `NOT_NULL` are the only operators that test presence directly.
 
+**`NOT` is not a binary operator and is not subject to this guard.** `NOT` sits outside the operator it wraps and inverts whatever two-valued answer that operator gives, including a null-guarded non-match: on an entity missing `x`, `NOT($.x EQUALS "A")` **matches** even though both `$.x EQUALS "A"` and `$.x NOT_EQUAL "A"` do not. See `cyoda help search` for the full `NOT` contract.
+
 ## LIKE GRAMMAR
 
-`LIKE` compiles its operand to an anchored regular expression:
+`LIKE` is a glob matched directly — not translated into a regular expression, so
+no regex metacharacter has any meaning in a `LIKE` operand. Only these three
+characters are special:
 
-- `%` — matches any sequence of characters (including empty).
-- `_` — matches exactly one character.
-- `\` — escapes a following `%`, `_`, or `\` to its literal form.
-- The match is **whole-string anchored** (the entire stored value must match, not a substring) and **case-sensitive**.
+- `%` — matches any sequence of characters, including empty and including newlines.
+- `_` — matches exactly one character (one UTF-8 rune, not one byte), including a newline.
+- `\` — escapes the character after it to its literal form. It escapes **any**
+  character, not only `%`, `_` and `\`: `\a` matches a literal `a`, and `\\`
+  matches a single backslash.
+
+The match is **whole-string anchored** (the entire stored value must match, not a
+substring) and **case-sensitive**. Everything outside the three characters above
+is literal text compared bytewise, so an operand carrying invalid UTF-8 matches
+the byte-identical stored value rather than being transcoded.
+
+A pattern that ends with an unpaired `\` has nothing to escape and is invalid.
+The request is rejected — see VALIDATION below. Use `\\` for a literal trailing
+backslash.
 
 ## MATCHES_PATTERN
 
 `MATCHES_PATTERN` compiles the operand as a Go RE2 regular expression, whole-string anchored (equivalent to Java's `Pattern.matches`), case-sensitive. RE2 and the Java regex dialect diverge on some constructs (e.g. backreferences, some lookaround); this is an accepted, bounded divergence — not reconciled.
 
+The operand must parse **on its own** as well as compile anchored. Anchoring wraps it as `\A(?:operand)\z`, and that wrapper's own parentheses can rebalance a body whose parens are unmatched: `)|(` would become an alternation matching every stored value. Requiring a standalone parse keeps that family unrepresentable, so an accepted pattern never matches more than it says.
+
 ## VALIDATION
 
-Validation is **parse-based**, evaluated at request time against the target model:
+Validation is **parse-based**, evaluated at request time against the target model. The codes below are search's; a workflow or transition criterion is validated identically at import and surfaces the same rejections as `400 VALIDATION_FAILED` (see `workflows`).
 
-- `400 CONDITION_TYPE_MISMATCH` — the operand parses into **none** of the field's declared types (comparison and range operators only; string operators and unary presence tests carry no operand-type constraint and are always accepted).
-- `400 INVALID_FIELD_PATH` — the field path is unknown to the model, **or** it names a pure-container (object) path: a scalar operator cannot compare against structure — navigate to a scalar leaf sub-path instead. (A path observed as both an object and a scalar across entities remains searchable via its scalar type — see `cyoda help search`.) `IS_NULL`/`NOT_NULL` are exempt from the container-path rejection since they test presence, not a value.
-- `400 INVALID_CONDITION` — the operand is `null` on a binary/range operator, a range operator's value is not a two-element array, or the operand is an object/complex value.
-
-There is no operator-versus-field-type rejection: `CONTAINS` on a numeric field or `GREATER_THAN` on a boolean field are accepted requests — they parse and simply evaluate to a (non-)match.
+- `400 CONDITION_TYPE_MISMATCH` — the operand parses into **none** of the field's declared types, or the operator does not apply to the field's type: string and pattern operators require a text field; ordering and range operators require an ordered type (number, text, timestamp). `IS_NULL`/`NOT_NULL` carry no operand-type constraint.
+- `400 INVALID_FIELD_PATH` — the field path is unknown to the model, **or** it names a container path with no scalar form: a bare object path, or a `[*]` path over an array whose elements are only ever objects. A scalar operator cannot compare against structure — navigate to a scalar leaf sub-path instead. (A path observed as both a container and a scalar across entities — a field, or an array's elements, holding a plain value on some entities and an object on others — remains searchable via its scalar branch; see `cyoda help search`.) `IS_NULL`/`NOT_NULL` are exempt from the container-path rejection since they test presence, not a value.
+- `400 INVALID_CONDITION` — `operatorType` is missing or names no operator in the catalog above, the operand is `null` on a binary/range operator, a range operator's value is not a two-element array, the operand is an object/complex value, or a `LIKE`/`MATCHES_PATTERN` operand is not a valid pattern. Pattern operands are checked against the same derivation the evaluator uses, so anything accepted here evaluates everywhere — on both the sync and async paths, and on every backend. This is the code on every surface that carries a condition, workflow import included — there is no surface where an unknown operator falls through to the coarser `400 BAD_REQUEST`.
 
 ## SEE ALSO
 

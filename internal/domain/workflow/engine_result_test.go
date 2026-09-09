@@ -7,6 +7,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -20,7 +21,7 @@ import (
 // versus the engine having consumed it at first-segment flush (segmented
 // → handler does plain Save). Replaces the old `FinalTxID != entryTxID`
 // comparison-vs-entry-txID convention in single UpdateEntity and the
-// UpdateEntityCollection per-item loop (issue #228 N1).
+// UpdateEntityCollection per-item loop.
 func TestEngineResult_Segmented_FalseOnNonSegmentingCascade(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -92,6 +93,14 @@ func TestEngineResult_Segmented_TrueOnCBDCascade(t *testing.T) {
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-segmented", ModelVersion: "1.0"}
+
+	// cbd-proc's returned data passes the same model checks a client write
+	// does: declare the entity's own `x` and the `enriched` field the
+	// processor writes. Strict model — no ChangeLevel.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"x":        schema.Integer,
+		"enriched": schema.Boolean,
+	})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CbdSegmentedWF", InitialState: "S_pre", Active: true,

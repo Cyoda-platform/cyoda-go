@@ -30,9 +30,9 @@ The server handles graceful shutdown on `SIGINT` (Ctrl+C) or `SIGTERM`: the HTTP
 
 Three TCP listeners start concurrently:
 
-- **REST API** — `CYODA_HTTP_PORT` (default: 8080). All entity, schema, workflow, and auth endpoints. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
+- **REST API** — `CYODA_HTTP_PORT` (default: 8080). All entity, schema, workflow, and auth endpoints, plus `GET /health` — a health summary for humans and simple scripts, not the deployment probe: `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
 - **gRPC** — `CYODA_GRPC_PORT` (default: 9090). Externalized-processor streaming.
-- **Admin** — `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default: `127.0.0.1:9091`). `/livez`, `/readyz`, and `/metrics` endpoints. Admin port is bound to localhost by default; the Helm chart overrides `CYODA_ADMIN_BIND_ADDRESS` so the kubelet can reach `/readyz` without traversing the service mesh.
+- **Admin** — `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default: `127.0.0.1:9091`). `/livez`, `/readyz`, and `/metrics` endpoints — `/livez` (unconditional) and `/readyz` (mirrors the same flag as `/health`) are the deployment probes. Admin port is bound to localhost by default; the Helm chart overrides `CYODA_ADMIN_BIND_ADDRESS` so the kubelet can reach `/readyz` without traversing the service mesh.
 
 ## ENVIRONMENT VARIABLES
 
@@ -54,10 +54,11 @@ Variables read specifically during server boot (not covered by the config subtop
 - `CYODA_LOG_LEVEL` (string, default: `info`) — accepted: `debug|info|warn|error`.
 - `CYODA_SUPPRESS_BANNER` (bool, default: `false`) — suppress the ASCII startup banner and mock-auth warning.
 
-## STARTUP EXIT CODES
+## EXIT CODES
 
 - `0` — clean shutdown after SIGINT or SIGTERM.
 - `1` — startup failure: IAM validation failed (`CYODA_REQUIRE_JWT` contract not met), OTel SDK initialization error, gRPC port-bind failure, or backend connection failure during `app.New`.
+- `2` — hard exit forced by a second SIGINT or SIGTERM delivered while the graceful drain was still running. Nothing is drained or flushed on this path.
 
 ## EXAMPLES
 

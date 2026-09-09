@@ -17,7 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 )
 
-// callback_txjoin_errors_test.go — feature #287, loud-fail error-code coverage
+// callback_txjoin_errors_test.go — loud-fail error-code coverage
 // for compute-node callbacks presenting a transaction routing token over HTTP
 // (real Postgres via the callback harness). Each case proves one row of the
 // spec error table end-to-end through the TxJoin middleware:

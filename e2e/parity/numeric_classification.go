@@ -176,3 +176,97 @@ func RunSchemaExtensionsSequentialFoldAcrossRequests(t *testing.T, fixture Backe
 		}
 	}
 }
+
+// RunNumericClassificationDoubleSchemaAcceptsWholeNumber confirms a leaf
+// declared DOUBLE admits a whole number under a below-TYPE change level, at
+// every magnitude DOUBLE actually holds. Classification by LABEL condemned
+// every whole number past 2^31 as LONG, and LONG does not widen into DOUBLE
+// because 2^63 exceeds DOUBLE's 53-bit mantissa — the mantissa argument is
+// right, the instrument was wrong. 2147483648 is ten significant digits and
+// exactly representable; it was refused only by association with values
+// that are not.
+//
+// Admission judges the value: a decimal of at most 15 significant digits
+// round-trips uniquely through a binary64 double, which is what DOUBLE's
+// findability and the lossless float8 pushdown need, so 2147483648 (ten
+// digits) is held under ARRAY_LENGTH with the model unmoved, while
+// 9007199254740993 (sixteen) is not — every backend must still fail closed
+// there, and this scenario asserts both halves so a later "any whole number
+// is fine" simplification still cannot pass.
+func RunNumericClassificationDoubleSchemaAcceptsWholeNumber(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-num-double-whole"
+	const modelVersion = 1
+	if err := c.ImportModel(t, modelName, modelVersion, `{"amount":10.5,"amounts":[1.5,2.5]}`); err != nil {
+		t.Fatalf("ImportModel: %v", err)
+	}
+	if err := c.LockModel(t, modelName, modelVersion); err != nil {
+		t.Fatalf("LockModel: %v", err)
+	}
+	if err := c.SetChangeLevel(t, modelName, modelVersion, "ARRAY_LENGTH"); err != nil {
+		t.Fatalf("SetChangeLevel: %v", err)
+	}
+	before, err := c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel before: %v", err)
+	}
+
+	// The three spellings classify identically — the walker strips trailing
+	// zeros and normalises exponents before classifying.
+	for _, payload := range []string{
+		`{"amount":1000,"amounts":[3,4]}`,
+		`{"amount":1000.0,"amounts":[3.0,4.0]}`,
+		`{"amount":1e3,"amounts":[3e0,4e0]}`,
+	} {
+		status, body, err := c.CreateEntityRaw(t, modelName, modelVersion, payload)
+		if err != nil {
+			t.Fatalf("CreateEntityRaw transport for %s: %v", payload, err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("whole number into a DOUBLE leaf must be accepted; %s got %d: %s", payload, status, body)
+		}
+	}
+
+	after, err := c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("a whole-number write to a DOUBLE leaf must not change the schema\n  before: %s\n  after:  %s",
+			before, after)
+	}
+
+	// Within DOUBLE's mantissa: held at the most restrictive level, and the
+	// model does not move for it either.
+	before, err = c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel before 2147483648: %v", err)
+	}
+	status, body, err := c.CreateEntityRaw(t, modelName, modelVersion, `{"amount":2147483648,"amounts":[1.5,2.5]}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw transport: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Errorf("2147483648 needs 10 significant digits, DOUBLE holds it; got %d: %s", status, body)
+	}
+	after, err = c.ExportModel(t, "SIMPLE_VIEW", modelName, modelVersion)
+	if err != nil {
+		t.Fatalf("ExportModel after 2147483648: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("a held whole-number write must not change the schema\n  before: %s\n  after:  %s", before, after)
+	}
+
+	// Past the mantissa boundary, every backend must still fail closed at the
+	// same place: 9007199254740993 needs 16 significant digits, past DOUBLE's
+	// mantissa, so it is a genuine type change and stays refused here.
+	status, body, err = c.CreateEntityRaw(t, modelName, modelVersion, `{"amount":9007199254740993,"amounts":[1.5,2.5]}`)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw transport: %v", err)
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("9007199254740993 is past DOUBLE's mantissa; it is a type change; got %d: %s", status, body)
+	}
+}

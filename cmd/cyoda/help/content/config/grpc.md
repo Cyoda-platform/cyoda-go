@@ -25,6 +25,11 @@ connect to the endpoint specified by `CYODA_COMPUTE_GRPC_ENDPOINT`.
 ### gRPC listener
 
 - `CYODA_GRPC_PORT` — gRPC listen port (default: `9090`)
+- `CYODA_KEEPALIVE_INTERVAL` — seconds between server keep-alive pings to each
+  compute member; also the transport keepalive idle time (default: `10`)
+- `CYODA_KEEPALIVE_TIMEOUT` — seconds of inbound silence or write stall before
+  a compute member is evicted; also the transport keepalive ack timeout
+  (default: `30`)
 
 ### Compute-node client
 

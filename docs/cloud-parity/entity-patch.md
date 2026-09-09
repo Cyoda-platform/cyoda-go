@@ -97,8 +97,8 @@ PATCH /api/entity/{format}/{entityId}/{transition}
 The first form fires the loopback. The second form carries a named transition.
 Both are parallel to the existing PUT endpoints, which are unchanged.
 
-The same query parameters PUT accepts (`transactionTimeoutMillis`,
-`waitForConsistencyAfter`) apply unchanged. The response shape is the existing
+The same query parameters PUT accepts (`transactionTimeoutMillis`) apply
+unchanged. The response shape is the existing
 `EntityTransactionResponse`.
 
 ### Format

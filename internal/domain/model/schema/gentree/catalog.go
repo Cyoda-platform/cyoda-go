@@ -16,7 +16,7 @@ import (
 type Fixture struct {
 	Name          string
 	Old           *schema.ModelNode
-	Incoming      any // fed through importer.Walk
+	Incoming      any // fed directly to schema.Extend as the document
 	Level         spi.ChangeLevel
 	ExpectedKinds []schema.SchemaOpKind // nil = don't assert
 	ExpectError   bool
@@ -112,9 +112,16 @@ var Catalog = []Fixture{
 
 	// --- Unicode + edge cases ---
 	{
-		Name:          "UnicodeKey4ByteCodepoint",
+		// A 4-byte-codepoint key can no longer ENTER a schema — importer.Walk
+		// refuses any name the wire jsonPath grammar cannot address. One
+		// already stored by a deployment that predates the rule still has to
+		// survive every schema operation unchanged, though: codec round-trip,
+		// Extend, Diff and Apply all carry it through untouched, and only the
+		// NEW field has to be addressable. That upgrade-path contract is what
+		// this fixture pins.
+		Name:          "LegacyUnicodeKeySurvivesExtension",
 		Old:           objNode(map[string]*schema.ModelNode{"🐙": leaf(schema.String)}),
-		Incoming:      map[string]any{"🐙": "tentacle", "🦊": "fox"},
+		Incoming:      map[string]any{"fox": "fox"},
 		Level:         spi.ChangeLevelStructural,
 		ExpectedKinds: []schema.SchemaOpKind{schema.KindAddProperty},
 	},
@@ -159,9 +166,14 @@ var Catalog = []Fixture{
 		Level:    spi.ChangeLevelType,
 	},
 	{
-		Name:          "DecimalBoundaryExceedsBigDecimal", // 20 fractional digits
+		// BigDecimal's admission (numeric_admit.go) is magnitude-only, not
+		// scale/precision-bound — more fractional digits alone stay held (a
+		// value the leaf already admits is not a type change). What actually
+		// exceeds it is magnitude past int128Max/1e18 (~1.7014118e20), which
+		// is what this value's integer part does.
+		Name:          "DecimalBoundaryExceedsBigDecimal", // magnitude beyond BigDecimal's range
 		Old:           leaf(schema.BigDecimal),
-		Incoming:      json.Number("1.23456789012345678901"),
+		Incoming:      json.Number("170141183460469231732.1"),
 		Level:         spi.ChangeLevelType,
 		ExpectedKinds: []schema.SchemaOpKind{schema.KindBroadenType},
 	},
@@ -214,12 +226,14 @@ var Catalog = []Fixture{
 		Level:    spi.ChangeLevelStructural,
 	},
 
-	// 3. Array length at ArrayLength level — same element type, just more items.
+	// 3. ArrayLength is the floor: it permits no schema change at all, so an
+	// element widening (Integer -> Double, an ARRAY_ELEMENTS change) is refused.
 	{
-		Name:     "ArrayLengthRejectsElementChangeAtArrayLength",
-		Old:      schema.NewArrayNode(leaf(schema.Integer)),
-		Incoming: []any{json.Number("10"), json.Number("20"), json.Number("30"), json.Number("40")},
-		Level:    spi.ChangeLevelArrayLength,
+		Name:        "ArrayLengthFloorRefusesElementWidening",
+		Old:         schema.NewArrayNode(leaf(schema.Integer)),
+		Incoming:    []any{json.Number("1.5")},
+		Level:       spi.ChangeLevelArrayLength,
+		ExpectError: true,
 	},
 
 	// 4. Array element broaden at ArrayElements level — incoming element type requires broaden.

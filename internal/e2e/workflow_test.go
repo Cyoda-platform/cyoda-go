@@ -10,6 +10,20 @@ import (
 
 const workflowSampleModel = `{"name": "Test Order", "amount": 100, "status": "draft"}`
 
+// workflowSampleWith returns workflowSampleModel extended with extra top-level
+// fields, given as the inner body of a JSON object
+// (e.g. `"total":0,"enriched":false`).
+//
+// A processor's returned data passes the same model checks a client write does,
+// so a locked model must DECLARE every field the workflow's processors write.
+// Seeding a zero value states that contract explicitly while keeping the model
+// strict — raising the model's changeLevel instead would let the model absorb
+// any key, so a typo'd field name would silently widen the model rather than
+// fail the test.
+func workflowSampleWith(extraFieldsJSON string) string {
+	return `{"name": "Test Order", "amount": 100, "status": "draft", ` + extraFieldsJSON + `}`
+}
+
 const workflowV1 = `{
 	"importMode": "REPLACE",
 	"workflows": [
@@ -59,8 +73,14 @@ const workflowV2 = `{
 // importModelE2E imports a model via the REST API and asserts a 200 response.
 func importModelE2E(t *testing.T, entityName string, modelVersion int) {
 	t.Helper()
+	importModelSampleE2E(t, entityName, modelVersion, workflowSampleModel)
+}
+
+// importModelSampleE2E is importModelE2E from a CUSTOM sample.
+func importModelSampleE2E(t *testing.T, entityName string, modelVersion int, sample string) {
+	t.Helper()
 	path := fmt.Sprintf("/api/model/import/JSON/SAMPLE_DATA/%s/%d", entityName, modelVersion)
-	resp := doAuth(t, http.MethodPost, path, workflowSampleModel)
+	resp := doAuth(t, http.MethodPost, path, sample)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("importModel %s/%d: expected 200, got %d: %s", entityName, modelVersion, resp.StatusCode, body)
@@ -170,8 +190,8 @@ func TestWorkflow_OverwriteWorkflow(t *testing.T) {
 }
 
 // TestWorkflow_ImportUnknownModel verifies that importing a workflow targeting
-// a model that does not exist returns 404 MODEL_NOT_FOUND. This covers issue
-// #131: previously the import silently succeeded with 200 {"success":true};
+// a model that does not exist returns 404 MODEL_NOT_FOUND. Previously the
+// import silently succeeded with 200 {"success":true};
 // cyoda-cloud parity requires HTTP 404 + MODEL_NOT_FOUND. See the workflow
 // handler unit test TestImport_UnknownModel_Returns404 for the canonical
 // assertion.
@@ -351,6 +371,64 @@ func TestWorkflow_Import_MalformedCriterionRegex_ValidationFailed(t *testing.T) 
 	}
 	if !strings.Contains(errBody.Detail, "go") {
 		t.Errorf("detail %q does not name the offending transition", errBody.Detail)
+	}
+}
+
+// TestWorkflow_Import_MalformedCriterionPattern_ValidationFailed covers the
+// pattern operands import used to let through. A LIKE operand was not checked
+// at all, and a MATCHES_PATTERN operand that compiles standalone but not once
+// the kernel anchors it (`\Q` swallows the appended `)\z`) was accepted and
+// then failed on every evaluation of the transition. Both are import-time
+// rejections now, with the offending transition named.
+func TestWorkflow_Import_MalformedCriterionPattern_ValidationFailed(t *testing.T) {
+	for name, criterion := range map[string]string{
+		"malformedLike":   `{"type":"simple","jsonPath":"$.orderId","operatorType":"LIKE","value":"abc\\"}`,
+		"anchorSkewRegex": `{"type":"simple","jsonPath":"$.orderId","operatorType":"MATCHES_PATTERN","value":"\\Q"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			entityName := "e2e-wf-badpattern-" + name
+			importModelE2E(t, entityName, 1)
+
+			body := `{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1",
+					"name": "wf-badpattern",
+					"initialState": "S1",
+					"active": true,
+					"states": {
+						"S1": {
+							"transitions": [{
+								"name": "go",
+								"next": "S2",
+								"manual": false,
+								"criterion": ` + criterion + `
+							}]
+						},
+						"S2": {}
+					}
+				}]
+			}`
+			status, respBody := importWorkflowE2E(t, entityName, 1, body)
+			if status != http.StatusBadRequest {
+				t.Fatalf("expected 400 VALIDATION_FAILED; got %d: %s", status, respBody)
+			}
+			var errBody struct {
+				Detail     string `json:"detail"`
+				Properties struct {
+					ErrorCode string `json:"errorCode"`
+				} `json:"properties"`
+			}
+			if err := json.Unmarshal([]byte(respBody), &errBody); err != nil {
+				t.Fatalf("decode error body: %v; raw: %s", err, respBody)
+			}
+			if errBody.Properties.ErrorCode != "VALIDATION_FAILED" {
+				t.Fatalf("errorCode = %q; want VALIDATION_FAILED; body: %s", errBody.Properties.ErrorCode, respBody)
+			}
+			if !strings.Contains(errBody.Detail, "go") {
+				t.Errorf("detail %q does not name the offending transition", errBody.Detail)
+			}
+		})
 	}
 }
 

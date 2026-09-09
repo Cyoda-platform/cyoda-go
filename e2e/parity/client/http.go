@@ -133,7 +133,7 @@ func (c *Client) doJSON(t *testing.T, method, path string, body any, out any, op
 // --- Operation methods ---
 //
 // Each method maps to one cyoda HTTP API operation. The methods are
-// added incrementally as parity scenarios need them. Methods that fail
+// added incrementally as parity scenarios need them. Most methods return an error rather than failing the test; older ones that fail
 // (non-2xx status, decode error, transport error) call t.Fatalf with
 // a clear message including the operation name and the response body
 // where applicable.
@@ -362,6 +362,29 @@ func (c *Client) DeleteEntity(t *testing.T, entityID uuid.UUID) error {
 	return err
 }
 
+// DeleteEntityWithTxID issues DELETE /api/entity/{entityId} and returns the
+// transactionId from the delete response envelope (internal/domain/entity.
+// Handler.DeleteSingleEntity: {id, modelKey, transactionId}). Used by
+// history-read parity scenarios that need the delete's own transaction ID —
+// e.g. to assert GetEntityByTransactionID 404s on a tombstone's txID (a
+// DELETED tombstone carries no entity payload, so it never matches).
+// Canonical: docs/cyoda/openapi.yml:1147 (deleteSingleEntity).
+func (c *Client) DeleteEntityWithTxID(t *testing.T, entityID uuid.UUID) (string, error) {
+	t.Helper()
+	path := "/api/entity/" + entityID.String()
+	raw, err := c.doRaw(t, http.MethodDelete, path, "")
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		TransactionID string `json:"transactionId"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode DeleteEntityWithTxID response: %w", err)
+	}
+	return resp.TransactionID, nil
+}
+
 // GetEntityChanges issues GET /api/entity/{entityId}/changes.
 // Returns the change history as []EntityChangeMeta.
 // Canonical: docs/cyoda/openapi.yml:1207 (getEntityChangesMetadata).
@@ -402,6 +425,22 @@ func (c *Client) ListEntitiesByModel(t *testing.T, modelName string, modelVersio
 	return entities, nil
 }
 
+// ListEntitiesByModelPaged issues GET
+// /api/entity/{name}/{version}?pageSize=<size>&pageNumber=<number>. Returns
+// the requested page — used by parity scenarios that assert paging behaviour
+// (determinism, self-consistency, set-equality with the full model) rather
+// than a single unpaged listing.
+// Canonical: docs/cyoda/openapi.yml:1326 (getAllEntities).
+func (c *Client) ListEntitiesByModelPaged(t *testing.T, modelName string, modelVersion, pageSize, pageNumber int) ([]EntityResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?pageSize=%d&pageNumber=%d", modelName, modelVersion, pageSize, pageNumber)
+	var entities []EntityResult
+	if _, err := c.doJSON(t, http.MethodGet, path, nil, &entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
 // ListEntitiesByModelAt issues GET /api/entity/{name}/{version}?pointInTime=<t>.
 // Returns the entity list as it existed at the given point in time (E3).
 // Canonical: docs/cyoda/openapi.yml (getAllEntities with pointInTime query param).
@@ -418,7 +457,7 @@ func (c *Client) ListEntitiesByModelAt(t *testing.T, modelName string, modelVers
 // GetEntityAt issues GET /api/entity/{entityId}?pointInTime=<t>.
 // Returns the entity as it was at the given point in time.
 // Canonical: docs/cyoda/openapi.yml:1055 (getOneEntity with pointInTime query param).
-// This is the code path that exercised the GetAsAt bug (PR #173).
+// This is the code path where the GetAsAt regression lived.
 func (c *Client) GetEntityAt(t *testing.T, entityID uuid.UUID, pointInTime time.Time) (EntityResult, error) {
 	t.Helper()
 	path := fmt.Sprintf("/api/entity/%s?pointInTime=%s", entityID.String(), pointInTime.Format(time.RFC3339Nano))
@@ -541,6 +580,32 @@ func (c *Client) GetEntityByTransactionIDBodyRaw(t *testing.T, entityID uuid.UUI
 	return resp.StatusCode, raw, nil
 }
 
+// GetTransitionsByTransactionIDBodyRaw issues
+// GET /api/entity/{entityId}/transitions?transactionId=<tx> and returns the
+// raw status code and response body. Used by tenant-isolation tests: the
+// transitions handler resolves the transactionId to a submit time via the
+// transaction manager before any entity lookup, so this is the path where a
+// cross-tenant txID must be rejected rather than resolved.
+func (c *Client) GetTransitionsByTransactionIDBodyRaw(t *testing.T, entityID uuid.UUID, txID string) (int, []byte, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/transitions?transactionId=%s", entityID.String(), txID)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.baseURL+path, strings.NewReader(""))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // GetEntityChangesAtBodyRaw issues GET /api/entity/{entityId}/changes?pointInTime=<t>
 // and returns the raw status code and response body. Used by tenant-isolation
 // tests that need to compare error-response bodies byte-for-byte across the
@@ -585,6 +650,25 @@ func (c *Client) UpdateEntity(t *testing.T, entityID uuid.UUID, transition, body
 	return err
 }
 
+// UpdateEntityWithTxID issues PUT /api/entity/JSON/{entityId}/{transition}
+// and returns the transactionId from the EntityTransactionInfo response
+// envelope. Used by history-read parity scenarios that need each save's own
+// transaction ID to drive GetEntityByTransactionID lookups.
+// Canonical: docs/cyoda/openapi.yml:2037 (updateOne / transition).
+func (c *Client) UpdateEntityWithTxID(t *testing.T, entityID uuid.UUID, transition, body string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/JSON/%s/%s", entityID.String(), transition)
+	raw, err := c.doRaw(t, http.MethodPut, path, body)
+	if err != nil {
+		return "", err
+	}
+	var info EntityTransactionInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return "", fmt.Errorf("decode UpdateEntityWithTxID response: %w", err)
+	}
+	return info.TransactionID, nil
+}
+
 // CollectionItem is one entry in a POST /api/entity/{format} body for
 // heterogeneous collection creation. Payload is a JSON-encoded string
 // (not a nested object) per the wire contract — the handler in
@@ -608,7 +692,7 @@ func (c *Client) CreateEntitiesCollection(t *testing.T, items []CollectionItem) 
 // parameter. window <= 0 omits the query parameter (server applies its
 // default). Returns the list of created entity IDs concatenated across
 // all chunk elements in commit order. Used by parity scenarios that pin
-// the chunking contract from issue #227.
+// the chunking contract.
 func (c *Client) CreateEntitiesCollectionWithWindow(t *testing.T, items []CollectionItem, window int) ([]uuid.UUID, error) {
 	t.Helper()
 	raw, err := c.CreateEntitiesCollectionRawWithWindow(t, items, window)
@@ -668,14 +752,14 @@ func (c *Client) CreateEntitiesCollectionRawWithWindow(t *testing.T, items []Col
 // UpdateCollectionItem is one entry in a PUT /api/entity/{format} body.
 // Payload is a JSON-encoded string (not a nested object) per the collection
 // update wire contract. IfMatch is the optional per-item optimistic-
-// concurrency precondition added by issue #228; when populated, the server
+// concurrency precondition; when populated, the server
 // rejects the item with ENTITY_MODIFIED if the entity's current
 // transactionId no longer matches.
 type UpdateCollectionItem struct {
 	ID         uuid.UUID
 	Payload    string
 	Transition string // optional; "" = loopback
-	IfMatch    string // optional per-item ifMatch (issue #228)
+	IfMatch    string // optional per-item ifMatch
 }
 
 // UpdateCollection issues PUT /api/entity/JSON with a batch of
@@ -739,7 +823,7 @@ func (c *Client) UpdateCollectionRawWithWindow(t *testing.T, items []UpdateColle
 
 // marshalUpdateCollectionItems renders the per-item update wire shape.
 // IfMatch is emitted with `omitempty` so existing scenarios that do not
-// supply it produce identical bytes to the pre-#228 wire format.
+// supply it produce identical bytes to the wire format that predates it.
 func marshalUpdateCollectionItems(items []UpdateCollectionItem) ([]byte, error) {
 	type rawItem struct {
 		ID         string `json:"id"`
@@ -768,7 +852,7 @@ func marshalUpdateCollectionItems(items []UpdateCollectionItem) ([]byte, error) 
 // assert per-chunk fields (transactionId, entityIds, failed[]) without
 // repeating the map[string]any decode dance. EntityIDs is decoded as a
 // concrete slice — the server emits `[]` (not `null`) on a chunk where
-// every item failed via per-item isolation (issue #228 I2).
+// every item failed via per-item isolation.
 type CollectionChunkResult struct {
 	TransactionID string                       `json:"transactionId,omitempty"`
 	EntityIDs     []string                     `json:"entityIds"`
@@ -787,7 +871,7 @@ type CollectionChunkError struct {
 
 // CollectionChunkItemFailure documents a single per-item failure that did
 // NOT roll the chunk back. Reserved for ENTITY_MODIFIED conflicts on items
-// carrying an IfMatch precondition (issue #228).
+// carrying an IfMatch precondition.
 type CollectionChunkItemFailure struct {
 	EntityID string                 `json:"entityId"`
 	Error    CollectionChunkItemErr `json:"error"`
@@ -1012,9 +1096,11 @@ func (c *Client) DeleteMessage(t *testing.T, messageID string) error {
 
 // DeleteMessages issues DELETE /api/message with a JSON-array body of
 // message IDs. Returns the list of actually-deleted IDs from the
-// response. Paging by transactionSize is supported by the server via
-// query param (default 1000); this helper does not expose it because
-// every parity test deletes well under 1000 IDs at a time.
+// response's first chunk. transactionSize is omitted (server applies its
+// default paging window); every existing caller deletes well under that
+// window and gets exactly one chunk back. Callers that need the
+// transactionSize knob or the full multi-chunk response use
+// DeleteMessagesBatched.
 //
 // Canonical: api/openapi.yaml deleteMessages operation. Despite the
 // generated DeleteMessagesParams struct only carrying TransactionSize,
@@ -1022,26 +1108,48 @@ func (c *Client) DeleteMessage(t *testing.T, messageID string) error {
 // struct is just for the query knob.
 func (c *Client) DeleteMessages(t *testing.T, ids []string) ([]string, error) {
 	t.Helper()
-	body, err := json.Marshal(ids)
-	if err != nil {
-		return nil, fmt.Errorf("marshal DeleteMessages ids: %w", err)
-	}
-	raw, err := c.doRaw(t, http.MethodDelete, "/api/message", string(body))
+	results, err := c.DeleteMessagesBatched(t, ids, 0)
 	if err != nil {
 		return nil, err
-	}
-	// Response is [{"entityIds":[...],"success":true}].
-	var results []struct {
-		EntityIDs []string `json:"entityIds"`
-		Success   bool     `json:"success"`
-	}
-	if err := json.Unmarshal(raw, &results); err != nil {
-		return nil, fmt.Errorf("decode DeleteMessages response: %w (body=%s)", err, string(raw))
 	}
 	if len(results) == 0 {
 		return nil, fmt.Errorf("DeleteMessages returned empty results array")
 	}
 	return results[0].EntityIDs, nil
+}
+
+// DeleteMessagesResult is one element of the deleteMessages response array:
+// {"entityIds":[...],"success":true}. A transactionSize-batched delete
+// returns one element per batch.
+type DeleteMessagesResult struct {
+	EntityIDs []string `json:"entityIds"`
+	Success   bool     `json:"success"`
+}
+
+// DeleteMessagesBatched issues DELETE /api/message with a JSON-array body
+// of message IDs and an optional transactionSize query parameter, and
+// returns every chunk of the response (not just the first — see
+// DeleteMessages). transactionSize <= 0 omits the query parameter (server
+// applies its default paging window, currently 1000).
+func (c *Client) DeleteMessagesBatched(t *testing.T, ids []string, transactionSize int) ([]DeleteMessagesResult, error) {
+	t.Helper()
+	body, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal DeleteMessagesBatched ids: %w", err)
+	}
+	path := "/api/message"
+	if transactionSize > 0 {
+		path = fmt.Sprintf("%s?transactionSize=%d", path, transactionSize)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, path, string(body))
+	if err != nil {
+		return nil, err
+	}
+	var results []DeleteMessagesResult
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return nil, fmt.Errorf("decode DeleteMessagesBatched response: %w (body=%s)", err, string(raw))
+	}
+	return results, nil
 }
 
 // SubmitAsyncSearch issues POST /api/search/async/{name}/{version} with
@@ -1061,6 +1169,34 @@ func (c *Client) SubmitAsyncSearch(t *testing.T, modelName string, modelVersion 
 	}
 	if jobID == "" {
 		return "", fmt.Errorf("SubmitAsyncSearch returned empty jobId (body=%s)", string(raw))
+	}
+	return jobID, nil
+}
+
+// SubmitAsyncSearchSorted is SubmitAsyncSearch with one or more `sort` query
+// keys, so a caller can drive the async job's requested-order contract
+// (design §9 row 19: async result ordering respected end-to-end) the same
+// way SyncSearchSorted drives the direct-search equivalent.
+func (c *Client) SubmitAsyncSearchSorted(t *testing.T, modelName string, modelVersion int, condition string, sortKeys []string) (string, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/search/async/%s/%d", modelName, modelVersion)
+	if len(sortKeys) > 0 {
+		vals := url.Values{}
+		for _, k := range sortKeys {
+			vals.Add("sort", k)
+		}
+		path += "?" + vals.Encode()
+	}
+	raw, err := c.doRaw(t, http.MethodPost, path, condition)
+	if err != nil {
+		return "", err
+	}
+	var jobID string
+	if err := json.Unmarshal(raw, &jobID); err != nil {
+		return "", fmt.Errorf("decode SubmitAsyncSearchSorted response: %w (body=%s)", err, string(raw))
+	}
+	if jobID == "" {
+		return "", fmt.Errorf("SubmitAsyncSearchSorted returned empty jobId (body=%s)", string(raw))
 	}
 	return jobID, nil
 }
@@ -1370,6 +1506,85 @@ func (c *Client) DeleteEntitiesByModelAt(t *testing.T, name string, version int,
 	path := fmt.Sprintf("/api/entity/%s/%d?pointInTime=%s", name, version, pointInTime.UTC().Format(time.RFC3339Nano))
 	_, err := c.doRaw(t, http.MethodDelete, path, "")
 	return err
+}
+
+// StreamDeleteResult mirrors the deleteEntities JSON response shape:
+// {entityModelClassId, deleteResult:{idToError, numberOfEntitites,
+// numberOfEntititesRemoved}, ids?}. MatchedCount is the count the
+// condition selected; RemovedCount is the count actually deleted — the
+// two are decoupled because a per-id delete can fail independently of
+// the match (see internal/domain/entity/handler.go DeleteEntities).
+type StreamDeleteResult struct {
+	MatchedCount int
+	RemovedCount int
+	IDToError    map[string]string
+	IDs          []string
+}
+
+// decodeStreamDeleteResult decodes the deleteEntities response body
+// ({entityModelClassId, deleteResult:{idToError, numberOfEntitites,
+// numberOfEntititesRemoved}, ids?}) into a StreamDeleteResult.
+func decodeStreamDeleteResult(raw []byte) (StreamDeleteResult, error) {
+	var resp struct {
+		DeleteResult struct {
+			IDToError                map[string]string `json:"idToError"`
+			NumberOfEntitites        int               `json:"numberOfEntitites"`
+			NumberOfEntititesRemoved int               `json:"numberOfEntititesRemoved"`
+		} `json:"deleteResult"`
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return StreamDeleteResult{}, err
+	}
+	return StreamDeleteResult{
+		MatchedCount: resp.DeleteResult.NumberOfEntitites,
+		RemovedCount: resp.DeleteResult.NumberOfEntititesRemoved,
+		IDToError:    resp.DeleteResult.IDToError,
+		IDs:          resp.IDs,
+	}, nil
+}
+
+// DeleteEntitiesConditional issues DELETE /api/entity/{name}/{version} with
+// the given search condition as the request body, verbose=true (so the
+// response echoes the deleted ids), and an optional transactionSize query
+// parameter for batched (paged) deletion. transactionSize <= 0 omits the
+// query parameter (server applies its single-transaction default).
+func (c *Client) DeleteEntitiesConditional(t *testing.T, name string, version int, condition string, transactionSize int) (StreamDeleteResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?verbose=true", name, version)
+	if transactionSize > 0 {
+		path += fmt.Sprintf("&transactionSize=%d", transactionSize)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, path, condition)
+	if err != nil {
+		return StreamDeleteResult{}, err
+	}
+	result, err := decodeStreamDeleteResult(raw)
+	if err != nil {
+		return StreamDeleteResult{}, fmt.Errorf("decode DeleteEntitiesConditional response: %w (body=%s)", err, string(raw))
+	}
+	return result, nil
+}
+
+// DeleteEntitiesByModelVerbose issues DELETE /api/entity/{name}/{version}?verbose=true
+// with an empty body (every entity of the model) and, when pointInTime is
+// non-nil, &pointInTime=<RFC3339Nano UTC> so the selection is the committed
+// state as at that instant. Returns the decoded StreamDeleteResult.
+func (c *Client) DeleteEntitiesByModelVerbose(t *testing.T, name string, version int, pointInTime *time.Time) (StreamDeleteResult, error) {
+	t.Helper()
+	path := fmt.Sprintf("/api/entity/%s/%d?verbose=true", name, version)
+	if pointInTime != nil {
+		path += "&pointInTime=" + pointInTime.UTC().Format(time.RFC3339Nano)
+	}
+	raw, err := c.doRaw(t, http.MethodDelete, path, "")
+	if err != nil {
+		return StreamDeleteResult{}, err
+	}
+	result, err := decodeStreamDeleteResult(raw)
+	if err != nil {
+		return StreamDeleteResult{}, fmt.Errorf("decode DeleteEntitiesByModelVerbose response: %w (body=%s)", err, string(raw))
+	}
+	return result, nil
 }
 
 // LockModelRaw issues PUT /api/model/{name}/{version}/lock and returns

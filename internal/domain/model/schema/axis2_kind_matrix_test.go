@@ -3,28 +3,30 @@ package schema_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
 // axis2Cell describes one cell of the (existingKind, incomingKind) matrix.
-// Action: "roundtrip" asserts I1; "extendContract" asserts Extend is a no-op
-// (silent-drop); "skip" marks polymorphic-slot cells deferred to A.3.
+// Action: "roundtrip" asserts I1; "extendContract" asserts one of two
+// outcomes for a kind-incompatible value at a restricted level — Extend
+// rejects it (RejectNamesLevel, when set, is asserted against the error
+// text), or Extend genuinely no-ops (Marshal-equal old/extended, when
+// Extend returns no error). A kind conflict always rejects under the
+// value-based Admit rule (§4/§5) — there is no silent-drop path left to
+// exercise — so every current extendContract cell takes the reject branch;
+// the no-op branch stays for a value that turns out already held.
 type axis2Cell struct {
-	Name    string
-	Old     *schema.ModelNode
-	Value   any
-	Level   spi.ChangeLevel
-	Action  string // roundtrip | extendContract | skip
-	SkipMsg string
+	Name             string
+	Old              *schema.ModelNode
+	Value            any
+	Level            spi.ChangeLevel
+	Action           string // roundtrip | extendContract
+	RejectNamesLevel string // extendContract only: substring the rejection error must contain
 }
-
-// polymorphicSlotIssue references the A.3 tracking issue for kind-conflict
-// (LEAF↔OBJECT, LEAF↔ARRAY, OBJECT↔ARRAY) Extend/Diff/Apply semantics.
-const polymorphicSlotIssue = "polymorphic-slot semantics pending — see issue #85"
 
 func TestAxis2KindMatrix(t *testing.T) {
 	leaf := func(dt schema.DataType) *schema.ModelNode { return schema.NewLeafNode(dt) }
@@ -42,41 +44,48 @@ func TestAxis2KindMatrix(t *testing.T) {
 		{"OO_add_field", obj(), map[string]any{"k": json.Number("1"), "new": "s"}, spi.ChangeLevelStructural, "roundtrip", ""},
 		{"AA_same_element", arr(), []any{json.Number("1")}, spi.ChangeLevelStructural, "roundtrip", ""},
 
-		// Kind-conflict cells (6 cells × whatever levels are in scope) — skip to A.3.
-		{"LO_leaf_to_object", leaf(schema.Integer), map[string]any{"x": json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"LA_leaf_to_array", leaf(schema.Integer), []any{json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"OL_object_to_leaf", obj(), json.Number("1"), spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"OA_object_to_array", obj(), []any{json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"AL_array_to_leaf", arr(), json.Number("1"), spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
-		{"AO_array_to_object", arr(), map[string]any{"k": json.Number("1")}, spi.ChangeLevelStructural, "skip", polymorphicSlotIssue},
+		// Kind-union cells: at STRUCTURAL the write adds the kind, and the
+		// delta must replay to exactly the model Extend produced.
+		{"LO_leaf_to_object", leaf(schema.Integer), map[string]any{"x": json.Number("1")}, spi.ChangeLevelStructural, "roundtrip", ""},
+		{"LA_leaf_to_array", leaf(schema.Integer), []any{json.Number("1")}, spi.ChangeLevelStructural, "roundtrip", ""},
+		{"OL_object_to_leaf", obj(), json.Number("1"), spi.ChangeLevelStructural, "roundtrip", ""},
+		{"OA_object_to_array", obj(), []any{json.Number("1")}, spi.ChangeLevelStructural, "roundtrip", ""},
+		{"AL_array_to_leaf", arr(), json.Number("1"), spi.ChangeLevelStructural, "roundtrip", ""},
+		{"AO_array_to_object", arr(), map[string]any{"k": json.Number("1")}, spi.ChangeLevelStructural, "roundtrip", ""},
 
-		// Silent-drop Extend-contract cells: verify Extend returns old unchanged
-		// when confronted with incompatible kinds at restricted levels.
-		{"LO_restricted_levelType_no_op", leaf(schema.Integer), map[string]any{"k": json.Number("1")}, spi.ChangeLevelType, "extendContract", ""},
+		// Extend-contract cells: an object value against a leaf-only path at
+		// TYPE is a new kind (ReasonNewKind), which always requires
+		// STRUCTURAL — this cell exercises the reject-with-no-mutation half
+		// of the contract, not a no-op.
+		{"LO_restrictedLevelType_rejectsNewObjectBranch", leaf(schema.Integer), map[string]any{"k": json.Number("1")}, spi.ChangeLevelType, "extendContract", "STRUCTURAL"},
 	}
 
 	for _, c := range cells {
 		c := c
 		t.Run(c.Name, func(t *testing.T) {
-			if c.Action == "skip" {
-				t.Skip(c.SkipMsg)
-			}
-			incomingNode, err := importer.Walk(c.Value)
-			if err != nil {
-				t.Fatalf("Walk: %v", err)
-			}
 			switch c.Action {
 			case "roundtrip":
-				extended, err := schema.Extend(c.Old, incomingNode, c.Level)
+				extended, err := schema.Extend(c.Old, c.Value, c.Level)
 				if err != nil {
 					t.Fatalf("Extend: %v", err)
 				}
 				assertRoundTrip(t, c.Old, extended, c.Name)
 			case "extendContract":
-				extended, err := schema.Extend(c.Old, incomingNode, c.Level)
+				oldBytesBefore, _ := schema.Marshal(c.Old)
+				extended, err := schema.Extend(c.Old, c.Value, c.Level)
 				if err != nil {
-					// Reject is an acceptable Extend-contract outcome;
-					// the contract is "no partial mutation".
+					// Reject is an acceptable Extend-contract outcome — the
+					// contract is "no partial mutation" — but the cell must
+					// still assert something about the rejection, not just
+					// that no mutation happened silently. When the cell
+					// names the level the rejection should cite, require it.
+					if c.RejectNamesLevel != "" && !strings.Contains(err.Error(), c.RejectNamesLevel) {
+						t.Fatalf("%s: rejection must name %s: %v", c.Name, c.RejectNamesLevel, err)
+					}
+					oldBytesAfter, _ := schema.Marshal(c.Old)
+					if string(oldBytesBefore) != string(oldBytesAfter) {
+						t.Fatalf("%s: a rejected Extend must not mutate its input", c.Name)
+					}
 					return
 				}
 				oldBytes, _ := schema.Marshal(c.Old)

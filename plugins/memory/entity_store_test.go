@@ -112,7 +112,7 @@ func TestTenantIsolationWritesDontCross(t *testing.T) {
 		Data: []byte(`{"owner": "A"}`),
 	}
 	storeA.Save(ctxA, entity)
-	all, _ := storeB.GetAll(ctxB, spi.ModelRef{EntityName: "Order", ModelVersion: "1"})
+	all := drainAll(t, ctxB, storeB, spi.ModelRef{EntityName: "Order", ModelVersion: "1"}, nil)
 	if len(all) != 0 {
 		t.Errorf("expected 0 entities for tenant-B, got %d", len(all))
 	}
@@ -312,7 +312,7 @@ func TestSoftDeleteCountExcludes(t *testing.T) {
 	}
 }
 
-func TestSoftDeleteGetAllExcludes(t *testing.T) {
+func TestSoftDeleteIterateExcludes(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -333,7 +333,7 @@ func TestSoftDeleteGetAllExcludes(t *testing.T) {
 	store.Save(ctx, e2)
 	store.Delete(ctx, "e-gone")
 
-	all, _ := store.GetAll(ctx, modelRef)
+	all := drainAll(t, ctx, store, modelRef, nil)
 	if len(all) != 1 {
 		t.Fatalf("expected 1 entity after delete, got %d", len(all))
 	}
@@ -342,7 +342,7 @@ func TestSoftDeleteGetAllExcludes(t *testing.T) {
 	}
 }
 
-func TestGetVersionHistory(t *testing.T) {
+func TestGetVersionMetadata(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -365,36 +365,37 @@ func TestGetVersionHistory(t *testing.T) {
 	entity.Data = []byte(`{"v": 2}`)
 	store.Save(ctx, entity)
 
-	history, err := store.GetVersionHistory(ctx, "e-hist")
+	metas, err := store.GetVersionMetadata(ctx, "e-hist", spi.VersionMetadataOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions, got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions, got %d", len(metas))
 	}
 
-	if history[0].ChangeType != "CREATED" {
-		t.Errorf("expected CREATED, got %s", history[0].ChangeType)
+	// Newest first: metas[0] is UPDATED (v2), metas[1] is CREATED (v1).
+	if metas[0].ChangeType != "UPDATED" {
+		t.Errorf("expected UPDATED, got %s", metas[0].ChangeType)
 	}
-	if history[0].User != "user-1" {
-		t.Errorf("expected user-1, got %s", history[0].User)
+	if metas[0].User != "user-2" {
+		t.Errorf("expected user-2, got %s", metas[0].User)
 	}
-	if history[0].Version != 1 {
-		t.Errorf("expected version 1, got %d", history[0].Version)
+	if metas[0].Version != 2 {
+		t.Errorf("expected version 2, got %d", metas[0].Version)
 	}
 
-	if history[1].ChangeType != "UPDATED" {
-		t.Errorf("expected UPDATED, got %s", history[1].ChangeType)
+	if metas[1].ChangeType != "CREATED" {
+		t.Errorf("expected CREATED, got %s", metas[1].ChangeType)
 	}
-	if history[1].User != "user-2" {
-		t.Errorf("expected user-2, got %s", history[1].User)
+	if metas[1].User != "user-1" {
+		t.Errorf("expected user-1, got %s", metas[1].User)
 	}
-	if history[1].Version != 2 {
-		t.Errorf("expected version 2, got %d", history[1].Version)
+	if metas[1].Version != 1 {
+		t.Errorf("expected version 1, got %d", metas[1].Version)
 	}
 }
 
-func TestGetVersionHistoryWithDelete(t *testing.T) {
+func TestGetVersionMetadataWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -412,33 +413,37 @@ func TestGetVersionHistoryWithDelete(t *testing.T) {
 	time.Sleep(time.Millisecond)
 	store.Delete(ctx, "e-hist-del")
 
-	history, err := store.GetVersionHistory(ctx, "e-hist-del")
+	metas, err := store.GetVersionMetadata(ctx, "e-hist-del", spi.VersionMetadataOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions, got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions, got %d", len(metas))
 	}
 
-	if history[0].ChangeType != "CREATED" {
-		t.Errorf("expected CREATED, got %s", history[0].ChangeType)
+	// Newest first: metas[0] is the DELETE tombstone, metas[1] is CREATED.
+	if metas[1].ChangeType != "CREATED" {
+		t.Errorf("expected CREATED, got %s", metas[1].ChangeType)
 	}
-	if history[0].Deleted {
-		t.Error("expected first version not deleted")
+	if metas[1].Deleted {
+		t.Error("expected the CREATE version not deleted")
 	}
 
-	if history[1].ChangeType != "DELETED" {
-		t.Errorf("expected DELETED, got %s", history[1].ChangeType)
+	if metas[0].ChangeType != "DELETED" {
+		t.Errorf("expected DELETED, got %s", metas[0].ChangeType)
 	}
-	if !history[1].Deleted {
-		t.Error("expected second version to be deleted")
+	if !metas[0].Deleted {
+		t.Error("expected the newest version to be deleted")
 	}
-	if history[1].User != "test-user" {
-		t.Errorf("expected test-user from context, got %s", history[1].User)
+	if metas[0].User != "test-user" {
+		t.Errorf("expected test-user from context, got %s", metas[0].User)
+	}
+	if metas[0].Version == 0 {
+		t.Error("expected the DELETE tombstone's Version to be populated, got 0")
 	}
 }
 
-func TestGetAllAsAt(t *testing.T) {
+func TestIterateAsAt(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -467,11 +472,8 @@ func TestGetAllAsAt(t *testing.T) {
 	store.Save(ctx, e1)
 	t2 := time.Now()
 
-	// GetAllAsAt(t1) → both at original state
-	gotT1, err := store.GetAllAsAt(ctx, modelRef, t1)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(t1) failed: %v", err)
-	}
+	// Iterate(t1) → both at original state
+	gotT1 := drainAll(t, ctx, store, modelRef, &t1)
 	if len(gotT1) != 2 {
 		t.Fatalf("expected 2 entities at t1, got %d", len(gotT1))
 	}
@@ -481,11 +483,8 @@ func TestGetAllAsAt(t *testing.T) {
 		}
 	}
 
-	// GetAllAsAt(t2) → entity 1 updated, entity 2 original
-	gotT2, err := store.GetAllAsAt(ctx, modelRef, t2)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(t2) failed: %v", err)
-	}
+	// Iterate(t2) → entity 1 updated, entity 2 original
+	gotT2 := drainAll(t, ctx, store, modelRef, &t2)
 	if len(gotT2) != 2 {
 		t.Fatalf("expected 2 entities at t2, got %d", len(gotT2))
 	}
@@ -502,7 +501,7 @@ func TestGetAllAsAt(t *testing.T) {
 	}
 }
 
-func TestGetAllAsAtWithDelete(t *testing.T) {
+func TestIterateAsAtWithDelete(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
@@ -522,10 +521,7 @@ func TestGetAllAsAtWithDelete(t *testing.T) {
 	afterDelete := time.Now()
 
 	// Before delete → entity present
-	got, err := store.GetAllAsAt(ctx, modelRef, beforeDelete)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(beforeDelete) failed: %v", err)
-	}
+	got := drainAll(t, ctx, store, modelRef, &beforeDelete)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 entity before delete, got %d", len(got))
 	}
@@ -534,21 +530,18 @@ func TestGetAllAsAtWithDelete(t *testing.T) {
 	}
 
 	// After delete → empty
-	got, err = store.GetAllAsAt(ctx, modelRef, afterDelete)
-	if err != nil {
-		t.Fatalf("GetAllAsAt(afterDelete) failed: %v", err)
-	}
+	got = drainAll(t, ctx, store, modelRef, &afterDelete)
 	if len(got) != 0 {
 		t.Errorf("expected 0 entities after delete, got %d", len(got))
 	}
 }
 
-func TestGetVersionHistoryNotFound(t *testing.T) {
+func TestGetVersionMetadataNotFound(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
 	store, _ := factory.EntityStore(ctx)
 
-	_, err := store.GetVersionHistory(ctx, "nonexistent")
+	_, err := store.GetVersionMetadata(ctx, "nonexistent", spi.VersionMetadataOptions{})
 	if err == nil {
 		t.Fatal("expected error for nonexistent entity")
 	}
@@ -616,30 +609,6 @@ func TestCompareAndSaveMismatchTxID(t *testing.T) {
 	got, _ := store.Get(ctx, "e-cas-2")
 	if string(got.Data) != `{"v": 1}` {
 		t.Errorf("entity should not have been modified, got: %s", got.Data)
-	}
-}
-
-func TestCompareAndSaveNewEntity(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	ctx := ctxWithTenant("tenant-A")
-	store, _ := factory.EntityStore(ctx)
-	modelRef := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-
-	// CompareAndSave on a new entity (no prior versions) should succeed
-	// because there's nothing to conflict with.
-	entity := &spi.Entity{
-		Meta: spi.EntityMeta{
-			ID: "e-cas-new", TenantID: "tenant-A", ModelRef: modelRef,
-			State: "NEW", TransactionID: "tx-001",
-		},
-		Data: []byte(`{"v": 1}`),
-	}
-	ver, err := store.CompareAndSave(ctx, entity, "any-tx-id")
-	if err != nil {
-		t.Fatalf("expected success for new entity, got error: %v", err)
-	}
-	if ver != 1 {
-		t.Errorf("expected version 1, got %d", ver)
 	}
 }
 
@@ -776,7 +745,7 @@ func TestTransactionDeleteVisibility(t *testing.T) {
 	}
 }
 
-func TestTransactionGetAllIncludesBuffer(t *testing.T) {
+func TestTransactionIterateIncludesBuffer(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
 	uuids := newTestUUIDGenerator()
@@ -809,13 +778,10 @@ func TestTransactionGetAllIncludesBuffer(t *testing.T) {
 	}
 	store.Save(txCtx, newEntity)
 
-	// GetAll within tx → should include both existing and buffered
-	all, err := store.GetAll(txCtx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll in tx failed: %v", err)
-	}
+	// Iterate within tx → should include both existing and buffered
+	all := drainAll(t, txCtx, store, modelRef, nil)
 	if len(all) != 2 {
-		t.Fatalf("expected 2 entities in tx GetAll, got %d", len(all))
+		t.Fatalf("expected 2 entities in tx Iterate, got %d", len(all))
 	}
 
 	ids := make(map[string]bool)
@@ -826,13 +792,10 @@ func TestTransactionGetAllIncludesBuffer(t *testing.T) {
 		t.Errorf("expected both e-existing and e-buffered, got IDs: %v", ids)
 	}
 
-	// GetAll outside tx → should only include existing
-	allOutside, err := store.GetAll(ctx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll outside tx failed: %v", err)
-	}
+	// Iterate outside tx → should only include existing
+	allOutside := drainAll(t, ctx, store, modelRef, nil)
 	if len(allOutside) != 1 {
-		t.Fatalf("expected 1 entity outside tx GetAll, got %d", len(allOutside))
+		t.Fatalf("expected 1 entity outside tx Iterate, got %d", len(allOutside))
 	}
 }
 
@@ -936,14 +899,14 @@ func TestTransactionDeleteAllVisibility(t *testing.T) {
 		t.Fatalf("deleteAll in tx failed: %v", err)
 	}
 
-	// Within tx: GetAll should return 0
-	all, _ := store.GetAll(txCtx, modelRef)
+	// Within tx: Iterate should return 0
+	all := drainAll(t, txCtx, store, modelRef, nil)
 	if len(all) != 0 {
 		t.Errorf("expected 0 entities in tx after DeleteAll, got %d", len(all))
 	}
 
 	// Outside tx: still 2
-	allOutside, _ := store.GetAll(ctx, modelRef)
+	allOutside := drainAll(t, ctx, store, modelRef, nil)
 	if len(allOutside) != 2 {
 		t.Errorf("expected 2 entities outside tx, got %d", len(allOutside))
 	}
@@ -1032,10 +995,12 @@ func TestTransactionalDeleteNonExistentEntity(t *testing.T) {
 	}
 }
 
-// TestGetAllReturnsNonNilOnEmptyModel asserts that GetAll returns a non-nil empty
-// slice (not nil) when no entities exist for the requested model. The SPI
-// contract requires non-nil so callers can range over the result safely.
-func TestGetAllReturnsNonNilOnEmptyModel(t *testing.T) {
+// TestIterateReturnsNoEntriesOnEmptyModel asserts that Iterate over a model
+// with no entities yields zero entries and no error — the streamed
+// replacement for the old GetAll-on-empty-model non-nil-slice guarantee
+// (Iterate has no nil-vs-empty-slice ambiguity to begin with: a zero-entry
+// iteration just never calls Next() successfully).
+func TestIterateReturnsNoEntriesOnEmptyModel(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-getall-empty")
 	store, err := factory.EntityStore(ctx)
@@ -1043,21 +1008,15 @@ func TestGetAllReturnsNonNilOnEmptyModel(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	modelRef := spi.ModelRef{EntityName: "m-empty", ModelVersion: "1"}
-	got, err := store.GetAll(ctx, modelRef)
-	if err != nil {
-		t.Fatalf("GetAll: unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("GetAll on empty model must return non-nil slice, got nil")
-	}
+	got := drainAll(t, ctx, store, modelRef, nil)
 	if len(got) != 0 {
-		t.Fatalf("GetAll on empty model must return empty slice, got %d elements", len(got))
+		t.Fatalf("Iterate on empty model must yield no entities, got %d elements", len(got))
 	}
 }
 
-// TestGetAllAsAtReturnsNonNilOnEmptyModel asserts the same non-nil guarantee
-// for GetAllAsAt on an empty model.
-func TestGetAllAsAtReturnsNonNilOnEmptyModel(t *testing.T) {
+// TestIterateAsAtReturnsNoEntriesOnEmptyModel asserts the same guarantee for
+// Iterate's committed-only PointInTime branch on an empty model.
+func TestIterateAsAtReturnsNoEntriesOnEmptyModel(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-getallasat-empty")
 	store, err := factory.EntityStore(ctx)
@@ -1065,24 +1024,21 @@ func TestGetAllAsAtReturnsNonNilOnEmptyModel(t *testing.T) {
 		t.Fatalf("EntityStore: %v", err)
 	}
 	modelRef := spi.ModelRef{EntityName: "m-empty", ModelVersion: "1"}
-	got, err := store.GetAllAsAt(ctx, modelRef, time.Now())
-	if err != nil {
-		t.Fatalf("GetAllAsAt: unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("GetAllAsAt on empty model must return non-nil slice, got nil")
-	}
+	asAt := time.Now()
+	got := drainAll(t, ctx, store, modelRef, &asAt)
 	if len(got) != 0 {
-		t.Fatalf("GetAllAsAt on empty model must return empty slice, got %d elements", len(got))
+		t.Fatalf("Iterate(asAt) on empty model must yield no entities, got %d elements", len(got))
 	}
 }
 
-// --- Follow-on-action attribution (#430) ---
+// --- Follow-on-action attribution ---
 
 // TestSaveAndDelete_ExecutorRoundTrip verifies that Meta.ChangeUser/
 // ChangeUserKind/ChangeExecutor stamped by the caller before Save round-trip
-// through GetVersionHistory as EntityVersion.AttributedKind/Executor, and
-// that a DELETED version's Executor is populated even though Entity is nil.
+// through GetVersionMetadata as EntityVersionMeta.AttributedKind/Executor,
+// including for a DELETED version — EntityVersionMeta carries no entity
+// payload at all, so Executor is readable directly, with nothing to
+// dereference.
 func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := ctxWithTenant("tenant-A")
@@ -1113,15 +1069,16 @@ func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(ctx, "e-exec-1")
+	metas, err := store.GetVersionMetadata(ctx, "e-exec-1", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions (CREATE + DELETE), got %d", len(metas))
 	}
 
-	created := history[0]
+	// Newest first: metas[0] is the DELETE tombstone, metas[1] is CREATE.
+	created := metas[1]
 	if created.AttributedKind != spi.PrincipalUser {
 		t.Errorf("CREATE version AttributedKind = %v, want %v", created.AttributedKind, spi.PrincipalUser)
 	}
@@ -1129,12 +1086,9 @@ func TestSaveAndDelete_ExecutorRoundTrip(t *testing.T) {
 		t.Errorf("CREATE version Executor = %+v, want %+v", created.Executor, wantExecutor)
 	}
 
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
-	}
-	if tomb.Entity != nil {
-		t.Errorf("expected nil Entity on a DELETED version, got %+v", tomb.Entity)
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	wantDel := spi.Principal{ID: "del-user", Kind: spi.PrincipalUser}
 	if tomb.Executor != wantDel {
@@ -1172,13 +1126,13 @@ func TestDelete_NonTx_AttributionIsCaller(t *testing.T) {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	history, err := store.GetVersionHistory(ctx, "e-del-nontx")
+	metas, err := store.GetVersionMetadata(ctx, "e-del-nontx", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory failed: %v", err)
+		t.Fatalf("GetVersionMetadata failed: %v", err)
 	}
-	tomb := history[len(history)-1]
+	tomb := metas[0]
 	if !tomb.Deleted {
-		t.Fatal("expected last version to be the DELETE tombstone")
+		t.Fatal("expected the newest version to be the DELETE tombstone")
 	}
 	want := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
 	if tomb.User != want.ID {
@@ -1219,13 +1173,13 @@ func TestDeleteAll_NonTx_Attribution(t *testing.T) {
 
 	want := spi.Principal{ID: "bob", Kind: spi.PrincipalUser}
 	for _, id := range []string{"e-da-1", "e-da-2"} {
-		history, err := store.GetVersionHistory(ctx, id)
+		metas, err := store.GetVersionMetadata(ctx, id, spi.VersionMetadataOptions{})
 		if err != nil {
-			t.Fatalf("GetVersionHistory(%s) failed: %v", id, err)
+			t.Fatalf("GetVersionMetadata(%s) failed: %v", id, err)
 		}
-		tomb := history[len(history)-1]
+		tomb := metas[0]
 		if !tomb.Deleted {
-			t.Fatalf("expected %s's last version to be the DELETE tombstone", id)
+			t.Fatalf("expected %s's newest version to be the DELETE tombstone", id)
 		}
 		if tomb.Executor != want {
 			t.Errorf("%s tombstone Executor = %+v, want %+v", id, tomb.Executor, want)
@@ -1289,13 +1243,13 @@ func TestDeleteAll_Tx_AttributionStaged(t *testing.T) {
 	}
 
 	for _, id := range []string{"e-dat-1", "e-dat-2"} {
-		history, err := store.GetVersionHistory(ctx, id)
+		metas, err := store.GetVersionMetadata(ctx, id, spi.VersionMetadataOptions{})
 		if err != nil {
-			t.Fatalf("GetVersionHistory(%s) failed: %v", id, err)
+			t.Fatalf("GetVersionMetadata(%s) failed: %v", id, err)
 		}
-		tomb := history[len(history)-1]
+		tomb := metas[0]
 		if !tomb.Deleted {
-			t.Fatalf("expected %s's last version to be the DELETE tombstone", id)
+			t.Fatalf("expected %s's newest version to be the DELETE tombstone", id)
 		}
 		if tomb.Executor != want {
 			t.Errorf("%s tombstone Executor = %+v, want %+v", id, tomb.Executor, want)

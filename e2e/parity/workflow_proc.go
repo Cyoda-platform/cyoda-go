@@ -6,13 +6,30 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// setupModelWithWorkflow imports a model, locks it, and imports the given
-// workflow JSON. This is the parity equivalent of the internal/e2e helper
-// with the same name.
-func setupModelWithWorkflow(t *testing.T, c *client.Client, modelName string, modelVersion int, workflowJSON string) {
+// wfBaseSample is the plain model sample used by scenarios whose workflow has
+// no processor writing entity data back.
+const wfBaseSample = `{"name":"Test","amount":10,"status":"new"}`
+
+// wfTaggedSample is wfBaseSample plus a zero-valued "tag" field.
+//
+// A processor's returned data passes the SAME model checks a client write does,
+// so a model must DECLARE every field its processors stamp. The "tag-with-foo"
+// processor writes data.tag, hence the seed. The value is the zero value on
+// purpose: the sample declares the field's type without asserting a value, and
+// keeping the model strict means a mistyped field name in a processor still
+// fails loudly instead of silently widening the model.
+const wfTaggedSample = `{"name":"Test","amount":10,"status":"new","tag":""}`
+
+// setupModelWithWorkflow imports a model from sampleDoc, locks it, and imports
+// the given workflow JSON. This is the parity equivalent of the internal/e2e
+// helper with the same name.
+//
+// sampleDoc is explicit rather than hard-coded because the model must declare
+// the fields the workflow's processors write back (see wfTaggedSample).
+func setupModelWithWorkflow(t *testing.T, c *client.Client, modelName string, modelVersion int, sampleDoc, workflowJSON string) {
 	t.Helper()
 
-	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`); err != nil {
+	if err := c.ImportModel(t, modelName, modelVersion, sampleDoc); err != nil {
 		t.Fatalf("ImportModel: %v", err)
 	}
 	if err := c.LockModel(t, modelName, modelVersion); err != nil {
@@ -46,7 +63,7 @@ func RunWorkflowProcessorChainOnCreation(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfTaggedSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -92,7 +109,7 @@ func RunWorkflowCriteriaMatch(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -132,7 +149,7 @@ func RunWorkflowCriteriaNoMatch(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfBaseSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -178,7 +195,7 @@ func RunWorkflowMultiStateCascade(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfTaggedSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -229,7 +246,7 @@ func RunWorkflowManualTransition(t *testing.T, fixture BackendFixture) {
 			}
 		}]
 	}`
-	setupModelWithWorkflow(t, c, modelName, modelVersion, wf)
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfTaggedSample, wf)
 
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","amount":10,"status":"new"}`)
 	if err != nil {
@@ -262,5 +279,102 @@ func RunWorkflowManualTransition(t *testing.T, fixture BackendFixture) {
 	// tag-with-foo adds tag="foo".
 	if got.Data["tag"] != "foo" {
 		t.Errorf("expected data.tag=\"foo\" (tag-with-foo processor), got %v", got.Data["tag"])
+	}
+}
+
+// wfSelectionSample declares the fields the per-kind selection criteria read
+// by RunWorkflowSelectionAfterCreation. A locked model rejects undeclared
+// fields, so both must appear in the sample.
+const wfSelectionSample = `{"name":"Test","kind":"a","go":false}`
+
+// wfSelectionWorkflows imports two active workflows that declare THE SAME
+// STATE NAMES — the normal shape for a per-kind machine — distinguished only
+// by their `criterion`. kind-a-wf is declared first, so a resolver that picks
+// "the first active workflow declaring the entity's current state" returns it
+// for every entity regardless of kind. Each workflow's transitions land in
+// differently-named target states, so the observed state alone identifies
+// which definition ran. The criteria are inline predicates over the payload,
+// so no compute node is involved.
+const wfSelectionWorkflows = `{
+	"importMode": "REPLACE",
+	"workflows": [
+		{
+			"version": "1.1", "name": "kind-a-wf", "initialState": "NONE", "active": true,
+			"criterion": {"type": "simple", "jsonPath": "$.kind", "operatorType": "EQUALS", "value": "a"},
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "VALIDATE", "manual": false}]},
+				"VALIDATE": {"transitions": [
+					{"name": "check", "next": "A_CHECKED", "manual": true},
+					{"name": "a-advance", "next": "A_ADVANCED", "manual": false,
+						"criterion": {"type": "simple", "jsonPath": "$.go", "operatorType": "EQUALS", "value": true}}
+				]},
+				"A_CHECKED": {},
+				"A_ADVANCED": {}
+			}
+		},
+		{
+			"version": "1.1", "name": "kind-b-wf", "initialState": "NONE", "active": true,
+			"criterion": {"type": "simple", "jsonPath": "$.kind", "operatorType": "EQUALS", "value": "b"},
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "VALIDATE", "manual": false}]},
+				"VALIDATE": {"transitions": [
+					{"name": "check", "next": "B_CHECKED", "manual": true},
+					{"name": "b-advance", "next": "B_ADVANCED", "manual": false,
+						"criterion": {"type": "simple", "jsonPath": "$.go", "operatorType": "EQUALS", "value": true}}
+				]},
+				"B_CHECKED": {},
+				"B_ADVANCED": {}
+			}
+		}
+	]
+}`
+
+// RunWorkflowSelectionAfterCreation asserts that workflow-level selection is
+// applied on the post-creation doors too, not only on creation: a manual
+// transition and a loopback re-evaluation must both run the definition the
+// entity's criterion binds it to.
+//
+// RunWorkflowCriteriaSelectingWorkflow already covers selection at creation.
+// This is the backend-agnostic companion for the later doors — the engine
+// resolves the workflow the same way on every backend, so a divergence here
+// would be a backend bug, not a modelling choice.
+func RunWorkflowSelectionAfterCreation(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-wf-selection-doors"
+	const modelVersion = 1
+	setupModelWithWorkflow(t, c, modelName, modelVersion, wfSelectionSample, wfSelectionWorkflows)
+
+	// --- Manual transition ---
+	manualID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","kind":"b","go":false}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (manual): %v", err)
+	}
+	if err := c.UpdateEntity(t, manualID, "check", `{"name":"Test","kind":"b","go":false}`); err != nil {
+		t.Fatalf("UpdateEntity (check): %v", err)
+	}
+	got, err := c.GetEntity(t, manualID)
+	if err != nil {
+		t.Fatalf("GetEntity (manual): %v", err)
+	}
+	if got.Meta.State != "B_CHECKED" {
+		t.Errorf("state after manual transition = %s, want B_CHECKED (kind-b-wf selected by criterion)", got.Meta.State)
+	}
+
+	// --- Loopback (transition-less update) ---
+	loopbackID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Test","kind":"b","go":false}`)
+	if err != nil {
+		t.Fatalf("CreateEntity (loopback): %v", err)
+	}
+	if err := c.UpdateEntityData(t, loopbackID, `{"name":"Test","kind":"b","go":true}`); err != nil {
+		t.Fatalf("UpdateEntityData (loopback): %v", err)
+	}
+	got, err = c.GetEntity(t, loopbackID)
+	if err != nil {
+		t.Fatalf("GetEntity (loopback): %v", err)
+	}
+	if got.Meta.State != "B_ADVANCED" {
+		t.Errorf("state after loopback = %s, want B_ADVANCED (kind-b-wf selected by criterion)", got.Meta.State)
 	}
 }

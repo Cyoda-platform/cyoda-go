@@ -26,11 +26,7 @@ type trackingReadSearcherEntityStore struct {
 
 func (s *trackingReadSearcherEntityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	*s.captured = opts
-	searcher, ok := s.EntityStore.(spi.Searcher)
-	if !ok {
-		return nil, nil
-	}
-	return searcher.Search(ctx, filter, opts)
+	return s.EntityStore.Search(ctx, filter, opts)
 }
 
 // trackingReadSearcherFactory wraps a StoreFactory and returns the spy
@@ -74,7 +70,7 @@ func newTrackingReadTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Cont
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
 
 	svc := &CloudEventsServiceImpl{

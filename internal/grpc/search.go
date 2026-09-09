@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -159,6 +160,13 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 
 	snapshotID, err := s.searchService.SubmitAsyncSearch(ctx, modelRef, cond, opts)
 	if err != nil {
+		// ErrQueueFull (the async-search worker pool's queue is at capacity)
+		// is a bare sentinel, not an *common.AppError — map it to the shared
+		// retryable 503 before handing off to snapshotSearchError, whose
+		// buildErrorFields only classifies *common.AppError specially.
+		if errors.Is(err, search.ErrQueueFull) {
+			err = search.QueueFullError()
+		}
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntitySnapshotSearchRequest, "ceId", ce.Id, "error", err.Error())
 		return snapshotSearchError(ctx, ce.Id, err)
 	}
@@ -261,7 +269,7 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	pageNumber := req.PageNumber
 
 	// Reject negative / over-cap / overflow-prone values BEFORE the
-	// storage lookup (PR #149 follow-up). Without this guard, an
+	// storage lookup. Without this guard, an
 	// attacker-supplied PageNumber up to MaxInt would propagate to the
 	// service layer and panic with a slice-bounds error.
 	if vErr := pagination.ValidateOffset(int64(pageNumber), int64(pageSize)); vErr != nil {
@@ -364,8 +372,31 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		opts.OrderBy = append(opts.OrderBy, search.OrderKey{Path: o.Path, Source: src, Desc: o.Desc})
 	}
 
-	results, err := s.searchService.DirectSearch(ctx, modelRef, cond, opts)
+	// timeoutMillis (spec D5): validate, reject on a joined (tx-token'd)
+	// request, attach the feature-owned deadline — resolveEventTimeout (T14)
+	// mirrors internal/domain/search/handler.go's HTTP equivalent. A nil
+	// TimeoutMillis is a no-op, so a caller that never sends the field
+	// observes zero behavior change.
+	opCtx, cancelTimeout, terr := resolveEventTimeout(ctx, req.TimeoutMillis, "timeoutMillis")
+	if terr != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", terr.Error())
+		errCE, ceErr := entityResponseError(ctx, ce.Id, terr)
+		if ceErr != nil {
+			return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+		}
+		return stream.Send(errCE)
+	}
+	defer cancelTimeout()
+
+	results, err := s.searchService.DirectSearch(opCtx, modelRef, cond, opts)
 	if err != nil {
+		// Classify an expired client-requested deadline ahead of the general
+		// error path (spec D2/D8): SEARCH_TIMEOUT only when the marker is
+		// ours, the chain shows DeadlineExceeded, and opCtx itself is
+		// currently expired — see common.ClassifyRequestTimeout.
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeSearchTimeout); appErr != nil {
+			err = appErr
+		}
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntitySearchRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
 		if ceErr != nil {
@@ -567,7 +598,12 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 			TimeOfChange: t,
 			User:         entry.User,
 		}
-		if entry.TransactionID != "" {
+		// transactionId is present only when hasEntity is true — the
+		// documented contract (cmd/cyoda/help/content/crud.md) and the way
+		// HasEntity=false is observed on the wire. The HTTP handler already
+		// gates on it (internal/domain/entity/handler.go); this door must
+		// not surface a tombstone's transaction id when that one does not.
+		if entry.HasEntity && entry.TransactionID != "" {
 			txID := entry.TransactionID
 			changeMeta.TransactionID = &txID
 		}
@@ -636,7 +672,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	}
 
 	// Reject negative / over-cap / overflow-prone values BEFORE the
-	// snapshot lookup (PR #149 follow-up). The HTTP async-results path
+	// snapshot lookup. The HTTP async-results path
 	// already validates here; the gRPC entry point did not, leaving the
 	// same offset = pageNumber*pageSize multiplication exposed.
 	if vErr := pagination.ValidateOffset(int64(req.PageNumber), int64(req.PageSize)); vErr != nil {

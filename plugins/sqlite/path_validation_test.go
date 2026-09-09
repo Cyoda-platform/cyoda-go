@@ -3,6 +3,8 @@ package sqlite
 import (
 	"errors"
 	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // TestValidateJSONPath_Accepts ensures well-formed dotted-identifier paths pass.
@@ -22,6 +24,20 @@ func TestValidateJSONPath_Accepts(t *testing.T) {
 		if err := validateJSONPath(p); err != nil {
 			t.Errorf("validateJSONPath(%q) returned unexpected error: %v", p, err)
 		}
+	}
+}
+
+// TestValidateJSONPath_AcceptsEmpty documents a deliberate behaviour change
+// from the pre-SPI-grammar validator, which used to reject "" outright.
+// docs/cloud-parity/path-grammar.md section 9 states the empty filter path
+// is legal — the tree operators (AND/OR) carry one instead of a leaf
+// condition — and spi.ValidateFilterPath (the one grammar this validator now
+// delegates to) accepts it accordingly. This is not a new injection surface:
+// validateFilterPaths, the only caller that reaches SQL interpolation, skips
+// f.Path == "" before ever calling validateJSONPath.
+func TestValidateJSONPath_AcceptsEmpty(t *testing.T) {
+	if err := validateJSONPath(""); err != nil {
+		t.Errorf("validateJSONPath(\"\") = %v, want nil (empty filter path is legal)", err)
 	}
 }
 
@@ -68,8 +84,8 @@ func TestValidateJSONPath_RejectsInjection(t *testing.T) {
 		"a b",
 		"a\nb",
 		"a\tb",
-		// Empty segments / malformed dotting.
-		"",
+		// Empty segments / malformed dotting. The empty path itself is NOT
+		// here: see TestValidateJSONPath_AcceptsEmpty for why.
 		".",
 		".foo",
 		"foo.",
@@ -87,5 +103,171 @@ func TestValidateJSONPath_RejectsInjection(t *testing.T) {
 		if !errors.Is(err, ErrInvalidFilterPath) {
 			t.Errorf("validateJSONPath(%q) = %v, want wraps ErrInvalidFilterPath", p, err)
 		}
+	}
+}
+
+// TestValidateJSONPath_AcceptsSubscripts checks the validator against the
+// one SPI grammar (spi.ValidateFilterPath): a bracketed wildcard or
+// non-negative index is a legitimate array subscript, and every rejection
+// the grammar states stays rejected here too.
+func TestValidateJSONPath_AcceptsSubscripts(t *testing.T) {
+	for _, p := range []string{"tags[0]", "tags[*]", "items[*].sku", "obj.0", "m[0][1]"} {
+		if err := validateJSONPath(p); err != nil {
+			t.Errorf("validateJSONPath(%q): unexpected error %v", p, err)
+		}
+	}
+	for _, p := range []string{"a'b", "a;DROP", "a[-1]", "a[0:2]", "a[", "a[0]b"} {
+		if err := validateJSONPath(p); err == nil {
+			t.Errorf("validateJSONPath(%q): want rejection", p)
+		}
+	}
+}
+
+// TestValidateGroupAndAggregatePaths_RejectsEmpty: unlike a filter leaf's
+// Path (where "" is the legitimate "no field" shape the AND/OR tree
+// operators carry), a GroupExpr.Path or AggregateExpr.Field always names a
+// real field. validateJSONPath alone now admits "" (spi.ValidateFilterPath
+// is right to, for a filter leaf), so validateGroupAndAggregatePaths must
+// catch the empty case itself rather than silently accepting a meaningless
+// "group by nothing" / "aggregate nothing" request.
+func TestValidateGroupAndAggregatePaths_RejectsEmpty(t *testing.T) {
+	if err := validateGroupAndAggregatePaths(
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: ""}}, nil,
+	); !errors.Is(err, ErrInvalidFilterPath) {
+		t.Errorf("empty GroupExpr.Path: err = %v, want ErrInvalidFilterPath", err)
+	}
+	if err := validateGroupAndAggregatePaths(
+		nil, []spi.AggregateExpr{{Op: spi.AggSum, Field: "", Alias: "s"}},
+	); !errors.Is(err, ErrInvalidFilterPath) {
+		t.Errorf("empty AggregateExpr.Field: err = %v, want ErrInvalidFilterPath", err)
+	}
+	// GroupExprState carries no path and must stay exempt.
+	if err := validateGroupAndAggregatePaths(
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}}, nil,
+	); err != nil {
+		t.Errorf("GroupExprState: err = %v, want nil", err)
+	}
+	// A well-formed, subscript-free non-empty path/field must still pass.
+	if err := validateGroupAndAggregatePaths(
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "amount"}},
+		[]spi.AggregateExpr{{Op: spi.AggSum, Field: "amount", Alias: "s"}},
+	); err != nil {
+		t.Errorf("well-formed group/aggregate paths: err = %v, want nil", err)
+	}
+}
+
+// TestValidateGroupAndAggregatePaths_RejectsSubscript pins
+// docs/cloud-parity/path-grammar.md section 7: "An array position is
+// therefore not a grouping dimension, an aggregation field or a sort key.
+// Those three surfaces admit no subscript... The three surfaces that reject
+// subscripts use the grammar of section 2 with the subscript production
+// removed." "tags[0]" and "tags[*]" are legal FILTER paths (see
+// TestValidateJSONPath_AcceptsSubscripts) but must be REJECTED here — the
+// same string is legal in one position and illegal in another.
+func TestValidateGroupAndAggregatePaths_RejectsSubscript(t *testing.T) {
+	for _, p := range []string{"tags[0]", "tags[*]", "items[0].sku", "m[0][1]"} {
+		if err := validateGroupAndAggregatePaths(
+			[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: p}}, nil,
+		); !errors.Is(err, ErrInvalidFilterPath) {
+			t.Errorf("group-by path %q: err = %v, want ErrInvalidFilterPath", p, err)
+		}
+		if err := validateGroupAndAggregatePaths(
+			nil, []spi.AggregateExpr{{Op: spi.AggSum, Field: p, Alias: "s"}},
+		); !errors.Is(err, ErrInvalidFilterPath) {
+			t.Errorf("aggregate field %q: err = %v, want ErrInvalidFilterPath", p, err)
+		}
+	}
+}
+
+// TestValidateOrderSpecs_RejectsSubscript: a SourceData sort key is a scalar
+// surface too (docs/cloud-parity/path-grammar.md section 7) and must reject
+// the same subscripted paths a filter accepts.
+func TestValidateOrderSpecs_RejectsSubscript(t *testing.T) {
+	for _, p := range []string{"tags[0]", "tags[*]"} {
+		err := validateOrderSpecs([]spi.OrderSpec{{Path: p, Source: spi.SourceData}})
+		if !errors.Is(err, ErrInvalidFilterPath) {
+			t.Errorf("order-by path %q: err = %v, want ErrInvalidFilterPath", p, err)
+		}
+	}
+	// Subscript-free order-by paths are unaffected.
+	if err := validateOrderSpecs([]spi.OrderSpec{{Path: "amount", Source: spi.SourceData}}); err != nil {
+		t.Errorf("order-by path %q: err = %v, want nil", "amount", err)
+	}
+}
+
+// TestRejectSubscript_ParseFailureRejects pins rejectSubscript's default on
+// a path spi.ParseFilterPath cannot parse. Every call site runs
+// validateJSONPath first, so this is unreachable in practice with a
+// well-formed caller — but the DEFAULT direction still matters: it was
+// nil (accept), the permissive choice, which .claude/rules/correctness-over-
+// availability.md forbids for a dependency (here, a successful parse) a
+// correct answer requires. Flipped to reject.
+func TestRejectSubscript_ParseFailureRejects(t *testing.T) {
+	for _, p := range []string{"a[", "a]", "a[-1]", "a[?(@.x)]"} {
+		if err := rejectSubscript(p, "sort path"); err == nil {
+			t.Errorf("rejectSubscript(%q): want rejection on a path that fails to parse, got nil", p)
+		}
+	}
+}
+
+// TestValidateFilterPaths_RecursesOnAnyNodeWithChildren pins the defect this
+// package's validateFilterPaths used to have: it recursed on a case list of
+// named branch operators (FilterAnd, FilterOr) rather than on the PRESENCE
+// of a subtree. A node with an unrecognised Op and populated Children fell
+// through to the "f.Path == """ check and returned nil without ever
+// inspecting Children — its subtree went unvalidated.
+//
+// Two nodes exercise this, and neither subsumes the other.
+// "__unknown_branch_op__" is a deliberately fictional Filter.Op — it can
+// never collide with a real one, present or future — standing in for any
+// operator this validator has not been taught to recognise. spi.FilterNot is
+// the REAL branch operator the SPI now defines. A validator rewritten as a
+// fixed case list — "case spi.FilterAnd, spi.FilterOr, spi.FilterNot", the
+// natural rewrite once FilterNot exists — would pass the FilterNot case by
+// name while still leaving the synthetic-op case (and any future real
+// operator nobody has added a case for yet) unvalidated: the malformed path
+// would reach SQL interpolation unchecked. Both assertions must stay green
+// independently for the fix to be proven.
+func TestValidateFilterPaths_RecursesOnAnyNodeWithChildren(t *testing.T) {
+	malformed := spi.Filter{Op: spi.FilterEq, Path: "a[", Source: spi.SourceData, Value: "x"}
+	wellFormed := spi.Filter{Op: spi.FilterEq, Path: "a.b", Source: spi.SourceData, Value: "x"}
+
+	// The bug: a malformed path nested under an operator this validator has
+	// never seen must still be caught.
+	unknownOpMalformed := spi.Filter{Op: spi.FilterOp("__unknown_branch_op__"), Children: []spi.Filter{malformed}}
+	if err := validateFilterPaths(unknownOpMalformed); !errors.Is(err, spi.ErrInvalidFilterPath) {
+		t.Errorf("malformed path nested under unrecognised op %q: err = %v, want wraps spi.ErrInvalidFilterPath", unknownOpMalformed.Op, err)
+	}
+
+	// The same bug, pinned separately against the REAL spi.FilterNot rather
+	// than a synthetic stand-in — see the doc comment above for why this
+	// case does not subsume, and is not subsumed by, the one above.
+	notMalformed := spi.Filter{Op: spi.FilterNot, Children: []spi.Filter{malformed}}
+	if err := validateFilterPaths(notMalformed); !errors.Is(err, spi.ErrInvalidFilterPath) {
+		t.Errorf("malformed path nested under FilterNot: err = %v, want wraps spi.ErrInvalidFilterPath", err)
+	}
+
+	// Regression guard: the existing recognised-operator behaviour must not
+	// have broken. A malformed path nested under a genuine FilterAnd is
+	// still rejected.
+	andMalformed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{wellFormed, malformed}}
+	if err := validateFilterPaths(andMalformed); !errors.Is(err, spi.ErrInvalidFilterPath) {
+		t.Errorf("malformed path nested under FilterAnd: err = %v, want wraps spi.ErrInvalidFilterPath", err)
+	}
+
+	// Regression guard: a well-formed path nested under any of these kinds
+	// of branch node is still accepted — the fix must not start rejecting
+	// valid filters.
+	andWellFormed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{wellFormed}}
+	if err := validateFilterPaths(andWellFormed); err != nil {
+		t.Errorf("well-formed path nested under FilterAnd: err = %v, want nil", err)
+	}
+	unknownOpWellFormed := spi.Filter{Op: spi.FilterOp("__unknown_branch_op__"), Children: []spi.Filter{wellFormed}}
+	if err := validateFilterPaths(unknownOpWellFormed); err != nil {
+		t.Errorf("well-formed path nested under unrecognised op %q: err = %v, want nil", unknownOpWellFormed.Op, err)
+	}
+	notWellFormed := spi.Filter{Op: spi.FilterNot, Children: []spi.Filter{wellFormed}}
+	if err := validateFilterPaths(notWellFormed); err != nil {
+		t.Errorf("well-formed path nested under FilterNot: err = %v, want nil", err)
 	}
 }

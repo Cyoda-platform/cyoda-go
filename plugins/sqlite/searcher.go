@@ -9,18 +9,20 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Compile-time check that entityStore implements spi.Searcher.
-var _ spi.Searcher = (*entityStore)(nil)
-
-// Search implements spi.Searcher for the SQLite entity store.
+// Search implements spi.EntityStore.Search for the SQLite entity store. The
+// compile-time check that *entityStore implements spi.EntityStore lives in
+// entity_store.go.
 //
-// Search is bounded-or-fail: opts.Limit > 0 is a cap on the matched set, not a
-// page size. A matched set larger than Limit is spi.ErrSearchResultLimitExceeded,
-// never a truncated prefix; exactly-at-limit succeeds. opts.Limit <= 0 is
-// unbounded and must never raise — no default is substituted for it.
+// Search is bounded-or-fail: opts.Limit >= 1 is REQUIRED, a cap on the matched
+// set, not a page size. A matched set larger than Limit is
+// spi.ErrSearchResultLimitExceeded, never a truncated prefix; exactly-at-limit
+// succeeds. opts.Limit <= 0 is a contract violation — Search returns an error
+// rather than treating it as "unbounded" or substituting a default of its own
+// (see spi.EntityStore.Search's doc comment; the engine resolves the direct-search
+// default before calling, so Search itself never needs to guess a bound).
 //
-// Three branches, all producing the same result set that GetAll + spi.MatchFilter
-// would for the same transaction state:
+// Three branches, all producing the same result set that
+// GetPage + spi.Prepare(filter).Match would for the same transaction state:
 //   - non-tx (or in-tx point-in-time): committed pushdown via searchCommitted —
 //     the query planner pushes pushable predicates to SQL and post-filters the
 //     residual in Go; the bound is enforced in SQL (LIMIT limit+1, so the extra
@@ -35,6 +37,9 @@ var _ spi.Searcher = (*entityStore)(nil)
 //     opts.TrackingRead is set — under bounded-or-fail that is exactly the
 //     matched set, since there is no page smaller than it.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if opts.Limit <= 0 {
+		return nil, fmt.Errorf("search: limit must be >= 1, got %d", opts.Limit)
+	}
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
@@ -55,16 +60,15 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 // bounded-or-fail cap. Used by the non-tx path and the in-tx point-in-time
 // path (committed-only).
 //
-// The scan budget (SearchScanLimit, metered only while a residual post-filter
-// is active) and the result bound (opts.Limit) are independent checks over
-// the same streamed rows — neither subsumes the other, and whichever trips
-// first wins. A dense match rate trips the result bound
-// (spi.ErrSearchResultLimitExceeded) well before the scan budget is
-// threatened; a sparse match rate over a long scan trips the scan budget
-// (spi.ErrScanBudgetExhausted) first, regardless of how few matches were
-// found.
+// The result bound (opts.Limit) is the only bound over the streamed rows. The
+// residual scan itself is unmetered: time-unbounded work is the caller's to
+// bound, via the direct-search timeout or async job cancellation, never the
+// backend's.
 func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-	plan := planQuery(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
 
 	var baseQuery string
 	var baseArgs []any
@@ -81,15 +85,16 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 	}
 
 	if opts.PointInTime != nil {
-		baseQuery += orderByClause(opts, "ev")
+		baseQuery += orderByClause(opts.OrderBy, "ev")
 	} else {
-		baseQuery += orderByClause(opts, "")
+		baseQuery += orderByClause(opts.OrderBy, "")
 	}
 
 	// When there is no residual, push the bound into SQL. Ask for limit+1: the
 	// extra row is the proof that the matched set does not fit, which is what
-	// bounded-or-fail must report instead of truncating to limit.
-	if plan.postFilter == nil && opts.Limit > 0 {
+	// bounded-or-fail must report instead of truncating to limit. opts.Limit is
+	// guaranteed >= 1 here — Search rejects Limit <= 0 before this is reached.
+	if plan.postFilter == nil {
 		baseQuery += " LIMIT ?"
 		baseArgs = append(baseArgs, opts.Limit+1)
 	}
@@ -104,8 +109,14 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 	scanned := 0
 
 	for rows.Next() {
-		if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
-			return nil, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
+		// Amortized cancellation check (spec D5): checked every 1024 rows
+		// (scanned&1023==0, true at scanned==0 too) so an already-expired or
+		// since-expired ctx aborts the scan deterministically instead of
+		// depending on database/sql's/the driver's own cancellation timing.
+		if scanned&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("Search: %w", err)
+			}
 		}
 		scanned++
 
@@ -120,23 +131,27 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 			return nil, scanErr
 		}
 
-		if plan.postFilter != nil {
-			matches, evalErr := evaluateFilter(*plan.postFilter, e)
-			if evalErr != nil {
-				return nil, fmt.Errorf("post-filter evaluation: %w", evalErr)
-			}
-			if !matches {
-				continue
-			}
+		if plan.preparedPostFilter != nil && !evaluateFilter(*plan.preparedPostFilter, e) {
+			continue
 		}
 
 		results = append(results, e)
-		if opts.Limit > 0 && len(results) > opts.Limit {
+		if len(results) > opts.Limit {
 			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 		}
 	}
 
 	if err := rows.Err(); err != nil {
+		// Prefer ctx.Err() over the raw driver error when the row stream
+		// ended because the deadline fired: the sqlite driver's own
+		// interrupt mechanism can surface a driver-specific error (e.g.
+		// "sqlite3: interrupted") that does not chain to
+		// context.DeadlineExceeded/Canceled on its own. Checking ctx here
+		// guarantees the caller always gets a deterministic, chainable
+		// error when cancellation is the actual cause.
+		if cErr := ctx.Err(); cErr != nil {
+			return nil, fmt.Errorf("Search: %w", cErr)
+		}
 		return nil, fmt.Errorf("row iteration: %w", err)
 	}
 
@@ -161,11 +176,12 @@ func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []a
 // searchSnapshotBase returns the base SQL selecting the latest non-deleted
 // version of each entity for the model as of snapshotMicro. Shared by the
 // point-in-time path (snapshotMicro = opts.PointInTime) and the in-tx overlay
-// (snapshotMicro = tx.SnapshotTime) so both agree with getSnapshot/getAllTx.
+// (snapshotMicro = tx.SnapshotTime) so both agree with getSnapshot.
 //
 // Uses submit_time <= ? (non-strict) matching the memory plugin's convention
 // (!v.submitTime.After(snapshotTime)) and all other snapshot queries in this
-// package (getSnapshot, getAllTx, DeleteAll tx). Rows scan via scanVersionEntity.
+// package (getSnapshot, the tx overlay in tx_overlay.go, DeleteAll tx). Rows
+// scan via scanVersionEntity.
 func (s *entityStore) searchSnapshotBase(opts spi.SearchOptions, snapshotMicro int64) (string, []any) {
 	query := `SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
 	                 json(ev.data), json(ev.meta), ev.submit_time
@@ -185,10 +201,19 @@ func (s *entityStore) searchSnapshotBase(opts spi.SearchOptions, snapshotMicro i
 // comparator (a strict total order with an entity_id ascending tiebreaker), so
 // the buffer `adds` slice is ordered identically to the SQL ORDER BY stream
 // before the merge.
-func sortEntitiesByOrder(rows []*spi.Entity, order []spi.OrderSpec) {
+//
+// A single ctx check gates the O(n log n) sort itself (spec D5's pre-sort
+// check): the buffer-match loop that built rows already pays for its own
+// amortized checks over the scan, but the sort is a separate unit of Go-only
+// work worth gating on its own before it runs.
+func sortEntitiesByOrder(ctx context.Context, rows []*spi.Entity, order []spi.OrderSpec) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("Search: %w", err)
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		return spi.LessByOrder(rows[i], rows[j], order)
 	})
+	return nil
 }
 
 // searchTxOverlay implements the in-transaction read-your-own-writes overlay for
@@ -198,20 +223,30 @@ func sortEntitiesByOrder(rows []*spi.Entity, order []spi.OrderSpec) {
 // Committed candidates are streamed in ORDER BY order WITHOUT SQL LIMIT (the
 // bound is enforced by MergeBounded over the merged committed+buffered
 // sequence, not by SQL alone, since a buffered own-write can itself be what
-// pushes the total over the cap). The residual post-filter and SearchScanLimit
-// still apply to the committed stream, so a filter whose pushable part narrows
-// the candidate set does not full-scan; a broad residual can still exhaust the
-// budget as in the non-tx path. The scan budget and the result bound
-// (opts.Limit) are independent: whichever trips first over the streamed rows
-// wins, exactly as in searchCommitted.
+// pushes the total over the cap). The residual post-filter still applies to the
+// committed stream, so a filter whose pushable part narrows the candidate set
+// does not full-scan. The scan itself is unmetered and opts.Limit is the only
+// bound, exactly as in searchCommitted.
 //
-// The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack) so
-// Commit/Rollback (which take tx.OpMu.Lock) cannot race our reads of
-// tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order: tx.OpMu before
-// the sql.DB query — identical to Save/GetAll/getAllTx in this package.
+// The whole operation runs under tx.OpMu.RLock (fail fast on tx.RolledBack or
+// tx.Closed) so Commit/Rollback (which take tx.OpMu.Lock) cannot race our
+// reads of tx.Buffer/tx.Deletes or our write to tx.ReadSet. Lock order:
+// tx.OpMu before the sql.DB query — identical to Save/GetPage in this package.
 func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionState, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
 	modelRef := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
-	plan := planQuery(filter)
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
+	}
+	// The buffered own-writes are matched against the FULL original filter
+	// (not the residual), so they need their own prepared value, independent
+	// of plan.preparedPostFilter (which stays nil whenever the plan is fully
+	// EXACT — see planQuery). The error is ignored, not unchecked: planFor's
+	// success above already ran spi.Prepare on this exact filter value
+	// (planQuery calls it unconditionally, before dissection, precisely so no
+	// plan shape can skip evaluability), so a second failure here is
+	// impossible — this call exists only to obtain the PreparedFilter value.
+	pf, _ := spi.Prepare(filter)
 
 	// Committed candidate SQL: snapshot at tx.SnapshotTime, ORDER BY, no LIMIT.
 	baseQuery, baseArgs := s.searchSnapshotBase(opts, timeToMicro(tx.SnapshotTime))
@@ -219,14 +254,17 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		baseQuery += " AND (" + plan.where + ")"
 		baseArgs = append(baseArgs, plan.args...)
 	}
-	baseQuery += orderByClause(opts, "ev")
+	baseQuery += orderByClause(opts.OrderBy, "ev")
 
 	var results []*spi.Entity
-	err := func() error {
+	err = func() error {
 		tx.OpMu.RLock()
 		defer tx.OpMu.RUnlock()
 		if tx.RolledBack {
 			return fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxRolledBack, tx.ID)
+		}
+		if tx.Closed {
+			return fmt.Errorf("Search: %w (txID=%s)", spi.ErrTxAlreadyCommitted, tx.ID)
 		}
 
 		rows, err := s.db.QueryContext(ctx, baseQuery, baseArgs...)
@@ -236,30 +274,34 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		defer rows.Close()
 
 		// Lazy committed source: scan one row per call, apply the residual
-		// post-filter, honour the scan budget. Never drains into a slice.
+		// post-filter. Never drains into a slice.
 		scanned := 0
 		next := func() (*spi.Entity, bool, error) {
 			for rows.Next() {
-				if plan.postFilter != nil && scanned >= s.cfg.SearchScanLimit {
-					return nil, false, fmt.Errorf("%w: examined %d rows", spi.ErrScanBudgetExhausted, s.cfg.SearchScanLimit)
+				// Amortized cancellation check (spec D5): same shape as
+				// searchCommitted's row loop — checked every 1024 rows so an
+				// expired ctx aborts the streamed merge deterministically.
+				if scanned&1023 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, false, fmt.Errorf("Search: %w", err)
+					}
 				}
 				scanned++
 				e, scanErr := scanVersionEntity(rows)
 				if scanErr != nil {
 					return nil, false, scanErr
 				}
-				if plan.postFilter != nil {
-					matches, evalErr := evaluateFilter(*plan.postFilter, e)
-					if evalErr != nil {
-						return nil, false, fmt.Errorf("post-filter evaluation: %w", evalErr)
-					}
-					if !matches {
-						continue
-					}
+				if plan.preparedPostFilter != nil && !evaluateFilter(*plan.preparedPostFilter, e) {
+					continue
 				}
 				return e, true, nil
 			}
 			if err := rows.Err(); err != nil {
+				// Prefer ctx.Err() over the raw driver error — see the
+				// matching comment in searchCommitted.
+				if cErr := ctx.Err(); cErr != nil {
+					return nil, false, fmt.Errorf("Search: %w", cErr)
+				}
 				return nil, false, fmt.Errorf("row iteration: %w", err)
 			}
 			return nil, false, nil
@@ -268,18 +310,32 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 		// adds = matching buffered own-writes for this model, excluding staged
 		// deletes. copyEntity so no store-internal pointer escapes the lock.
 		adds := make([]*spi.Entity, 0, len(tx.Buffer))
+		addI := 0
 		for id, e := range tx.Buffer {
+			// Amortized cancellation check (spec D5): this loop is pure Go
+			// (no SQL), so it has no other cancellation signal — checked
+			// every 1024 entries so a large buffer under an expiring ctx
+			// aborts promptly instead of scanning to completion regardless
+			// of the deadline.
+			if addI&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("Search: %w", err)
+				}
+			}
+			addI++
 			if tx.Deletes[id] {
 				continue
 			}
 			if e.Meta.ModelRef != modelRef {
 				continue
 			}
-			if spi.MatchFilter(filter, e.Data, e.Meta) {
+			if pf.Match(e.Data, e.Meta) {
 				adds = append(adds, copyEntity(e))
 			}
 		}
-		sortEntitiesByOrder(adds, opts.OrderBy)
+		if err := sortEntitiesByOrder(ctx, adds, opts.OrderBy); err != nil {
+			return err
+		}
 
 		// A committed row is suppressed if staged for delete OR shadowed by a
 		// buffered own-write (the buffered version, if matching, arrives via adds).
@@ -296,7 +352,7 @@ func (s *entityStore) searchTxOverlay(ctx context.Context, tx *spi.TransactionSt
 			return mErr
 		}
 
-		// Read-set recording is CONDITIONAL on TrackingRead (unlike GetAll, which
+		// Read-set recording is CONDITIONAL on TrackingRead (unlike GetPage, which
 		// records unconditionally). Only returned committed rows (not buffered —
 		// those are own-writes already in the write-set) enter the read-set.
 		// Under bounded-or-fail, page IS the whole matched committed+buffered
@@ -337,24 +393,29 @@ func jsonExtract(col, key string) string {
 	return fmt.Sprintf("json_extract(json(%s), '$.%s')", col, key)
 }
 
-// orderByClause builds a SQL ORDER BY clause from opts.OrderBy.
+// orderByClause builds a SQL ORDER BY clause from order. Shared by Search
+// (SearchOptions.OrderBy) and Iterate (IterateOptions.OrderBy) — both fields
+// are the same []spi.OrderSpec type.
 //
-//   - When OrderBy is empty, defaults to "ORDER BY entity_id".
+//   - When order is empty, defaults to "ORDER BY entity_id". For Search this
+//     is the documented canonical default; for Iterate an empty OrderBy means
+//     "unspecified" per the Iterate doc, and a deterministic order is a
+//     conformant (if stronger-than-required) choice within "unspecified".
 //   - Each clause gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.
 //   - A entity_id tiebreaker is appended unless the last OrderSpec already
 //     resolves to entity_id (Source=SourceMeta, Path="id"), avoiding duplicates.
 //   - tablePrefix is prepended to column references (e.g., "ev" for PIT queries).
-func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
+func orderByClause(order []spi.OrderSpec, tablePrefix string) string {
 	idCol := "entity_id"
 	if tablePrefix != "" {
 		idCol = tablePrefix + ".entity_id"
 	}
-	if len(opts.OrderBy) == 0 {
+	if len(order) == 0 {
 		return " ORDER BY " + idCol
 	}
-	clauses := make([]string, 0, len(opts.OrderBy)+1)
-	for _, spec := range opts.OrderBy {
+	clauses := make([]string, 0, len(order)+1)
+	for _, spec := range order {
 		expr := orderByFieldExpr(spec, tablePrefix)
 		if spec.Desc {
 			expr += " DESC"
@@ -362,7 +423,7 @@ func orderByClause(opts spi.SearchOptions, tablePrefix string) string {
 		clauses = append(clauses, expr+" NULLS LAST")
 	}
 	// Append entity_id tiebreaker unless the last spec already IS entity_id.
-	if last := opts.OrderBy[len(opts.OrderBy)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
+	if last := order[len(order)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
 		clauses = append(clauses, idCol)
 	}
 	return " ORDER BY " + strings.Join(clauses, ", ")

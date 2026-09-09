@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -18,6 +19,15 @@ import (
 
 const submitTimeTTL = 1 * time.Hour
 
+// submitTimeEntry pairs a committed transaction's submit time with the
+// tenant that owns it, so GetSubmitTime can enforce the same tenant gate
+// as every other tx-lifecycle method after cleanupTx has removed the
+// active-tx state.
+type submitTimeEntry struct {
+	submitTime time.Time
+	tenantID   spi.TenantID
+}
+
 // TransactionManager implements spi.TransactionManager backed by PostgreSQL
 // with REPEATABLE READ isolation plus application-layer row-granular
 // first-committer-wins validation. Each Begin() acquires a real pgx.Tx,
@@ -28,9 +38,9 @@ type TransactionManager struct {
 	registry *txRegistry
 	uuids    spi.UUIDGenerator
 	mu       sync.Mutex
-	// submitTimes records the database timestamp captured at commit time.
-	// Evicted after submitTimeTTL.
-	submitTimes map[string]time.Time
+	// submitTimes records the database timestamp captured at commit time,
+	// paired with the owning tenant. Evicted after submitTimeTTL.
+	submitTimes map[string]submitTimeEntry
 	// tenants records the tenant for each active transaction so Join can
 	// reconstruct the TransactionState without requiring tenant in the
 	// joining context.
@@ -47,19 +57,38 @@ type TransactionManager struct {
 	origins    map[string]spi.Principal
 	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
+	// acquireTimeout bounds Begin's wait for a pooled connection.
+	acquireTimeout time.Duration
+}
+
+// TransactionManagerOption configures a TransactionManager at construction.
+type TransactionManagerOption func(*TransactionManager)
+
+// WithAcquireTimeout bounds how long Begin waits for a pooled connection before
+// failing with the storage-unavailable marker. Zero disables the deadline,
+// matching the convention the GUC ceilings use. Production wiring passes
+// cfg.AcquireTimeout (CYODA_POSTGRES_ACQUIRE_TIMEOUT); without this option the
+// manager still gets the shipped default rather than an unbounded wait.
+func WithAcquireTimeout(d time.Duration) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.acquireTimeout = d }
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
-func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator) *TransactionManager {
-	return &TransactionManager{
-		pool:        pool,
-		registry:    newTxRegistry(),
-		uuids:       uuids,
-		submitTimes: make(map[string]time.Time),
-		tenants:     make(map[string]spi.TenantID),
-		origins:     make(map[string]spi.Principal),
-		txStates:    make(map[string]*txState),
+func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...TransactionManagerOption) *TransactionManager {
+	tm := &TransactionManager{
+		pool:           pool,
+		registry:       newTxRegistry(),
+		uuids:          uuids,
+		submitTimes:    make(map[string]submitTimeEntry),
+		tenants:        make(map[string]spi.TenantID),
+		origins:        make(map[string]spi.Principal),
+		txStates:       make(map[string]*txState),
+		acquireTimeout: defaultAcquireTimeout,
 	}
+	for _, apply := range opts {
+		apply(tm)
+	}
+	return tm
 }
 
 // Begin starts a new REPEATABLE READ transaction (snapshot isolation) and
@@ -76,17 +105,30 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 
 	txID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 
-	pgxTx, err := tm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	// The deadline bounds the acquire ONLY. It must not reach the context this
+	// function returns: that one is derived from the caller's ctx below and
+	// carries the transaction for its whole life, so a deadline on it would
+	// cancel the transaction the moment the acquire window closed.
+	//
+	// pool.BeginTx and the set_config round-trip both return before the caller
+	// touches the transaction, so bounding them leaks nothing into the handle.
+	acquireCtx, cancelAcquire := tm.acquireContext(ctx)
+	defer cancelAcquire()
+
+	pgxTx, err := tm.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
-		return "", nil, fmt.Errorf("Begin: failed to start transaction: %w", err)
+		return "", nil, classifyAcquireErr(ctx, acquireCtx, "Begin: failed to start transaction", err)
 	}
 
 	// Set the current tenant for RLS policies. We use set_config(name, value, is_local)
 	// rather than `SET LOCAL app.current_tenant = $1` because PostgreSQL's SET statement
 	// does not accept bound parameters under pgx's extended-query protocol.
-	if _, err := pgxTx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(tenantID)); err != nil {
-		_ = pgxTx.Rollback(ctx)
-		return "", nil, fmt.Errorf("Begin: failed to set tenant: %w", err)
+	if _, err := pgxTx.Exec(acquireCtx, "SELECT set_config('app.current_tenant', $1, true)", string(tenantID)); err != nil {
+		// The rollback runs on a context derived WithoutCancel: acquireCtx may be
+		// the very thing that just expired, and a rollback on an expired context
+		// destroys the pooled connection instead of returning it.
+		_ = pgxTx.Rollback(context.WithoutCancel(ctx))
+		return "", nil, classifyAcquireErr(ctx, acquireCtx, "Begin: failed to set tenant", err)
 	}
 
 	tm.registry.Register(txID, pgxTx)
@@ -115,15 +157,21 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	// EntityStore.Delete and Search's documented assumption in searcher.go)
 	// — real row visibility is governed by PostgreSQL's own transaction/
 	// SAVEPOINT machinery, not an in-process buffer. The SPI conformance
-	// contract is the committed outcome (GetVersionHistory), never these
-	// maps' contents.
+	// contract is the committed outcome (GetPage, GetVersionByTransaction,
+	// GetVersionMetadata), never these maps' contents.
 	txSpiState := &spi.TransactionState{
 		ID:       txID,
 		TenantID: tenantID,
 		Origin:   origin,
 	}
 
-	return txID, spi.WithTransaction(ctx, txSpiState), nil
+	return txID, spi.WithTransaction(ctx, txSpiState), nil // derived from the CALLER's ctx
+}
+
+// acquireContext returns the acquire-only deadline context for this manager.
+// See newAcquireContext for why it must never reach the transaction handle.
+func (tm *TransactionManager) acquireContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return newAcquireContext(ctx, tm.acquireTimeout)
 }
 
 // Commit commits the transaction and records its submit time.
@@ -131,7 +179,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 // or when the application-layer first-committer-wins validation detects a
 // stale read or write set.
 //
-// Tenant isolation (issue #199 PR-C2): rejects callers whose UserContext
+// Tenant isolation: rejects callers whose UserContext
 // tenant does not match the transaction's tenant. RLS protects data-path
 // access (every DML is row-level filtered) but does not extend to
 // transaction-lifecycle commands (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/etc.) —
@@ -169,7 +217,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		if err != nil {
 			tm.cleanupTx(txID)
 			_ = pgxTx.Rollback(context.Background())
-			return classifyError(fmt.Errorf("Commit: validate: %w", err))
+			return tm.classifyTxError(txID, fmt.Errorf("Commit: validate: %w", err))
 		}
 		if verr := state.ValidateReadSet(current); verr != nil {
 			tm.cleanupTx(txID)
@@ -196,6 +244,13 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		var pgErr *pgconn.PgError
 		if errors.As(tsErr, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction {
 			_ = pgxTx.Rollback(context.Background())
+			// 25P02 says only "something earlier in this transaction failed".
+			// When that something was a ceiling, classifyTxError recorded it,
+			// and reporting the real cause is what keeps a cancelled statement
+			// off the retryable-conflict path — a retry would cancel again.
+			if cause := state.AbortCause(); cause != nil {
+				return fmt.Errorf("Commit: transaction aborted: %w", cause)
+			}
 			return fmt.Errorf("%w: Commit: transaction aborted: %w", spi.ErrConflict, tsErr)
 		}
 		// For non-25P02 errors (e.g. network failures, context deadline exceeded)
@@ -211,29 +266,34 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		// it back to the pool; ignore the rollback error (tx is already invalid).
 		_ = pgxTx.Rollback(ctx)
 		tm.cleanupTx(txID)
-		return classifyError(fmt.Errorf("Commit: %w", err))
+		return tm.classifyCommitError(txID, fmt.Errorf("Commit: %w", err))
 	}
 
-	tm.cleanupTx(txID)
-
+	// Record the submit time BEFORE cleanupTx removes the active-tx state:
+	// a concurrent GetSubmitTime racing this Commit then observes the tx in
+	// at least one of the two maps at all times (its committed branch wins
+	// during the overlap), never a transient "neither map" ErrTxNotFound
+	// for a transaction that just committed successfully.
 	func() {
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
-		tm.submitTimes[txID] = submitTime
+		tm.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: state.tenantID}
 		evictBefore := time.Now().Add(-submitTimeTTL)
-		for id, t := range tm.submitTimes {
-			if t.Before(evictBefore) {
+		for id, e := range tm.submitTimes {
+			if e.submitTime.Before(evictBefore) {
 				delete(tm.submitTimes, id)
 			}
 		}
 	}()
+
+	tm.cleanupTx(txID)
 
 	return nil
 }
 
 // Rollback aborts the transaction.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 // See Commit's godoc for the design rationale.
 func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
@@ -261,7 +321,7 @@ func (tm *TransactionManager) Rollback(ctx context.Context, txID string) error {
 // Join attaches to an existing transaction, returning a context carrying its
 // TransactionState.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 // Returning a context for another tenant's tx would let the joining caller
 // drive arbitrary lifecycle operations on that tx — see Commit's godoc.
 func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Context, error) {
@@ -301,21 +361,73 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 
 // GetSubmitTime returns the database timestamp recorded when the transaction
 // was committed.
-func (tm *TransactionManager) GetSubmitTime(_ context.Context, txID string) (time.Time, error) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+//
+// Tenant isolation: like every other tx-lifecycle method, the caller's
+// tenant must match the transaction's tenant. The check runs before any
+// state-dependent response so a cross-tenant caller learns neither the
+// submit time nor whether the transaction is in flight or committed.
+func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
+	// Single critical section for both maps; verifyTenant runs outside it
+	// (it takes no locks, but keeping the section minimal matches the rest
+	// of this file).
+	entry, committed, activeTenant, active := func() (submitTimeEntry, bool, spi.TenantID, bool) {
+		tm.mu.Lock()
+		defer tm.mu.Unlock()
+		e, ok := tm.submitTimes[txID]
+		tid, act := tm.tenants[txID]
+		return e, ok, tid, act
+	}()
 
-	t, ok := tm.submitTimes[txID]
-	if !ok {
-		return time.Time{}, fmt.Errorf("GetSubmitTime: transaction %s has no submit time (not yet committed or unknown)", txID)
+	switch {
+	case committed:
+		if err := verifyTenant(ctx, entry.tenantID, "GetSubmitTime", txID); err != nil {
+			return time.Time{}, err
+		}
+		return entry.submitTime, nil
+	case active:
+		if err := verifyTenant(ctx, activeTenant, "GetSubmitTime", txID); err != nil {
+			return time.Time{}, err
+		}
+		return time.Time{}, fmt.Errorf("transaction not yet committed: %s", txID)
+	default:
+		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
 	}
-	return t, nil
 }
 
 // LookupTx exposes the registry lookup for use in tests and by the store
 // layer (resolveQuerier). Production code should prefer resolveQuerier.
 func (tm *TransactionManager) LookupTx(txID string) (pgx.Tx, bool) {
 	return tm.registry.Lookup(txID)
+}
+
+// wasCommitted reports whether txID is recorded in submitTimes — i.e. it
+// committed successfully and no later Commit's sweep has evicted the entry
+// yet. It is the store layer's way of telling "this transaction is gone
+// because it committed" apart from "this transaction is gone for an unknown
+// reason" at the resolveRaw seam: cleanupTx purges the registry on every
+// exit path (Commit and Rollback alike), so a registry miss alone cannot
+// distinguish committed from rolled-back from reclaimed. submitTimes,
+// populated only on the Commit success path and kept deliberately past
+// cleanupTx (see Commit's comment on the race with GetSubmitTime), is the
+// one piece of post-cleanup state that answers "committed" affirmatively.
+//
+// Eviction past submitTimeTTL is opportunistic, not a wall-clock deadline:
+// the sweep runs only inside a later Commit's own submitTimes write (see
+// Commit), so on a quiet system with no other transaction committing, an
+// entry can outlive the TTL considerably. That only ever makes wasCommitted
+// stay precise for longer — it never turns a true answer false — so the
+// eventual degradation to ErrTxNotFound at the resolveRaw seam is a floor on
+// how long the precise sentinel is guaranteed to be available, not a
+// deadline by which it is guaranteed to be gone.
+//
+// No tenant check: this only steers which SPI sentinel a same-context store
+// operation gets classified as, never anything that discloses the submit
+// time or any other value to a caller who doesn't already hold the ID.
+func (tm *TransactionManager) wasCommitted(txID string) bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	_, ok := tm.submitTimes[txID]
+	return ok
 }
 
 // cleanupTx removes all per-transaction state (registry, tenant, txState).
@@ -371,7 +483,7 @@ func (tm *TransactionManager) lookupTxState(txID string) (*txState, bool) {
 // Savepoint creates a named savepoint within the given PostgreSQL transaction
 // and pushes a snapshot of the current readSet/writeSet onto the txState stack.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -397,7 +509,7 @@ func (tm *TransactionManager) Savepoint(ctx context.Context, txID string) (strin
 // RollbackToSavepoint rolls back all work done since the named savepoint and
 // restores the txState readSet/writeSet to the snapshot captured at that savepoint.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers —
+// Tenant isolation: rejects mismatched-tenant callers —
 // destructive on tx-state.
 func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
@@ -433,7 +545,7 @@ func (tm *TransactionManager) RollbackToSavepoint(ctx context.Context, txID stri
 // ReleaseSavepoint releases a savepoint, merging its work into the parent transaction.
 // The txState snapshot for this savepoint is dropped; work done after the push is kept.
 //
-// Tenant isolation (issue #199 PR-C2): rejects mismatched-tenant callers.
+// Tenant isolation: rejects mismatched-tenant callers.
 func (tm *TransactionManager) ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error {
 	pgxTx, ok := tm.registry.Lookup(txID)
 	if !ok {
@@ -504,18 +616,124 @@ func verifyTenant(ctx context.Context, txTenantID spi.TenantID, op string, txID 
 // Both sentinels stay reachable: spi.ErrConflict satisfies handler-level
 // errors.Is checks, and the original *pgconn.PgError stays in the chain so
 // observability and logging can type-assert via errors.As.
+//
+// The two connection ceilings are classified here too, and deliberately NOT
+// alike, because they differ in whether retrying helps:
+//   - idle_in_transaction_session_timeout (25P03, plus the torn-socket shape of
+//     the same event) → the storage-unavailable marker, i.e. a retryable 503.
+//   - statement_timeout (57014) → passed through unmarked, so it lands on the
+//     500-with-a-ticket path. Re-running a statement that just exceeded the
+//     ceiling will exceed it again; calling that retryable would be a lie.
 func classifyError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch {
-		case pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected:
-			return fmt.Errorf("%w: %w", spi.ErrConflict, err)
-		case pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "unique_claims_uq":
-			return fmt.Errorf("%w: %w", spi.ErrUniqueViolation, err)
-		}
+	if classified, ok := classifySQLState(err); ok {
+		return classified
+	}
+	// No server response to read: the session was already gone by the time pgx
+	// looked. Same event as 25P03, second face — see isConnectionTorn.
+	if isConnectionTorn(err) {
+		return &idleInTxAbortError{cause: err}
 	}
 	return err
+}
+
+// classifySQLState is the half of classification that depends only on what the
+// SERVER said. It is separated out because it is the only half that is safe
+// where the outcome of an in-flight statement is in doubt — see
+// classifyCommitError.
+//
+// Reports false when no branch matched, so callers can decide for themselves
+// what to make of an error the server never answered.
+func classifySQLState(err error) (error, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return err, false
+	}
+	switch {
+	case pgErr.Code == pgerrcode.SerializationFailure || pgErr.Code == pgerrcode.DeadlockDetected:
+		return fmt.Errorf("%w: %w", spi.ErrConflict, err), true
+	case pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "unique_claims_uq":
+		return fmt.Errorf("%w: %w", spi.ErrUniqueViolation, err), true
+	case pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout:
+		// The server said which ceiling fired, so the log can name it — the
+		// torn-socket shape cannot.
+		slog.Warn("transaction reclaimed after exceeding the configured ceiling",
+			"pkg", "postgres", "setting", "idle_in_transaction_session_timeout", "err", err)
+		return &idleInTxAbortError{cause: err}, true
+	case pgErr.Code == pgerrcode.QueryCanceled:
+		// NOT retryable, and deliberately not marked so. The 500 this becomes
+		// carries a ticket; this log line is the whole user-visible benefit,
+		// turning an unexplained failure into a named cause.
+		slog.Warn("statement cancelled after exceeding the configured ceiling",
+			"pkg", "postgres", "setting", "statement_timeout", "err", err)
+		return err, true
+	}
+	return err, false
+}
+
+// classifyTxError is classifyError for an error raised against a specific
+// transaction. When the session was reclaimed, that transaction no longer exists
+// server-side and Commit/Rollback will never run to tidy up after it — so the
+// pgx handle and the per-transaction bookkeeping are reclaimed here instead.
+//
+// It also records a cancelled statement on the txState. PostgreSQL answers every
+// later statement in an aborted transaction — Commit's own probe included — with
+// 25P02, which says only "something earlier failed"; without this the commit
+// would report the ceiling as a retryable conflict.
+func (tm *TransactionManager) classifyTxError(txID string, err error) error {
+	classified := classifyError(err)
+	if isIdleInTxAbort(classified) {
+		tm.discardTx(txID)
+		return classified
+	}
+	if isStatementTimeout(classified) {
+		if state, ok := tm.lookupTxState(txID); ok {
+			state.RecordAbort(classified)
+		}
+	}
+	return classified
+}
+
+// classifyCommitError classifies a failure of the COMMIT itself, where a torn
+// socket means something different from what it means anywhere else.
+//
+// If the backend received the COMMIT and the connection died before its response
+// arrived, the transaction COMMITTED. The outcome is in doubt, and a caller told
+// to retry would apply the work twice — entity ids are minted per attempt, so
+// the retry creates a duplicate rather than colliding. Only the server saying
+// 25P03 proves the transaction was reclaimed and nothing was applied.
+//
+// So this classifies on the server's response alone: every shape the server did
+// not answer keeps the non-retryable 500 it has always had.
+func (tm *TransactionManager) classifyCommitError(txID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	classified, _ := classifySQLState(err)
+	var pgErr *pgconn.PgError
+	if errors.As(classified, &pgErr) && pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout {
+		tm.discardTx(txID)
+	}
+	return classified
+}
+
+// discardTx releases a transaction whose session the server has already
+// terminated.
+//
+// The rollback cannot reach the server and is expected to fail; it is issued
+// because that is what hands the pooled connection back — pgxpool releases it
+// inside Rollback regardless of outcome. Dropping the registry entry without it
+// would leave pgxpool believing the connection is still checked out, so the pool
+// would shrink by one on every reclaimed transaction.
+//
+// It runs on a background context: the caller's may be the very one that just
+// expired, and a rollback on an expired context destroys the pooled connection
+// instead of returning it.
+func (tm *TransactionManager) discardTx(txID string) {
+	if pgxTx, ok := tm.registry.Lookup(txID); ok {
+		_ = pgxTx.Rollback(context.Background())
+	}
+	tm.cleanupTx(txID)
 }

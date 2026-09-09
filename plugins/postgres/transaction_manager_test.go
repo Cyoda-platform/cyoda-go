@@ -13,9 +13,35 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool) {
+// txManagerOptions configures the fixture below. The zero value is the fixture
+// default: a five-connection pool and the plugin's own default acquire timeout.
+type txManagerOptions struct {
+	maxConns       int32
+	acquireTimeout time.Duration
+	acquireSet     bool
+}
+
+type txManagerOption func(*txManagerOptions)
+
+// withMaxConns sizes the fixture pool. A one-connection pool is how the
+// acquire tests make "no connection available" reachable without racing.
+func withMaxConns(n int32) txManagerOption {
+	return func(o *txManagerOptions) { o.maxConns = n }
+}
+
+// withAcquireTimeout overrides the manager's connection-acquire deadline, so a
+// test can observe saturation in milliseconds rather than the shipped default.
+func withAcquireTimeout(d time.Duration) txManagerOption {
+	return func(o *txManagerOptions) { o.acquireTimeout, o.acquireSet = d, true }
+}
+
+func newTestTxManager(t *testing.T, opts ...txManagerOption) (*postgres.TransactionManager, *pgxpool.Pool) {
 	t.Helper()
-	pool := newTestPool(t)
+	o := txManagerOptions{maxConns: 5}
+	for _, apply := range opts {
+		apply(&o)
+	}
+	pool := newTestPoolSized(t, o.maxConns)
 	if err := postgres.DropSchemaForTest(pool); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
@@ -25,7 +51,11 @@ func newTestTxManager(t *testing.T) (*postgres.TransactionManager, *pgxpool.Pool
 	t.Cleanup(func() { _ = postgres.DropSchemaForTest(pool) })
 
 	uuids := newTestUUIDGenerator()
-	tm := postgres.NewTransactionManager(pool, uuids)
+	var tmOpts []postgres.TransactionManagerOption
+	if o.acquireSet {
+		tmOpts = append(tmOpts, postgres.WithAcquireTimeout(o.acquireTimeout))
+	}
+	tm := postgres.NewTransactionManager(pool, uuids, tmOpts...)
 	return tm, pool
 }
 
@@ -33,10 +63,7 @@ func TestTxManager_BeginAndCommit(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, txCtx := beginGuarded(t, tm, ctx)
 	if txID == "" {
 		t.Fatal("expected non-empty txID")
 	}
@@ -65,10 +92,7 @@ func TestTxManager_BeginAndRollback(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
 
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, _ := beginGuarded(t, tm, ctx)
 
 	if err := tm.Rollback(ctx, txID); err != nil {
 		t.Fatalf("Rollback: %v", err)
@@ -79,10 +103,7 @@ func TestTxManager_JoinExisting(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
 
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, _ := beginGuarded(t, tm, ctx)
 
 	// Join from a fresh context (simulating another goroutine / handler)
 	joinCtx := ctxWithTenant("tx-tenant")
@@ -119,10 +140,7 @@ func TestTxManager_GetSubmitTime(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
 
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, _ := beginGuarded(t, tm, ctx)
 
 	if err := tm.Commit(ctx, txID); err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -146,13 +164,9 @@ func TestTxManager_GetSubmitTimeBeforeCommit(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
 
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(ctx, txID) //nolint:errcheck
+	txID, _ := beginGuarded(t, tm, ctx)
 
-	_, err = tm.GetSubmitTime(ctx, txID)
+	_, err := tm.GetSubmitTime(ctx, txID)
 	if err == nil {
 		t.Fatal("expected error when getting submit time before commit")
 	}
@@ -162,16 +176,13 @@ func TestTxManager_DoubleCommit(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
 
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, _ := beginGuarded(t, tm, ctx)
 
 	if err := tm.Commit(ctx, txID); err != nil {
 		t.Fatalf("first Commit: %v", err)
 	}
 
-	err = tm.Commit(ctx, txID)
+	err := tm.Commit(ctx, txID)
 	if err == nil {
 		t.Fatal("expected error on second commit")
 	}
@@ -181,10 +192,7 @@ func TestTxManager_WriteVisibleInTx(t *testing.T) {
 	tm, pool := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
 
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, _ := beginGuarded(t, tm, ctx)
 
 	// Get the underlying pgx.Tx via the registry (use pool to insert via the tx)
 	// We'll use the kv_store table since it exists from migrations.
@@ -196,7 +204,7 @@ func TestTxManager_WriteVisibleInTx(t *testing.T) {
 	}
 
 	// Insert a row within the transaction
-	_, err = pgxTx.Exec(ctx, "INSERT INTO kv_store (tenant_id, namespace, key, value) VALUES ($1, $2, $3, $4)",
+	_, err := pgxTx.Exec(ctx, "INSERT INTO kv_store (tenant_id, namespace, key, value) VALUES ($1, $2, $3, $4)",
 		"tx-tenant", "test-ns", "test-key", []byte("test-value"))
 	if err != nil {
 		t.Fatalf("insert within tx: %v", err)
@@ -260,15 +268,9 @@ func TestTxManager_SerializationConflict(t *testing.T) {
 	})
 
 	// Begin tx1 and tx2
-	txID1, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin tx1: %v", err)
-	}
+	txID1, _ := beginGuarded(t, tm, ctx)
 
-	txID2, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin tx2: %v", err)
-	}
+	txID2, _ := beginGuarded(t, tm, ctx)
 
 	pgxTx1, _ := tm.LookupTx(txID1)
 	pgxTx2, _ := tm.LookupTx(txID2)
@@ -352,10 +354,7 @@ func TestCommitProbe_NonPGError_NotConflict(t *testing.T) {
 func TestTxManager_BeginAllocatesTxState(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, _ := beginGuarded(t, tm, ctx)
 	if !postgres.HasTxState(tm, txID) {
 		t.Errorf("expected txState registered for %s", txID)
 	}
@@ -370,10 +369,7 @@ func TestTxManager_BeginAllocatesTxState(t *testing.T) {
 func TestTxManager_RollbackCleansTxState(t *testing.T) {
 	tm, _ := newTestTxManager(t)
 	ctx := ctxWithTenant("tx-tenant")
-	txID, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
+	txID, _ := beginGuarded(t, tm, ctx)
 	if err := tm.Rollback(ctx, txID); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
@@ -387,10 +383,7 @@ func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
 	ctx := ctxWithTenant("t1")
 
 	// Tx1: insert a row.
-	txID1, txCtx1, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin 1: %v", err)
-	}
+	txID1, txCtx1 := beginGuarded(t, tm, ctx)
 	tx1, _ := tm.LookupTx(txID1)
 	if _, err := tx1.Exec(txCtx1,
 		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
@@ -411,10 +404,7 @@ func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
 	}
 
 	// Tx2: takes snapshot.
-	txID2, txCtx2, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin 2: %v", err)
-	}
+	txID2, txCtx2 := beginGuarded(t, tm, ctx)
 	tx2, _ := tm.LookupTx(txID2)
 	var v2 int64
 	if err := tx2.QueryRow(txCtx2,
@@ -426,10 +416,7 @@ func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
 	}
 
 	// Tx3 (outside tx2) commits a version bump.
-	txID3, txCtx3, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin 3: %v", err)
-	}
+	txID3, txCtx3 := beginGuarded(t, tm, ctx)
 	tx3, _ := tm.LookupTx(txID3)
 	if _, err := tx3.Exec(txCtx3,
 		`UPDATE entities SET version=2 WHERE tenant_id='t1' AND entity_id='e1'`); err != nil {
@@ -447,7 +434,6 @@ func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
 	if v2 != 1 {
 		t.Errorf("snapshot preserved after concurrent commit: want 1, got %d", v2)
 	}
-	_ = tm.Rollback(ctx, txID2)
 }
 
 func TestTxManager_Commit_ReadSetConflict(t *testing.T) {
@@ -461,18 +447,12 @@ func TestTxManager_Commit_ReadSetConflict(t *testing.T) {
 	`)
 
 	// Tx A: begin, record a read at version 5.
-	txA, _, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin A: %v", err)
-	}
+	txA, _ := beginGuarded(t, tm, ctx)
 	stateA, _ := postgres.LookupTxStateForTest(tm, txA)
 	stateA.RecordRead("e1", 5)
 
 	// Tx B: bumps e1 to version 6 and commits.
-	txB, txCtxB, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin B: %v", err)
-	}
+	txB, txCtxB := beginGuarded(t, tm, ctx)
 	txBpgx, _ := tm.LookupTx(txB)
 	if _, err := txBpgx.Exec(txCtxB,
 		`UPDATE entities SET version=6 WHERE tenant_id='t1' AND entity_id='e1'`); err != nil {
@@ -483,7 +463,7 @@ func TestTxManager_Commit_ReadSetConflict(t *testing.T) {
 	}
 
 	// Tx A: commit must fail with ErrConflict.
-	err = tm.Commit(ctx, txA)
+	err := tm.Commit(ctx, txA)
 	if err == nil {
 		t.Fatal("want ErrConflict on A.Commit, got nil")
 	}
@@ -513,11 +493,7 @@ func TestTxManager_Savepoint_RollsBackTxStateEntries(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM entities WHERE tenant_id='sp-tenant'`)
 	})
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	pgxTx, _ := tm.LookupTx(txID)
 	state, ok := postgres.LookupTxStateForTest(tm, txID)

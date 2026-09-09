@@ -1652,7 +1652,7 @@ type AggregationExpr struct {
 	// As Optional result alias.
 	As *string `json:"as,omitempty"`
 
-	// Field JSONPath of the field to aggregate (e.g. `$.amount`).
+	// Field Scalar JSONPath of the field to aggregate (e.g. `$.amount`). Same grammar as a `groupBy` JSONPath, including the required `$.` leader; a path outside it is rejected with 400 `INVALID_AGGREGATION_FIELD`. The `state` token is groupBy-only — there is no aggregate over lifecycle state — so it is rejected here too.
 	Field string `json:"field"`
 
 	// Op Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
@@ -1661,6 +1661,7 @@ type AggregationExpr struct {
 
 // ArrayConditionDto defines model for ArrayConditionDto.
 type ArrayConditionDto struct {
+	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
 	JsonPath     *string                        `json:"jsonPath,omitempty"`
 	OperatorType *ArrayConditionDtoOperatorType `json:"operatorType,omitempty"`
 	Type         string                         `json:"type"`
@@ -2310,7 +2311,7 @@ type GroupedStatsBucket struct {
 	GroupKey []GroupKeyEntry `json:"groupKey"`
 }
 
-// GroupedStatsRequest Request body for the grouped-stats query endpoint. `groupBy` dimensions may be either the literal string `state` (the workflow state) or a JSONPath expression starting with `$.` over the entity payload.
+// GroupedStatsRequest Request body for the grouped-stats query endpoint. `groupBy` dimensions may be either the reserved token `state` (the workflow state) or a JSONPath expression over the entity payload, which must start with `$.`.
 type GroupedStatsRequest struct {
 	// Aggregations Optional per-group aggregations.
 	Aggregations *[]AggregationExpr `json:"aggregations,omitempty"`
@@ -2318,13 +2319,13 @@ type GroupedStatsRequest struct {
 	// Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
 	Condition *GroupedStatsRequest_Condition `json:"condition,omitempty"`
 
-	// GroupBy Ordered list of group-by dimensions. Each entry is either the literal `state` or a JSONPath expression. At least one entry is required.
+	// GroupBy Ordered list of group-by dimensions. Each entry is either the reserved token `state` (a token, not a path — no leader) or a scalar JSONPath. At least one entry is required. A JSONPath is a REQUIRED `$.` leader followed by dot-separated segments of ASCII letters, digits, `_` and `-`. Anything else — a missing leader (`country`), bracket-quoted property access (`$['country']`), array projections, recursive descent, whitespace, quotes, non-ASCII — is rejected with 400 `INVALID_GROUP_BY_PATH`. Paths are validated, never rewritten: the response `groupKey` path echoes exactly what the request sent.
 	GroupBy []string `json:"groupBy"`
 
-	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); requests exceeding the cap are rejected with 400 `MALFORMED_REQUEST`.
+	// Limit Optional cap on the number of buckets returned. Must be positive and less than or equal to the server-configured `CYODA_STATS_GROUP_MAX` (default 10000); a value outside that range is rejected with 400 `INVALID_LIMIT` rather than clamped.
 	Limit *int32 `json:"limit,omitempty"`
 
-	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Defaults to the current consistency time.
+	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Absent means the current committed state.
 	PointInTime *time.Time `json:"pointInTime,omitempty"`
 }
 
@@ -2678,6 +2679,7 @@ type SetUniqueKeysRequest struct {
 
 // SimpleConditionDto defines model for SimpleConditionDto.
 type SimpleConditionDto struct {
+	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
 	JsonPath     *string                         `json:"jsonPath,omitempty"`
 	OperatorType *SimpleConditionDtoOperatorType `json:"operatorType,omitempty"`
 	Type         string                          `json:"type"`
@@ -2978,7 +2980,7 @@ type TransitionDefinitionDto struct {
 	// `TransitionScheduleDto`. Mutually exclusive with `manual=true`.
 	// Explicit fires of a scheduled transition by name return HTTP 400
 	// `TRANSITION_NOT_FOUND` — it is not manually fireable. See
-	// `cyoda help workflows` (authoring) and `cyoda help config.scheduler`
+	// `cyoda help workflows` (authoring) and `cyoda help config scheduler`
 	// (runtime tuning).
 	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
 }
@@ -3255,6 +3257,9 @@ type InternalServerError = ProblemDetail
 // NotImplemented defines model for NotImplemented.
 type NotImplemented = ProblemDetail
 
+// ServiceUnavailable defines model for ServiceUnavailable.
+type ServiceUnavailable = ProblemDetail
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ProblemDetail
 
@@ -3302,13 +3307,13 @@ type CreateTechnicalUserParams struct {
 
 // GetEntityStatisticsParams defines parameters for GetEntityStatistics.
 type GetEntityStatisticsParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
 // GetEntityStatisticsByStateParams defines parameters for GetEntityStatisticsByState.
 type GetEntityStatisticsByStateParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
@@ -3317,7 +3322,7 @@ type GetEntityStatisticsByStateParams struct {
 
 // GetEntityStatisticsByStateForModelParams defines parameters for GetEntityStatisticsByStateForModel.
 type GetEntityStatisticsByStateForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
@@ -3326,13 +3331,13 @@ type GetEntityStatisticsByStateForModelParams struct {
 
 // GetEntityStatisticsForModelParams defines parameters for GetEntityStatisticsForModel.
 type GetEntityStatisticsForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to current consistency time if not provided
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
 // GetOneEntityParams defines parameters for GetOneEntity.
 type GetOneEntityParams struct {
-	// PointInTime The point-in-time for loading the entity, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for loading the entity, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// TransactionId Load the entity as it was at the end of the specified transaction with the given transactionId
@@ -3341,7 +3346,7 @@ type GetOneEntityParams struct {
 
 // GetEntityChangesMetadataParams defines parameters for GetEntityChangesMetadata.
 type GetEntityChangesMetadataParams struct {
-	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
@@ -3350,19 +3355,29 @@ type GetEntityTransitionsParams struct {
 	// PointInTime Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339). Mutually exclusive with transactionId.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime.
+	// TransactionId Evaluate available transitions as of the submit time of this transaction. Mutually exclusive with pointInTime. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID is rejected with 400.
 	TransactionId *openapi_types.UUID `form:"transactionId,omitempty" json:"transactionId,omitempty"`
 }
 
 // DeleteEntitiesParams defines parameters for DeleteEntities.
 type DeleteEntitiesParams struct {
-	// TransactionSize Maximum number of entities to delete in a single transaction. Higher values may improve performance but increase memory usage.
+	// TransactionSize Number of entities to delete per transaction batch. Batches
+	// committed before a failure remain durable and per-id/batch
+	// failures are reported in the response. Not supported on
+	// requests joining an open transaction (400). Absent means a
+	// single transaction.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 
-	// PointInTime The point-in-time for selecting the entities for deletion, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the consistency time of the system if not provided.
+	// PointInTime Select the entities that existed at this instant, in ISO 8601
+	// format (e.g. '2035-01-01T12:00:00Z'), and delete their current
+	// rows. Absent means the current committed state. An entity
+	// selected at the instant but already gone is reported in
+	// idToError.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
-	// Verbose Include the list of deleted entity IDs in the response. When false, only returns statistics.
+	// Verbose Include the list of entity IDs the delete attempted in the
+	// response; an ID whose delete failed also appears in idToError.
+	// When false, only statistics are returned.
 	Verbose *bool `form:"verbose,omitempty" json:"verbose,omitempty"`
 }
 
@@ -3374,7 +3389,7 @@ type GetAllEntitiesParams struct {
 	// PageNumber Page number to retrieve, starting from 0. Must be greater than or equal to 0.
 	PageNumber *int32 `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
 
-	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 }
 
@@ -3397,19 +3412,12 @@ type CreateCollectionParams struct {
 	// chunks committed before any later failure remain durable.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
-
-	// WaitForConsistencyAfter If true, waits for consistency after operation completes.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
-	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
 }
 
 // CreateCollectionParamsFormat defines parameters for CreateCollection.
@@ -3448,19 +3456,12 @@ type UpdateCollectionParams struct {
 	// chunks committed before any later failure remain durable.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
-
-	// WaitForConsistencyAfter If true, waits for consistency after operation completes.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
-	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
 }
 
 // UpdateCollectionParamsFormat defines parameters for UpdateCollection.
@@ -3474,22 +3475,12 @@ type PatchSingleWithLoopbackApplicationMergePatchPlusJSONBody = map[string]inter
 
 // PatchSingleWithLoopbackParams defines parameters for PatchSingleWithLoopback.
 type PatchSingleWithLoopbackParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
-
-	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
-	// May increase response time but guarantees data consistency when
-	// returning, so that subsequent calls will see the updated data.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
-	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
 
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
@@ -3503,22 +3494,12 @@ type UpdateSingleWithLoopbackJSONBody = map[string]interface{}
 
 // UpdateSingleWithLoopbackParams defines parameters for UpdateSingleWithLoopback.
 type UpdateSingleWithLoopbackParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
-
-	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
-	// May increase response time but guarantees data consistency when
-	// returning, so that subsequent calls will see the updated data.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
-	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
 
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
@@ -3535,22 +3516,12 @@ type PatchSingleApplicationMergePatchPlusJSONBody = map[string]interface{}
 
 // PatchSingleParams defines parameters for PatchSingle.
 type PatchSingleParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
-
-	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
-	// May increase response time but guarantees data consistency when
-	// returning, so that subsequent calls will see the updated data.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
-	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
 
 	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
@@ -3564,22 +3535,12 @@ type UpdateSingleJSONBody = map[string]interface{}
 
 // UpdateSingleParams defines parameters for UpdateSingle.
 type UpdateSingleParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds allowed for transaction completion.
-	// Operation will fail if it takes longer than this timeout.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
-
-	// WaitForConsistencyAfter If true, waits for the consistency time to pass before responding.
-	// May increase response time but guarantees data consistency when
-	// returning, so that subsequent calls will see the updated data.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
-	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
 
 	// IfMatch Transaction ID of the entity version the client last read. If the entity has been modified since, returns 412 Precondition Failed.
 	IfMatch *string `json:"If-Match,omitempty"`
@@ -3605,19 +3566,12 @@ type CreateParams struct {
 	// remain durable.
 	TransactionWindow *int32 `form:"transactionWindow,omitempty" json:"transactionWindow,omitempty"`
 
-	// TransactionTimeoutMillis Maximum time in milliseconds for transaction completion.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
-
-	// WaitForConsistencyAfter If true, waits for consistency after the operation completes.
-	// Accepted for Cyoda Cloud API parity. Behavior is
-	// storage-engine-plugin dependent — not every plugin honors this
-	// field; consult the runtime plugin's documentation for the
-	// supported behavior.
-	WaitForConsistencyAfter *bool `form:"waitForConsistencyAfter,omitempty" json:"waitForConsistencyAfter,omitempty"`
 }
 
 // CreateParamsFormat defines parameters for Create.
@@ -3634,13 +3588,21 @@ type DeleteMessagesJSONBody = []openapi_types.UUID
 
 // DeleteMessagesParams defines parameters for DeleteMessages.
 type DeleteMessagesParams struct {
-	// TransactionSize Number of messages to delete per transaction batch
+	// TransactionSize Number of messages to delete per transaction batch. Batches
+	// committed before a failure remain durable and per-batch
+	// failures are reported in the response. Not supported on
+	// requests joining an open transaction (400). Absent means a
+	// single call.
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 }
 
 // NewMessageParams defines parameters for NewMessage.
 type NewMessageParams struct {
-	// TransactionTimeoutMillis Maximum time in milliseconds to wait for transaction completion
+	// TransactionTimeoutMillis Maximum time in milliseconds the server may spend before the
+	// first commit. When exceeded, the operation is rolled back and
+	// fails with 408 TRANSACTION_TIMEOUT; nothing is committed. Not
+	// supported on requests joining an open transaction (400). Absent
+	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
 	// ContentType MIME type of the message payload
@@ -3672,13 +3634,21 @@ type NewMessageParams struct {
 type ExportMetadataParamsConverter string
 
 // ImportEntityModelJSONBody defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody = map[string]interface{}
+type ImportEntityModelJSONBody struct {
+	union json.RawMessage
+}
 
 // ImportEntityModelParamsDataFormat defines parameters for ImportEntityModel.
 type ImportEntityModelParamsDataFormat string
 
 // ImportEntityModelParamsConverter defines parameters for ImportEntityModel.
 type ImportEntityModelParamsConverter string
+
+// ImportEntityModelJSONBody0 defines parameters for ImportEntityModel.
+type ImportEntityModelJSONBody0 map[string]interface{}
+
+// ImportEntityModelJSONBody1 defines parameters for ImportEntityModel.
+type ImportEntityModelJSONBody1 = []map[string]interface{}
 
 // ValidateEntityModelJSONBody defines parameters for ValidateEntityModel.
 type ValidateEntityModelJSONBody = map[string]interface{}
@@ -3739,7 +3709,7 @@ type SubmitAsyncSearchJobJSONBody struct {
 
 // SubmitAsyncSearchJobParams defines parameters for SubmitAsyncSearchJob.
 type SubmitAsyncSearchJobParams struct {
-	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Defaults to the current consistency time of the system if not provided.
+	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.
@@ -3762,7 +3732,7 @@ type SearchEntitiesJSONBody struct {
 
 // SearchEntitiesParams defines parameters for SearchEntities.
 type SearchEntitiesParams struct {
-	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Defaults to the consistency time of the system if not provided.
+	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Absent means the current committed state.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Limit Caps the matched result set; not a page size. Defaults to 1000 if not provided. Accepts 1-10000; values outside this range, including 0, are rejected with 400. A matched set larger than `limit` fails 400 `SEARCH_RESULT_LIMIT` rather than returning a truncated prefix.
@@ -3773,6 +3743,12 @@ type SearchEntitiesParams struct {
 
 	// TrackingRead When true and the request runs inside an active transaction, the entities this search returns are recorded into the transaction's read-set so commit-time first-committer-wins validates them. Defaults to false (a plain snapshot read that records nothing). Ignored outside a transaction.
 	TrackingRead *bool `form:"trackingRead,omitempty" json:"trackingRead,omitempty"`
+
+	// TimeoutMillis Maximum time in milliseconds to wait for the search to complete.
+	// When exceeded, the request fails with 408 SEARCH_TIMEOUT and no
+	// partial results are returned. Absent means no server-side timeout.
+	// Not supported on requests joining an open transaction (400).
+	TimeoutMillis *int64 `form:"timeoutMillis,omitempty" json:"timeoutMillis,omitempty"`
 }
 
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
@@ -3815,7 +3791,7 @@ type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
 type NewMessageJSONRequestBody = NewMessageRequest
 
 // ImportEntityModelJSONRequestBody defines body for ImportEntityModel for application/json ContentType.
-type ImportEntityModelJSONRequestBody = ImportEntityModelJSONBody
+type ImportEntityModelJSONRequestBody ImportEntityModelJSONBody
 
 // ValidateEntityModelJSONRequestBody defines body for ValidateEntityModel for application/json ContentType.
 type ValidateEntityModelJSONRequestBody = ValidateEntityModelJSONBody
@@ -4194,32 +4170,6 @@ func (t *GroupedStatsRequest_Condition) FromArrayConditionDto(v ArrayConditionDt
 
 // MergeArrayConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided ArrayConditionDto
 func (t *GroupedStatsRequest_Condition) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the GroupedStatsRequest_Condition as a FunctionConditionDto
-func (t GroupedStatsRequest_Condition) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided FunctionConditionDto
-func (t *GroupedStatsRequest_Condition) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided FunctionConditionDto
-func (t *GroupedStatsRequest_Condition) MergeFunctionConditionDto(v FunctionConditionDto) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4696,6 +4646,68 @@ func (t *CreateJSONBody) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsImportEntityModelJSONBody0 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody0
+func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody0() (ImportEntityModelJSONBody0, error) {
+	var body ImportEntityModelJSONBody0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromImportEntityModelJSONBody0 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody0
+func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeImportEntityModelJSONBody0 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody0
+func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsImportEntityModelJSONBody1 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody1
+func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody1() (ImportEntityModelJSONBody1, error) {
+	var body ImportEntityModelJSONBody1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromImportEntityModelJSONBody1 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody1
+func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeImportEntityModelJSONBody1 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody1
+func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ImportEntityModelJSONBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ImportEntityModelJSONBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsArrayConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a ArrayConditionDto
 func (t SubmitAsyncSearchJobJSONBody) AsArrayConditionDto() (ArrayConditionDto, error) {
 	var body ArrayConditionDto
@@ -4712,32 +4724,6 @@ func (t *SubmitAsyncSearchJobJSONBody) FromArrayConditionDto(v ArrayConditionDto
 
 // MergeArrayConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided ArrayConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a FunctionConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided FunctionConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided FunctionConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeFunctionConditionDto(v FunctionConditionDto) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4852,32 +4838,6 @@ func (t *SearchEntitiesJSONBody) FromArrayConditionDto(v ArrayConditionDto) erro
 
 // MergeArrayConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided ArrayConditionDto
 func (t *SearchEntitiesJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the SearchEntitiesJSONBody as a FunctionConditionDto
-func (t SearchEntitiesJSONBody) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided FunctionConditionDto
-func (t *SearchEntitiesJSONBody) FromFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided FunctionConditionDto
-func (t *SearchEntitiesJSONBody) MergeFunctionConditionDto(v FunctionConditionDto) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -5056,7 +5016,7 @@ type ServerInterface interface {
 	// Create New
 	// (POST /entity/{format}/{entityName}/{modelVersion})
 	Create(w http.ResponseWriter, r *http.Request, format CreateParamsFormat, entityName string, modelVersion int32, params CreateParams)
-	// Delete multiple edge messages by IDs
+	// Delete multiple edge messages by IDs, optionally in batches
 	// (DELETE /message)
 	DeleteMessages(w http.ResponseWriter, r *http.Request, params DeleteMessagesParams)
 	// Send a new edge message
@@ -6191,19 +6151,6 @@ func (siw *ServerInterfaceWrapper) CreateCollection(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
-		}
-		return
-	}
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateCollection(w, r, format, params)
 	}))
@@ -6265,19 +6212,6 @@ func (siw *ServerInterfaceWrapper) UpdateCollection(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
-		}
-		return
-	}
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateCollection(w, r, format, params)
 	}))
@@ -6331,19 +6265,6 @@ func (siw *ServerInterfaceWrapper) PatchSingleWithLoopback(w http.ResponseWriter
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
 		}
 		return
 	}
@@ -6422,19 +6343,6 @@ func (siw *ServerInterfaceWrapper) UpdateSingleWithLoopback(w http.ResponseWrite
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
 		}
 		return
 	}
@@ -6526,19 +6434,6 @@ func (siw *ServerInterfaceWrapper) PatchSingle(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
-		}
-		return
-	}
-
 	headers := r.Header
 
 	// ------------- Optional header parameter "If-Match" -------------
@@ -6622,19 +6517,6 @@ func (siw *ServerInterfaceWrapper) UpdateSingle(w http.ResponseWriter, r *http.R
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
 		}
 		return
 	}
@@ -6735,19 +6617,6 @@ func (siw *ServerInterfaceWrapper) Create(w http.ResponseWriter, r *http.Request
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "transactionTimeoutMillis"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "transactionTimeoutMillis", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "waitForConsistencyAfter" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForConsistencyAfter", r.URL.Query(), &params.WaitForConsistencyAfter, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForConsistencyAfter"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForConsistencyAfter", Err: err})
 		}
 		return
 	}
@@ -8415,6 +8284,19 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "trackingRead"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "trackingRead", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "timeoutMillis" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "timeoutMillis", r.URL.Query(), &params.TimeoutMillis, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "timeoutMillis"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMillis", Err: err})
 		}
 		return
 	}

@@ -13,7 +13,7 @@
     },
     "entityIds": {
       "type": "array",
-      "description": "IDs of the removed entities.",
+      "description": "IDs the delete attempted, when verbose was requested; an id whose delete failed also appears in errorsById. Empty when verbose is false.",
       "items": {
         "type": "string",
         "format": "uuid"

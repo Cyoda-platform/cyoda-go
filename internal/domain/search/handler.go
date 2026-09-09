@@ -2,6 +2,7 @@ package search
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,13 +32,34 @@ const (
 )
 
 // jobLookupError maps a service-level error to a handler response. Job-not-
-// found is reported as 404 + SEARCH_JOB_NOT_FOUND (issue #93); any other
-// lookup error is treated as an internal failure.
+// found is reported as 404 + SEARCH_JOB_NOT_FOUND; any other lookup error is
+// treated as an internal failure, which routes a storage outage to a retryable
+// 503 and everything else to a 500 with a ticket.
 func jobLookupError(err error) *common.AppError {
 	if errors.Is(err, ErrSearchJobNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
 	}
 	return common.Internal("job lookup failed", err)
+}
+
+// submitAsyncError maps a SubmitAsync error to the response to write.
+// ErrQueueFull — the async-search worker pool's queue is at capacity —
+// maps to the shared retryable 503 (QueueFullError, pool.go), checked
+// ahead of the generic AppError forward below so a wrapped ErrQueueFull
+// (errors.Is sees through fmt.Errorf's %w) isn't mistaken for an
+// unclassified internal failure. Any other AppError (pre-execution
+// validation) forwards unchanged so its 4xx surfaces instead of being
+// shrouded as a 5xx ticket. Everything else is an unclassified internal
+// failure.
+func submitAsyncError(err error) *common.AppError {
+	if errors.Is(err, ErrQueueFull) {
+		return QueueFullError()
+	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return common.Internal("failed to submit async search", err)
 }
 
 // Handler handles search-related HTTP endpoints.
@@ -137,9 +159,40 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		ModelVersion: fmt.Sprintf("%d", modelVersion),
 	}
 
-	results, err := h.searchSvc.Search(r.Context(), modelRef, cond, opts)
+	// timeoutMillis (spec D5): validate, reject on a joined (tx-token'd)
+	// request — same reasoning as resolveRequestTimeout in
+	// internal/domain/entity/handler.go: a routed compute-node callback
+	// must not be able to unilaterally impose its own deadline on a
+	// transaction it doesn't own — then attach the feature-owned deadline.
+	// A nil TimeoutMillis is a no-op, so a caller that never sends the
+	// param observes zero behavior change.
+	opCtx := r.Context()
+	if params.TimeoutMillis != nil {
+		if appErr := common.ValidateRequestTimeoutMillis(*params.TimeoutMillis); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		if spi.GetTransaction(opCtx) != nil {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"timeoutMillis is not supported on a request that joins an open transaction"))
+			return
+		}
+		var cancel context.CancelFunc
+		opCtx, cancel = common.WithRequestTimeout(opCtx, *params.TimeoutMillis)
+		defer cancel()
+	}
+
+	results, err := h.searchSvc.Search(opCtx, modelRef, cond, opts)
 	if err != nil {
-		// Pre-execution validation (issue #77) returns a classified
+		// Classify an expired client-requested deadline ahead of the
+		// general error classifier (spec D2/D8): 408 SEARCH_TIMEOUT only
+		// when the marker is ours, the chain shows DeadlineExceeded, and
+		// ctx itself is currently expired — see common.ClassifyRequestTimeout.
+		if appErr := common.ClassifyRequestTimeout(opCtx, err, common.ErrCodeSearchTimeout); appErr != nil {
+			common.WriteError(w, r, appErr)
+			return
+		}
+		// Pre-execution validation returns a classified
 		// *common.AppError directly; forward it so the 4xx surfaces
 		// instead of being shrouded as a 5xx ticket.
 		var appErr *common.AppError
@@ -210,15 +263,7 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 
 	jobID, err := h.searchSvc.SubmitAsync(r.Context(), modelRef, cond, opts)
 	if err != nil {
-		// Pre-execution validation (issue #77) returns a classified
-		// *common.AppError directly; forward it so the 4xx surfaces
-		// instead of being shrouded as a 5xx ticket.
-		var appErr *common.AppError
-		if errors.As(err, &appErr) {
-			common.WriteError(w, r, appErr)
-			return
-		}
-		common.WriteError(w, r, common.Internal("failed to submit async search", err))
+		common.WriteError(w, r, submitAsyncError(err))
 		return
 	}
 
@@ -268,9 +313,9 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 		pageNumber = pn
 	}
 
-	// Cap + overflow check via the shared helper (issue #98, #68 item
-	// 10): rejects negative values, pageSize > MaxPageSize, pageNumber >
-	// MaxPageNumber, and any pageNumber*pageSize that overflows int64.
+	// Cap + overflow check via the shared helper: rejects negative
+	// values, pageSize > MaxPageSize, pageNumber > MaxPageNumber, and
+	// any pageNumber*pageSize that overflows int64.
 	// Apply the cap to the *effective* pageSize (with the 1000 default
 	// substituted for non-positive values) so the bound matches what is
 	// actually used downstream.
@@ -291,11 +336,23 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 
 	page, err := h.searchSvc.GetAsyncResults(r.Context(), jobId.String(), opts)
 	if err != nil {
-		if errors.Is(err, ErrSearchJobNotFound) {
-			common.WriteError(w, r, jobLookupError(err))
+		// Asking for results before the job finished is a client error, and the
+		// status it is in is domain detail the caller is entitled to. Every other
+		// failure that reaches here — the job lookup, the result-ID read, and
+		// acquiring the entity store — is a server-side failure: jobLookupError
+		// keeps a genuine miss at 404 and routes the rest through common.Internal,
+		// which answers a storage outage with a retryable 503 and keeps the
+		// driver's text out of the body. A failed read of an individual result
+		// entity reaches here too: only a genuine ErrNotFound is skipped (the
+		// entity was hard-deleted since the scan recorded it), and any other read
+		// failure fails the whole page rather than answering 200 with a page
+		// silently short by however many entities the store could not serve — see
+		// GetAsyncResults.
+		if errors.Is(err, ErrSearchJobNotComplete) {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
 			return
 		}
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("failed to get results: %v", err)))
+		common.WriteError(w, r, jobLookupError(err))
 		return
 	}
 

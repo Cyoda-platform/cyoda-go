@@ -16,7 +16,7 @@ type config struct {
 	AutoMigrate             bool
 	BusyTimeout             time.Duration
 	CacheSizeKiB            int
-	SearchScanLimit         int
+	ReaderPoolSize          int // default GOMAXPROCS clamped to [4,8]; read from CYODA_SQLITE_READER_POOL_SIZE; min 1
 	SchemaSavepointInterval int // default 64; read from CYODA_SCHEMA_SAVEPOINT_INTERVAL; min 1
 	SchemaExtendMaxRetries  int // default 8; read from CYODA_SCHEMA_EXTEND_MAX_RETRIES; min 1
 }
@@ -28,7 +28,7 @@ func parseConfig(getenv func(string) string) (config, error) {
 		AutoMigrate:             envBoolFn(getenv, "CYODA_SQLITE_AUTO_MIGRATE", true),
 		BusyTimeout:             envDurationFn(getenv, "CYODA_SQLITE_BUSY_TIMEOUT", 5*time.Second),
 		CacheSizeKiB:            envIntFn(getenv, "CYODA_SQLITE_CACHE_SIZE", 64000),
-		SearchScanLimit:         envIntFn(getenv, "CYODA_SQLITE_SEARCH_SCAN_LIMIT", 100_000),
+		ReaderPoolSize:          envIntMin1Fn(getenv, "CYODA_SQLITE_READER_POOL_SIZE", defaultReaderPoolSize()),
 		SchemaSavepointInterval: envIntMin1Fn(getenv, "CYODA_SCHEMA_SAVEPOINT_INTERVAL", 64),
 		SchemaExtendMaxRetries:  envIntMin1Fn(getenv, "CYODA_SCHEMA_EXTEND_MAX_RETRIES", 8),
 	}

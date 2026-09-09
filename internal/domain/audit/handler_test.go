@@ -338,6 +338,48 @@ func TestAuditTimeRangeFilter(t *testing.T) {
 	}
 }
 
+// TestAuditTimeRangeFilter_ToUtcTimeExactBoundaryExcluded pins the endpoint's
+// long-standing exclusive-upper-bound contract: an event stamped EXACTLY at
+// toUtcTime is excluded, not included. This is the boundary the post-merge
+// in-memory From/To filter (handler.go) has to preserve even after the SPI
+// pushdown, because spi.VersionMetadataOptions.Until is documented INCLUSIVE
+// while this endpoint's toUtcTime is EXCLUSIVE — the two disagree at exactly
+// this point, and only the in-memory filter enforces the endpoint's contract.
+func TestAuditTimeRangeFilter_ToUtcTimeExactBoundaryExcluded(t *testing.T) {
+	srv := newTestServer(t)
+	importAndLockModel(t, srv.URL, "AuditBoundary", 1, `{"name":"Alice"}`)
+
+	entityID := createEntityAndGetID(t, srv.URL, "AuditBoundary", 1, `{"name":"Bob"}`)
+
+	// Capture the create event's own timestamp, then query with toUtcTime
+	// set to that exact value round-tripped.
+	events, _ := getAuditEvents(t, srv.URL, entityID, "eventType=EntityChange")
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit event before the boundary query, got %d", len(events))
+	}
+	exact, ok := events[0]["utcTime"].(string)
+	if !ok || exact == "" {
+		t.Fatalf("expected a non-empty utcTime on the create event, got %v", events[0]["utcTime"])
+	}
+
+	boundaryEvents, _ := getAuditEvents(t, srv.URL, entityID, "toUtcTime="+exact, "eventType=EntityChange")
+	if len(boundaryEvents) != 0 {
+		t.Errorf("expected the event stamped exactly at toUtcTime to be EXCLUDED, got %d event(s): %v", len(boundaryEvents), boundaryEvents)
+	}
+
+	// Sanity: a toUtcTime one nanosecond later still includes it, so the
+	// exclusion above is the boundary itself, not a broken filter.
+	ts, err := time.Parse(time.RFC3339Nano, exact)
+	if err != nil {
+		t.Fatalf("parse captured utcTime %q: %v", exact, err)
+	}
+	after := ts.Add(time.Nanosecond).UTC().Format(time.RFC3339Nano)
+	includedEvents, _ := getAuditEvents(t, srv.URL, entityID, "toUtcTime="+after, "eventType=EntityChange")
+	if len(includedEvents) != 1 {
+		t.Fatalf("expected the event to be included one nanosecond past its own timestamp, got %d event(s)", len(includedEvents))
+	}
+}
+
 func TestAuditTransactionIdFilter(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "AuditTx", 1, `{"name":"Alice"}`)
@@ -346,8 +388,8 @@ func TestAuditTransactionIdFilter(t *testing.T) {
 	_ = updateEntity(t, srv.URL, entityID, `{"name":"Carol"}`)
 
 	// Filter by the create transaction ID — returns both EntityChange and
-	// StateMachine events that share the same txID (issue #20: the workflow
-	// engine now uses the entity-write txID for SM audit events).
+	// StateMachine events that share the same txID (the workflow
+	// engine uses the entity-write txID for SM audit events).
 	events, _ := getAuditEvents(t, srv.URL, entityID, "transactionId="+createTxID)
 
 	if len(events) < 1 {
@@ -572,7 +614,7 @@ func newTestServerNoContextPath(t *testing.T) *httptest.Server {
 }
 
 // getSmTransactionID queries audit events for the given entity and returns the
-// transactionId from the first StateMachine event. Since issue #20, this is the
+// transactionId from the first StateMachine event. This is the
 // same as the entity-write transaction ID (the workflow engine uses
 // entity.Meta.TransactionID for SM audit events).
 func getSmTransactionID(t *testing.T, base, entityID string) string {
@@ -616,7 +658,7 @@ func TestGetStateMachineFinishedEvent_Found(t *testing.T) {
 
 	entityID := createEntityAndGetID(t, srv.URL, "SMFinish", 1, `{"name":"Bob","age":25}`)
 
-	// Since issue #20, the SM txID matches the entity-write txID.
+	// The SM txID matches the entity-write txID.
 	smTxID := getSmTransactionID(t, srv.URL, entityID)
 
 	url := fmt.Sprintf("%s/audit/entity/%s/workflow/%s/finished", srv.URL, entityID, smTxID)

@@ -12,7 +12,14 @@ import (
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dbURL := skipIfNoPostgres(t)
+	return newTestPoolSized(t, 5)
+}
+
+// newTestPoolSized is newTestPool with the pool ceiling under the caller's
+// control, so a test can make connection scarcity reachable.
+func newTestPoolSized(t *testing.T, maxConns int32) *pgxpool.Pool {
+	t.Helper()
+	dbURL := testDBURL(t)
 
 	// Use pgxpool.ParseConfig + NewWithConfig so we can set HealthCheckPeriod
 	// to 24h (effectively disabled). The default HealthCheckPeriod triggers a
@@ -23,7 +30,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("failed to parse pool config: %v", err)
 	}
-	poolCfg.MaxConns = 5
+	poolCfg.MaxConns = maxConns
 	poolCfg.MinConns = 0 // 0 avoids keeping idle connections that the health check probes
 	poolCfg.MaxConnIdleTime = 60 * time.Second
 	poolCfg.HealthCheckPeriod = 24 * time.Hour

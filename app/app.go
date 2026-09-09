@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,7 +26,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
-	"github.com/cyoda-platform/cyoda-go/internal/cluster/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/modelcache"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
@@ -67,14 +67,39 @@ type App struct {
 	tokenSigner        *token.Signer
 	selfNodeID         string
 	nodeRegistry       contract.NodeRegistry
-	txLifecycle        *lifecycle.Manager
 	scheduler          *scheduler.Service
-	stopReaper         chan struct{}
 	stopSearchReaper   chan struct{}
-	grpcStopOnce       sync.Once
+	// searchReaperDone is closed by the reaper goroutine when it exits, so
+	// stopSearchReaperLoop can await a clean stop. stopSearchReaperOnce makes
+	// the close idempotent — both Shutdown and Close signal the loop.
+	searchReaperDone     chan struct{}
+	stopSearchReaperOnce sync.Once
+	// searchPool is the bounded worker pool async-search submissions run
+	// on, sized from cfg.SearchAsync. Shutdown drains it (bounded by
+	// searchDrainBudget) before aborting whatever async jobs are still
+	// registered on this node.
+	searchPool   *search.WorkerPool
+	grpcStopOnce sync.Once
+	// healthFlag starts true and is latched false by the first recovered
+	// panic at any of the four sites that run engine or store work: the HTTP
+	// recovery middleware, the gRPC recovery interceptors, the async-search
+	// goroutine and the scheduler's dispatch goroutine. Notification-callback
+	// recoveries (member-registry onChange, OIDC broadcast) deliberately do
+	// not. Nothing resets it: a node that has panicked has state nothing has
+	// verified. Read by RegisterHealthRoutes (GET /health) and by
+	// ReadinessCheck (/readyz).
+	healthFlag *atomic.Bool
 }
 
 func New(cfg Config) *App {
+	// Invariants this function's own wiring depends on (worker-pool sizing,
+	// heartbeat/stale-after cadence). Checked here rather than only in the
+	// binary so an in-process embedder gets them too — see Config.Validate.
+	if err := cfg.Validate(); err != nil {
+		slog.Error("startup failure", "phase", "config-validation", "error", err.Error())
+		os.Exit(1)
+	}
+
 	// Validate and normalise bootstrap config before any auth wiring.
 	validatedCfg, err := validateBootstrapConfig(&cfg)
 	if err != nil {
@@ -92,6 +117,11 @@ func New(cfg Config) *App {
 	}
 
 	a := &App{config: cfg}
+
+	// Created before anything that can latch it: the async-search goroutine
+	// is wired below, well ahead of the HTTP mux and the gRPC server.
+	a.healthFlag = &atomic.Bool{}
+	a.healthFlag.Store(true)
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
@@ -160,13 +190,7 @@ func New(cfg Config) *App {
 
 	// Wire the schema.Apply replay function into the plugin factory so
 	// ExtendSchema can fold deltas on read. Postgres uses this to fold
-	// the extension log; SQLite/Memory use it to apply in-place. The
-	// interface uses the raw function signature (not any plugin-local
-	// named ApplyFunc type) so a single type-assertion satisfies all
-	// plugins uniformly.
-	type applyFuncSetter interface {
-		SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
-	}
+	// the extension log; SQLite/Memory use it to apply in-place.
 	if setter, ok := factory.(applyFuncSetter); ok {
 		setter.SetApplyFunc(makeSchemaApply())
 	}
@@ -253,14 +277,31 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore,
-			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant))
+		authReconcileMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter())
+		if err != nil {
+			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
+		trustedOpts := []auth.KVTrustedKeyStoreOption{
+			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant),
+			auth.WithReconcileInterval(cfg.IAM.AuthCacheReconcileInterval),
+			auth.WithReconcileMetrics(authReconcileMetrics),
+		}
+		if gossipReg != nil {
+			// Typed-nil guard: only append when non-nil (same rationale as
+			// cacheBroadcaster above).
+			trustedOpts = append(trustedOpts, auth.WithTrustedKeyBroadcaster(gossipReg))
+		}
+		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore, trustedOpts...)
 		if err != nil {
 			slog.Error("startup failure",
 				"phase", "kv-trusted-store-bootstrap",
 				"error", err.Error())
 			os.Exit(1)
 		}
+		// Periodic KV-reconcile backstop; systemCtx is process-lifetime, so
+		// the loop runs until exit (same lifecycle as the warmup retry loop).
+		trustedKeyStore.StartReconcileLoop(systemCtx)
 
 		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
 		// enabled. Checked here (after KVTrustedKeyStore bootstrap, before OIDC
@@ -299,6 +340,7 @@ func New(cfg Config) *App {
 			AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
 			ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
 			SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
+			ReconcileInterval:    cfg.IAM.AuthCacheReconcileInterval,
 		})
 
 		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
@@ -313,7 +355,14 @@ func New(cfg Config) *App {
 			cfg.IAM.OIDC.RequireHTTPS,
 			cfg.IAM.OIDC.AllowPrivateNetworks,
 		)
-		pendingWarmJWKS = func() { oidcRegistry.WarmJWKSAsync(systemCtx) }
+		// Phase-2 warm-up is one-shot; the retry loop re-attempts any provider
+		// whose IdP was unreachable at that moment (e.g. cyoda boots ahead of
+		// the IdP), so federated auth recovers without a restart.
+		pendingWarmJWKS = func() {
+			oidcRegistry.WarmJWKS(systemCtx)
+			oidcRegistry.StartWarmupRetryLoop(systemCtx)
+			oidcRegistry.StartReconcileLoop(systemCtx)
+		}
 
 		authSvc, err = auth.NewAuthService(auth.AuthConfig{
 			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
@@ -401,32 +450,48 @@ func New(cfg Config) *App {
 	// to the descriptor cache via SubscribeLocal: every model
 	// invalidation (local mutation OR gossip-received event) drops
 	// the corresponding negative-cache bucket. This works on
-	// single-node and multi-node alike (issue #174 — pre-fix the
-	// cache subscribed to the broadcaster directly, so single-node
-	// deployments where the broadcaster is nil never received any
-	// invalidations). Per-(tenant, ref) bucketed otter caches isolate
-	// cross-tenant eviction (issue #175).
+	// single-node and multi-node alike: subscribing to the descriptor
+	// cache rather than to the broadcaster directly is what makes
+	// single-node deployments, where the broadcaster is nil, receive
+	// invalidations at all. Per-(tenant, ref) bucketed otter caches
+	// isolate cross-tenant eviction.
 	pathValidationCache := search.NewPathValidationCache()
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
+	// Bounded async-search worker pool, sized from config (validated by
+	// cfg.Validate at the top of New).
+	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
 		WithPathValidationCache(pathValidationCache).
-		WithMaxSortKeys(a.config.SearchMaxSortKeys)
+		WithMaxSortKeys(a.config.SearchMaxSortKeys).
+		WithHealthFlag(a.healthFlag).
+		WithAsyncPool(a.searchPool).
+		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
+		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
-	// Search snapshot TTL reaper (uses stopSearchReaper for graceful shutdown)
+	// Search reapers (use stopSearchReaper/searchReaperDone for graceful
+	// shutdown). Two cadences: the snapshot-TTL sweep on SearchReapInterval,
+	// and the stale-job reclaim sweep on the finer SearchJobHeartbeatInterval,
+	// plus one reclaim sweep at startup.
 	a.stopSearchReaper = make(chan struct{})
+	a.searchReaperDone = make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(cfg.SearchReapInterval)
-		defer ticker.Stop()
+		defer close(a.searchReaperDone)
+		// Startup sweep: a restarted node reclaims its own released jobs and
+		// any already-stale jobs the moment it can execute, not after the
+		// first interval.
+		reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
+
+		snapTicker := time.NewTicker(cfg.SearchReapInterval)
+		defer snapTicker.Stop()
+		claimTicker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
+		defer claimTicker.Stop()
 		for {
 			select {
-			case <-ticker.C:
-				reaped, err := searchStore.ReapExpired(context.Background(), cfg.SearchSnapshotTTL)
-				if err != nil {
-					slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
-				} else if reaped > 0 {
-					slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
-				}
+			case <-snapTicker.C:
+				reapExpiredSnapshotsTick(context.Background(), searchStore, cfg.SearchSnapshotTTL, a.healthFlag)
+			case <-claimTicker.C:
+				reclaimStaleTick(context.Background(), a.searchService, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, a.healthFlag)
 			case <-a.stopSearchReaper:
 				return
 			}
@@ -437,17 +502,13 @@ func New(cfg Config) *App {
 	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
 
 	// Cluster components
-	a.txLifecycle = lifecycle.NewManager(cfg.Cluster.OutcomeTTL)
-	// Wire the TM so the TTL reaper can roll back the underlying transaction
-	// when a cluster-level timeout fires; otherwise the plugin's physical
-	// handle is orphaned until the database's own idle timeout catches it.
-	a.txLifecycle.SetTransactionManager(a.transactionManager)
 	if cfg.Cluster.Enabled {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
 		// are already registered, so no messages are dropped.
-		// Use startupCtx so the gossip join honors CYODA_STARTUP_TIMEOUT
-		// (issue #9) instead of the legacy hard-coded 2-minute deadline.
+		// Use startupCtx so the gossip join honors the configured
+		// gossip-registration deadline (CYODA_STARTUP_TIMEOUT) instead of a
+		// hard-coded 2-minute one.
 		if err := gossipReg.Register(startupCtx, cfg.Cluster.NodeID, cfg.Cluster.NodeAddr); err != nil {
 			slog.Error("failed to register with gossip cluster", "pkg", "cluster", "err", err)
 			os.Exit(1)
@@ -455,26 +516,6 @@ func New(cfg Config) *App {
 		a.nodeRegistry = gossipReg
 
 		slog.Info("cluster mode enabled", "pkg", "cluster", "nodeID", cfg.Cluster.NodeID, "gossipAddr", cfg.Cluster.GossipAddr)
-
-		// Start TTL reaper goroutine with shutdown support
-		a.stopReaper = make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(cfg.Cluster.TxReapInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					reaped, err := a.txLifecycle.ReapExpired(context.Background())
-					if err != nil {
-						slog.Error("tx reaper error", "pkg", "cluster", "err", err)
-					} else if reaped > 0 {
-						slog.Info("reaped expired transactions", "pkg", "cluster", "count", reaped)
-					}
-				case <-a.stopReaper:
-					return
-				}
-			}
-		}()
 	} else {
 		a.nodeRegistry = registry.NewLocal("local", fmt.Sprintf("localhost:%d", cfg.HTTPPort))
 	}
@@ -530,12 +571,15 @@ func New(cfg Config) *App {
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
-		a.memberRegistry.SetOnChange(func(tags map[string][]string) {
-			if gossipReg, ok := a.nodeRegistry.(*registry.Gossip); ok {
-				if err := gossipReg.UpdateTags(tags); err != nil {
-					slog.Error("failed to update gossip tags", "pkg", "cluster", "err", err)
-				}
+		a.memberRegistry.SetOnChange(func(tags map[string][]string) error {
+			gossipReg, ok := a.nodeRegistry.(*registry.Gossip)
+			if !ok {
+				return nil
 			}
+			if err := gossipReg.UpdateTags(tags); err != nil {
+				return fmt.Errorf("update gossip tags: %w", err)
+			}
+			return nil
 		})
 	}
 
@@ -591,13 +635,14 @@ func New(cfg Config) *App {
 			Clock:        schedClock,
 			Executor:     clusterExecutor,
 			SelfID:       a.selfNodeID,
+			HealthFlag:   a.healthFlag,
 		},
 	)
 	a.scheduler.Start()
 
 	// Domain handlers
 	a.txGate = txgate.New()
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.searchService)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
 	modelHandler := model.New(a.storeFactory)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler
@@ -634,14 +679,11 @@ func New(cfg Config) *App {
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
-
 	// Infrastructure routes (no auth, receives health flag)
-	internalapi.RegisterHealthRoutes(mux, healthFlag)
+	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
 
 	// Auth service route registration is split into two strict groups so
-	// nothing administrative leaks into the public surface (#34 item 1):
+	// nothing administrative leaks into the public surface:
 	//
 	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
 	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
@@ -673,32 +715,31 @@ func New(cfg Config) *App {
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
-	// the EntityStore as `any` (capability detection via type assertion in
-	// the service layer) and a validated ModelRef for the calling tenant.
+	// the EntityStore and a validated ModelRef for the calling tenant.
 	// The resolver returns ok=false when the model is not registered (after
 	// one bounded cache refresh — closing the multi-node stale-cache race);
 	// the handler maps that to 404 MODEL_NOT_FOUND. Genuine store errors
 	// (non-ErrNotFound from Get or RefreshAndGet) surface as Internal(500)
 	// and are propagated to the 500-with-ticket path.
 	storeFactory := a.storeFactory
-	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (any, spi.ModelRef, map[string]schema.FieldDescriptor, bool, error) {
+	groupedStatsResolver := func(r *http.Request, entityName, modelVersion string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
 		ctx := r.Context()
 		modelStore, err := storeFactory.ModelStore(ctx)
 		if err != nil {
-			return nil, spi.ModelRef{}, nil, false, err
+			return nil, spi.ModelRef{}, nil, nil, false, err
 		}
 		ref := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 		if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
 			if appErr.Status == http.StatusNotFound {
 				// Not registered after one bounded refresh → handler emits 404 MODEL_NOT_FOUND.
-				return nil, ref, nil, false, nil
+				return nil, ref, nil, nil, false, nil
 			}
 			// Genuine store error → propagate to 500-with-ticket path.
-			return nil, ref, nil, false, appErr
+			return nil, ref, nil, nil, false, appErr
 		}
 		entityStore, err := storeFactory.EntityStore(ctx)
 		if err != nil {
-			return nil, ref, nil, false, err
+			return nil, ref, nil, nil, false, err
 		}
 		// Load the model's declared field types so grouped-stats comparison is
 		// type-directed (temporal data fields compare temporally), consistent
@@ -707,18 +748,19 @@ func New(cfg Config) *App {
 		// correct typing, so surface it to the 500-with-ticket path rather than
 		// silently under-match with untyped leaves. The no-schema-registered
 		// case is (nil, nil) — fields stays nil and data leaves degrade to
-		// non-type-directed comparison, same as the search fallback.
+		// non-type-directed comparison.
 		fields, err := search.LoadFieldsMap(ctx, modelStore, ref)
 		if err != nil {
-			return nil, ref, nil, false, err
+			return nil, ref, nil, nil, false, err
 		}
-		return entityStore, ref, fields, true, nil
+		return entityStore, ref, fields, modelStore, true, nil
 	}
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
 	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", authMW(txJoinMW(groupedStatsHandler)))
 
-	// Generated API routes (with recovery + auth) — uses chi to avoid ServeMux
-	// wildcard-conflict panics in overlapping /model/… paths.
+	// Generated API routes (with auth) — uses chi to avoid ServeMux
+	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
+	// applied once, below, to the fully assembled handler.
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
 		BaseRouter:       internalapi.NewChiMux(),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
@@ -726,9 +768,7 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		apiHandler = otelhttp.NewMiddleware("cyoda")(apiHandler)
 	}
-	mux.Handle("/", middleware.Recovery(healthFlag)(
-		middleware.Auth(a.authService)(txJoinMW(apiHandler)),
-	))
+	mux.Handle("/", middleware.Auth(a.authService)(txJoinMW(apiHandler)))
 
 	// Context path — wrap all routes under configurable prefix
 	contextPath := strings.TrimRight(cfg.ContextPath, "/")
@@ -762,38 +802,113 @@ func New(cfg Config) *App {
 		a.handler = mux
 	}
 
-	// Cluster routing middleware — outermost layer, before auth and recovery.
-	// The proxy forwards the original request including auth headers to the
-	// target node, where auth is applied locally.
+	// Cluster routing sits directly over the mux: a request carrying a
+	// transaction token for another node is forwarded before auth runs here
+	// (auth is applied on the owning node).
 	if cfg.Cluster.Enabled {
 		a.handler = proxy.HTTPRouting(a.tokenSigner, a.nodeRegistry, cfg.Cluster.NodeID, cfg.Cluster.ProxyTimeout, cfg.Cluster.DispatchAllowLoopback)(a.handler)
 	}
 
-	// CORS middleware — outermost wrapper. Sits outside cluster-routing
-	// so preflights short-circuit at the receiving node and never get
-	// proxied. Sits outside outerMux so /help, discovery, and the API
-	// surface are all covered by a single CORS policy. See spec
+	// CORS sits outside cluster routing so preflights short-circuit at the
+	// receiving node and never get proxied, and outside outerMux so /help,
+	// discovery, and the API surface share one policy. See
 	// docs/superpowers/specs/2026-05-01-issue-196-cors-design.md.
 	corsPolicy := middleware.NewCORSPolicy(cfg.CORS.Enabled, cfg.CORS.Wildcard, cfg.CORS.AllowedOrigins)
 	a.handler = middleware.CORS(corsPolicy)(a.handler)
 
+	// Recovery is the outermost layer, so nothing — CORS, cluster routing,
+	// or any route added later — sits outside panic containment. CORS writes
+	// its headers before calling the next handler, so a recovered 500 keeps
+	// them. Recovery re-raises http.ErrAbortHandler, which is how the reverse
+	// proxy reports a client hang-up, so proxied disconnects stay silent.
+	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
+
 	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback)
+	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
 
 	return a
+}
+
+// latchOnPanic recovers a panic beneath a reaper sweep and latches healthFlag
+// false, exactly as the async-search executor's own recovery does: a reaper
+// goroutine has no HTTP handler above it, so an unrecovered panic takes the
+// process down, and a node that has panicked has state nothing has verified.
+// Recovering also keeps the ticker alive, so one bad tick does not silently
+// end reaping for the rest of the process's life. Deferred at the top of each
+// tick; site names the sweep in the log. No plugin currently returns the
+// shapes that would panic (a nil element from ClaimStale, say), so this is
+// hardening rather than a fix for a live defect.
+func latchOnPanic(healthFlag *atomic.Bool, site string) {
+	if rec := recover(); rec != nil {
+		slog.Error("panic recovered in "+site, "pkg", "search",
+			"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
+		if healthFlag != nil {
+			healthFlag.Store(false)
+		}
+	}
+}
+
+// reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
+// on SearchReapInterval. Panic-latches health like the other engine-work sites.
+func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthFlag *atomic.Bool) {
+	defer latchOnPanic(healthFlag, "search snapshot reaper")
+	reaped, err := store.ReapExpired(ctx, snapshotTTL)
+	if err != nil {
+		slog.Error("search snapshot reaper error", "pkg", "search", "err", err)
+	} else if reaped > 0 {
+		slog.Info("reaped expired search snapshots", "pkg", "search", "count", reaped)
+	}
+}
+
+// reclaimStaleTick claims stale/released RUNNING jobs and re-executes them on
+// this node (or fails those past the attempt cap). Runs on the heartbeat
+// interval — a finer cadence than the snapshot reap — plus once at startup.
+func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthFlag *atomic.Bool) {
+	defer latchOnPanic(healthFlag, "search stale-job reaper")
+	reenqueued, failed, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
+	if err != nil {
+		slog.Error("stale search job reclaim error", "pkg", "search", "err", err)
+		return
+	}
+	if reenqueued > 0 {
+		slog.Info("re-enqueued stale async search jobs", "pkg", "search", "count", reenqueued)
+	}
+	if failed > 0 {
+		slog.Warn("failed async search jobs past the attempt cap", "pkg", "search", "count", failed)
+	}
 }
 
 func (a *App) Handler() http.Handler { return a.handler }
 
 // ReadinessCheck returns nil when the instance is ready to serve external
 // traffic. Called synchronously by the /readyz admin endpoint on every
-// probe — keep it cheap. By the time New() returns, the plugin factory
-// has successfully opened connections and applied migrations (per the
-// existing startup sequence), so a non-nil storeFactory is a sufficient
-// readiness signal until the SPI gains a dedicated Ping method.
+// probe — keep it cheap; both conditions below are a pointer test and an
+// atomic load, and neither performs I/O.
+//
+// Two conditions fail it independently, and the returned reasons differ so
+// the admin handler's server-side log tells an operator which fired:
+//
+//   - Storage is not initialized. A defensive guard rather than a live
+//     window: cmd/cyoda builds the admin listener from an App that New()
+//     has already returned, so a probe never observes it. It costs nothing
+//     and keeps the check honest for any other caller.
+//   - A panic was recovered on some door. The node's state is then
+//     unverified, so it must stop receiving traffic — fail closed. Nothing
+//     resets the flag.
+//
+// What failing readiness achieves is bounded: Kubernetes drops the pod from
+// the client-facing Service, so new client connections stop. Peers resolve
+// each other through the gossip registry rather than the Service, so
+// forwarded work keeps arriving, and /livez is deliberately unaffected so a
+// deterministic panic does not become a restart loop. Replacing a drained
+// node is an operator action.
 func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")
+	}
+	// nil only for an App not built by New(); New() always sets the flag.
+	if a.healthFlag != nil && !a.healthFlag.Load() {
+		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
 	}
 	return nil
 }
@@ -819,12 +934,30 @@ func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServe
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
 func (a *App) NodeRegistry() contract.NodeRegistry          { return a.nodeRegistry }
-func (a *App) TxLifecycle() *lifecycle.Manager              { return a.txLifecycle }
 
 // gRPCGracefulStopBudget is the upper bound on graceful drain at shutdown.
 // Matched to the HTTP server's drain deadline in cmd/cyoda/main.go so a
 // caller can predict total stop time as ~max(http, grpc) drain budgets.
 const gRPCGracefulStopBudget = 10 * time.Second
+
+// searchDrainBudget bounds how long Shutdown waits for in-flight async
+// search jobs to finish naturally before releasing whatever is still
+// registered for reclaim. Jobs run their own context (not the pool's — see
+// search.WithAsyncPool's doc comment), so pool.Drain's own ctx cancellation
+// does not itself abort them; this budget is what actually bounds the wait.
+const searchDrainBudget = 5 * time.Second
+
+// stopSearchReaperLoop signals the reaper goroutine and waits for it to exit.
+// Idempotent: safe to call from both Shutdown and Close (sync.Once guards the
+// close; the done-channel wait is a no-op once the goroutine has already
+// returned).
+func (a *App) stopSearchReaperLoop() {
+	if a.stopSearchReaper == nil {
+		return
+	}
+	a.stopSearchReaperOnce.Do(func() { close(a.stopSearchReaper) })
+	<-a.searchReaperDone
+}
 
 // Close performs graceful shutdown of all backend resources.
 //
@@ -836,9 +969,12 @@ const gRPCGracefulStopBudget = 10 * time.Second
 // gRPC is stopped via GracefulStop bounded by gRPCGracefulStopBudget; if
 // the budget elapses without graceful completion (a stuck stream, a
 // non-cooperative client) we fall back to a hard Stop and emit a slog.Warn
-// so operators can see the budget was hit (#68 item 19).
+// so operators can see the budget was hit.
 func (a *App) Close() error {
 	slog.Info("shutting down")
+	// Stop the reaper first so a node whose store is closing does not keep
+	// sweeping on the claim ticker against a store being torn down.
+	a.stopSearchReaperLoop()
 	var err error
 	if a.storeFactory != nil {
 		err = a.storeFactory.Close()
@@ -881,11 +1017,18 @@ func (a *App) StopGRPC() {
 // followed by Close() (the runServers sequence) close the factory
 // exactly once.
 func (a *App) Shutdown() {
-	if a.stopSearchReaper != nil {
-		close(a.stopSearchReaper)
+	a.stopSearchReaperLoop()
+	if a.searchPool != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
+		a.searchPool.Drain(drainCtx)
+		cancel()
 	}
-	if a.stopReaper != nil {
-		close(a.stopReaper)
+	if a.searchService != nil {
+		// Jobs still registered after the drain budget are released for
+		// reclaim (a peer, or this node on restart, re-runs them), not failed.
+		if n := a.searchService.ReleaseRegisteredJobs(context.Background()); n > 0 {
+			slog.Info("released in-flight async search jobs for reclaim at shutdown", "pkg", "search", "count", n)
+		}
 	}
 	if a.scheduler != nil {
 		a.scheduler.Stop()
@@ -965,6 +1108,17 @@ func validateClusterConfig(c cluster.Config) {
 		slog.Error("CYODA_NODE_ADDR must include scheme (http:// or https://)", "pkg", "cluster", "addr", c.NodeAddr)
 		os.Exit(1)
 	}
+}
+
+// applyFuncSetter is the wiring surface Run soft-asserts on each plugin
+// factory. It uses the raw function signature (not any plugin-local named
+// ApplyFunc type) so a single type-assertion satisfies all plugins
+// uniformly. The assertion is soft: a factory that stops implementing
+// this exact signature would be skipped silently and every fold-on-read
+// of pending deltas would fail — applyfunc_wiring_test.go pins the
+// in-tree factories to this same declaration at compile time.
+type applyFuncSetter interface {
+	SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) ([]byte, error))
 }
 
 // makeSchemaApply returns the schema-apply replay function the plugin

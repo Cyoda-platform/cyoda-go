@@ -13,18 +13,29 @@ import (
 // postFilter is the residual filter that must be evaluated in Go.
 //
 // SQL-pushdown soundness contract: the pushed SQL WHERE is a best-effort
-// NARROWING — the kernel (spi.MatchFilter, re-run over the candidates the SQL
-// returns) is authoritative. The invariant is that the pushed SQL returns a
-// SUPERSET of the kernel's matches (it never misses one). A leaf is EXACT when
-// its SQL matches the kernel bit-for-bit (only IsNull/NotNull — see leafExact);
-// every other pushed leaf is at best a SOUND SUPERSET (SQLite storage-class /
-// text comparison can over-select relative to the precise bignum/temporal
-// kernel, so the kernel must re-check). The SQL LIMIT/OFFSET/GROUP-BY fast path
-// (gated on postFilter == nil) is allowed ONLY when the whole plan is exact.
+// NARROWING — the kernel (spi.Prepare/PreparedFilter.Match, re-run over the
+// candidates the SQL returns) is authoritative. The invariant is that the
+// pushed SQL returns a SUPERSET of the kernel's matches (it never misses
+// one). A leaf is EXACT when its SQL matches the kernel bit-for-bit (only
+// IsNull/NotNull — see leafExact); every other pushed leaf is at best a
+// SOUND SUPERSET (SQLite storage-class / text comparison can over-select
+// relative to the precise bignum/temporal kernel, so the kernel must
+// re-check). The SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter ==
+// nil) is allowed ONLY when the whole plan is exact.
 type sqlPlan struct {
 	where      string
 	args       []any
 	postFilter *spi.Filter
+	// preparedPostFilter is postFilter compiled for per-row evaluation. It is
+	// non-nil EXACTLY when postFilter is non-nil.
+	//
+	// postFilter itself stays a *spi.Filter and stays the field the planner's
+	// own predicates read, because its NIL-NESS is what gates LIMIT pushdown and
+	// native GROUP BY. A zero spi.PreparedFilter means match-all, not absent, so
+	// replacing the field outright — or pairing a value with a bool — would put
+	// that invariant back in play at every consumer. Row loops read this field;
+	// planner decisions read postFilter.
+	preparedPostFilter *spi.PreparedFilter
 }
 
 // leafExact reports whether a pushed leaf's SQL matches the kernel bit-for-bit.
@@ -43,6 +54,13 @@ func leafExact(op spi.FilterOp) bool {
 func allPushedExact(f spi.Filter) bool {
 	switch f.Op {
 	case spi.FilterAnd, spi.FilterOr:
+		// An empty group is never EXACT: exactness is a claim about leaves and
+		// an empty group has none — its identity semantics (empty AND = true,
+		// empty OR = false) are the kernel's to apply. Unreachable by
+		// construction (dissect never pushes an empty group); fails safe.
+		if len(f.Children) == 0 {
+			return false
+		}
 		for _, c := range f.Children {
 			if !allPushedExact(c) {
 				return false
@@ -52,6 +70,25 @@ func allPushedExact(f spi.Filter) bool {
 	default:
 		return leafExact(f.Op)
 	}
+}
+
+// planFor is the entry point every search path plans through. It adds the
+// match-all guard planQuery cannot make on its own: a zero-value spi.Filter
+// means "match all", but planQuery treats the empty Op as a non-pushable leaf
+// and would install the zero filter as its own residual. That residual matches
+// everything, so results stay correct while LIMIT pushdown and native GROUP BY
+// are silently lost. Mirrors the guard in the postgres plugin.
+//
+// The error return is spi.Prepare's: a leaf the kernel genuinely cannot
+// evaluate (an operand fitting no declared type, a pattern that will not
+// compile, ...) makes the whole filter unplannable, wrapping
+// spi.ErrUnevaluableLeaf. Callers propagate it rather than degrading to a
+// plan that matches nothing.
+func planFor(filter spi.Filter) (sqlPlan, error) {
+	if filter.Op == "" {
+		return sqlPlan{}, nil
+	}
+	return planQuery(filter)
 }
 
 // planQuery translates a spi.Filter tree into a SQL WHERE clause and an
@@ -66,7 +103,31 @@ func allPushedExact(f spi.Filter) bool {
 // leaf satisfies leafExact — the FULL original filter is installed as postFilter
 // so the kernel re-checks every candidate the narrowing SQL returns. This also
 // disables the SQL LIMIT/OFFSET/GROUP-BY fast path (gated on postFilter == nil).
-func planQuery(filter spi.Filter) sqlPlan {
+//
+// Callers go through planFor, not here: planQuery has no match-all guard.
+//
+// The error return propagates spi.Prepare's — see planFor's doc comment.
+// Evaluability is checked UNCONDITIONALLY, on the whole input filter, before
+// dissection ever runs — never as a by-product of preparing the residual.
+// Only IsNull/NotNull are leafExact, so a filter built entirely from those
+// (e.g. a single bogus-path IsNull leaf, or an AND/OR of two IsNull/NotNull
+// leaves where one addresses a path spi.Prepare cannot resolve) plans fully
+// pushable and EXACT: postFilter stays nil and no residual is ever prepared.
+// Gating the spi.Prepare call on "postFilter != nil" would let that shape
+// skip the check entirely and push SQL that means something else — IS NULL
+// on a JSON key that never exists is true for EVERY row, so an unevaluable
+// filter would silently select everything (fail-open), while the memory
+// backend correctly rejects the same filter — a three-backend divergence
+// this project treats as a defect. Preparing the full filter up front closes
+// that gap for every plan shape, and its result is reused below instead of
+// preparing the same full filter a second time when it also becomes the
+// residual.
+func planQuery(filter spi.Filter) (sqlPlan, error) {
+	preparedFull, err := spi.Prepare(filter)
+	if err != nil {
+		return sqlPlan{}, err
+	}
+
 	pushed, residual := dissect(filter)
 	plan := sqlPlan{postFilter: residual}
 	if pushed != nil {
@@ -78,8 +139,9 @@ func planQuery(filter spi.Filter) sqlPlan {
 	if residual != nil || (pushed != nil && !allPushedExact(*pushed)) {
 		full := filter
 		plan.postFilter = &full
+		plan.preparedPostFilter = &preparedFull
 	}
-	return plan
+	return plan, nil
 }
 
 // dissect splits a filter tree into a pushable portion and a residual portion.
@@ -137,6 +199,14 @@ func dissectAnd(f spi.Filter) (*spi.Filter, *spi.Filter) {
 // dissectOr implements conservative OR dissection: only push if ALL children
 // are fully pushable, otherwise the entire OR is residual.
 func dissectOr(f spi.Filter) (*spi.Filter, *spi.Filter) {
+	// An explicit empty OR is the OR identity (false, matches nothing) — a
+	// shape toSQL cannot express: joining zero fragments yields no predicate
+	// at all (i.e. TRUE, matches everything). Route it to the residual so the
+	// kernel applies the identity. Note the asymmetry with the empty AND,
+	// whose identity (true) IS what dissectAnd's (nil, nil) means.
+	if len(f.Children) == 0 {
+		return nil, &f
+	}
 	for _, child := range f.Children {
 		if !isFullyPushable(child) {
 			return nil, &f
@@ -149,6 +219,13 @@ func dissectOr(f spi.Filter) (*spi.Filter, *spi.Filter) {
 func isFullyPushable(f spi.Filter) bool {
 	switch f.Op {
 	case spi.FilterAnd, spi.FilterOr:
+		// Empty groups are identity shapes (empty AND = true, empty OR =
+		// false) that toSQL cannot express — joinChildren over zero children
+		// emits "" standalone and a malformed "()" nested. Never pushable;
+		// the enclosing OR goes residual and the kernel applies the identity.
+		if len(f.Children) == 0 {
+			return false
+		}
 		for _, c := range f.Children {
 			if !isFullyPushable(c) {
 				return false
@@ -169,16 +246,20 @@ func isFullyPushable(f spi.Filter) bool {
 // is residual-only (kernel-evaluated). BetweenInclusive IS pushable: SQL BETWEEN
 // is inclusive [lo,hi], a sound superset of the inclusive kernel between.
 //
-// Like is deliberately NOT pushable (as of this commit): SQL LIKE's '%'/'_'
-// wildcards do not line up with Cloud's LIKE grammar (spi.MatchFilter's
-// likeToRegex), so a naive pushdown either escapes the wildcards into a
-// literal match (under-selecting real wildcard patterns) or pushes them
-// through unescaped (over-selecting/misinterpreting SQL-LIKE-specific
-// escaping). A sound SQL-LIKE translation that aligns SQL LIKE to Cloud's
-// grammar is deferred to a dedicated follow-up; until then Like is
-// residual-only so the kernel evaluates it correctly. leafToSQL's LIKE
-// branch is kept below (unreachable via isPushable, like Ne) for mirror
-// totality with postgres.
+// Like is deliberately NOT pushable (as of this commit), but the ORIGINAL reason
+// no longer holds and is recorded here so it is not repeated: the kernel used to
+// translate LIKE into a regex, whose grammar SQL LIKE could not be aligned to.
+// The kernel now matches LIKE as a glob whose grammar IS SQL's — see
+// cyoda-go-spi like_pattern.go and the FilterLike godoc, which names
+// `LIKE ... ESCAPE '\'` as the reference. What still blocks a pushdown is
+// collation, not grammar: SQLite's LIKE is ASCII-case-INsensitive by default
+// while the kernel is case-sensitive (an over-select, so sound, but only if
+// the residual re-check is kept), and postgres's LIKE is case-sensitive but
+// differs on non-ASCII folding. Enabling it needs its own soundness argument
+// per backend; until one exists Like stays residual-only so the kernel
+// evaluates it correctly. leafToSQL's LIKE branch is kept
+// below (unreachable via isPushable, like Ne) for mirror totality with
+// postgres.
 //
 // IMPORTANT: this OP-LEVEL set MUST match postgres's isPushable exactly.
 // Adding or removing an op here without doing the same in postgres breaks the
@@ -213,13 +294,27 @@ func isComparisonOp(op spi.FilterOp) bool {
 
 // isLeafPushable is the LEAF-LEVEL pushability decision: it layers a
 // type-family check on top of the op-level isPushable. A comparison leaf
-// (isComparisonOp) whose DECLARED type set is polymorphic (len > 1, i.e. its
-// stored values may span different type families / SQLite storage classes) is
-// NOT pushable on sqlite: json_extract preserves each stored scalar's native
+// (isComparisonOp) whose DECLARED type set is polymorphic (len > 1) is NOT
+// pushable on sqlite: json_extract preserves each stored scalar's native
 // storage class and SQLite never equates different classes (30 = '30' is
 // false), so no single-storage-class-bound SQL predicate can be a SUPERSET of
 // every kernel branch. Such leaves are routed to the residual, where the
-// kernel (spi.MatchFilter) evaluates all branches correctly.
+// kernel (spi.Prepare/PreparedFilter.Match) evaluates all branches correctly.
+//
+// This is NOT a guard against a monomorphic leaf spanning SQLite storage
+// classes on its own: a single-Declared `[DOUBLE]` leaf routinely holds both
+// INTEGER-class (30) and REAL-class (30.5) stored scalars, and pushing that
+// is fine — SQLite compares INTEGER and REAL numerically (both convert to
+// REAL for the comparison), the same total order the kernel's float64
+// compare gives. The real danger the gate guards against is TEXT landing in
+// the same predicate as a numeric comparison: SQLite's storage-class
+// ordering (NULL < INTEGER/REAL < TEXT < BLOB) would then override the
+// kernel's type-directed compare and silently diverge from it. That never
+// happens within a single Declared type — the JSON-kind admission rule keeps
+// a value that would classify as STRING out of any field declared numeric,
+// and vice versa — so `len(f.Declared) > 1` (more than one JSON kind
+// observed for the field) is exactly the condition where a TEXT/numeric mix
+// becomes possible, which is what this check catches.
 //
 // DELIBERATE MIRROR DIVERGENCE from postgres: postgres's `->>` extraction
 // stringifies every stored scalar to text, so a single text bind IS already a
@@ -235,6 +330,9 @@ func isLeafPushable(f spi.Filter) bool {
 	if !isPushable(f.Op) {
 		return false
 	}
+	if pathHasWildcard(f.Path) {
+		return false
+	}
 	if f.Coercion == spi.CoerceTemporal {
 		// Meta temporal fields store a single full instant (a µs-integer here /
 		// an offset-bearing RFC3339 string on postgres) that the epoch-ms push
@@ -243,9 +341,9 @@ func isLeafPushable(f spi.Filter) bool {
 		// subtype resolution — an imprecise-floor op mutation (e.g. `>=
 		// 2024-09-09` on a Year field becomes `> 2024`) that a flat epoch-ms
 		// compare cannot reproduce as a sound superset. Route data temporal
-		// COMPARISONS to the residual, where the kernel (spi.MatchFilter) is
-		// authoritative; presence checks (IsNull/NotNull) are coercion-
-		// independent and stay pushable.
+		// COMPARISONS to the residual, where the kernel
+		// (spi.Prepare/PreparedFilter.Match) is authoritative; presence checks
+		// (IsNull/NotNull) are coercion-independent and stay pushable.
 		if f.Source == spi.SourceData && isComparisonOp(f.Op) {
 			return false
 		}
@@ -255,6 +353,39 @@ func isLeafPushable(f spi.Filter) bool {
 		return false
 	}
 	return true
+}
+
+// pathHasWildcard reports whether path contains a "[*]" array subscript
+// anywhere along its hops. There is no SQL form for a wildcard leaf until a
+// quantifier node exists — pushing it as a scalar comparison would silently
+// drop every matching row, and a narrowing WHERE cannot be recovered by the
+// residual re-check. Detected structurally via spi.ParseFilterPath and
+// PathSub.Wildcard, never by matching the literal "[*]" substring: the parse
+// is the one place that knows what is a subscript versus what merely looks
+// like one.
+//
+// f.Path reaching isLeafPushable has already passed validateFilterPaths at
+// the Search()/GroupedAggregate() boundary, so a parse error here is not
+// expected in practice. But the default direction still matters: treating
+// an unparseable path as "definitely not a wildcard" would let
+// isLeafPushable push it down as a scalar comparison, which for an ACTUAL
+// wildcard drops every matching row with no way for the residual re-check
+// to recover them (the exact hazard this function's own doc above
+// describes). true — "might be a wildcard, don't push" — is the fail-closed
+// default, matching .claude/rules/correctness-over-availability.md.
+func pathHasWildcard(path string) bool {
+	hops, err := spi.ParseFilterPath(path)
+	if err != nil {
+		return true
+	}
+	for _, hop := range hops {
+		for _, sub := range hop.Subs {
+			if sub.Wildcard {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // comparisonBind returns the operand-binding form for a NON-temporal
@@ -317,7 +448,10 @@ func operandText(v any) string {
 }
 
 // toSQL recursively converts a (fully pushable) filter tree to a SQL WHERE
-// fragment and bound arguments.
+// fragment and bound arguments. The tree must contain no empty groups —
+// joining zero fragments renders "" standalone and a malformed "()" nested;
+// dissect guarantees none reach here (empty groups are identity shapes the
+// kernel owns).
 func toSQL(f spi.Filter) (string, []any) {
 	switch f.Op {
 	case spi.FilterAnd:
@@ -358,7 +492,7 @@ var directMetaColumns = map[string]bool{
 // fieldExpr returns the SQL expression for accessing a field.
 // SourceMeta "id" resolves to the entity_id column (direct, no json_extract).
 // SourceMeta fields matching a canonical lifecycle-filter name (as used by
-// post-#423 temporal/lifecycle filters, e.g. "creationDate") are mapped
+// temporal/lifecycle filters, e.g. "creationDate") are mapped
 // through metaBlobKey to their meta-blob storage key — mirroring
 // orderByFieldExpr's resolution so filter and ORDER BY agree on where a
 // canonical path lives.
@@ -483,12 +617,21 @@ func leafToSQL(f spi.Filter) (string, []any) {
 			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
 				[]any{comparisonBind(f, f.Values[0]), comparisonBind(f, f.Values[1])}
 		}
-		// Malformed BETWEEN (not exactly 2 operands) fails closed — exclude
-		// every row, matching memory's spi.MatchFilter semantics. Validation
-		// upstream (search.validateBetweenArity) rejects this shape before it
-		// ever reaches a plugin; this is defense-in-depth only.
+		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
+		// function only runs on the pushed half planQuery's dissect produces,
+		// and planQuery calls spi.Prepare on the WHOLE filter first — Prepare
+		// now errors on a range leaf without exactly 2 bounds
+		// (ExpandLeaf/expandBetween), so a malformed BETWEEN never survives to
+		// reach dissect/leafToSQL at all. search.validateBetweenArity rejects
+		// the same shape even earlier, at the request boundary.
 		return "0", nil
 	}
+	// Unreachable: leafToSQL only ever receives a genuine leaf (dissect never
+	// pushes a branch op into it). FilterNot is the first branch op whose
+	// accidental arrival here would have been silently absorbed as this
+	// match-all default instead of failing loudly — AND/OR never risked it,
+	// since a group either stayed fully residual or was flattened per-child
+	// before reaching this function.
 	return "1=1", nil
 }
 
@@ -521,11 +664,11 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	switch f.Op {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
 		if len(f.Values) < 2 {
-			// Malformed BETWEEN (not exactly 2 operands) fails closed —
-			// exclude every row, matching memory's spi.MatchFilter semantics.
-			// Validation upstream (search.validateBetweenArity) rejects this
-			// shape before it ever reaches a plugin; this is defense-in-depth
-			// only.
+			// Malformed BETWEEN (not exactly 2 operands) is unreachable here
+			// for the same reason as leafToSQL's identical arm above:
+			// planQuery calls spi.Prepare on the whole filter before dissect
+			// ever routes a leaf to this function, and Prepare now errors on
+			// a range leaf without exactly 2 bounds regardless of Coercion.
 			return "0", nil
 		}
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))

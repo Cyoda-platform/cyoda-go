@@ -142,7 +142,7 @@ func TestCreateEntity_JSONArrayCreatesBatch(t *testing.T) {
 }
 
 func TestNewHandler(t *testing.T) {
-	h := entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
+	h := entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
@@ -1012,7 +1012,7 @@ func TestEntityResponseEnvelope(t *testing.T) {
 
 	// After creation without an explicit transition, transitionForLatestSave
 	// must be "loopback" — not the literal "workflow", which is not a valid
-	// value (issue #94).
+	// value.
 	if v, exists := meta["transitionForLatestSave"]; !exists || v != "loopback" {
 		t.Errorf("expected transitionForLatestSave=loopback after creation, got %v", meta["transitionForLatestSave"])
 	}
@@ -1415,8 +1415,8 @@ func TestGetEntityChangesMetadata(t *testing.T) {
 
 // TestGetEntityChangesMetadata_PointInTime asserts that the pointInTime
 // query parameter constrains the returned change history to entries whose
-// timeOfChange is at or before the supplied timestamp. Regression test
-// for issue #152: handler previously dropped the parameter silently.
+// timeOfChange is at or before the supplied timestamp. Regression test:
+// the handler previously dropped the parameter silently.
 func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPIT", 1, `{"k":1}`)
@@ -1494,7 +1494,7 @@ func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
 
 // TestGetEntityChangesMetadata_PointInTimeFuture asserts that a pointInTime
 // strictly after the latest change returns the full history — equivalent to
-// omitting the parameter. Boundary case for issue #152.
+// omitting the parameter. Boundary case.
 func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
@@ -1554,8 +1554,7 @@ func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 
 // TestGetEntityChangesMetadata_PointInTimeExactBoundary asserts that a
 // pointInTime exactly equal to a change's timestamp INCLUDES that change —
-// the filter is at-or-before (<=), not strictly-before. Boundary case for
-// issue #152.
+// the filter is at-or-before (<=), not strictly-before. Boundary case.
 func TestGetEntityChangesMetadata_PointInTimeExactBoundary(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPITExact", 1, `{"k":1}`)
@@ -1932,41 +1931,6 @@ func TestTransitionNotFound(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestWaitForConsistencyFalse(t *testing.T) {
-	srv := newTestServer(t)
-	importAndLockModel(t, srv.URL, "WfAsync", 1, `{"name":"Alice"}`)
-
-	entityID := createEntityAndGetID(t, srv.URL, "WfAsync", 1, `{"name":"Bob"}`)
-
-	// UpdateSingle with waitForConsistencyAfter=false → succeeds (200) after SSI commit.
-	url := fmt.Sprintf("%s/entity/JSON/%s/UPDATE?waitForConsistencyAfter=false", srv.URL, entityID)
-	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(`{"name":"Bob"}`))
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-
-	// UpdateSingleWithLoopback with waitForConsistencyAfter=false → succeeds (200).
-	url = fmt.Sprintf("%s/entity/JSON/%s?waitForConsistencyAfter=false", srv.URL, entityID)
-	req, err = http.NewRequest(http.MethodPut, url, strings.NewReader(`{"name":"Bob"}`))
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	expectStatus(t, resp, http.StatusOK)
-	resp.Body.Close()
-}
-
 // --- If-Match optimistic-concurrency tests ---
 
 func getEntityTransactionID(t *testing.T, base, entityID string) string {
@@ -2056,7 +2020,7 @@ func TestGetEntityPointInTimeBothParamsRejected(t *testing.T) {
 
 // TestGetEntityByTransactionID verifies that GET /entity/{id}?transactionId=<tx>
 // returns the entity envelope as it stood at that transaction — not the
-// latest version. Issue #150: the handler previously parsed
+// latest version: the handler previously parsed
 // params.TransactionId but never propagated it, so the query parameter was
 // silently dropped and the latest version was returned regardless.
 func TestGetEntityByTransactionID(t *testing.T) {
@@ -2117,7 +2081,7 @@ func TestGetEntityByTransactionID(t *testing.T) {
 
 // TestGetEntityByTransactionID_BogusReturns404 verifies that a transactionId
 // that doesn't appear in the entity's version history yields 404
-// ENTITY_NOT_FOUND. Issue #150 (dictionary 12/neg/05): cyoda-go previously
+// ENTITY_NOT_FOUND (dictionary 12/neg/05): cyoda-go previously
 // returned HTTP 200 with the latest entity because the query parameter was
 // dropped silently.
 func TestGetEntityByTransactionID_BogusReturns404(t *testing.T) {
@@ -2275,7 +2239,7 @@ func TestBatchDeleteTransaction(t *testing.T) {
 // `entityVersion`) when an entity payload's leaf value type is not
 // assignable to the schema's declared DataType.
 //
-// Closes #129. Cloud equivalent:
+// Cloud equivalent:
 // FoundIncompatibleTypeWithEntityModelException.
 func TestCreateEntity_IncompatibleType_ReturnsSpecificCode(t *testing.T) {
 	srv := newTestServer(t)

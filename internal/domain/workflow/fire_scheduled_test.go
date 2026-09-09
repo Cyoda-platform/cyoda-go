@@ -10,7 +10,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -382,7 +381,7 @@ func TestFireScheduled_GuardEntityMovedOn(t *testing.T) {
 // row.
 //
 // This mirrors the real dispatch shape exactly: the ctx is built via
-// scheduler.SystemUserContext(task.TenantID) — precisely what both
+// common.SystemUserContext(task.TenantID) — precisely what both
 // LocalExecutor.Execute and the peer RPC handler do with the (here,
 // attacker-controlled) task.TenantID field — scoping every tenant-aware
 // store the engine opens (EntityStore, WorkflowStore, ...) to testTenantB.
@@ -434,7 +433,7 @@ func TestFireScheduled_TenantMismatch_DropsWithoutDeletingVictimTask(t *testing.
 	// Forged dispatch: real task.ID, but task.TenantID asserts testTenantB.
 	// The ctx is built exactly as the real dispatch paths build it — scoped
 	// to the (attacker-controlled) task.TenantID.
-	forgedCtx := scheduler.SystemUserContext(testTenantB)
+	forgedCtx := common.SystemUserContext(testTenantB)
 	forgedTask := spi.ScheduledTask{ID: id, TenantID: testTenantB}
 
 	outcome, err := engine.FireScheduledTransition(forgedCtx, forgedTask)
@@ -720,29 +719,50 @@ func ptrInt64(v int64) *int64 { return &v }
 
 // --- Attribution: durable ArmedBy seed, verify-or-abort, anchor stamp ---
 
-// latestVersion returns the most recently persisted spi.EntityVersion for
-// entityID (GetVersionHistory appends in insertion order, so the last entry
-// is the anchor write this test suite is asserting against).
-func latestVersion(t *testing.T, factory spi.StoreFactory, ctx context.Context, entityID string) spi.EntityVersion {
+// latestVersion returns the most recently persisted version's metadata for
+// entityID — GetVersionHistory (now removed) returned the full
+// spi.EntityVersion oldest-first; its replacement, GetVersionMetadata,
+// returns spi.EntityVersionMeta (no Entity payload) newest-first, so the
+// anchor write this test suite asserts against is versions[0]. Callers here
+// only ever read User/AttributedKind/Executor, none of which needs the
+// payload.
+func latestVersion(t *testing.T, factory spi.StoreFactory, ctx context.Context, entityID string) spi.EntityVersionMeta {
 	t.Helper()
 	es, err := factory.EntityStore(ctx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
 	}
-	versions, err := es.GetVersionHistory(ctx, entityID)
+	versions, err := es.GetVersionMetadata(ctx, entityID, spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
 	if len(versions) == 0 {
 		t.Fatalf("expected at least one version for %q", entityID)
 	}
-	return versions[len(versions)-1]
+	return versions[0]
+}
+
+// chronologicalVersionMetas returns entityID's version metadata oldest-first
+// (spi.EntityStore.GetVersionMetadata itself returns newest-first), matching
+// the insertion-order contract the deleted GetVersionHistory offered, for
+// tests written against that ordering.
+func chronologicalVersionMetas(t *testing.T, es spi.EntityStore, ctx context.Context, entityID string) []spi.EntityVersionMeta {
+	t.Helper()
+	versions, err := es.GetVersionMetadata(ctx, entityID, spi.VersionMetadataOptions{})
+	if err != nil {
+		t.Fatalf("GetVersionMetadata: %v", err)
+	}
+	reversed := make([]spi.EntityVersionMeta, len(versions))
+	for i, v := range versions {
+		reversed[len(versions)-1-i] = v
+	}
+	return reversed
 }
 
 // TestFireScheduled_AttributesToArmedByUser_IncludingCascade covers Task
 // 13's core positive case: a task whose durable row carries a user ArmedBy
 // fires under a plain system dispatch ctx (mirroring the real
-// scheduler.SystemUserContext dispatch — no user identity on ctx at all),
+// common.SystemUserContext dispatch — no user identity on ctx at all),
 // yet the anchor write attributes to the ARMING user, executed by system.
 // The workflow cascades automatically past an intermediate state
 // (OPEN->MID->DONE) before the single anchor persist, proving the
@@ -787,7 +807,7 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	// The real dispatch ctx carries no user identity at all — just the
 	// synthesised system UserContext scheduler.LocalExecutor/the peer RPC
 	// handler build. Attribution must come from the durable row, not ctx.
-	dispatchCtx := scheduler.SystemUserContext(testTenant)
+	dispatchCtx := common.SystemUserContext(testTenant)
 	outcome, err := engine.FireScheduledTransition(dispatchCtx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
@@ -814,8 +834,8 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	if entity.Meta.ChangeUserKind != wantUser.Kind {
 		t.Errorf("ChangeUserKind = %v, want %v", entity.Meta.ChangeUserKind, wantUser.Kind)
 	}
-	if entity.Meta.ChangeExecutor != scheduler.SystemPrincipal() {
-		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, scheduler.SystemPrincipal())
+	if entity.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 
 	// Anchor version, independently of Entity — matches the EntityVersion
@@ -827,8 +847,8 @@ func TestFireScheduled_AttributesToArmedByUser_IncludingCascade(t *testing.T) {
 	if v.AttributedKind != wantUser.Kind {
 		t.Errorf("version AttributedKind = %v, want %v", v.AttributedKind, wantUser.Kind)
 	}
-	if v.Executor != scheduler.SystemPrincipal() {
-		t.Errorf("version Executor = %+v, want %+v", v.Executor, scheduler.SystemPrincipal())
+	if v.Executor != common.SystemPrincipal() {
+		t.Errorf("version Executor = %+v, want %+v", v.Executor, common.SystemPrincipal())
 	}
 }
 
@@ -882,8 +902,8 @@ func TestFireScheduled_LegacyZeroArmedBy_AttributesToSystem_NeverSchedulerString
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if entity.Meta.ChangeUser != scheduler.SystemPrincipal().ID {
-		t.Errorf("ChangeUser = %q, want %q", entity.Meta.ChangeUser, scheduler.SystemPrincipal().ID)
+	if entity.Meta.ChangeUser != common.SystemPrincipal().ID {
+		t.Errorf("ChangeUser = %q, want %q", entity.Meta.ChangeUser, common.SystemPrincipal().ID)
 	}
 	if entity.Meta.ChangeUser == "scheduler" {
 		t.Error("ChangeUser must never be the bare string \"scheduler\"")
@@ -891,8 +911,8 @@ func TestFireScheduled_LegacyZeroArmedBy_AttributesToSystem_NeverSchedulerString
 	if entity.Meta.ChangeUserKind != spi.PrincipalSystem {
 		t.Errorf("ChangeUserKind = %v, want %v", entity.Meta.ChangeUserKind, spi.PrincipalSystem)
 	}
-	if entity.Meta.ChangeExecutor != scheduler.SystemPrincipal() {
-		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, scheduler.SystemPrincipal())
+	if entity.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("ChangeExecutor = %+v, want %+v", entity.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 }
 
@@ -1338,6 +1358,11 @@ func TestFireScheduled_CBDSegmentedFire_HappyPath(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-fire-order", ModelVersion: "1.0"}
 
+	// cbd-proc echoes the entity back, and that output still passes the same
+	// model checks a client write does. The entity carries no data fields, so
+	// an empty (but registered, strict) model is the honest declaration.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CBDFireWF", InitialState: "OPEN", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -1488,6 +1513,11 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-intermediate-order", ModelVersion: "1.0"}
 
+	// cbd-proc echoes the entity back, and that output still passes the same
+	// model checks a client write does. The entity carries no data fields, so
+	// an empty (but registered, strict) model is the honest declaration.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CBDIntermediateWF", InitialState: "OPEN", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -1544,24 +1574,40 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		t.Fatalf("outcome = %v, want Fired", outcome)
 	}
 
-	versions, err := es.GetVersionHistory(ctx, entityID)
-	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
-	}
+	versionMetas := chronologicalVersionMetas(t, es, ctx, entityID)
 	// [0] = the pre-seeded prior-committer version; [1] = the CBD TX_pre
 	// flush (mid-cascade — entity still in OPEN, the state BEFORE the
-	// transition's Next is applied); [2] = the terminal post-cascade
-	// persist (state MID). The defect lived in [1]: before the fix it
-	// carried the prior committer's stale attribution instead of the
-	// arming principal's.
-	if len(versions) != 3 {
-		t.Fatalf("versions = %d, want 3 (seed, CBD intermediate flush, terminal)", len(versions))
+	// transition's Next is applied — its own segmented transaction);
+	// [2] = executeCommitBeforeDispatch's CompareAndSave applying the
+	// processor's returned entity back in the post-dispatch transaction
+	// (engine_processors.go) — still OPEN, since Meta.State only advances
+	// to Next afterward, back in fireTransition (engine.go); [3] = the
+	// terminal post-cascade persist (state MID, fire_scheduled.go). [2]
+	// and [3] land as separate rows, not one: every Save/CompareAndSave
+	// call inside a transaction gets its own version — same-tx multiple
+	// saves are never coalesced into one (Postgres has always behaved
+	// this way; the in-memory store's txmanager.go documents this as a
+	// deliberate backend-parity fix, supersededSaves). The defect this
+	// test guards against lived in [1]: before the fix it carried the
+	// prior committer's stale attribution instead of the arming
+	// principal's.
+	if len(versionMetas) != 4 {
+		t.Fatalf("versions = %d, want 4 (seed, CBD TX_pre flush, CBD post-dispatch apply, terminal)", len(versionMetas))
 	}
-	intermediate := versions[1]
-	if intermediate.Entity == nil {
+	intermediate := versionMetas[1]
+	// GetVersionMetadata carries no Entity payload; GetVersionByTransaction
+	// does — fetched by the intermediate write's own TransactionID, whose
+	// contract ("earliest version written by txID") resolves to exactly
+	// this write even if the terminal write shares the same transaction
+	// (the CBD TX_pre flush is, by construction, the earlier of the two).
+	intermediateEntity, err := es.GetVersionByTransaction(ctx, entityID, intermediate.TransactionID)
+	if err != nil {
+		t.Fatalf("GetVersionByTransaction (intermediate): %v", err)
+	}
+	if intermediateEntity == nil || intermediateEntity.Entity == nil {
 		t.Fatalf("intermediate version has no Entity")
 	}
-	if got := intermediate.Entity.Meta.State; got != "OPEN" {
+	if got := intermediateEntity.Entity.Meta.State; got != "OPEN" {
 		t.Fatalf("intermediate version state = %q, want OPEN (the CBD TX_pre flush, before the transition's state change)", got)
 	}
 	if intermediate.User != armingUser.ID {
@@ -1577,10 +1623,40 @@ func TestFireScheduled_CBDIntermediateFlush_AttributesToArmingPrincipal_NotPrior
 		t.Error("intermediate version must never carry the stale prior-committer attribution")
 	}
 
-	terminal := versions[2]
-	if terminal.Entity == nil || terminal.Entity.Meta.State != "MID" {
-		t.Fatalf("terminal version missing or state != MID")
+	// [2]: the post-dispatch CompareAndSave applying the processor's
+	// returned entity, inside the SAME transaction as the terminal write
+	// [3]. GetVersionByTransaction resolves to [2] here — not [3] — because
+	// its contract is "the EARLIEST version written by txID", and [2] is
+	// chronologically first within that shared transaction.
+	postDispatchApply := versionMetas[2]
+	postDispatchEntity, err := es.GetVersionByTransaction(ctx, entityID, postDispatchApply.TransactionID)
+	if err != nil {
+		t.Fatalf("GetVersionByTransaction (post-dispatch apply): %v", err)
 	}
+	if postDispatchEntity == nil || postDispatchEntity.Entity == nil {
+		t.Fatalf("post-dispatch apply version has no Entity")
+	}
+	if got := postDispatchEntity.Entity.Meta.State; got != "OPEN" {
+		t.Fatalf("post-dispatch apply version state = %q, want OPEN (Meta.State advances to Next only after this write, in fireTransition)", got)
+	}
+	if postDispatchApply.User != armingUser.ID || postDispatchApply.AttributedKind != armingUser.Kind || postDispatchApply.Executor != systemPrincipal {
+		t.Errorf("post-dispatch apply version attribution = {%q %v %+v}, want {%q %v %+v} — this write must not carry the stale prior-committer attribution either",
+			postDispatchApply.User, postDispatchApply.AttributedKind, postDispatchApply.Executor,
+			armingUser.ID, armingUser.Kind, systemPrincipal)
+	}
+
+	// The terminal version is simply the entity's current state — no
+	// history lookup needed for its payload (and GetVersionByTransaction
+	// could not distinguish it from [2] above; both share one transaction
+	// and that lookup always resolves to the earliest of the two).
+	terminalEntity, err := es.Get(ctx, entityID)
+	if err != nil {
+		t.Fatalf("Get (terminal): %v", err)
+	}
+	if terminalEntity.Meta.State != "MID" {
+		t.Fatalf("terminal version state = %q, want MID", terminalEntity.Meta.State)
+	}
+	terminal := versionMetas[3]
 	if terminal.User != armingUser.ID || terminal.AttributedKind != armingUser.Kind || terminal.Executor != systemPrincipal {
 		t.Errorf("terminal version attribution = {%q %v %+v}, want {%q %v %+v}",
 			terminal.User, terminal.AttributedKind, terminal.Executor,
@@ -1652,6 +1728,15 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	factoryRef = factory
 	ctx := ctxWithTenant(testTenant)
 
+	// sibling-writer-proc echoes the anchor back, and that output passes the
+	// same model checks a client write does — the anchor carries no data
+	// fields. The sibling entity it saves shares this model, so `createdBy`
+	// is declared too, keeping the model an accurate description of every
+	// field the test stores under it.
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{
+		"createdBy": schema.String,
+	})
+
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "SiblingWriteWF", InitialState: "OPEN", Active: true,
 		States: map[string]spi.StateDefinition{
@@ -1682,9 +1767,9 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	advance(delayMs)
 
 	// Dispatch ctx carries no user identity at all, exactly like the real
-	// scheduler dispatch (scheduler.SystemUserContext) — attribution must
+	// scheduler dispatch (common.SystemUserContext) — attribution must
 	// come entirely from the ambient origin seeded from the durable row.
-	dispatchCtx := scheduler.SystemUserContext(testTenant)
+	dispatchCtx := common.SystemUserContext(testTenant)
 	outcome, err := engine.FireScheduledTransition(dispatchCtx, spi.ScheduledTask{ID: id, TenantID: testTenant})
 	if err != nil {
 		t.Fatalf("FireScheduledTransition: %v", err)
@@ -1707,8 +1792,8 @@ func TestFireScheduled_SiblingEntityWrite_AttributesToArmingUser_ViaAmbientOrigi
 	if sibling.Meta.ChangeUserKind != armingUser.Kind {
 		t.Errorf("sibling ChangeUserKind = %v, want %v", sibling.Meta.ChangeUserKind, armingUser.Kind)
 	}
-	if sibling.Meta.ChangeExecutor != scheduler.SystemPrincipal() {
-		t.Errorf("sibling ChangeExecutor = %+v, want %+v (system: the dispatch ctx's UserContext)", sibling.Meta.ChangeExecutor, scheduler.SystemPrincipal())
+	if sibling.Meta.ChangeExecutor != common.SystemPrincipal() {
+		t.Errorf("sibling ChangeExecutor = %+v, want %+v (system: the dispatch ctx's UserContext)", sibling.Meta.ChangeExecutor, common.SystemPrincipal())
 	}
 }
 
@@ -1830,5 +1915,100 @@ func TestFireScheduled_GuardCASRace_DropsWithoutTornWrite(t *testing.T) {
 	// The task survives for the next scan to retry against the new state.
 	if _, found := getTask(t, realFactory, ctx, id); !found {
 		t.Error("expected task to remain for retry after losing the CAS race")
+	}
+}
+
+// TestFireScheduled_UnstampedEntity_RefusesBeforeFiring pins the guard on the
+// one engine caller that derives its compare-and-save precondition from
+// stored data rather than a client If-Match. CompareAndSave rejects an empty
+// expectedTxID outright, so an entity whose last committed version carries no
+// transaction ID has no usable precondition — and the fire must refuse BEFORE
+// running the transition, not after.
+//
+// The processor is COMMIT_BEFORE_DISPATCH, which is what makes the ordering
+// load-bearing rather than cosmetic: a fire that runs first and only fails at
+// the terminal persist rolls back TX_post while TX_pre is already committed,
+// leaving the entity advanced by a fire that was refused. The dispatch
+// counter is the discriminating assertion — the entity's state and audit
+// trail alone cannot tell "never ran" from "ran and rolled back".
+func TestFireScheduled_UnstampedEntity_RefusesBeforeFiring(t *testing.T) {
+	const armMs = int64(1_700_000_000_000)
+	const delayMs = int64(1000)
+
+	dispatches := 0
+	mock := &mockExternalProcessing{
+		dispatchFunc: func(_ context.Context, e *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
+			dispatches++
+			return e, nil
+		},
+	}
+	engine, factory, tracker, advance := setupEngineForCBDFire(t, armMs, mock, 0)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "unstamped-order", ModelVersion: "1.0"}
+	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{})
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "UnstampedWF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN": {Transitions: []spi.TransitionDefinition{
+				{Name: "AutoClose", Next: "MID", Schedule: &spi.TransitionSchedule{DelayMs: delayMs},
+					Processors: []spi.ProcessorDefinition{
+						{Type: ProcessorTypeExternalized, Name: "cbd-proc", ExecutionMode: ExecutionModeCommitBeforeDispatch},
+					}},
+			}},
+			"MID": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+	// No transaction ID on the stored row: a store's non-transactional Save
+	// keeps whatever the caller supplied, so a writer that never stamps one
+	// produces exactly this shape.
+	seedFireEntity(t, factory, ctx, "unstamped-e1", modelRef, "OPEN", "", map[string]any{})
+
+	id := taskID(testTenant, "unstamped-e1", "OPEN", "AutoClose")
+	armTask(t, factory, ctx, spi.ScheduledTask{
+		ID: id, TenantID: testTenant, Type: spi.ScheduledTaskFireTransition,
+		ScheduledTime: armMs + delayMs, EntityID: "unstamped-e1", ModelName: modelRef.EntityName,
+		Transition: "AutoClose", SourceState: "OPEN", ArmedAt: armMs,
+	})
+
+	advance(delayMs)
+
+	outcome, err := engine.FireScheduledTransition(ctx, spi.ScheduledTask{ID: id, TenantID: testTenant})
+	if outcome != OutcomeDropped {
+		t.Fatalf("outcome = %v, want Dropped", outcome)
+	}
+	// Dropped with no error: nothing in the machinery failed, and the
+	// executor's own "local fire failed" ERROR on top of the guard's would
+	// double-log a condition the guard already reports, on every scan.
+	if err != nil {
+		t.Fatalf("expected a clean drop, got %v", err)
+	}
+	if dispatches != 0 {
+		t.Errorf("processor dispatches = %d, want 0 — the fire must refuse before running the transition", dispatches)
+	}
+	if got := getEntityState(t, factory, ctx, "unstamped-e1"); got != "OPEN" {
+		t.Errorf("entity state = %q, want OPEN", got)
+	}
+	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionFired); n != 0 {
+		t.Errorf("fired audit events = %d, want 0", n)
+	}
+	// The task is deleted, not left for the next scan. Nothing rewrites a
+	// stored transaction ID on its own, so leaving the row would re-dispatch
+	// and re-refuse it on every scan for as long as the entity sits
+	// untouched — and any write that WOULD make it fireable runs reconcile,
+	// which re-arms this transition out of the entity's current state.
+	if _, found := getTask(t, factory, ctx, id); found {
+		t.Error("expected the unfireable task deleted, not left to be re-dispatched every scan")
+	}
+	// Audited, not silent — the same rule the obsolete-task drop above it
+	// follows. A scheduled transition is often a time-based control, and a
+	// timer this destroys permanently must be attributable to something an
+	// operator can find after the fact; a log line on one node is not that.
+	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
+		t.Errorf("cancelled audit events = %d, want 1", n)
+	}
+	if n := tracker.openCount(); n != 0 {
+		t.Errorf("open transactions = %d, want 0", n)
 	}
 }

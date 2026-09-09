@@ -24,8 +24,9 @@ func idSetTx(entities []*spi.Entity) map[string]bool {
 var cityBerlin = spi.Filter{Op: spi.FilterEq, Path: "city", Source: spi.SourceData, Value: "Berlin", Declared: []spi.DataType{spi.String}}
 
 // beginTxSearcher sets up a factory seeded with the standard person set, begins a
-// transaction, and returns the store, the transaction context, and the searcher.
-func beginTxSearcher(t *testing.T) (spi.EntityStore, context.Context, spi.Searcher) {
+// transaction, and returns the store, the transaction context, and the store
+// again as the searcher (Search is a required spi.EntityStore method).
+func beginTxSearcher(t *testing.T) (spi.EntityStore, context.Context, spi.EntityStore) {
 	t.Helper()
 	factory, ctx := setupSearcherTest(t)
 	store, err := factory.EntityStore(ctx)
@@ -40,11 +41,7 @@ func beginTxSearcher(t *testing.T) (spi.EntityStore, context.Context, spi.Search
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
-	return store, txCtx, searcher
+	return store, txCtx, store
 }
 
 // mkPerson builds a person entity with the given id, city, and state.
@@ -56,20 +53,21 @@ func mkPerson(id, city, state string) *spi.Entity {
 	}
 }
 
-// assertSearchEqualsGetAllMatch asserts that Search returns exactly the same
-// id-set (and per-id Data) as GetAll + spi.MatchFilter would for the same tx
-// state — the canonical RYW parity contract.
-func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher spi.Searcher, txCtx context.Context, filter spi.Filter, opts spi.SearchOptions) []*spi.Entity {
+// assertSearchEqualsIterateMatch asserts that Search returns exactly the same
+// id-set (and per-id Data) as Iterate + spi.Prepare(filter).Match would for the
+// same tx state — the canonical RYW parity contract.
+func assertSearchEqualsIterateMatch(t *testing.T, store spi.EntityStore, searcher spi.EntityStore, txCtx context.Context, filter spi.Filter, opts spi.SearchOptions) []*spi.Entity {
 	t.Helper()
 	ref := spi.ModelRef{EntityName: opts.ModelName, ModelVersion: opts.ModelVersion}
-	all, err := store.GetAll(txCtx, ref)
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, txCtx, store, ref, nil)
 	wantIDs := make(map[string]bool)
 	wantData := make(map[string]string)
+	pf, err := spi.Prepare(filter)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range all {
-		if spi.MatchFilter(filter, e.Data, e.Meta) {
+		if pf.Match(e.Data, e.Meta) {
 			wantIDs[e.Meta.ID] = true
 			wantData[e.Meta.ID] = string(e.Data)
 		}
@@ -90,7 +88,7 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 	}
 	for _, e := range got {
 		if wd, ok := wantData[e.Meta.ID]; ok && string(e.Data) != wd {
-			t.Errorf("id %s data mismatch: Search=%s GetAll=%s", e.Meta.ID, e.Data, wd)
+			t.Errorf("id %s data mismatch: Search=%s Iterate=%s", e.Meta.ID, e.Data, wd)
 		}
 	}
 	return got
@@ -98,7 +96,7 @@ func assertSearchEqualsGetAllMatch(t *testing.T, store spi.EntityStore, searcher
 
 // TestSearchTx_RYWParity_CreateUpdateDelete: buffered create, an update that
 // changes a matching entity to no longer match, and a delete must all be
-// reflected in Search exactly as GetAll + MatchFilter sees them.
+// reflected in Search exactly as Iterate + spi.Prepare(filter).Match sees them.
 func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	store, txCtx, searcher := beginTxSearcher(t)
 	// Committed baseline (from setup): e1=Berlin, e3=Berlin match cityBerlin.
@@ -115,8 +113,8 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 		t.Fatalf("Delete e3: %v", err)
 	}
 
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	ids := idSetTx(got)
 	if !ids["e6"] {
@@ -130,6 +128,31 @@ func TestSearchTx_RYWParity_CreateUpdateDelete(t *testing.T) {
 	}
 }
 
+// TestSearchTx_RejectsUnevaluableFilter pins the propagation of
+// spi.Prepare's error through the in-transaction Search overlay
+// (searchTxOverlay): a leaf spi.Prepare genuinely cannot evaluate must fail
+// the search outright, not silently degrade to an empty page. This is the
+// same acceptance criterion as the non-tx Searcher tests, but exercised on
+// the read-your-own-writes overlay path, which plans AND prepares the
+// filter independently of the non-tx committed-pushdown path.
+func TestSearchTx_RejectsUnevaluableFilter(t *testing.T) {
+	store, txCtx, searcher := beginTxSearcher(t)
+	if _, err := store.Save(txCtx, mkPerson("e6", "Berlin", "NEW")); err != nil {
+		t.Fatalf("Save e6: %v", err)
+	}
+
+	_, err := searcher.Search(txCtx, spi.Filter{
+		Op: spi.FilterLike, Source: spi.SourceData, Path: "name",
+		Value: `a\`, Declared: []spi.DataType{spi.String},
+	}, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20})
+	if err == nil {
+		t.Fatal("in-tx Search must fail on an unevaluable filter, not return an empty page")
+	}
+	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
+		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
+	}
+}
+
 // TestSearchTx_DeletedInTxAbsent: a committed entity deleted in the tx is absent;
 // a sibling remains present.
 func TestSearchTx_DeletedInTxAbsent(t *testing.T) {
@@ -137,8 +160,8 @@ func TestSearchTx_DeletedInTxAbsent(t *testing.T) {
 	if err := store.Delete(txCtx, "e1"); err != nil {
 		t.Fatalf("Delete e1: %v", err)
 	}
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 	ids := idSetTx(got)
 	if ids["e1"] {
 		t.Errorf("deleted-in-tx e1 must be absent, got %v", ids)
@@ -150,7 +173,7 @@ func TestSearchTx_DeletedInTxAbsent(t *testing.T) {
 
 // TestSearchTx_DeleteThenSave_ReturnedOnceAsBuffered is the Save-after-Delete
 // regression: Delete then re-Save the same id in one tx must leave it present
-// exactly once, as the buffered version — and Search must agree with GetAll.
+// exactly once, as the buffered version — and Search must agree with Iterate.
 func TestSearchTx_DeleteThenSave_ReturnedOnceAsBuffered(t *testing.T) {
 	store, txCtx, searcher := beginTxSearcher(t)
 	// e1 is a committed Berlin match.
@@ -172,8 +195,8 @@ func TestSearchTx_DeleteThenSave_ReturnedOnceAsBuffered(t *testing.T) {
 		t.Errorf("Save-after-Delete must clear tx.Deletes for e1")
 	}
 
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	count := 0
 	var found *spi.Entity
@@ -204,8 +227,8 @@ func TestSearchTx_BufferedSupersedesCommitted(t *testing.T) {
 		t.Fatalf("Save e1: %v", err)
 	}
 
-	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1"}
-	got := assertSearchEqualsGetAllMatch(t, store, searcher, txCtx, cityBerlin, opts)
+	opts := spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 20}
+	got := assertSearchEqualsIterateMatch(t, store, searcher, txCtx, cityBerlin, opts)
 
 	count := 0
 	var found *spi.Entity
@@ -234,7 +257,7 @@ func TestSearchTx_OrderAcrossOverlay(t *testing.T) {
 	// Committed Berlin: e1, e3. Buffered Berlin: e2b. id-asc order: e1, e2b, e3.
 	order := []spi.OrderSpec{{Path: "id", Source: spi.SourceMeta, Kind: spi.OrderText}}
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", OrderBy: order,
+		ModelName: "person", ModelVersion: "1", OrderBy: order, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -280,7 +303,7 @@ func TestSearchTx_TrackingRead_RecordsReturnedCommittedOnly(t *testing.T) {
 
 	// TrackingRead=true: committed Berlin (e1, e3) recorded; buffered e6 NOT.
 	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", TrackingRead: true,
+		ModelName: "person", ModelVersion: "1", TrackingRead: true, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -332,10 +355,7 @@ func TestSearchTx_TrackingRead_RecordsMatchedSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher, ok := store.(spi.Searcher)
-	if !ok {
-		t.Fatal("entityStore does not implement spi.Searcher")
-	}
+	searcher := store
 
 	// A buffered own-write that DOES match cityBerlin — it is part of the
 	// returned matched set (RYW), so it must actually reach tx.ReadSet's
@@ -382,7 +402,7 @@ func TestSearchTx_TrackingRead_RecordsMatchedSet(t *testing.T) {
 func TestSearchTx_TrackingReadFalse_RecordsNothing(t *testing.T) {
 	_, txCtx, searcher := beginTxSearcher(t)
 	_, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", TrackingRead: false,
+		ModelName: "person", ModelVersion: "1", TrackingRead: false, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -393,15 +413,24 @@ func TestSearchTx_TrackingReadFalse_RecordsNothing(t *testing.T) {
 	}
 }
 
-// TestSearchTx_NarrowPredicateStaysWithinScanBudget: a mixed filter whose
-// pushable part narrows the committed candidate set must NOT exhaust the scan
-// budget over a large model (no full scan), while a broad post-filter over the
-// same model still errors spi.ErrScanBudgetExhausted.
-func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
+// TestSearchTx_MixedFilterOverLargeModel: in-tx, a mixed filter (pushable
+// eq(city) AND a non-pushable regex) returns exactly the matching rows, and a
+// broad residual over the whole model runs to completion.
+//
+// The broad half is the in-tx regression guard for the removed scan budget: 50
+// rows all reached through a residual post-filter used to fail the search
+// outright, and must now return all 50.
+//
+// Note what this does NOT assert: that the pushable half actually narrows the
+// SQL candidate set. It cannot — the residual re-checks the FULL original
+// filter, so a full scan returns the same two rows as a narrowed one. Rows
+// examined was observable only through the scan budget, which is gone. The
+// narrowing is pinned at the planner instead, by
+// TestPlanFor_MixedFilterPushesTheEqLeaf (plan_for_test.go).
+func TestSearchTx_MixedFilterOverLargeModel(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "tx_budget.db")
-	// Scan budget of 5: far below the 50-row model size.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5)
+	dbPath := filepath.Join(dir, "tx_broad_residual.db")
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("create factory: %v", err)
 	}
@@ -428,28 +457,30 @@ func TestSearchTx_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher := store.(spi.Searcher)
+	searcher := store
 
-	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; residual regex
-	// on name then post-filters those 2 — scanned (2) <= budget (5). If the
-	// pushdown were dropped (full scan), 50 > 5 would trip the budget.
+	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; the residual
+	// regex on name then post-filters those 2.
 	mixed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
 		cityBerlin,
 		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
 	}}
-	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{ModelName: "person", ModelVersion: "1"})
+	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 10})
 	if err != nil {
-		t.Fatalf("narrow in-tx search must stay within budget, got: %v", err)
+		t.Fatalf("narrow in-tx search: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 Berlin matches, got %d", len(got))
 	}
 
-	// Broad residual over the whole model still exhausts the budget.
+	// Broad residual over the whole model: unmetered, so all 50 come back.
 	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
-	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{ModelName: "person", ModelVersion: "1"})
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("broad in-tx post-filter must exhaust budget, got: %v", err)
+	all, err := searcher.Search(txCtx, broad, spi.SearchOptions{ModelName: "person", ModelVersion: "1", Limit: 50})
+	if err != nil {
+		t.Fatalf("broad in-tx residual must not be metered: %v", err)
+	}
+	if len(all) != 50 {
+		t.Fatalf("expected all 50 rows through the residual, got %d", len(all))
 	}
 }
 
@@ -474,10 +505,10 @@ func itoa(i int) string {
 
 // TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite: an in-tx Search with
 // PointInTime set to before a buffered write must be committed-only — the
-// buffered write is excluded (no overlay) — and must equal
-// GetAllAsAt(pit) + spi.MatchFilter exactly. It must also record NOTHING in
-// tx.ReadSet even with TrackingRead:true (PIT does not participate in RYW
-// read-set tracking; it mirrors GetAllAsAt, which always reads committed data).
+// buffered write is excluded (no overlay) — and must equal a committed-only
+// Iterate(pit) + spi.Prepare(filter).Match exactly. It must also record
+// NOTHING in tx.ReadSet even with TrackingRead:true (PIT does not participate
+// in RYW read-set tracking; it always reads committed data).
 func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	dir := t.TempDir()
 	clock := sqlite.NewTestClockAt(pitBase)
@@ -509,16 +540,14 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher := store.(spi.Searcher)
-
 	// Buffered write, AFTER pit, inside the tx: must be excluded from a
 	// committed-only PIT search at pit (which predates it).
 	if _, err := store.Save(txCtx, mkPerson2(ref, "e2", "Berlin", "buffered")); err != nil {
 		t.Fatalf("Save e2 (buffered): %v", err)
 	}
 
-	got, err := searcher.Search(txCtx, cityBerlin, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", PointInTime: &pit, TrackingRead: true,
+	got, err := store.Search(txCtx, cityBerlin, spi.SearchOptions{
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit, TrackingRead: true, Limit: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -531,24 +560,26 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 		t.Errorf("committed e1 must be present, got %v", gotIDs)
 	}
 
-	// Must equal GetAllAsAt(pit) + MatchFilter exactly (the committed-pushdown
-	// contract; no overlay dimension participates).
-	wantAll, err := store.GetAllAsAt(ctx, ref, pit)
-	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
-	}
+	// Must equal a committed-only Iterate(pit) + spi.Prepare(filter).Match
+	// exactly (the committed-pushdown contract; no overlay dimension
+	// participates).
+	wantAll := drainAll(t, ctx, store, ref, &pit)
 	wantIDs := map[string]bool{}
+	pfBerlin, err := spi.Prepare(cityBerlin)
+	if err != nil {
+		t.Fatalf("spi.Prepare: %v", err)
+	}
 	for _, e := range wantAll {
-		if spi.MatchFilter(cityBerlin, e.Data, e.Meta) {
+		if pfBerlin.Match(e.Data, e.Meta) {
 			wantIDs[e.Meta.ID] = true
 		}
 	}
 	if len(gotIDs) != len(wantIDs) {
-		t.Fatalf("Search(PIT) id-set %v != GetAllAsAt+MatchFilter %v", gotIDs, wantIDs)
+		t.Fatalf("Search(PIT) id-set %v != Iterate(pit)+Prepare/Match %v", gotIDs, wantIDs)
 	}
 	for id := range wantIDs {
 		if !gotIDs[id] {
-			t.Errorf("expected id %s from GetAllAsAt+MatchFilter, missing from Search(PIT) %v", id, gotIDs)
+			t.Errorf("expected id %s from Iterate(pit)+Prepare/Match, missing from Search(PIT) %v", id, gotIDs)
 		}
 	}
 
@@ -560,16 +591,16 @@ func TestSearchTxPIT_CommittedOnly_ExcludesBufferedWrite(t *testing.T) {
 	}
 }
 
-// TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget: an in-tx PIT search
-// with a narrow pushable predicate over a large model must stay within
-// SearchScanLimit (the pushdown, not a GetAllAsAt-style full scan), while a
-// broad residual over the same model still exhausts the budget.
-func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
+// TestSearchTxPIT_MixedFilterOverLargeModel is the point-in-time counterpart of
+// TestSearchTx_MixedFilterOverLargeModel: the mixed filter returns exactly the
+// matching rows at the snapshot, and a broad residual over the whole model runs
+// to completion unmetered. The same caveat applies — it does not assert that
+// the pushable half narrows; see the sibling's note.
+func TestSearchTxPIT_MixedFilterOverLargeModel(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "tx_pit_budget.db")
+	dbPath := filepath.Join(dir, "tx_pit_broad_residual.db")
 	clock := sqlite.NewTestClockAt(pitBase)
-	// Scan budget of 5: far below the 50-row model size.
-	factory, err := sqlite.NewStoreFactoryForTestWithScanLimit(context.Background(), dbPath, 5, sqlite.WithClock(clock))
+	factory, err := sqlite.NewStoreFactoryForTest(context.Background(), dbPath, sqlite.WithClock(clock))
 	if err != nil {
 		t.Fatalf("create factory: %v", err)
 	}
@@ -590,8 +621,12 @@ func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 			t.Fatalf("Save: %v", err)
 		}
 	}
-	pit := clock.Now() // snapshot after all 50 committed rows
+	// Advance before capturing the snapshot: submit times are stamped under a
+	// monotonic floor, so 50 writes inside one frozen-clock tick land at
+	// successive microseconds ABOVE the clock. A point in time read off the
+	// clock itself would sit below all but the first.
 	clock.Advance(time.Millisecond)
+	pit := clock.Now() // snapshot after all 50 committed rows
 
 	tm, err := factory.TransactionManager(ctx)
 	if err != nil {
@@ -601,31 +636,33 @@ func TestSearchTxPIT_NarrowPredicateStaysWithinScanBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	searcher := store.(spi.Searcher)
+	searcher := store
 
-	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; residual regex
-	// on name then post-filters those 2 — scanned (2) <= budget (5). If the
-	// pushdown were dropped (full scan), 50 > 5 would trip the budget.
+	// Mixed filter: pushable eq(city=Berlin) narrows to 2 rows; the residual
+	// regex on name then post-filters those 2.
 	mixed := spi.Filter{Op: spi.FilterAnd, Children: []spi.Filter{
 		cityBerlin,
 		{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"},
 	}}
 	got, err := searcher.Search(txCtx, mixed, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", PointInTime: &pit,
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit, Limit: 10,
 	})
 	if err != nil {
-		t.Fatalf("narrow in-tx PIT search must stay within budget, got: %v", err)
+		t.Fatalf("narrow in-tx PIT search: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 Berlin matches, got %d", len(got))
 	}
 
-	// Broad residual over the whole model still exhausts the budget.
+	// Broad residual over the whole model: unmetered, so all 50 come back.
 	broad := spi.Filter{Op: spi.FilterMatchesRegex, Path: "name", Source: spi.SourceData, Value: ".*"}
-	_, err = searcher.Search(txCtx, broad, spi.SearchOptions{
-		ModelName: "person", ModelVersion: "1", PointInTime: &pit,
+	all, err := searcher.Search(txCtx, broad, spi.SearchOptions{
+		ModelName: "person", ModelVersion: "1", PointInTime: &pit, Limit: 50,
 	})
-	if !errors.Is(err, spi.ErrScanBudgetExhausted) {
-		t.Fatalf("broad in-tx PIT post-filter must exhaust budget, got: %v", err)
+	if err != nil {
+		t.Fatalf("broad in-tx PIT residual must not be metered: %v", err)
+	}
+	if len(all) != 50 {
+		t.Fatalf("expected all 50 rows through the residual, got %d", len(all))
 	}
 }

@@ -31,6 +31,10 @@ type ConfigVar struct {
 var rootConfigVars = []ConfigVar{
 	// --- server ---
 	{Name: "CYODA_HTTP_PORT", Topic: "server", Type: "int", Default: "8080", Description: "HTTP listen port."},
+	{Name: "CYODA_HTTP_READ_HEADER_TIMEOUT", Topic: "server", Type: "duration", Default: "10s", Description: "Time allowed to receive a request's headers on the API and admin servers. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
+	{Name: "CYODA_HTTP_READ_TIMEOUT", Topic: "server", Type: "duration", Default: "5m", Description: "Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables."},
+	{Name: "CYODA_HTTP_WRITE_TIMEOUT", Topic: "server", Type: "duration", Default: "0s", Description: "Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests."},
+	{Name: "CYODA_HTTP_IDLE_TIMEOUT", Topic: "server", Type: "duration", Default: "2m", Description: "How long an idle keep-alive connection is held open between requests. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
 	{Name: "CYODA_CONTEXT_PATH", Topic: "server", Type: "string", Default: "/api", Description: "URL prefix for all routes."},
 	{Name: "CYODA_ERROR_RESPONSE_MODE", Topic: "server", Type: "string", Default: "sanitized", Description: "Error detail level: sanitized (generic message + ticket UUID for 5xx) or verbose (internal detail included; development only)."},
 	{Name: "CYODA_LOG_LEVEL", Topic: "server", Type: "string", Default: "info", Description: "Log level: debug|info|warn|error."},
@@ -54,11 +58,12 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SEARCH_REAP_INTERVAL", Topic: "search", Type: "duration", Default: "5m", Description: "Search snapshot reap interval."},
 	{Name: "CYODA_SEARCH_MAX_SORT_KEYS", Topic: "search", Type: "int", Default: "16", Description: "Maximum number of sort keys per search request; values <= 0 clamp to the default."},
 	{Name: "CYODA_STATS_GROUP_MAX", Topic: "search", Type: "int", Default: "10000", Description: "Cardinality ceiling for grouped-stats results; also caps the request limit parameter. Values <= 0 clamp to the default."},
-
-	// --- tx ---
-	{Name: "CYODA_TX_TTL", Topic: "tx", Type: "duration", Default: "1m", Description: "Transaction TTL."},
-	{Name: "CYODA_TX_REAP_INTERVAL", Topic: "tx", Type: "duration", Default: "10s", Description: "Transaction reap interval."},
-	{Name: "CYODA_TX_OUTCOME_TTL", Topic: "tx", Type: "duration", Default: "5m", Description: "Transaction outcome TTL."},
+	{Name: "CYODA_SEARCH_ASYNC_WORKERS", Topic: "search", Type: "int", Default: "8", Description: "Async-search worker pool size. Must be >= 1; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_ASYNC_QUEUE", Topic: "search", Type: "int", Default: "256", Description: "Async-search submit queue capacity beyond the running workers; Submit returns SEARCH_QUEUE_FULL (retryable 503) once exhausted. Must be >= 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_ASYNC_MAX_PER_TENANT", Topic: "search", Type: "int", Default: "8", Description: "Maximum async-search jobs one tenant may have in flight (queued or running) on a node; further submissions get SEARCH_QUEUE_FULL (retryable 503), so one tenant cannot fill the shared queue. Defaults to CYODA_SEARCH_ASYNC_WORKERS, so it tracks a resized pool. 0 disables the cap. Must be >= 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", Topic: "search", Type: "duration", Default: "15s", Description: "How often a running async-search executor stamps job liveness and polls for cross-node cancel/terminal status, starting at submit time (while queued, not only while scanning). Must be > 0; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_STALE_AFTER", Topic: "search", Type: "duration", Default: "5m", Description: "How long a RUNNING async-search job may go without a heartbeat before the reaper claims it and marks it FAILED. Must be >= 4x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_MAX_ATTEMPTS", Topic: "search", Type: "int", Default: "3", Description: "Executions an async-search job may consume before it is failed: the initial run plus one per executor lost without a graceful release. Graceful handoffs do not count. Must be >= 1 (1 disables re-execution)."},
 
 	// --- cluster ---
 	{Name: "CYODA_CLUSTER_ENABLED", Topic: "cluster", Type: "bool", Default: "false", Description: "Enable multi-node clustering."},
@@ -73,8 +78,6 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long the dispatcher polls gossip for a compute member with matching tags."},
 	{Name: "CYODA_DISPATCH_FORWARD_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "HTTP timeout for the cross-node forwarding call."},
 	{Name: "CYODA_TX_TOKEN_TTL", Topic: "cluster", Type: "duration", Default: "1m30s", Description: "TTL of the signed transaction routing token minted on processor/criteria dispatch."},
-	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "cluster", Type: "int", Default: "10", Description: "Keep-alive send interval in seconds."},
-	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "cluster", Type: "int", Default: "30", Description: "Keep-alive timeout in seconds."},
 
 	// --- auth ---
 	{Name: "CYODA_IAM_MODE", Topic: "auth", Type: "string", Default: "mock", Description: "Authentication mode: mock or jwt."},
@@ -92,6 +95,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", Topic: "auth", Type: "int", Default: "20", Description: "Caps the number of properties in a registered JWK."},
 	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity for the bootstrap signing key and runtime-issued keypairs."},
 	{Name: "CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the withAdminRole=true query parameter on POST /clients."},
+	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the trusted-key and OIDC-provider caches; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
 	{Name: "CYODA_BOOTSTRAP_CLIENT_ID", Topic: "auth", Type: "string", Default: "", Description: "Bootstrap M2M client ID."},
 	{Name: "CYODA_BOOTSTRAP_CLIENT_SECRET", Topic: "auth", Type: "string", Default: "", Description: "Bootstrap M2M client secret; must be set when CYODA_BOOTSTRAP_CLIENT_ID is set. Supports _FILE suffix."},
 	{Name: "CYODA_BOOTSTRAP_TENANT_ID", Topic: "auth", Type: "string", Default: "default-tenant", Description: "Tenant for the bootstrap client."},
@@ -110,6 +114,8 @@ var rootConfigVars = []ConfigVar{
 
 	// --- grpc ---
 	{Name: "CYODA_GRPC_PORT", Topic: "grpc", Type: "int", Default: "9090", Description: "gRPC listen port."},
+	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "grpc", Type: "int", Default: "10", Description: "Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time."},
+	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "grpc", Type: "int", Default: "30", Description: "Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout."},
 	{Name: "CYODA_COMPUTE_GRPC_ENDPOINT", Topic: "grpc", Type: "string", Default: "", Description: "gRPC endpoint for a compute node to connect to (compute-client side)."},
 	{Name: "CYODA_COMPUTE_TOKEN", Topic: "grpc", Type: "string", Default: "", Description: "Bearer token for compute-node authentication (compute-client side)."},
 	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node calls back into (compute-client side)."},

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -90,10 +89,7 @@ type pgFixture struct {
 
 func newPGFixture(t *testing.T) *pgFixture {
 	t.Helper()
-	dbURL := os.Getenv("CYODA_TEST_DB_URL")
-	if dbURL == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
-	}
+	dbURL := testDBURL(t)
 	poolCfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		t.Fatalf("parse pool config: %v", err)
@@ -153,10 +149,7 @@ func newPGFixture(t *testing.T) *pgFixture {
 // time — used by B-I2 to compare interval=64 vs interval=1_000_000.
 func newPGFixtureWithInterval(t *testing.T, interval int) *pgFixture {
 	t.Helper()
-	dbURL := os.Getenv("CYODA_TEST_DB_URL")
-	if dbURL == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL test")
-	}
+	dbURL := testDBURL(t)
 	poolCfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		t.Fatalf("parse pool config: %v", err)
@@ -534,9 +527,10 @@ func TestExtendSchema_UnlockDoesNotWriteSavepoint(t *testing.T) {
 }
 
 // TestExtendSchema_CommutativeAppend_ConvergesUnderConcurrency — B-I7.
-// N goroutines extend the same model concurrently. Postgres has no retry
-// loop (REPEATABLE READ gives no schema-write conflict surface), so all
-// writers are expected to commit. The set-union apply is associative,
+// N goroutines extend the same model concurrently. These are self-wrap
+// writers (no ambient transaction), which serialise by blocking on the
+// per-(tenant, model) write-claim, so all are expected to commit without
+// a conflict or retry. The set-union apply is associative,
 // commutative, and idempotent — so the fold must equal the fold of any
 // serial replay regardless of interleaving. The test also asserts that
 // exactly N delta rows exist: no writer was silently dropped.
@@ -599,8 +593,9 @@ func TestExtendSchema_CommutativeAppend_ConvergesUnderConcurrency(t *testing.T) 
 }
 
 // TestExtendSchema_ContextCancellation_ReturnsCtxErr — §4.2 contract.
-// Postgres's ExtendSchema has no retry loop (REPEATABLE READ presents
-// no schema-write conflict surface) so there is no retry-budget path
+// Postgres's ExtendSchema has no transparent retry loop: a concurrent
+// same-model writer surfaces spi.ErrConflict to the caller (first
+// committer wins), so there is no retry-budget path
 // that could turn a ctx cancellation into ErrRetryExhausted. Assert
 // that the pgx-native cancellation behavior surfaces the context error
 // — the same observable contract every plugin must honour.

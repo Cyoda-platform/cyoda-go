@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
+	parityclient "github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
 func init() {
@@ -67,7 +68,7 @@ func RunExternalAPI_10_01_LoadBalancerEndToEnd(t *testing.T, fixture MultiNodeFi
 }
 
 // RunExternalAPI_10_02_ReadbackReachesAllReplicas — dictionary 10/02.
-// Write to node A, read from node B (≠ A). Repeat for every (A,B) pair.
+// Write to node A, then GET, list and search from node B (≠ A). Repeat for every (A,B) pair. This is the running check of the write-visibility contract: a successful write response means the write is visible to every subsequent read on every node.
 func RunExternalAPI_10_02_ReadbackReachesAllReplicas(t *testing.T, fixture MultiNodeFixture) {
 	t.Helper()
 	urls := fixture.BaseURLs()
@@ -102,6 +103,23 @@ func RunExternalAPI_10_02_ReadbackReachesAllReplicas(t *testing.T, fixture Multi
 			}
 			if got.Data["k"] != float64(writerIdx) {
 				t.Errorf("read via node %d (written via %d): got k=%v, want %d", readerIdx, writerIdx, got.Data["k"], writerIdx)
+			}
+
+			// The contract is not only read-by-id: a listing and a search
+			// issued on the other node immediately after the write's
+			// response must contain the entity too.
+			listed, err := dR.ListEntitiesByModel("multi2", 1)
+			if err != nil {
+				t.Errorf("list via node %d (written via %d): %v", readerIdx, writerIdx, err)
+			} else if !containsEntityID(listed, id) {
+				t.Errorf("list via node %d (written via %d): entity %s missing", readerIdx, writerIdx, id)
+			}
+			found, err := dR.SyncSearch("multi2", 1,
+				fmt.Sprintf(`{"type":"simple","jsonPath":"$.k","operatorType":"EQUALS","value":%d}`, writerIdx))
+			if err != nil {
+				t.Errorf("search via node %d (written via %d): %v", readerIdx, writerIdx, err)
+			} else if !containsEntityID(found, id) {
+				t.Errorf("search via node %d (written via %d): entity %s missing", readerIdx, writerIdx, id)
 			}
 		}
 	}
@@ -167,4 +185,13 @@ func RunExternalAPI_10_03_ParallelUpdatesSameEntity(t *testing.T, fixture MultiN
 	if int(final) < 1 || int(final) > len(urls) {
 		t.Errorf("final counter: got %v, want 1..%d (one of the parallel writes)", final, len(urls))
 	}
+}
+
+func containsEntityID(results []parityclient.EntityResult, id uuid.UUID) bool {
+	for _, r := range results {
+		if r.Meta.ID == id.String() {
+			return true
+		}
+	}
+	return false
 }

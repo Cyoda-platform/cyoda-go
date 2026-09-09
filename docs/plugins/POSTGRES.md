@@ -67,6 +67,13 @@ Full transaction-lifecycle implementation
   `SELECT CURRENT_TIMESTAMP` before `COMMIT` and records it with a
   1-hour TTL, surfaced via `GetSubmitTime`.
 
+- **Eager deletes:** an in-transaction `Delete` writes its tombstone
+  version row immediately on the transaction's connection. A re-create of
+  the same entity later in that transaction therefore leaves `DELETED` then
+  the re-create in the version history, where memory and sqlite (which
+  buffer and cancel the delete) record only the re-create. Documented
+  difference; see `docs/CONSISTENCY.md` §6.
+
 The real serialization guarantee is the combination of PostgreSQL's
 `REPEATABLE READ` snapshot + tuple locks + the TM's first-committer
 validation — not `SERIALIZABLE` alone.
@@ -165,13 +172,35 @@ Workflows live in `kv_store` under a dedicated namespace.
 **Migrations:** SQL migrations ship embedded in the binary via
 `//go:embed migrations/*.sql` and are applied on startup by
 `golang-migrate` when `CYODA_POSTGRES_AUTO_MIGRATE=true` (the
-default). Schema compatibility is verified at startup before any
-migration runs: if the database schema is newer than the binary's
-embedded migrations, the binary refuses to start rather than risk
-running against an incompatible schema. Dirty migration state is
-surfaced as a fatal error requiring manual intervention. A dedicated
-`cyoda migrate` subcommand (`RunMigrateWithDSN`) is available for
-operators who prefer to apply migrations out-of-band.
+default). Migrations run **first**; the schema-compatibility check then
+runs against a settled schema (`ensureSchemaWith`). A node booting
+alongside a peer's in-flight migration therefore waits for it rather
+than reading the dirty flag outside any lock and exiting. A database
+newer than the binary's embedded migrations is still refused — that
+check reads the version under golang-migrate's own advisory lock — and
+a schema left genuinely dirty by a failed migration is still a fatal
+error requiring manual intervention. With
+`CYODA_POSTGRES_AUTO_MIGRATE=false` the compatibility check is the only
+phase. A dedicated `cyoda migrate` subcommand (`RunMigrateWithDSN`) is
+available for operators who prefer to apply migrations out-of-band.
+
+## Canonical entity-ID order
+
+`GetPage` (paged entity listing), the entity-ID tie-break under a
+user-field `OrderBy`, and an explicit entity-ID `OrderBy` all order by the
+postgres plugin's canonical entity-ID order: **byte-wise ascending**,
+enforced with `COLLATE "C"` on every `entity_id ORDER BY` — the database's
+configured default collation may not be `"C"` and can otherwise reorder
+entity IDs differently from Go's byte-wise string comparison, so `COLLATE
+"C"` is pinned explicitly rather than relied on as a server default. The
+supporting index is `idx_entities_model_entity_id` (migration `000008`; see
+that migration's operator note below). This order is stable and
+deterministic but is **not** guaranteed identical to another storage
+engine's canonical order — each in-house backend documents byte-wise
+ascending as its native behaviour, but a client that depends on
+cross-backend identical list order is relying on an accident, not a
+contract. See `docs/cloud-parity/` for the public-API-facing statement of
+this rule.
 
 ## Configuration (env vars)
 
@@ -186,6 +215,21 @@ are rendered in the binary's `--help`.
 | `CYODA_POSTGRES_MIN_CONNS` | `5` | `pgxpool.Pool` minimum (warm) connections. |
 | `CYODA_POSTGRES_MAX_CONN_IDLE_TIME` | `5m` | Idle connection reap threshold (Go duration syntax). |
 | `CYODA_POSTGRES_AUTO_MIGRATE` | `true` | Run embedded SQL migrations on startup. When `false`, the binary refuses to start if the database schema is older than the code. |
+| `CYODA_POSTGRES_STATEMENT_TIMEOUT` | `5m` | Maximum run time for a single SQL statement. Server-side, carried in the connection startup packet. |
+| `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` | `5m` | Maximum time a connection may sit idle inside an open transaction. Server-side, carried in the connection startup packet. Must clear the longest legitimate idle gap — a compute-node callout bounded by `responseTimeoutMs` (default `30s`). |
+| `CYODA_POSTGRES_ACQUIRE_TIMEOUT` | `10s` | Deadline on the wait for a free pooled connection, after which the request fails with `503 STORAGE_UNAVAILABLE`. Applied by the pool, not the server — `pgxpool.Config` has no acquire-timeout field. |
+| `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` | `30m` | Statement ceiling for async search scans, which legitimately run far longer than an interactive statement. Applied server-side as `SET LOCAL` in the scan's own transaction. |
+| `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` | `5m` | Maximum lock wait on the migration connection. That connection disables the two statement ceilings above, so a long index build is not cancelled mid-flight; what stays bounded is waiting. |
+
+The five ceilings each take a Go duration (`30s`, `5m`, `1h`); `0`
+disables that limit. They are the only vars here that reject a
+malformed value instead of falling back to the default — a
+silently-defaulted ceiling is a silently removed safety limit.
+`CYODA_POSTGRES_STATEMENT_TIMEOUT` and `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`
+may also be set in `CYODA_POSTGRES_URL`; a value there is left alone
+unless the environment variable is also set, in which case the
+environment variable wins and the override is logged at WARN. See
+`cyoda help config database` and `cyoda help errors STORAGE_UNAVAILABLE`.
 
 ### Managed-platform notes
 
@@ -220,6 +264,27 @@ transaction mode beyond the prepared-statement cache.
   database schema is newer than the code, and (with
   `CYODA_POSTGRES_AUTO_MIGRATE=false`) if it is older. Dirty
   migration state is fatal.
+- **Migration `000008` (adds `idx_entities_model_entity_id`) blocks writers
+  to `entities` for the duration of its index build**, on an upgrade of a
+  populated deployment. It uses a plain `CREATE INDEX`, not `CREATE INDEX
+  CONCURRENTLY` — the usual rule for an index added on a table that already
+  holds data (see `cyoda help cli.migrate`, ADDING AN INDEX MIGRATION).
+  `CONCURRENTLY` is deliberately not used here because it provably
+  deadlocks this project's concurrent multi-node boot path: golang-migrate
+  holds one session-level advisory lock for a migrator's entire run, and
+  `CONCURRENTLY`'s own multi-phase build waits on every other backend's
+  in-flight statement — including a second node's migrator merely blocked
+  trying to acquire that same advisory lock, which still holds an active
+  snapshot from PostgreSQL's perspective. That is a genuine lock cycle
+  (`SQLSTATE 40P01`), reproduced empirically, not a theoretical concern. A
+  plain `CREATE INDEX` avoids the deadlock at the cost of a brief
+  writer-blocking window during the build — size the maintenance window to
+  the `entities` table's row count before upgrading a populated instance.
+  **Structural gap:** the migration runner has no retry tolerance for a
+  deadlock-killed advisory-lock acquisition, so any future migration that
+  adds an index to an already-populated table hits the same choice between
+  `CONCURRENTLY` (deadlocks concurrent multi-node boot) and a plain
+  `CREATE INDEX` (blocks writers) until the runner grows that tolerance.
 
 ## When to use / when not to use
 

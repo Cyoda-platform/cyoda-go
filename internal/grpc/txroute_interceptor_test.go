@@ -457,7 +457,7 @@ func TestTxRouteInterceptor_BadTokenEnvelope(t *testing.T) {
 // assertEnvelopeCode decodes an EntityManage error envelope and asserts it is a
 // failure whose operational code (rendered as the "CODE: detail" message prefix
 // on the CLIENT_ERROR class) matches wantCode. Covers the gRPC entry point's
-// loud-fail contract for one callback-token error class (feature #287).
+// loud-fail contract for one callback-token error class.
 func assertEnvelopeCode(t *testing.T, resp any, wantReqID, wantCode string) {
 	t.Helper()
 	ce, ok := resp.(*cepb.CloudEvent)
@@ -536,7 +536,7 @@ func TestTxRouteInterceptor_NotFoundEnvelope(t *testing.T) {
 // A valid token naming a peer that the registry reports as dead yields
 // TRANSACTION_NODE_UNAVAILABLE (503) in the envelope — the gRPC-entry-point
 // counterpart of the HTTP proxy's TestHTTPProxy_TokenForDeadNode_Returns503.
-// This is the "owner node down" callback case (#287): a compute-node callback
+// This is the "owner node down" callback case: a compute-node callback
 // (EntityManage) lands on a non-owner node, but the owner is unreachable, so the
 // B→A forward cannot proceed and the client sees a clean operational code rather
 // than a raw gRPC error. Covers classifyRouteErr's proxy.ErrNodeUnavailable arm.

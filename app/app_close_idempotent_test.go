@@ -48,10 +48,10 @@ func (f *countingStoreFactory) Close() error {
 
 // TestApp_ShutdownThenClose_StoreFactoryClosedExactlyOnce pins the
 // invariant that storeFactory.Close() is called exactly once across the
-// Shutdown() then Close() teardown sequence used by runServers (#26
-// follow-up). Prior to the fix Shutdown() also closed the factory,
-// resulting in a double close which most plugins surface as
-// "use of closed connection" errors during graceful drain.
+// Shutdown() then Close() teardown sequence used by runServers.
+// A double close — Shutdown() closing the factory as well — is what
+// most plugins surface as "use of closed connection" errors during
+// graceful drain.
 func TestApp_ShutdownThenClose_StoreFactoryClosedExactlyOnce(t *testing.T) {
 	fake := &countingStoreFactory{}
 	a := &App{storeFactory: fake}

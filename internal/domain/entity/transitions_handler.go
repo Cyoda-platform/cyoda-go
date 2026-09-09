@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -28,23 +29,30 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A point in time is used only when the caller supplies one (directly or via
+	// a transaction's submit time). With neither, this is a request for the
+	// CURRENT state and must read the current version — NOT GetAsAt(time.Now()).
+	// Version times are stamped by the backend (the database itself, on
+	// postgres), so a process-clock "now" compared against them is a two-clock
+	// comparison: a database clock running ahead of this process makes a
+	// just-written version compare as not-yet-valid and the entity read as
+	// missing. See internal/e2e/transitions_clockskew_test.go.
 	var pointInTime time.Time
+	var usePointInTime bool
 	if txIDStr != "" {
 		submitTime, err := h.txMgr.GetSubmitTime(r.Context(), txIDStr)
 		if err != nil {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
 			return
 		}
-		pointInTime = submitTime
+		pointInTime, usePointInTime = submitTime, true
 	} else if pitStr != "" {
 		parsed, err := time.Parse(time.RFC3339, pitStr)
 		if err != nil {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pointInTime format"))
 			return
 		}
-		pointInTime = parsed
-	} else {
-		pointInTime = time.Now()
+		pointInTime, usePointInTime = parsed, true
 	}
 
 	// Load entity to get its modelRef.
@@ -53,8 +61,23 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Internal("failed to access entity store", err))
 		return
 	}
-	entity, err := entityStore.GetAsAt(r.Context(), entityID, pointInTime)
+	var entity *spi.Entity
+	if usePointInTime {
+		entity, err = entityStore.GetAsAt(r.Context(), entityID, pointInTime)
+	} else {
+		entity, err = entityStore.Get(r.Context(), entityID)
+	}
 	if err != nil {
+		// A store outage is not "no such entity". Answering 404 for it is a
+		// wrong-but-available answer that reads as a completed lookup and stops
+		// the caller retrying (.claude/rules/correctness-over-availability.md).
+		// The platform-api alias onto this same read classifies it correctly
+		// (workflow.GetAvailableTransitions) and the two must not diverge; both
+		// declare the retryable 503 in api/openapi.yaml.
+		if !errors.Is(err, spi.ErrNotFound) {
+			common.WriteError(w, r, common.Internal("failed to read entity", err))
+			return
+		}
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound,
 			fmt.Sprintf("entity %s not found", entityID)))
 		return
@@ -62,7 +85,15 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 
 	transitions, err := h.engine.GetAvailableTransitionsForEntity(r.Context(), entity)
 	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+		// classifyWorkflowError, not classifyError: this is a workflow-engine
+		// failure and must be reported exactly as the write doors report the
+		// identical condition. In particular an unresolvable compute member
+		// for a FUNCTION workflow criterion is a retryable 503
+		// NO_COMPUTE_MEMBER_FOR_TAG, not an opaque 500 — and classifyError
+		// would additionally have made the status depend on whether cluster
+		// mode is enabled, since only the cluster dispatcher pre-classifies
+		// that sentinel into an AppError.
+		common.WriteError(w, r, classifyWorkflowError(err))
 		return
 	}
 
@@ -92,9 +123,11 @@ func (h *Handler) HandleFetchTransitions(w http.ResponseWriter, r *http.Request)
 
 	modelRef := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 
-	transitions, err := h.engine.GetAvailableTransitions(r.Context(), entityID, modelRef, time.Now())
+	transitions, err := h.engine.GetAvailableTransitions(r.Context(), entityID, modelRef)
 	if err != nil {
-		common.WriteError(w, r, classifyError(err))
+		// Same classifier as HandleGetTransitions — this endpoint is an alias
+		// over the same engine call and must not diverge on status.
+		common.WriteError(w, r, classifyWorkflowError(err))
 		return
 	}
 

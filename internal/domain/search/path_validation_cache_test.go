@@ -86,7 +86,7 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 
 	const reqCount = 100
 	for i := 0; i < reqCount; i++ {
-		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+		_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 		if err == nil {
 			t.Fatalf("iter %d: expected error for unknown path, got nil", i)
 		}
@@ -105,11 +105,11 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 // TestSearch_NegativeCache_InvalidatedOnSchemaChange asserts that after
 // InvalidateRef fires for a (tenant, ref), the previously-cached
 // negative entry is dropped: the next validation re-consults the inner
-// store. Required to preserve the issue #77 "fresh-after-extend"
+// store. Required to preserve the "fresh-after-extend"
 // contract — a peer extending the model must not be hidden behind a
 // stale negative cache.
 //
-// Issue #174 — pre-fix the cache subscribed to a gossip broadcaster
+// Pre-fix the cache subscribed to a gossip broadcaster
 // directly, so this contract did not hold on single-node deployments.
 // After the redesign, app.go wires modelcache.SubscribeLocal to
 // pathValidationCache.InvalidateRef so every invalidation (local OR
@@ -139,7 +139,7 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChange(t *testing.T) {
 	}
 
 	// First request: warms the negative cache.
-	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10}); err == nil {
 		t.Fatalf("expected error on first call")
 	}
 	getsBefore := ms.getCount.Load()
@@ -147,7 +147,7 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChange(t *testing.T) {
 
 	// Second request: EnsureModelRegistered fires one Get, but path validation
 	// should hit the negative cache (no additional inner store calls).
-	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10}); err == nil {
 		t.Fatalf("expected error on second call")
 	}
 	if ms.getCount.Load() > getsBefore+1 || ms.refreshCount.Load() != refreshesBefore {
@@ -160,7 +160,7 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChange(t *testing.T) {
 	cache.InvalidateRef("tenant-1", ref)
 
 	// Third request: cache invalidated, inner Get must fire again.
-	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{}); err == nil {
+	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10}); err == nil {
 		t.Fatalf("expected error on third call")
 	}
 	if ms.getCount.Load() <= getsBefore {
@@ -205,7 +205,7 @@ func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
 			if i == concurrency/2 {
 				cache.InvalidateRef("tenant-1", ref)
 			}
-			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{})
+			_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 			errs <- err
 		}(i)
 	}

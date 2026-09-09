@@ -15,7 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
-// Regression test for issue #68 item 9 (originally surfaced as #97): if the
+// Regression test: if the
 // JWKS cache is keyed on `kid` alone, then two issuers advertising different
 // keys under the same `kid` can confuse the validator — a token signed by
 // issuer A's key but claiming issuer B can be accepted because a cache lookup

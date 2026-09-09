@@ -10,17 +10,24 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// RunSchemaExtensionConcurrentConvergence asserts B-I7: N concurrent
-// extensions on the same model all succeed and the final fold is
-// byte-identical to a serial replay via the in-memory oracle. This
-// asserts permutation invariance of delta application (B-I5) through
-// the HTTP layer — concurrent N-way extension converges on the same
-// bytes as any serial ordering.
+// RunSchemaExtensionConcurrentConvergence asserts B-I7 for STRUCTURAL
+// extension: N concurrent new-field extensions on the same model all succeed
+// and the final fold is byte-identical to a serial replay via the in-memory
+// oracle. This asserts permutation invariance of delta application (B-I5)
+// through the HTTP layer.
 //
-// If a backend's output depends on delta application order (e.g. field
-// order in the exported schema reflects insertion order), this test
-// will fail. That failure is the invariant we want to catch — do not
-// loosen the assertion.
+// If a backend's output depends on delta application order (e.g. field order
+// in the exported schema reflects insertion order), this test will fail. That
+// failure is the invariant we want to catch — do not loosen the assertion for
+// the shapes tested here.
+//
+// Byte-identity does NOT extend to numeric- and temporal-leaf widening. A
+// value a leaf already holds does not move the model, so whether a write
+// contributes its type depends on the snapshot the writing node held — the
+// ordinary state during a cross-node gossip window. The weaker property that
+// does hold there (every fold is monotone and admits every written value) is
+// asserted by RunSchemaNumericFoldCarveout. Adding a numeric leaf to the
+// scenario below would make it flaky, not stricter.
 func RunSchemaExtensionConcurrentConvergence(t *testing.T, fixture BackendFixture) {
 	const N = 10
 	tenant := fixture.NewTenant(t)

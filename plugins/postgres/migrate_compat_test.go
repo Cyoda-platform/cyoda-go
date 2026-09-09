@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"os"
 	"testing"
 	"time"
 
@@ -11,17 +10,11 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// openDBForCompat opens a *sql.DB from CYODA_TEST_DB_URL for schema-compat
+// openDBForCompat opens a *sql.DB against the test database for schema-compat
 // tests. Each call returns a fresh connection; the caller must close it.
-// Skips the test if CYODA_TEST_DB_URL is not set.
 func openDBForCompat(t *testing.T) *sql.DB {
 	t.Helper()
-	url := os.Getenv("CYODA_TEST_DB_URL")
-	if url == "" {
-		t.Skip("CYODA_TEST_DB_URL not set — skipping PostgreSQL compat test")
-	}
-
-	poolCfg, err := pgxpool.ParseConfig(url)
+	poolCfg, err := pgxpool.ParseConfig(testDBURL(t))
 	if err != nil {
 		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
 	}
@@ -96,7 +89,7 @@ func TestCheckSchemaCompat_SchemaMatches_Postgres(t *testing.T) {
 	_, _ = db.Exec(`CREATE SCHEMA public`)
 
 	// runMigrations takes a *pgxpool.Pool, so we use a dedicated pool here.
-	url := os.Getenv("CYODA_TEST_DB_URL")
+	url := testDBURL(t)
 	poolCfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		t.Fatalf("parse URL for migration pool: %v", err)
@@ -110,7 +103,7 @@ func TestCheckSchemaCompat_SchemaMatches_Postgres(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := runMigrations(context.Background(), pool); err != nil {
+	if err := runMigrations(context.Background(), pool, defaultMigrateLockTimeout); err != nil {
 		t.Fatalf("runMigrations: %v", err)
 	}
 	// After migrations, DB is at max version — compat check should pass with

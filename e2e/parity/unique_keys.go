@@ -39,7 +39,7 @@ package parity
 //     the negative case is covered by a unit test with a fake StoreFactory (task 8).
 //   - ASYNC_NEW_TX processor writing a duplicate (spec §7): the parity compute
 //     harness has no async-new-tx (savepoint) processor infrastructure. This is
-//     waived here, consistent with the existing TODO(#172) deferrals in
+//     waived here, consistent with the existing TODO deferrals in
 //     contracts.go (RunProcessorAsyncNewTxRollback) which block on the same
 //     missing ASYNC_NEW_TX semantics. Re-instate when that harness lands.
 

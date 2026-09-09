@@ -3,33 +3,41 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Compile-time check that *entityStore implements spi.Searcher.
-var _ spi.Searcher = (*entityStore)(nil)
+// Compile-time check that *entityStore implements spi.EntityStore.
+var _ spi.EntityStore = (*entityStore)(nil)
 
-// Search implements spi.Searcher for the PostgreSQL entity store. Pushable
+// Search implements spi.EntityStore.Search for the PostgreSQL entity store. Pushable
 // predicates go into the SQL WHERE via planQuery; the residual (regex /
 // case-insensitive ops) is evaluated in Go by postgresIter/evalPostFilter.
 //
-// Bounding: Search is bounded-or-fail. opts.Limit > 0 is a cap on the matched
-// set, not a page size — a matched set larger than Limit is
+// Bounding: Search is bounded-or-fail. opts.Limit >= 1 is REQUIRED: it is a
+// cap on the matched set, not a page size. A matched set larger than Limit is
 // spi.ErrSearchResultLimitExceeded, never a truncated prefix; exactly-at-limit
-// succeeds. opts.Limit <= 0 is unbounded and must never raise; no default is
-// substituted for it. When there is no residual, the bound is pushed into SQL
-// as "LIMIT limit+1": the extra row, if returned, is the proof that the
-// matched set does not fit, which Search reports instead of truncating to
-// limit. With a residual, rows are streamed and post-filtered in Go, and
-// Search raises the moment the running count exceeds Limit — there is no page
-// to gather, so it stops as soon as the matched set is known not to fit.
+// succeeds. opts.Limit <= 0 is a contract violation — Search returns an error
+// rather than treating it as "unbounded" or substituting a default of its own
+// (see spi.EntityStore.Search's doc comment; the engine resolves the direct-search
+// default before calling, so Search itself never needs to guess a bound).
+// When there is no residual, the bound is pushed into SQL as "LIMIT limit+1":
+// the extra row, if returned, is the proof that the matched set does not fit,
+// which Search reports instead of truncating to limit. With a residual, rows
+// are streamed and post-filtered in Go, and Search raises the moment the
+// running count exceeds Limit — there is no page to gather, so it stops as
+// soon as the matched set is known not to fit.
 //
-// No scan budget (unlike sqlite): the production engine streams in SQL order
-// and bounds memory via the limit+1 probe / early-raise above. An unbounded
+// No scan budget — no backend has one: bounding search TIME is the caller's,
+// via the direct-search timeout or async job cancellation. What the engine
+// bounds is memory: it streams in SQL order and uses the limit+1 probe /
+// early-raise above. An unbounded
 // request with a residual is O(n) memory — the same profile as the in-memory
-// fallback it replaces.
+// fallback it replaces. Time is bounded server-side by statement_timeout, and
+// on the async-search scan by that workload's own ceiling — see searchCommitted.
 //
 // Transaction awareness (read-your-own-writes). Unlike the memory and sqlite
 // backends — which stage a transaction's writes in an in-process buffer
@@ -41,10 +49,13 @@ var _ spi.Searcher = (*entityStore)(nil)
 // RYW is provided by the database, and the committed pushdown IS the RYW result.
 // No buffer overlay, no spi.MergeBounded, and no tx.OpMu are involved (postgres
 // never populates Buffer/Deletes/DeleteAttribution or any other
-// TransactionState bookkeeping field; Get/GetAll don't take tx.OpMu either).
+// TransactionState bookkeeping field; Get/GetPage don't take tx.OpMu either).
 // The one tx-specific behaviour Search adds over the committed pushdown
 // is read-set recording — see the TrackingRead block at the end of the function.
 func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if opts.Limit <= 0 {
+		return nil, fmt.Errorf("search: limit must be >= 1, got %d", opts.Limit)
+	}
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
@@ -60,7 +71,7 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// Read-set recording. Only in-transaction, current-state (PointInTime==nil),
 	// and only when TrackingRead is requested. Each returned entity's observed
 	// version enters the tx read-set so commit-time first-committer-wins
-	// validates it (mirroring Get/GetAll, which record via recordReadIfInTx —
+	// validates it (mirroring Get/GetPage, which record via recordReadIfInTx —
 	// but they record unconditionally; Search records only when asked).
 	//
 	// Recording the matched set, which under bounded-or-fail is everything the
@@ -73,7 +84,7 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	// read-set — harmless: ValidateReadSet runs inside the same pgx.Tx at
 	// commit and sees the own write at the recorded version, so it matches and
 	// never false-conflicts. In-tx point-in-time search is committed-only and
-	// records nothing (consistent with GetAsAt / GetAllAsAt, which deliberately
+	// records nothing (consistent with GetAsAt, which deliberately
 	// skip read-set tracking for historical reads).
 	if opts.TrackingRead && opts.PointInTime == nil && s.tm != nil {
 		for _, e := range results {
@@ -83,19 +94,125 @@ func (s *entityStore) Search(ctx context.Context, filter spi.Filter, opts spi.Se
 	return results, nil
 }
 
-// searchCommitted runs the committed pushdown: plan the filter, push the
+// searchCommitted routes the committed pushdown to the querier it should run
+// through, which is the context-resolving one for every search except the
+// async-search scan.
+//
+// That scan gets a transaction of its own so it can raise its statement ceiling
+// (searchUnderOwnCeiling). The two conditions are both required: the context
+// must be one the AsyncSearchStore marked, AND there must be no transaction
+// already active — opening a second transaction under a caller who is already in
+// one would run the scan outside the transaction whose writes it is supposed to
+// see, losing read-your-own-writes and holding a second pooled connection. An
+// async job never runs in a transaction, so this is a guard, not a branch the
+// production path takes.
+//
+// A point-in-time search is the other exception, and the opposite one: it is
+// committed-only, so it deliberately runs OFF any ambient transaction, through
+// committedQuerier (search_base.go). The ceiling branch above already satisfies
+// that by construction — it opens a transaction of its own — so the routing only
+// needs stating on the ordinary path.
+func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	if ceiling, ok := searchScanCeiling(ctx); ok && s.pool != nil && spi.GetTransaction(ctx) == nil {
+		return s.searchUnderOwnCeiling(ctx, ceiling, filter, opts)
+	}
+	if opts.PointInTime != nil {
+		return s.runSearch(ctx, s.committedQuerier(), filter, opts)
+	}
+	return s.runSearch(ctx, s.q, filter, opts)
+}
+
+// searchUnderOwnCeiling runs the scan in a transaction whose first statement
+// replaces the interactive statement ceiling with the async-search one.
+//
+// SET LOCAL, never SET: the ceiling has to die with the transaction. A session
+// SET would ride the pooled connection back into the pool and cap — or uncap —
+// every interactive statement that borrowed it next.
+//
+// The transaction is read-only in effect and always rolled back: there is
+// nothing to commit, and a rollback returns the connection just as cleanly.
+func (s *entityStore) searchUnderOwnCeiling(ctx context.Context, ceiling time.Duration, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	// Acquire-only deadline, cancelled the moment Begin has returned — see
+	// newAcquireContext. A deadline that reached the transaction handle would
+	// cancel the scan when the acquire window closed, which is the opposite of
+	// giving it room to run.
+	acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
+	tx, err := s.pool.Begin(acquireCtx)
+	cancelAcquire()
+	if err != nil {
+		// classifyAcquireErr rather than classifyError alone: an acquire that hit
+		// this plugin's own deadline never reached the server, so it carries no
+		// SQLSTATE and no torn socket for classifyError to recognise, and would
+		// fall through unmarked. classifyAcquireErr adds that case and runs
+		// classifyError for the rest, so the torn-socket shape keeps its marker
+		// too. The caller-visible job record is unchanged either way —
+		// jobFailureMessage collapses anything it does not recognise to a fixed
+		// string — but the classification is what the store's own contract is
+		// judged on, and it now matches the other two acquires.
+		return nil, classifyAcquireErr(ctx, acquireCtx, "begin async search scan", err)
+	}
+	// Rollback on a context derived WithoutCancel: on the cancellation path the
+	// caller's context may itself be the thing that expired, and a rollback on an
+	// expired context destroys the pooled connection instead of returning it.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The tenant RLS policies read, matching what TransactionManager.Begin does
+	// for every other transaction this plugin opens. set_config rather than SET
+	// LOCAL because PostgreSQL's SET takes no bound parameters.
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", string(s.tenantID)); err != nil {
+		return nil, fmt.Errorf("set tenant for async search scan: %w", classifyError(err))
+	}
+
+	// pgDurationMillis, never a Go duration string: PostgreSQL's time units are
+	// us/ms/s/min/h/d — "m" is not among them — and Go renders 30 minutes as
+	// "30m0s", which is invalid twice over.
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = "+pgDurationMillis(ceiling)); err != nil {
+		return nil, fmt.Errorf("set search statement ceiling: %w", classifyError(err))
+	}
+
+	results, err := s.runSearch(ctx, tx, filter, opts)
+	if err != nil {
+		return nil, s.classifyScanError(err)
+	}
+	return results, nil
+}
+
+// classifyScanError names the async-search ceiling when it is what fired, and
+// otherwise classifies the error the way every other statement in this plugin is
+// classified.
+//
+// The ceiling is checked first and does NOT fall through to classifySQLState:
+// that branch logs statement_timeout by name, which would be the wrong setting
+// here and would send an operator to the wrong knob.
+func (s *entityStore) classifyScanError(err error) error {
+	if isStatementTimeout(err) {
+		// NOT retryable, and deliberately not marked so: a scan re-run after
+		// exceeding its ceiling exceeds it again. Naming the setting is the whole
+		// operational benefit — the caller's own job record says only that a
+		// ceiling was hit.
+		slog.Warn("async search scan cancelled after exceeding the configured ceiling",
+			"pkg", "postgres", "setting", "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", "err", err)
+		return &searchCeilingError{cause: err}
+	}
+	return classifyError(err)
+}
+
+// runSearch runs the committed pushdown through q: plan the filter, push the
 // pushable portion to SQL, and — when there is no residual — push the
 // limit+1 probe described on Search above. When there is a residual, rows
 // are streamed and post-filtered in Go with no paging: Search raises the
-// moment the running count exceeds the bound. Executed through the context-
-// resolving Querier, so inside a transaction it observes the tx's own writes
+// moment the running count exceeds the bound. With the context-resolving
+// Querier, inside a transaction it observes the tx's own writes
 // (read-your-own-writes) natively; outside a transaction it reads committed data.
-func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
-	// Zero-value Filter means "match all" — skip planQuery (it would treat the
-	// empty Op as non-pushable and install the zero filter as a residual).
-	var plan sqlPlan
-	if filter.Op != "" {
-		plan = planQuery(filter)
+//
+// opts.Limit is guaranteed >= 1 here — Search rejects Limit <= 0 before
+// runSearch is ever reached, so the LIMIT pushdown and the overflow checks
+// below are unconditional.
+func (s *entityStore) runSearch(ctx context.Context, q Querier, filter spi.Filter, opts spi.SearchOptions) ([]*spi.Entity, error) {
+	// Zero-value Filter means "match all".
+	plan, err := planFor(filter)
+	if err != nil {
+		return nil, fmt.Errorf("Search: %w", err)
 	}
 
 	baseQuery, baseArgs := s.searchBaseQuery(opts.ModelName, opts.ModelVersion, opts.PointInTime)
@@ -106,21 +223,21 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 		baseArgs = append(baseArgs, plan.args...)
 	}
 
-	baseQuery += orderByClause(opts)
+	baseQuery += orderByClause(opts.OrderBy)
 
 	// No residual → push the bound into SQL. Ask for limit+1: the extra row is
 	// the proof that the matched set does not fit, which bounded-or-fail must
 	// report instead of truncating to limit.
-	if plan.postFilter == nil && opts.Limit > 0 {
+	if plan.postFilter == nil {
 		baseQuery += fmt.Sprintf(" LIMIT $%d", len(baseArgs)+1)
 		baseArgs = append(baseArgs, opts.Limit+1)
 	}
 
-	rows, err := s.q.Query(ctx, baseQuery, baseArgs...)
+	rows, err := q.Query(ctx, baseQuery, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("search query: %w", err)
 	}
-	it := &postgresIter{ctx: ctx, rows: rows, postFilter: plan.postFilter}
+	it := &postgresIter{ctx: ctx, rows: rows, preparedPostFilter: plan.preparedPostFilter}
 	defer it.Close()
 
 	var results []*spi.Entity
@@ -133,7 +250,7 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 		if err := it.Err(); err != nil {
 			return nil, err
 		}
-		if opts.Limit > 0 && len(results) > opts.Limit {
+		if len(results) > opts.Limit {
 			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 		}
 		return results, nil
@@ -143,7 +260,7 @@ func (s *entityStore) searchCommitted(ctx context.Context, filter spi.Filter, op
 	// moment the matched set is known not to fit — there is no page to gather.
 	for it.Next() {
 		results = append(results, it.Entity())
-		if opts.Limit > 0 && len(results) > opts.Limit {
+		if len(results) > opts.Limit {
 			return nil, fmt.Errorf("search: more than %d matches: %w", opts.Limit, spi.ErrSearchResultLimitExceeded)
 		}
 	}
@@ -166,9 +283,15 @@ var metaJSONKey = map[string]string{
 	"transactionId":           "transaction_id",
 }
 
-// orderByClause builds the SQL ORDER BY from opts.OrderBy.
+// orderByClause builds the SQL ORDER BY from order. Shared by Search
+// (SearchOptions.OrderBy) and Iterate (IterateOptions.OrderBy) — both fields
+// are the same []spi.OrderSpec type.
 //
 //   - Empty → default `ORDER BY entity_id COLLATE "C"` (unique, deterministic).
+//     For Search this is the documented canonical default; for Iterate an
+//     empty OrderBy means "unspecified" per the Iterate doc, and a
+//     deterministic order is a conformant (if stronger-than-required) choice
+//     within "unspecified".
 //   - Every key gets NULLS LAST so absent/null values sort after real values
 //     regardless of ASC/DESC.
 //   - An entity_id tiebreaker is appended unless the terminal key already
@@ -182,14 +305,14 @@ var metaJSONKey = map[string]string{
 // entity_id and other bare column names resolve against the entities table
 // (current-state) or the `latest` derived table (point-in-time), both of
 // which expose entity_id in their outer SELECT.
-func orderByClause(opts spi.SearchOptions) string {
-	if len(opts.OrderBy) == 0 {
+func orderByClause(order []spi.OrderSpec) string {
+	if len(order) == 0 {
 		// COLLATE "C": byte-order semantics, consistent with @id sort key and
 		// sqlite/memory paths; guards against nondeterministic ICU DB collation.
 		return ` ORDER BY entity_id COLLATE "C"`
 	}
-	clauses := make([]string, 0, len(opts.OrderBy)+1)
-	for _, spec := range opts.OrderBy {
+	clauses := make([]string, 0, len(order)+1)
+	for _, spec := range order {
 		expr := orderByFieldExpr(spec)
 		if spec.Desc {
 			expr += " DESC"
@@ -199,7 +322,7 @@ func orderByClause(opts spi.SearchOptions) string {
 	// Append entity_id tiebreaker unless the last spec already IS entity_id.
 	// COLLATE "C": byte-order semantics consistent with @id sort key and
 	// sqlite/memory paths; guards against nondeterministic ICU DB collation.
-	if last := opts.OrderBy[len(opts.OrderBy)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
+	if last := order[len(order)-1]; !(last.Source == spi.SourceMeta && last.Path == "id") {
 		clauses = append(clauses, `entity_id COLLATE "C"`)
 	}
 	return " ORDER BY " + strings.Join(clauses, ", ")

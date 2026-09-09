@@ -25,7 +25,7 @@ import (
 )
 
 // scheduled_function_rpc_test.go is Task 9.3's gRPC envelope coverage layer
-// for the scheduled-transition Function feature (issue #419): it proves the
+// for the scheduled-transition Function feature: it proves the
 // error classes tasks 9.1/9.2 already cover at the HTTP entrypoint
 // (internal/e2e/scheduled_function_test.go) surface with the SAME envelope
 // shape (Success=false, Error.Code, Error.Message) through the gRPC
@@ -75,7 +75,7 @@ func newTestEnvWithDispatch(t *testing.T) (*CloudEventsServiceImpl, *workflow.Ha
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(dispatcher))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), searchService)
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
 	modelHandler := model.New(factory)
 	workflowHandler := workflow.New(factory, engine)
 
@@ -217,7 +217,7 @@ func TestRPC_ScheduledFunction_Import_ValidationFailed(t *testing.T) {
 // compute member surfaces the Phase-2 uniform-503 NO_COMPUTE_MEMBER_FOR_TAG
 // classification through the gRPC EntityManage envelope — the same
 // classifyWorkflowError passthrough internal/e2e/dispatch_infra_error_test.go
-// proves over HTTP, reproduced here against the gRPC entrypoint (issue #419
+// proves over HTTP, reproduced here against the gRPC entrypoint (the
 // design's "G" coverage column: HTTP and gRPC are separate entry points).
 func TestRPC_ScheduledFunction_NoMember_Returns503Envelope(t *testing.T) {
 	const modelName = "grpc-schedfn-no-member"
@@ -250,9 +250,9 @@ func TestRPC_ScheduledFunction_DispatchTimeout_Envelope(t *testing.T) {
 	wf := scheduleFunctionRPCWorkflowJSON("schedfn-timeout-wf", schedFnConfigJSON("calcSlow", tag, responseTimeoutMs))
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName, wf)
 
-	svc.registry.Register(testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
+	svc.registry.Register("m-1", testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
 		return nil // never answers — the request is tracked but never completed
-	})
+	}, nil)
 
 	typed := createScheduledEntity(t, svc, ctx, modelName)
 	assertClientErrorEnvelope(t, typed, "DISPATCH_TIMEOUT")
@@ -275,8 +275,8 @@ func TestRPC_ScheduledFunction_MalformedResult_Envelope(t *testing.T) {
 	wf := scheduleFunctionRPCWorkflowJSON("schedfn-malformed-wf", schedFnConfigJSON("calcBadResult", tag, 0))
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName, wf)
 
-	var memberID string
-	memberID = svc.registry.Register(testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
+	const memberID = "m-1"
+	svc.registry.Register(memberID, testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
 		reqID, err := extractRequestID(ce)
 		if err != nil {
 			t.Errorf("extractRequestID: %v", err)
@@ -290,7 +290,7 @@ func TestRPC_ScheduledFunction_MalformedResult_Envelope(t *testing.T) {
 			Result: json.RawMessage(`{"fireAt":1234567890000,"fireAfterMs":1000}`),
 		})
 		return nil
-	})
+	}, nil)
 
 	typed := createScheduledEntity(t, svc, ctx, modelName)
 	if typed.Success {
@@ -326,8 +326,8 @@ func TestRPC_ScheduledFunction_ExplicitFire_ReturnsTransitionNotFound(t *testing
 	wf := scheduleFunctionRPCWorkflowJSON("schedfn-explicit-wf", schedFnConfigJSON("calcExplicit", tag, 0))
 	setupScheduledWorkflowRPCEnv(t, svc, wfHandler, ctx, modelName, wf)
 
-	var memberID string
-	memberID = svc.registry.Register(testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
+	const memberID = "m-1"
+	svc.registry.Register(memberID, testTenant, []string{tag}, func(ce *cepb.CloudEvent) error {
 		reqID, err := extractRequestID(ce)
 		if err != nil {
 			t.Errorf("extractRequestID: %v", err)
@@ -341,7 +341,7 @@ func TestRPC_ScheduledFunction_ExplicitFire_ReturnsTransitionNotFound(t *testing
 			Result: json.RawMessage(`{"fireAfterMs":600000}`),
 		})
 		return nil
-	})
+	}, nil)
 
 	createTyped := createScheduledEntity(t, svc, ctx, modelName)
 	if !createTyped.Success {
@@ -379,7 +379,7 @@ func TestRPC_ScheduledFunction_ExplicitFire_ReturnsTransitionNotFound(t *testing
 }
 
 // --- Phase-2 uniform-503 reconciliation: processor/criterion no-member,
-// via the gRPC entrypoint (issue #419's Function inherits this
+// via the gRPC entrypoint (the Function inherits this
 // classification; these two pin the processor/criterion siblings it
 // inherited it FROM, at the entrypoint dispatch_test.go's unit seam and
 // internal/e2e's HTTP coverage don't reach). ---

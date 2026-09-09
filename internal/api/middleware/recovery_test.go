@@ -1,7 +1,9 @@
 package middleware_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,5 +122,114 @@ func TestRecoveryMiddleware_VerboseMode_NoStackTraceInResponse(t *testing.T) {
 	}
 	if strings.Contains(body, "runtime/debug") {
 		t.Error("response body must not contain 'runtime/debug' (stack trace leaked)")
+	}
+}
+
+// TestRecoveryMiddleware_PanicLogCarriesTheClientTicket — the ticket is the only
+// thing a client can quote, and the stack is the only thing that says what
+// happened. If the two are not joined, an operator handed a ticket finds the
+// FATAL line whose detail has been deliberately overwritten with "panic
+// recovered; check server logs for details" and has no way to reach the stack
+// that sits in a different line. The gRPC door already logs the ticket with the
+// panic; this is the HTTP half.
+func TestRecoveryMiddleware_PanicLogCarriesTheClientTicket(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("something terrible")
+	})
+
+	w := httptest.NewRecorder()
+	middleware.Recovery(healthFlag)(handler).ServeHTTP(w, httptest.NewRequest("GET", "/test", nil))
+
+	var pd map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&pd); err != nil {
+		t.Fatalf("decode problem detail: %v", err)
+	}
+	ticket, _ := pd["ticket"].(string)
+	if ticket == "" {
+		t.Fatal("no ticket in the panic response")
+	}
+
+	var panicLine map[string]any
+	for _, raw := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+			continue
+		}
+		if rec["msg"] == "panic recovered" {
+			panicLine = rec
+		}
+	}
+	if panicLine == nil {
+		t.Fatalf("no \"panic recovered\" line was logged: %s", buf.String())
+	}
+	if got, _ := panicLine["ticket"].(string); got != ticket {
+		t.Errorf("panic log ticket = %q, client was given %q — the stack cannot be joined to the ticket", got, ticket)
+	}
+	if stack, _ := panicLine["stack"].(string); !strings.Contains(stack, "goroutine") {
+		t.Errorf("the ticketed line carries no stack, so joining it buys nothing: %v", panicLine["stack"])
+	}
+}
+
+// net/http uses http.ErrAbortHandler as a sentinel: a handler (notably
+// httputil.ReverseProxy when the client hangs up mid-body) panics with it to
+// abort the response silently. Recovery must re-raise it, not treat it as a
+// defect: no log, no 500, no health latch.
+func TestRecoveryMiddlewareReRaisesErrAbortHandler(t *testing.T) {
+	healthFlag := &atomic.Bool{}
+	healthFlag.Store(true)
+	handler := middleware.Recovery(healthFlag)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	srv := httptest.NewServer(handler) // a real server: net/http swallows the sentinel
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/x")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("expected the connection to be aborted, got status %d", resp.StatusCode)
+	}
+	if !healthFlag.Load() {
+		t.Fatal("ErrAbortHandler must not latch the health flag")
+	}
+}
+
+// A surface that does no engine or store work on the application's behalf —
+// the admin listener's probes and metrics scrape — opts out of the latch by
+// passing no flag. Containment still applies: the panic becomes a sanitised
+// 500 carrying a ticket. Nothing the process holds is marked unhealthy.
+func TestRecoveryMiddleware_NilFlagContainsWithoutLatch(t *testing.T) {
+	common.SetErrorResponseMode("sanitized")
+	// A flag the caller holds but never hands to Recovery. It stands in for
+	// the node-health flag the admin door deliberately does not pass, and it
+	// must come out of the panic untouched.
+	otherFlag := &atomic.Bool{}
+	otherFlag.Store(true)
+
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("probe exploded")
+	})
+	w := httptest.NewRecorder()
+	middleware.Recovery(nil)(handler).ServeHTTP(w, httptest.NewRequest("GET", "/readyz", nil))
+
+	if w.Code != 500 {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	var pd map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&pd); err != nil {
+		t.Fatalf("decode problem detail: %v", err)
+	}
+	if ticket, _ := pd["ticket"].(string); ticket == "" {
+		t.Error("expected a ticket UUID in the panic response")
+	}
+	if !otherFlag.Load() {
+		t.Error("Recovery(nil) must not latch any health flag")
 	}
 }

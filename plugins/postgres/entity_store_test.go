@@ -195,21 +195,6 @@ func TestEntityStore_CompareAndSave_Mismatch(t *testing.T) {
 	}
 }
 
-func TestEntityStore_CompareAndSave_NewEntity(t *testing.T) {
-	factory := setupEntityTest(t)
-	ctx := ctxWithTenant("entity-tenant")
-	store, _ := factory.EntityStore(ctx)
-
-	ent := makeEntity("ent-cas-new")
-	v, err := store.CompareAndSave(ctx, ent, "any-tx-id")
-	if err != nil {
-		t.Fatalf("CompareAndSave for new entity: %v", err)
-	}
-	if v != 1 {
-		t.Errorf("expected version 1, got %d", v)
-	}
-}
-
 func TestEntityStore_GetNotFound(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
@@ -229,20 +214,24 @@ func TestEntityStore_GetAsAt(t *testing.T) {
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
+	pool := factory.Pool()
+
 	ent := makeEntity("ent-asat")
 	ent.Data = []byte(`{"value":"v1"}`)
 	store.Save(ctx, ent)
+	// Boundaries come from the DB clock, never time.Now() — see pit_time_test.go.
+	// (Save takes a defensive copy, so the stamp is not readable off ent.)
+	afterV1 := dbNow(t, ctx, pool)
 
-	// Record time after v1 was saved
-	time.Sleep(2 * time.Millisecond)
-	afterV1 := time.Now().UTC()
+	// Space the two versions into distinct instants.
 	time.Sleep(2 * time.Millisecond)
 
 	ent.Data = []byte(`{"value":"v2"}`)
 	ent.Meta.State = "MODIFIED"
 	store.Save(ctx, ent)
+	afterV2 := dbNow(t, ctx, pool)
 
-	// GetAsAt at afterV1 should return v1
+	// GetAsAt after v1 but before v2 should return v1
 	got, err := store.GetAsAt(ctx, "ent-asat", afterV1)
 	if err != nil {
 		t.Fatalf("GetAsAt: %v", err)
@@ -251,8 +240,8 @@ func TestEntityStore_GetAsAt(t *testing.T) {
 		t.Errorf("GetAsAt version = %d, want 1", got.Meta.Version)
 	}
 
-	// GetAsAt at now should return v2
-	got2, err := store.GetAsAt(ctx, "ent-asat", time.Now().UTC())
+	// GetAsAt after v2 should return v2
+	got2, err := store.GetAsAt(ctx, "ent-asat", afterV2)
 	if err != nil {
 		t.Fatalf("GetAsAt now: %v", err)
 	}
@@ -261,7 +250,7 @@ func TestEntityStore_GetAsAt(t *testing.T) {
 	}
 }
 
-func TestEntityStore_GetAll(t *testing.T) {
+func TestEntityStore_Iterate(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
@@ -277,45 +266,40 @@ func TestEntityStore_GetAll(t *testing.T) {
 	diff.Meta.ModelRef = spi.ModelRef{EntityName: "Invoice", ModelVersion: "1"}
 	store.Save(ctx, diff)
 
-	all, err := store.GetAll(ctx, ref)
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, ctx, store, ref, nil)
 	if len(all) != 3 {
 		t.Errorf("expected 3, got %d", len(all))
 	}
 }
 
-func TestEntityStore_GetAllAsAt(t *testing.T) {
+func TestEntityStore_IterateAsAt(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
 
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
+	pool := factory.Pool()
+
 	store.Save(ctx, makeEntity("ent-aa-1"))
 	store.Save(ctx, makeEntity("ent-aa-2"))
+	// Boundaries come from the DB clock, never time.Now() — see pit_time_test.go.
+	afterFirst := dbNow(t, ctx, pool)
 
-	time.Sleep(2 * time.Millisecond)
-	afterFirst := time.Now().UTC()
+	// Space the third save into a distinct instant.
 	time.Sleep(2 * time.Millisecond)
 
 	store.Save(ctx, makeEntity("ent-aa-3"))
+	afterThird := dbNow(t, ctx, pool)
 
-	// GetAllAsAt at afterFirst should return 2
-	all, err := store.GetAllAsAt(ctx, ref, afterFirst)
-	if err != nil {
-		t.Fatalf("GetAllAsAt: %v", err)
-	}
+	// Iterate(asAt) after the first two saves should return 2
+	all := drainAll(t, ctx, store, ref, &afterFirst)
 	if len(all) != 2 {
 		t.Errorf("expected 2, got %d", len(all))
 	}
 
-	// GetAllAsAt at now should return 3
-	allNow, err := store.GetAllAsAt(ctx, ref, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("GetAllAsAt now: %v", err)
-	}
+	// Iterate(asAt) after the third save should return 3
+	allNow := drainAll(t, ctx, store, ref, &afterThird)
 	if len(allNow) != 3 {
 		t.Errorf("expected 3, got %d", len(allNow))
 	}
@@ -379,10 +363,7 @@ func TestEntityStore_DeleteAll(t *testing.T) {
 		t.Fatalf("DeleteAll: %v", err)
 	}
 
-	all, err := store.GetAll(ctx, ref)
-	if err != nil {
-		t.Fatalf("GetAll after DeleteAll: %v", err)
-	}
+	all := drainAll(t, ctx, store, ref, nil)
 	if len(all) != 0 {
 		t.Errorf("expected 0 after DeleteAll, got %d", len(all))
 	}
@@ -448,7 +429,10 @@ func TestEntityStore_Count(t *testing.T) {
 	}
 }
 
-func TestEntityStore_GetVersionHistory(t *testing.T) {
+// TestEntityStore_GetVersionMetadata pins GetVersionMetadata's ordering
+// contract (newest first, ties broken by Version DESC) — the replacement
+// for the removed GetVersionHistory, which returned oldest-first.
+func TestEntityStore_GetVersionMetadata(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-tenant")
 	store, _ := factory.EntityStore(ctx)
@@ -462,29 +446,30 @@ func TestEntityStore_GetVersionHistory(t *testing.T) {
 	ent.Meta.State = "COMPLETED"
 	store.Save(ctx, ent)
 
-	history, err := store.GetVersionHistory(ctx, "ent-hist")
+	metas, err := store.GetVersionMetadata(ctx, "ent-hist", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	if len(history) != 3 {
-		t.Fatalf("expected 3 versions, got %d", len(history))
-	}
-
-	if history[0].Version != 1 {
-		t.Errorf("history[0].Version = %d, want 1", history[0].Version)
-	}
-	if history[1].Version != 2 {
-		t.Errorf("history[1].Version = %d, want 2", history[1].Version)
-	}
-	if history[2].Version != 3 {
-		t.Errorf("history[2].Version = %d, want 3", history[2].Version)
+	if len(metas) != 3 {
+		t.Fatalf("expected 3 versions, got %d", len(metas))
 	}
 
-	if history[0].ChangeType != "CREATED" {
-		t.Errorf("history[0].ChangeType = %q, want CREATED", history[0].ChangeType)
+	// Newest first: metas[0] is version 3, metas[2] is version 1.
+	if metas[0].Version != 3 {
+		t.Errorf("metas[0].Version = %d, want 3", metas[0].Version)
 	}
-	if history[1].ChangeType != "UPDATED" {
-		t.Errorf("history[1].ChangeType = %q, want UPDATED", history[1].ChangeType)
+	if metas[1].Version != 2 {
+		t.Errorf("metas[1].Version = %d, want 2", metas[1].Version)
+	}
+	if metas[2].Version != 1 {
+		t.Errorf("metas[2].Version = %d, want 1", metas[2].Version)
+	}
+
+	if metas[2].ChangeType != "CREATED" {
+		t.Errorf("metas[2].ChangeType = %q, want CREATED", metas[2].ChangeType)
+	}
+	if metas[1].ChangeType != "UPDATED" {
+		t.Errorf("metas[1].ChangeType = %q, want UPDATED", metas[1].ChangeType)
 	}
 }
 
@@ -508,12 +493,9 @@ func TestEntityStore_TenantIsolation(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 
-	// Tenant B GetAll should be empty
+	// Tenant B Iterate should be empty
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-	all, err := storeB.GetAll(ctxB, ref)
-	if err != nil {
-		t.Fatalf("GetAll: %v", err)
-	}
+	all := drainAll(t, ctxB, storeB, ref, nil)
 	if len(all) != 0 {
 		t.Errorf("tenant-B should see 0, got %d", len(all))
 	}
@@ -555,18 +537,19 @@ func TestEntityStore_DeleteCreatesVersionEntry(t *testing.T) {
 	store.Save(ctx, ent)
 	store.Delete(ctx, "ent-del-ver")
 
-	history, err := store.GetVersionHistory(ctx, "ent-del-ver")
+	metas, err := store.GetVersionMetadata(ctx, "ent-del-ver", spi.VersionMetadataOptions{})
 	if err != nil {
-		t.Fatalf("GetVersionHistory: %v", err)
+		t.Fatalf("GetVersionMetadata: %v", err)
 	}
-	if len(history) != 2 {
-		t.Fatalf("expected 2 versions (create + delete), got %d", len(history))
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 versions (create + delete), got %d", len(metas))
 	}
-	if !history[1].Deleted {
-		t.Error("expected last version to be marked deleted")
+	// Newest first: metas[0] is the DELETE tombstone.
+	if !metas[0].Deleted {
+		t.Error("expected newest version to be marked deleted")
 	}
-	if history[1].ChangeType != "DELETED" {
-		t.Errorf("expected ChangeType=DELETED, got %q", history[1].ChangeType)
+	if metas[0].ChangeType != "DELETED" {
+		t.Errorf("expected ChangeType=DELETED, got %q", metas[0].ChangeType)
 	}
 }
 
@@ -589,11 +572,7 @@ func TestEntityStore_Get_PopulatesReadSet(t *testing.T) {
 	seedStore.Save(ctx, e) // v3
 
 	// Begin a transaction.
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	// Get within the transaction.
 	txStore, _ := factory.EntityStore(txCtx)
@@ -645,11 +624,7 @@ func TestEntityStore_Save_FreshInsertNotRecorded(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
 	e := makeEntity("new-e1")
@@ -682,11 +657,7 @@ func TestEntityStore_Save_UpdateRecordsPreWriteVersion(t *testing.T) {
 		seedStore.Save(ctx, e)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
 	if _, err := txStore.Save(txCtx, e); err != nil {
@@ -720,11 +691,7 @@ func TestEntityStore_Delete_RecordsWriteSet(t *testing.T) {
 		seedStore.Save(ctx, e)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
 	if err := txStore.Delete(txCtx, "del-e"); err != nil {
@@ -744,9 +711,13 @@ func TestEntityStore_Delete_RecordsWriteSet(t *testing.T) {
 	}
 }
 
-// TestEntityStore_GetAll_RecordsEachReadSet verifies that GetAll within a
-// transaction records each returned entity's version in the readSet.
-func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
+// TestEntityStore_GetPage_RecordsEachReadSet verifies that GetPage within a
+// transaction records each returned entity's version in the readSet
+// unconditionally — the same unconditional-recording contract GetAll used to
+// carry (GetPage is the surviving whole-model-shaped read; Search/Iterate
+// only record when TrackingRead is set, so they cannot stand in for this
+// specific assertion).
+func TestEntityStore_GetPage_RecordsEachReadSet(t *testing.T) {
 	factory, tm := setupEntityTestWithTM(t)
 	ctx := ctxWithTenant("hook-tenant")
 
@@ -759,16 +730,12 @@ func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
 		seedStore.Save(ctx, e)
 	}
 
-	txID, txCtx, err := tm.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tm.Rollback(txCtx, txID) //nolint:errcheck
+	txID, txCtx := beginGuarded(t, tm, ctx)
 
 	txStore, _ := factory.EntityStore(txCtx)
-	all, err := txStore.GetAll(txCtx, ref)
+	all, err := txStore.GetPage(txCtx, ref, 100, 0, nil)
 	if err != nil {
-		t.Fatalf("GetAll: %v", err)
+		t.Fatalf("GetPage: %v", err)
 	}
 	if len(all) != 3 {
 		t.Fatalf("expected 3 entities, got %d", len(all))
@@ -785,15 +752,18 @@ func TestEntityStore_GetAll_RecordsEachReadSet(t *testing.T) {
 	}
 }
 
-// TestEntityStore_GetVersionHistory_NonExistent asserts that GetVersionHistory
-// returns spi.ErrNotFound for an entity that has never been saved. This pins
-// the contract that the postgres plugin matches the memory and sqlite backends.
-func TestEntityStore_GetVersionHistory_NonExistent(t *testing.T) {
+// TestEntityStore_GetVersionMetadata_NonExistent asserts that GetVersionMetadata
+// returns spi.ErrNotFound for an entity that has never been saved (no version
+// history at all — distinct from an existing entity whose window excludes
+// every version, which must return an empty slice with a nil error). This
+// pins the contract that the postgres plugin matches the memory and sqlite
+// backends.
+func TestEntityStore_GetVersionMetadata_NonExistent(t *testing.T) {
 	factory := setupEntityTest(t)
 	ctx := ctxWithTenant("entity-nonexistent-tenant")
 	store, _ := factory.EntityStore(ctx)
 
-	_, err := store.GetVersionHistory(ctx, "does-not-exist")
+	_, err := store.GetVersionMetadata(ctx, "does-not-exist", spi.VersionMetadataOptions{})
 	if err == nil {
 		t.Fatal("expected error for non-existent entity, got nil")
 	}

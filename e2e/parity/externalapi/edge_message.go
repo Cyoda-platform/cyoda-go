@@ -54,7 +54,7 @@ func RunExternalAPI_11_01_SaveSingle(t *testing.T, fixture parity.BackendFixture
 	}
 
 	// Response shape: {header: {...}, metaData: {...}, content: <json-value>}
-	// Per #21 fix: "content" is now an embedded JSON value (not a JSON-in-string).
+	// "content" is an embedded JSON value, not a JSON-in-string.
 	// Verify the "content" key is present and the payload round-trips.
 	rawContent, ok := got["content"]
 	if !ok {
@@ -112,12 +112,12 @@ func RunExternalAPI_11_02_DeleteSingle(t *testing.T, fixture parity.BackendFixtu
 // Creates two messages, batch-deletes both via DELETE /api/message with a
 // JSON-array body, then verifies both return 404 on subsequent GET.
 //
-// Phase 0.2 incorrectly skipped this scenario under #134, believing the
+// Phase 0.2 incorrectly skipped this scenario, believing the
 // endpoint was delete-all-paged-by-tx-size. The handler
 // (internal/domain/messaging/handler.go:222) in fact reads the ID list
 // from the request body and calls store.DeleteBatch. transactionSize is
 // only a paging knob (default 1000) and irrelevant for handfuls of IDs.
-// #134 should be closed — no server-side change was ever needed.
+// No server-side change was ever needed.
 func RunExternalAPI_11_03_DeleteCollection(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)

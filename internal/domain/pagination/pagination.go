@@ -1,7 +1,7 @@
 // Package pagination centralizes shared validation rules for paginated
 // HTTP / gRPC endpoints. The bounds and overflow checks below were
-// originally inlined in internal/domain/search/handler.go (issues #98 and
-// #68 item 10); they are extracted here so every entry point that
+// originally inlined in internal/domain/search/handler.go; they are
+// extracted here so every entry point that
 // computes `offset = pageNumber * pageSize` enforces the same caps and
 // catches the same int64 overflow before reaching storage.
 package pagination
@@ -18,15 +18,14 @@ import (
 const (
 	// MaxPageSize caps sync and async pagination limits. Attacker-supplied
 	// values above this would let a single request pull an unreasonable
-	// volume of data (issue #98).
+	// volume of data.
 	MaxPageSize = 10000
 	// MaxPageNumber caps pageNumber. Even when the offset multiplication
 	// fits in int64, an absurd pageNumber by itself is a sign of misuse:
 	// with the maximum allowed pageSize (10000), a result set that fills
 	// MaxInt32 pages would contain ~2.1e13 entities — orders of magnitude
 	// beyond any realistic snapshot. Capping pageNumber independently
-	// catches this earlier than the overflow guard alone (issue #68 item
-	// 10).
+	// catches this earlier than the overflow guard alone.
 	MaxPageNumber = math.MaxInt32 / MaxPageSize
 )
 

@@ -43,7 +43,7 @@ type processorFunc func(ctx context.Context, entity *Entity, config json.RawMess
 type criterionFunc func(ctx context.Context, entity *Entity, config json.RawMessage) (bool, error)
 
 // functionFunc is the signature of a registered generic Function callout
-// (spi.ScheduleFunction — issue #419's scheduled-transition Function
+// (spi.ScheduleFunction — the scheduled-transition Function
 // arm-time timing computation). Returns the response's resultKind
 // discriminator and result payload, or an error to have the dispatcher
 // reply with a failed EntityFunctionCalculationResponse.
@@ -56,7 +56,7 @@ type catalog struct {
 	criteria   map[string]criterionFunc
 	functions  map[string]functionFunc
 
-	// Callback-capable entries (feature #287): these issue joined HTTP
+	// Callback-capable entries: these issue joined HTTP
 	// callbacks presenting the calc request's tx-token. cb may be nil when
 	// no CYODA_COMPUTE_HTTP_BASE is configured, in which case they fail loudly.
 	callbackProcessors map[string]callbackProcessorFunc
@@ -65,7 +65,7 @@ type catalog struct {
 }
 
 // newCatalog returns a catalog populated with all registered entries. cb is the
-// callback HTTP client used by the #287 callback-join processors/criteria; gcb is
+// callback HTTP client used by the callback-join processors/criteria; gcb is
 // the gRPC EntityManage callback client used by the cross-node gRPC-callback
 // processor. Pass nil for either when the corresponding transport is unconfigured.
 func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
