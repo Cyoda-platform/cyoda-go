@@ -38,26 +38,42 @@ package e2e_test
 //     TestE2E_AsyncSearch_CrossNodeCancel (async_cancel_multinode_test.go);
 //     gRPC cancel envelope TestEntitySearch_SnapshotCancel_Envelope
 //     (internal/grpc/search_test.go).
-//  8. Heartbeat + ClaimStale orphan handling: spitest + engine unit
+//  8. Heartbeat + ClaimStale orphan RE-EXECUTION: spitest + engine unit
 //     (TestReclaimStaleJobs_* in internal/domain/search/reaper_test.go,
 //     TestExecutor_HeartbeatRecordedWhileQueuedAndScanning /
 //     TestExecutor_HeartbeatFencingAborts in executor_test.go); e2e
-//     TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan (this file) — synthesises
-//     the owner-is-gone shape (a RUNNING row with no executor behind it,
-//     created_at backdated past SearchJobStaleAfter) and asserts app.New's
-//     wired reaper ticker (app.go's stopSearchReaper loop) claims and fails
-//     it; and its inverse TestE2E_AsyncSearch_StaleJobReaper_SparesLiveExecutor
-//     (this file) — a job blocked inside Iterate for longer than
-//     SearchJobStaleAfter is NOT claimed, because its executor's heartbeat
-//     ticker runs independent of scan progress. Both run under a
-//     production-valid cadence (staleAfter == the enforced 4x floor).
+//     TestE2E_AsyncSearch_OrphanReExecuted (this file) — synthesises the
+//     owner-is-gone shape (a RUNNING row with no executor behind it,
+//     created_at backdated past SearchJobStaleAfter, real entities seeded
+//     behind its model) and asserts app.New's wired reaper ticker (app.go's
+//     stopSearchReaper loop calling ReclaimStaleJobs) CLAIMS, ClearResults,
+//     re-enqueues, and completes it SUCCESSFUL with the direct-search result
+//     count — a crashed node's job is now finished, not failed;
+//     TestE2E_AsyncSearch_AttemptCap_Fails (this file) — a job whose
+//     stale_claims has reached SearchJobMaxAttempts is FAILED with the
+//     "search abandoned: executor lost repeatedly" message, the one path that
+//     still fails an orphan; TestE2E_AsyncSearch_CrashMidScan_PeerCompletes /
+//     _CrashMidSave_PartialCleared / _SingleNodeRestart_Reclaims (this file)
+//     — a peer or restarted node completes a crashed node's job, with
+//     ClearResults wiping a committed partial page so the final set has no
+//     duplicates; TestE2E_AsyncSearch_DeposedExecutorFenced
+//     (async_cancel_multinode_test.go) — a peer legitimately reclaims a
+//     slow-heartbeating live executor and completes it, and the deposed node's
+//     resumed write is fenced (single author). And the inverse guarantee
+//     TestE2E_AsyncSearch_StaleJobReaper_SparesLiveExecutor (this file) — a job
+//     blocked inside Iterate for longer than SearchJobStaleAfter is NOT
+//     claimed, because its executor's heartbeat ticker runs independent of scan
+//     progress. All run under a production-valid cadence (staleAfter == the
+//     enforced 4x floor, or a wider bound).
 //  9. Epoch fencing (stale-epoch Heartbeat/SaveResults/UpdateJobStatus
 //     refused; ClearResults idempotent): spitest only.
 // 10. Shutdown drain then release-for-reclaim: engine
 //     ReleaseRegisteredJobs is exercised by App.Shutdown itself; e2e
-//     TestE2E_AsyncSearch_ShutdownDrain_FailsInFlightJob (this file).
-//     NOTE: this e2e still asserts the pre-reclaim FAILED disposition; the
-//     crash-mid-save reclaim task rewrites it to the release disposition.
+//     TestE2E_AsyncSearch_ShutdownReleases_NoFailedWrite (this file) — after
+//     Shutdown the in-flight job is RUNNING (released), never FAILED, and a
+//     peer App with a live backend and a 1h stale bound still reclaims it via
+//     the released flag (proving Release, not staleness, drove the handoff)
+//     and completes it SUCCESSFUL.
 // 11. Worker pool (<=poolSize concurrent, excess queue): engine
 //     TestWorkerPool_ConcurrencyBound / TestWorkerPool_BoundedQueue_QueueFull
 //     (internal/domain/search/pool_test.go); isolated e2e
@@ -483,109 +499,200 @@ func TestE2E_AsyncSearch_QueueFull_503(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// (e) shutdown drain
+// (e) shutdown-release, crash, and restart reclaim
 // ---------------------------------------------------------------------------
 
-// TestE2E_AsyncSearch_ShutdownDrain_FailsInFlightJob starts a job whose
-// Iterate call never returns on its own, calls App.Shutdown, and asserts the
-// job settles FAILED with the safe fallback message — never left RUNNING.
-//
-// Builds its own minimal app.App rather than reusing newCallbackHarnessConfigured:
-// that harness registers t.Cleanup(a.Shutdown), and this test must call
-// Shutdown itself (that's what it exercises) — a second Shutdown() call
-// would double-close app.App's stopSearchReaper channel and panic. Only
-// Close() is left to t.Cleanup here.
-func TestE2E_AsyncSearch_ShutdownDrain_FailsInFlightJob(t *testing.T) {
+// seedStandalone imports+locks a model on the standalone app and creates n
+// committed entities behind it, so a search over the model has results.
+func seedStandalone(t *testing.T, a *standaloneApp, model string, n int) {
+	t.Helper()
+	setupSimpleModelWorkflow(t, a.doAuth, model)
+	for i := 0; i < n; i++ {
+		if resp := a.doAuth(http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model),
+			fmt.Sprintf(`{"name":"e%d","amount":%d,"status":"new"}`, i, i)); resp.StatusCode != http.StatusOK {
+			t.Fatalf("seed %d: %d %s", i, resp.StatusCode, readHTTPBody(t, resp))
+		}
+	}
+}
+
+// TestE2E_AsyncSearch_ShutdownReleases_NoFailedWrite submits over a
+// blocking-Iterate backend, calls App.Shutdown, and asserts the in-flight job
+// is RUNNING (released for reclaim) — NOT the pre-reclaim FAILED disposition.
+// A peer with a live backend and a 1h stale bound then reclaims it via the
+// released flag within one heartbeat interval: staleness alone would not fire
+// for an hour, so a completion proves Release, not staleness, drove the handoff.
+func TestE2E_AsyncSearch_ShutdownReleases_NoFailedWrite(t *testing.T) {
 	backend, gate := newBlockingIterateBackend(t)
+	a := newStandaloneApp(t, func(cfg *app.Config) {
+		cfg.StorageBackend = backend
+	})
 
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate RSA key: %v", err)
-	}
-	keyBytes, err := x509.MarshalPKCS8PrivateKey(rsaKey)
-	if err != nil {
-		t.Fatalf("marshal key: %v", err)
-	}
-	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}))
-
-	cfg := app.DefaultConfig()
-	cfg.ContextPath = "/api"
-	cfg.StorageBackend = backend
-	cfg.IAM.Mode = "jwt"
-	cfg.IAM.JWTSigningKey = keyPEM
-	cfg.IAM.JWTIssuer = "cyoda-shutdown-drain-test"
-	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID: "shutdown-drain-client-" + uuid.NewString(), ClientSecret: "shutdown-drain-secret",
-		TenantID: "test-tenant", UserID: "shutdown-drain-admin", Roles: "ROLE_ADMIN,ROLE_M2M",
-	}
-
-	srv := httptest.NewUnstartedServer(nil)
-	srv.Start()
-	t.Cleanup(srv.Close)
-	cfg.HTTPPort = srv.Listener.Addr().(*net.TCPAddr).Port
-
-	a := app.New(cfg)
-	srv.Config.Handler = a.Handler()
-	t.Cleanup(func() { _ = a.Close() })
-
-	token := fetchClientToken(t, srv.URL, cfg.Bootstrap.ClientID, cfg.Bootstrap.ClientSecret)
-	doAuthOn := func(method, path, body string) *http.Response {
-		return doAuthAgainst(t, srv.URL, token, method, path, body)
-	}
-
-	const model = "shutdowndrain-e2e"
-	setupSimpleModelWorkflow(t, doAuthOn, model)
-	if resp := doAuthOn(http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), `{"name":"Alice","amount":1,"status":"new"}`); resp.StatusCode != http.StatusOK {
-		t.Fatalf("seed create: %d %s", resp.StatusCode, readHTTPBody(t, resp))
-	}
+	const model = "shutdown-release-e2e"
+	const seeded = 4
+	seedStandalone(t, a, model, seeded)
 
 	gate.Block()
 	defer gate.Release()
 
-	resp := doAuthOn(http.MethodPost, "/api/search/async/"+model+"/1", `{"type":"group","operator":"AND","conditions":[]}`)
-	body := readHTTPBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("submit: %d %s", resp.StatusCode, body)
-	}
-	jobID := strings.Trim(strings.TrimSpace(body), `"`)
-
+	jobID := a.submitAsync(t, model)
 	select {
 	case <-gate.Entered():
 	case <-time.After(5 * time.Second):
 		t.Fatal("worker never reached the blocked Iterate call")
 	}
 
-	// Shutdown's own pool.Drain waits up to its budget for the (permanently
-	// blocked) worker to exit naturally, times out, then ReleaseRegisteredJobs
-	// cancels the job's ctx directly — which is what finally unblocks the
-	// gate (wait selects on ctx.Done() too). This call is synchronous and
-	// returns only once that has happened.
-	//
-	// NOTE (superseded assertion): the disposition is now release-for-reclaim,
-	// not FAILED. This test still asserts the old FAILED status and is left for
-	// the crash-mid-save reclaim e2e task to rewrite; it is out of scope for
-	// the engine/app reclaim wiring.
-	a.Shutdown()
+	// Shutdown's pool.Drain waits its budget for the permanently-blocked
+	// worker, times out, then ReleaseRegisteredJobs marks the job released
+	// (RUNNING) and cancels its ctx — never a FAILED terminal write.
+	a.app.Shutdown()
 
-	statusResp := doAuthOn(http.MethodGet, "/api/search/async/"+jobID+"/status", "")
-	statusBody := readHTTPBody(t, statusResp)
-	if statusResp.StatusCode != http.StatusOK {
-		t.Fatalf("status after shutdown: %d %s", statusResp.StatusCode, statusBody)
+	if st := a.jobStatus(t, jobID); st != "RUNNING" {
+		t.Fatalf("status after shutdown = %s, want RUNNING (released for reclaim, not FAILED)", st)
 	}
-	var st struct {
-		SearchJobStatus string `json:"searchJobStatus"`
-	}
-	if err := json.Unmarshal([]byte(statusBody), &st); err != nil {
-		t.Fatalf("decode status: %v; body=%s", err, statusBody)
-	}
-	if st.SearchJobStatus != "FAILED" {
-		t.Fatalf("status after shutdown = %s, want FAILED (never left RUNNING)", st.SearchJobStatus)
+	if !persistedJobReleased(t, jobID) {
+		t.Fatalf("job %s not marked released after shutdown", jobID)
 	}
 
-	msg := persistedJobErrorFor(t, jobID)
-	if msg != "search failed unexpectedly" {
-		t.Errorf("persisted error = %q, want the safe fallback message", msg)
+	peer := newStandaloneApp(t, func(cfg *app.Config) {
+		cfg.SearchJobHeartbeatInterval = 250 * time.Millisecond
+		cfg.SearchJobStaleAfter = time.Hour // staleness would not fire for an hour
+	})
+	if st := peer.waitTerminal(t, jobID, 15*time.Second); st != "SUCCESSFUL" {
+		t.Fatalf("peer settled released job %s = %s, want SUCCESSFUL", jobID, st)
+	}
+	if got, want := persistedJobResultCount(t, jobID), directSearchCount(t, peer.doAuth, model); got != want {
+		t.Fatalf("reclaimed job result_count = %d, want %d", got, want)
+	}
+}
+
+// TestE2E_AsyncSearch_CrashMidScan_PeerCompletes stands up node A over a
+// blocking-Iterate backend and node B over a live backend on the SAME Postgres.
+// A submits and enters Iterate, then A is Close()d WITHOUT Shutdown — a crash:
+// no Release, no terminal write, A's heartbeat simply stops. Once A's job goes
+// stale, B's reaper claims and re-executes it on B's live backend, completing
+// it SUCCESSFUL with the direct-search count. Asserts the OUTCOME (B finished
+// the crashed node's job), not which of A's calls was interrupted.
+func TestE2E_AsyncSearch_CrashMidScan_PeerCompletes(t *testing.T) {
+	backend, gate := newBlockingIterateBackend(t)
+	a := newStandaloneApp(t, func(cfg *app.Config) {
+		cfg.StorageBackend = backend
+		reaperFastCadence(cfg)
+	})
+	b := newStandaloneApp(t, reaperFastCadence)
+
+	const model = "crash-midscan-e2e"
+	const seeded = 5
+	seedStandalone(t, a, model, seeded)
+
+	gate.Block()
+	defer gate.Release()
+
+	jobID := a.submitAsync(t, model)
+	select {
+	case <-gate.Entered():
+	case <-time.After(5 * time.Second):
+		t.Fatal("A's worker never reached the blocked Iterate call")
+	}
+
+	// Crash A: Close without Shutdown. A's reaper stops, its store pool closes,
+	// so its job stops heartbeating and no terminal write is made. The job is
+	// left RUNNING at epoch 1 with a dead owner — exactly the orphan shape.
+	a.closeNow()
+
+	// B's reaper claims the now-stale job and re-executes it on B's live
+	// backend. Budget: A's last heartbeat + staleAfter + a few reap ticks +
+	// scan time.
+	if st := b.waitTerminal(t, jobID, 20*time.Second); st != "SUCCESSFUL" {
+		t.Fatalf("B settled crashed-node job %s = %s, want SUCCESSFUL", jobID, st)
+	}
+	if got, want := persistedJobResultCount(t, jobID), directSearchCount(t, b.doAuth, model); got != want {
+		t.Fatalf("peer-completed job result_count = %d, want %d", got, want)
+	}
+}
+
+// TestE2E_AsyncSearch_CrashMidSave_PartialCleared synthesises a stale RUNNING
+// job (epoch 1) AND a committed partial page of search_job_results for it — the
+// "executor crashed mid-SaveResults" shape, produced by SQL rather than a
+// >1000-match scan. One App (fast cadence) reclaims it: reclaim's ClearResults
+// must wipe the partial page before re-running, or the re-execution collides on
+// the (tenant_id, job_id, seq) PK (SaveResults restarts seq at 0) or leaves
+// duplicates. Asserts SUCCESSFUL, the result_count equals a direct search, and
+// the actual result set carries none of the synthetic partial ids.
+func TestE2E_AsyncSearch_CrashMidSave_PartialCleared(t *testing.T) {
+	a := newStandaloneApp(t, reaperFastCadence)
+
+	const model = "crash-midsave-e2e"
+	const seeded = 6
+	seedStandalone(t, a, model, seeded)
+	want := directSearchCount(t, a.doAuth, model)
+	if want != seeded {
+		t.Fatalf("direct search returned %d, want %d seeded entities", want, seeded)
+	}
+
+	jobID := insertOrphanRunningJob(t, model)
+	// A committed partial page from the (now dead) prior epoch: entity ids that
+	// are NOT real entities of this model, so any that survive into the final
+	// result set are unmistakably leftovers.
+	partial := []string{"stale-partial-0", "stale-partial-1", "stale-partial-2"}
+	insertPartialResultRows(t, jobID, partial)
+	backdateJobCreatedAt(t, jobID, time.Hour)
+
+	if st := a.waitTerminal(t, jobID, 20*time.Second); st != "SUCCESSFUL" {
+		t.Fatalf("status = %s, want SUCCESSFUL (reclaim never re-executed the crashed-mid-save job)", st)
+	}
+	if got := persistedJobResultCount(t, jobID); got != want {
+		t.Fatalf("result_count = %d, want %d (direct search over the same condition)", got, want)
+	}
+	got := a.resultIDs(t, jobID)
+	if len(got) != want {
+		t.Fatalf("collected %d result ids, want %d", len(got), want)
+	}
+	stale := map[string]bool{"stale-partial-0": true, "stale-partial-1": true, "stale-partial-2": true}
+	for _, id := range got {
+		if stale[id] {
+			t.Fatalf("stale partial id %q survived into the result set — ClearResults did not wipe the crashed epoch's rows", id)
+		}
+	}
+}
+
+// TestE2E_AsyncSearch_SingleNodeRestart_Reclaims proves the D8 restart path:
+// node 1 submits over a blocking backend and is Shutdown before the scan
+// finishes (releasing the job, RUNNING+released), then a SECOND App on the same
+// Postgres with a live backend reclaims it — via its STARTUP sweep, which runs
+// once before the first ticker — and completes it SUCCESSFUL.
+func TestE2E_AsyncSearch_SingleNodeRestart_Reclaims(t *testing.T) {
+	backend, gate := newBlockingIterateBackend(t)
+	a := newStandaloneApp(t, func(cfg *app.Config) {
+		cfg.StorageBackend = backend
+	})
+
+	const model = "restart-reclaim-e2e"
+	const seeded = 4
+	seedStandalone(t, a, model, seeded)
+
+	gate.Block()
+	defer gate.Release()
+
+	jobID := a.submitAsync(t, model)
+	select {
+	case <-gate.Entered():
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never reached the blocked Iterate call")
+	}
+
+	a.app.Shutdown() // releases the job: RUNNING+released
+	if st := a.jobStatus(t, jobID); st != "RUNNING" {
+		t.Fatalf("status after shutdown = %s, want RUNNING (released)", st)
+	}
+
+	// The "restarted" node: a fresh App on the same Postgres with a live
+	// backend. Its startup sweep reclaims the released job at boot.
+	restarted := newStandaloneApp(t, reaperFastCadence)
+	if st := restarted.waitTerminal(t, jobID, 20*time.Second); st != "SUCCESSFUL" {
+		t.Fatalf("restarted node settled job %s = %s, want SUCCESSFUL", jobID, st)
+	}
+	if got, want := persistedJobResultCount(t, jobID), directSearchCount(t, restarted.doAuth, model); got != want {
+		t.Fatalf("reclaimed job result_count = %d, want %d", got, want)
 	}
 }
 
@@ -613,23 +720,22 @@ func reaperFastCadence(cfg *app.Config) {
 	cfg.SearchReapInterval = reaperReapInterval
 }
 
-// TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan pins app.New's wired reaper
-// ticker (app.go's stopSearchReaper loop calling search.ReclaimStaleJobs) as a
-// genuinely running e2e path, not just the engine unit tests.
-//
-// NOTE (superseded assertion): the reaper now RECLAIMS and re-executes an
-// orphan rather than failing it. This test still asserts the old FAILED
-// disposition and is left for the crash-mid-save reclaim e2e task to rewrite;
-// it is out of scope for the engine/app reclaim wiring.
+// TestE2E_AsyncSearch_OrphanReExecuted pins app.New's wired reaper ticker
+// (app.go's stopSearchReaper loop calling search.ReclaimStaleJobs) as a
+// genuinely running e2e path: an orphaned job is now CLAIMED and RE-EXECUTED
+// to SUCCESSFUL, not failed.
 //
 // The subject is the case ClaimStale exists for: a RUNNING job whose owning
 // executor is GONE — the node holding it crashed or was killed — so nothing
 // will ever heartbeat it, complete it, or write its terminal status. That
 // shape is synthesised directly, by writing the job row the postgres store's
 // CreateJob writes (RUNNING, epoch 1, heartbeat_time NULL) with no executor
-// behind it and a created_at backdated far past SearchJobStaleAfter. Nothing
-// in this process owns the job, so the ONLY thing that can move it off
-// RUNNING is the app-wired reaper — which is exactly the assertion.
+// behind it and a created_at backdated far past SearchJobStaleAfter, with real
+// entities seeded behind its model so the re-execution has something to return.
+// Nothing in this process owns the job, so the ONLY thing that can move it off
+// RUNNING is the app-wired reaper — which claims it, ClearResults, re-enqueues
+// it on this node, and completes it. The result_count must equal a direct
+// search over the same condition: the reclaim ran the real scan, not a stub.
 //
 // Deliberately NOT a job whose Iterate call is blocked: such a job's owner is
 // alive and heartbeating, ClaimStale correctly refuses to claim it, and the
@@ -638,21 +744,35 @@ func reaperFastCadence(cfg *app.Config) {
 // is now rejected at startup, and the test it supported was asserting an
 // artefact of it. The live-but-blocked executor is the INVERSE guarantee and
 // gets its own test below.
-func TestE2E_AsyncSearch_StaleJobReaper_FailsOrphan(t *testing.T) {
+func TestE2E_AsyncSearch_OrphanReExecuted(t *testing.T) {
 	h := newCallbackHarnessConfigured(t, reaperFastCadence)
 
-	const model = "stalereaper-e2e"
+	const model = "orphan-reexec-e2e"
 	h.setupModelSampleWithWorkflow(t, model, `{"name":"Alice","amount":1,"status":"new"}`, secondaryWorkflow)
+
+	const seeded = 5
+	for i := 0; i < seeded; i++ {
+		if _, status, body := h.CreateEntity(t, model, 1, fmt.Sprintf(`{"name":"e%d","amount":%d,"status":"new"}`, i, i)); status != http.StatusOK {
+			t.Fatalf("seed %d: %d %s", i, status, body)
+		}
+	}
+
+	// Ground truth: a synchronous search over the same match-all condition,
+	// through the same app that will re-execute the orphan.
+	doAuth := func(method, path, body string) *http.Response { return h.DoAuth(t, method, path, body, "") }
+	want := directSearchCount(t, doAuth, model)
+	if want != seeded {
+		t.Fatalf("direct search returned %d, want %d seeded entities", want, seeded)
+	}
 
 	jobID := insertOrphanRunningJob(t, model)
 	backdateJobCreatedAt(t, jobID, time.Hour)
 
-	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "FAILED" {
-		t.Fatalf("status = %s, want FAILED (reaper never claimed the orphaned job)", status)
+	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "SUCCESSFUL" {
+		t.Fatalf("status = %s, want SUCCESSFUL (reaper never re-executed the orphaned job)", status)
 	}
-	msg := persistedJobErrorFor(t, jobID)
-	if msg != "search failed unexpectedly" {
-		t.Errorf("persisted error = %q, want the safe fallback message", msg)
+	if got := persistedJobResultCount(t, jobID); got != want {
+		t.Fatalf("re-executed orphan result_count = %d, want %d (direct search over the same condition)", got, want)
 	}
 }
 
@@ -707,6 +827,37 @@ func TestE2E_AsyncSearch_StaleJobReaper_SparesLiveExecutor(t *testing.T) {
 	}
 }
 
+// TestE2E_AsyncSearch_AttemptCap_Fails is the one path that still FAILS an
+// orphan: a job whose staleness claims have reached SearchJobMaxAttempts is a
+// crash-looping job — every node that claimed it also died mid-scan — and is
+// failed with the "search abandoned: executor lost repeatedly" message rather
+// than re-executed forever. The App runs with SearchJobMaxAttempts=1, so the
+// FIRST staleness claim (bumping stale_claims from the seeded 0 to 1) hits the
+// cap. maxAttempts bounds executor losses (stale_claims), never graceful
+// handoffs, so the seeded row is stale (not released).
+func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
+	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
+		reaperFastCadence(cfg)
+		cfg.SearchJobMaxAttempts = 1 // first staleness claim caps
+	})
+
+	const model = "attempt-cap-e2e"
+	h.setupModelSampleWithWorkflow(t, model, `{"name":"Alice","amount":1,"status":"new"}`, secondaryWorkflow)
+
+	// stale_claims = MaxAttempts - 1 = 0: the next staleness claim reaches the
+	// cap. (0 is also the default, but seed it explicitly so intent survives a
+	// change to the default MaxAttempts.)
+	jobID := insertRunningJobRow(t, model, 0)
+	backdateJobCreatedAt(t, jobID, time.Hour)
+
+	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "FAILED" {
+		t.Fatalf("status = %s, want FAILED (attempt cap not enforced)", status)
+	}
+	if msg := persistedJobErrorFor(t, jobID); msg != "search abandoned: executor lost repeatedly" {
+		t.Errorf("persisted error = %q, want the attempts-exhausted message", msg)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers for this file's scenarios. (The blocking-Iterate backend and
 // iterateGate above ARE shared with async_cancel_multinode_test.go; the direct
@@ -726,8 +877,39 @@ func TestE2E_AsyncSearch_StaleJobReaper_SparesLiveExecutor(t *testing.T) {
 // visible to that stack's authenticated status reads. Returns the job id.
 func insertOrphanRunningJob(t *testing.T, model string) string {
 	t.Helper()
+	return insertRunningJobRow(t, model, 0)
+}
+
+// insertRunningJobRow is insertOrphanRunningJob generalised over the
+// stale_claims counter (the attempt-cap input): staleClaims is the number of
+// prior staleness claims recorded against the job, so a caller can seed a job
+// one claim short of SearchJobMaxAttempts and watch the next sweep cap it.
+//
+// search_opts carries the store-all options a real match-all async submit
+// writes (limit 0 — "Async submit intentionally leaves the limit unset",
+// handler.go — and no orderBy). A real submit resolves PointInTime to now() and
+// writes it BOTH into search_opts (what the executor scans at) AND into the
+// point_in_time column (what GetAsyncResults' GetAsAt fetches entities at), so
+// the two must agree here too — otherwise the scan counts N but the results
+// endpoint fetches them as-of the zero time and returns nothing. The PIT is set
+// a minute ahead of every seeded commit (so any small Go/Postgres clock skew
+// still leaves it after them); a PIT past all commits resolves to "all
+// currently committed", exactly the match-all set. Re-execution now decodes
+// search_opts (decodeStoredJob), so unlike the pre-reclaim disposition neither
+// column can be NULL/zero.
+func insertRunningJobRow(t *testing.T, model string, staleClaims int64) string {
+	t.Helper()
 	const tenantID = "test-tenant" // callbackHarness's cfg.Bootstrap.TenantID
 	jobID := uuid.NewString()
+
+	pit := time.Now().Add(time.Minute).UTC()
+	optsJSON, err := json.Marshal(struct {
+		Limit       int       `json:"limit"`
+		PointInTime time.Time `json:"pointInTime"`
+	}{Limit: 0, PointInTime: pit})
+	if err != nil {
+		t.Fatalf("marshal search opts: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -738,17 +920,41 @@ func insertOrphanRunningJob(t *testing.T, model string) string {
 	defer pool.Close()
 
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, result_count, error, created_at, calc_ms, epoch)
-		 VALUES ($1, $2, 'RUNNING', $3, '1', $4, $5, 0, '', now(), 0, 1)`,
+		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, calc_ms, epoch, stale_claims)
+		 VALUES ($1, $2, 'RUNNING', $3, '1', $4, $5, $6, 0, '', now(), 0, 1, $7)`,
 		jobID, tenantID, model,
 		[]byte(`{"type":"group","operator":"AND","conditions":[]}`),
-		// CreateJob always writes job.PointInTime, and the column is scanned
-		// back into a non-pointer time.Time — an unset PIT is the zero time,
-		// never SQL NULL.
-		time.Time{}); err != nil {
+		pit,
+		optsJSON,
+		staleClaims); err != nil {
 		t.Fatalf("insert orphan search job: %v", err)
 	}
 	return jobID
+}
+
+// insertPartialResultRows writes a committed partial page of search_job_results
+// for jobID by SQL — the "executor crashed mid-SaveResults" shape, without
+// needing a scan large enough to page. entityIDs are seq 0..n-1. ClearResults
+// (which reclaim runs before re-executing) must wipe these, or the re-execution
+// either collides on the (tenant_id, job_id, seq) PK (SaveResults restarts seq
+// at 0) or leaves duplicates in the final result set.
+func insertPartialResultRows(t *testing.T, jobID string, entityIDs []string) {
+	t.Helper()
+	const tenantID = "test-tenant"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "stale-reaper-partial-writer"))
+	if err != nil {
+		t.Fatalf("open partial-writer pool: %v", err)
+	}
+	defer pool.Close()
+	for seq, id := range entityIDs {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO search_job_results (job_id, tenant_id, seq, entity_id) VALUES ($1, $2, $3, $4)`,
+			jobID, tenantID, seq, id); err != nil {
+			t.Fatalf("insert partial result row seq=%d: %v", seq, err)
+		}
+	}
 }
 
 // backdateJobCreatedAt pushes a search job's created_at back by age via a
@@ -790,6 +996,43 @@ func persistedJobErrorFor(t *testing.T, jobID string) string {
 		t.Fatalf("read search job %s: %v", jobID, err)
 	}
 	return msg
+}
+
+// persistedJobResultCount reads the result_count a completed job recorded,
+// straight from the shared Postgres — independent of which app instance
+// executed it. UpdateJobStatus writes it on the terminal SUCCESSFUL transition.
+func persistedJobResultCount(t *testing.T, jobID string) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "async-stream-count-reader"))
+	if err != nil {
+		t.Fatalf("open reader pool: %v", err)
+	}
+	defer pool.Close()
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT result_count FROM search_jobs WHERE id = $1`, jobID).Scan(&n); err != nil {
+		t.Fatalf("read search job %s result_count: %v", jobID, err)
+	}
+	return n
+}
+
+// persistedJobReleased reads the released flag — the shutdown-release tests
+// assert Shutdown left the job RUNNING+released (for reclaim), not FAILED.
+func persistedJobReleased(t *testing.T, jobID string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, withAppName(t, pgURLFromEnv(t), "async-stream-released-reader"))
+	if err != nil {
+		t.Fatalf("open reader pool: %v", err)
+	}
+	defer pool.Close()
+	var released bool
+	if err := pool.QueryRow(ctx, `SELECT released FROM search_jobs WHERE id = $1`, jobID).Scan(&released); err != nil {
+		t.Fatalf("read search job %s released: %v", jobID, err)
+	}
+	return released
 }
 
 // fetchClientToken obtains a JWT via client_credentials grant against an
@@ -876,4 +1119,168 @@ func readHTTPBody(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read response body: %v", err)
 	}
 	return string(raw)
+}
+
+// ---------------------------------------------------------------------------
+// Standalone app.App — the crash / shutdown-release / restart scenarios need
+// to drive Shutdown() and Close() themselves (a crash calls Close WITHOUT
+// Shutdown; a graceful stop calls Shutdown then lets cleanup Close).
+// newCallbackHarnessConfigured is unusable for these: it registers
+// t.Cleanup(a.Shutdown) AND t.Cleanup(a.Close), so a test that also shut the
+// app down would double-drive teardown (a second Shutdown double-closes the
+// reaper channel; the harness guards that ordering for the common case, not
+// for a test that owns the lifecycle). Each standaloneApp shares the package
+// Postgres testcontainer under the same "test-tenant", so a peer sees another
+// peer's jobs, models, and entities.
+// ---------------------------------------------------------------------------
+
+type standaloneApp struct {
+	app      *app.App
+	baseURL  string
+	doAuth   func(method, path, body string) *http.Response
+	closeNow func() // idempotent a.Close(); safe from the test body and again from cleanup
+}
+
+// newStandaloneApp builds an app.App on the shared Postgres, applies configure
+// (a blocking-Iterate backend, a reaper cadence, …), serves its HTTP handler,
+// and mints an admin token. Only a once-guarded Close is wired into t.Cleanup;
+// the caller drives Shutdown()/Close() itself.
+func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp {
+	t.Helper()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}))
+
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = "/api"
+	cfg.StorageBackend = "postgres" // CYODA_POSTGRES_URL is set by TestMain and still live.
+	cfg.IAM.Mode = "jwt"
+	cfg.IAM.JWTSigningKey = keyPEM
+	cfg.IAM.JWTIssuer = "cyoda-standalone-test"
+	cfg.IAM.JWTExpiry = 3600
+	cfg.Bootstrap = app.BootstrapConfig{
+		ClientID: "standalone-client-" + uuid.NewString(), ClientSecret: "standalone-secret",
+		TenantID: "test-tenant", UserID: "standalone-admin", Roles: "ROLE_ADMIN,ROLE_M2M",
+	}
+
+	srv := httptest.NewUnstartedServer(nil)
+	srv.Start()
+	t.Cleanup(srv.Close)
+	cfg.HTTPPort = srv.Listener.Addr().(*net.TCPAddr).Port
+
+	if configure != nil {
+		configure(&cfg)
+	}
+
+	a := app.New(cfg)
+	srv.Config.Handler = a.Handler()
+
+	var once sync.Once
+	closeNow := func() { once.Do(func() { _ = a.Close() }) }
+	t.Cleanup(closeNow)
+
+	token := fetchClientToken(t, srv.URL, cfg.Bootstrap.ClientID, cfg.Bootstrap.ClientSecret)
+	doAuth := func(method, path, body string) *http.Response {
+		return doAuthAgainst(t, srv.URL, token, method, path, body)
+	}
+	return &standaloneApp{app: a, baseURL: srv.URL, doAuth: doAuth, closeNow: closeNow}
+}
+
+// submitAsync submits a match-all async search over model on this app and
+// returns the job id.
+func (s *standaloneApp) submitAsync(t *testing.T, model string) string {
+	t.Helper()
+	resp := s.doAuth(http.MethodPost, "/api/search/async/"+model+"/1", `{"type":"group","operator":"AND","conditions":[]}`)
+	body := readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("submit async on %s: %d %s", s.baseURL, resp.StatusCode, body)
+	}
+	return strings.Trim(strings.TrimSpace(body), `"`)
+}
+
+// jobStatus reads searchJobStatus for jobID over this app's HTTP door.
+func (s *standaloneApp) jobStatus(t *testing.T, jobID string) string {
+	t.Helper()
+	resp := s.doAuth(http.MethodGet, "/api/search/async/"+jobID+"/status", "")
+	body := readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("async status: %d %s", resp.StatusCode, body)
+	}
+	var st struct {
+		SearchJobStatus string `json:"searchJobStatus"`
+	}
+	if err := json.Unmarshal([]byte(body), &st); err != nil {
+		t.Fatalf("decode status: %v; body=%s", err, body)
+	}
+	return st.SearchJobStatus
+}
+
+// waitTerminal polls this app's status endpoint until the job leaves RUNNING.
+func (s *standaloneApp) waitTerminal(t *testing.T, jobID string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if st := s.jobStatus(t, jobID); st != "RUNNING" {
+			return st
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("job %s never left RUNNING within %v (via %s)", jobID, timeout, s.baseURL)
+	return ""
+}
+
+// resultIDs pages this app's async-results endpoint and returns the entity ids,
+// in order — the actual persisted result set (search_job_results), the read
+// that would expose a stale partial page reclaim failed to clear.
+func (s *standaloneApp) resultIDs(t *testing.T, jobID string) []string {
+	t.Helper()
+	var ids []string
+	const pageSize = 100
+	for page := 0; ; page++ {
+		resp := s.doAuth(http.MethodGet,
+			fmt.Sprintf("/api/search/async/%s?pageSize=%d&pageNumber=%d", jobID, pageSize, page), "")
+		body := readHTTPBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("results page %d: %d %s", page, resp.StatusCode, body)
+		}
+		var parsed struct {
+			Content []map[string]any `json:"content"`
+			Page    struct {
+				TotalPages int `json:"totalPages"`
+			} `json:"page"`
+		}
+		if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+			t.Fatalf("decode results page %d: %v; body=%s", page, err, body)
+		}
+		for _, e := range parsed.Content {
+			meta, _ := e["meta"].(map[string]any)
+			id, _ := meta["id"].(string)
+			ids = append(ids, id)
+		}
+		if len(parsed.Content) == 0 || page+1 >= parsed.Page.TotalPages {
+			break
+		}
+	}
+	return ids
+}
+
+// directSearchCount runs a synchronous search over the same match-all
+// condition and counts the ndjson result lines — the ground truth an
+// async re-execution's result_count must equal. doAuth is any app's authed
+// request closure (the one that has the model + entities).
+func directSearchCount(t *testing.T, doAuth func(method, path, body string) *http.Response, model string) int {
+	t.Helper()
+	resp := doAuth(http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1", model), `{"type":"group","operator":"AND","conditions":[]}`)
+	body := readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("direct search over %s: %d %s", model, resp.StatusCode, body)
+	}
+	return countNDJSONLines(body)
 }

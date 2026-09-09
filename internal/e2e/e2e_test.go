@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -136,6 +137,19 @@ func TestMain(m *testing.M) {
 	// trusted-key store is wired in app.New, so this must be set before that call.
 	cfg.IAM.TrustedKeyRegistrationEnabled = true
 	cfg.IAM.M2MAdminRoleEnabled = true
+
+	// The package-global testApp shares this Postgres with every per-test
+	// harness. With the reclaim sweep on the heartbeat interval it would
+	// otherwise claim released/stale RUNNING jobs from other tests' Apps and
+	// make "which node completed the job" nondeterministic — the async
+	// orphan/crash/shutdown-release tests each stand up their own App and
+	// assert which node re-executes a job. Quiesce it: a 1h heartbeat interval
+	// and a 4h stale bound (staleAfter == the enforced 4x floor, so
+	// Config.Validate still accepts it) mean its only reclaim sweep is the
+	// startup one, which runs once at TestMain before any test synthesises a
+	// job. Plain config, no test hook.
+	cfg.SearchJobHeartbeatInterval = time.Hour
+	cfg.SearchJobStaleAfter = 4 * time.Hour
 
 	// In-process processor/criteria service for workflow E2E tests.
 	procSvc = localproc.New()
