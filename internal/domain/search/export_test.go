@@ -85,3 +85,47 @@ func JobFailureFallback() string {
 func JobAttemptsExhausted() string {
 	return jobAttemptsExhausted
 }
+
+// ErrJobSuperseded returns the cancellation cause registerReclaim sets on a
+// handle it replaces (a self-reclaim: this node re-registers a job it was
+// already running). Exposed so an external test can assert
+// context.Cause(oldCtx) against the exact sentinel rather than duplicating
+// or guessing at its text.
+func ErrJobSuperseded() error {
+	return errJobSuperseded
+}
+
+// AsyncJobHandleForTest is an opaque handle to a registered job's cancel
+// entry. It lets an external test hold a SPECIFIC handle instance (as
+// returned by RegisterJobHandleForTest/RegisterReclaimForTest) and later
+// present exactly that instance to DeregisterJobHandleForTest — as opposed to
+// DeregisterJobForTest, which always looks up and deregisters whatever handle
+// is CURRENTLY registered for a jobID. That distinction is the point: it is
+// what lets a test drive deregisterJobHandle's compare-and-delete identity
+// check (a superseded old handle's deregistration must not evict the new
+// handle a self-reclaim installed in its place).
+type AsyncJobHandleForTest = *asyncJobHandle
+
+// RegisterJobHandleForTest is RegisterJobForTest's sibling: it exposes
+// registerJob but returns the created handle (fixed at epoch 1) instead of
+// just a bool, so a test can later present that exact handle instance to
+// DeregisterJobHandleForTest.
+func (s *SearchService) RegisterJobHandleForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) AsyncJobHandleForTest {
+	h, _ := s.registerJob(jobID, cancel, uc, 1)
+	return h
+}
+
+// RegisterReclaimForTest exposes registerReclaim so an external test can
+// drive the self-reclaim replace path directly: registering a second handle
+// for a jobID that already has one, at a given epoch, without a full
+// ReclaimStaleJobs round-trip through a store.
+func (s *SearchService) RegisterReclaimForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) AsyncJobHandleForTest {
+	return s.registerReclaim(jobID, cancel, uc, epoch)
+}
+
+// DeregisterJobHandleForTest exposes deregisterJobHandle for a specific
+// captured handle, rather than DeregisterJobForTest's "look up whatever is
+// current" behaviour.
+func (s *SearchService) DeregisterJobHandleForTest(jobID string, h AsyncJobHandleForTest) {
+	s.deregisterJobHandle(jobID, h)
+}

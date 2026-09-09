@@ -238,6 +238,18 @@ func TestWorkerPool_Drain_Idempotent(t *testing.T) {
 	}
 }
 
+// TestWorkerPool_Cap asserts Cap() reports the node's total reclaim
+// headroom ceiling — workers plus queue length — the quantity
+// ReclaimStaleJobs subtracts registrySize() from to bound how much stale
+// work a node claims.
+func TestWorkerPool_Cap(t *testing.T) {
+	p := NewWorkerPool(3, 7)
+	t.Cleanup(func() { p.Drain(context.Background()) })
+	if got := p.Cap(); got != 10 {
+		t.Fatalf("Cap() = %d, want 10 (workers 3 + queue 7)", got)
+	}
+}
+
 // TestQueueFullError asserts the shared mapping's shape: 503, the
 // SEARCH_QUEUE_FULL code, retryable, and — since it's Operational — no
 // internal detail attached that submitAsyncError/gRPC would need to
