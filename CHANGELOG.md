@@ -1251,6 +1251,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A batch message delete no longer reports success for an id it cannot
+  match.** `DELETE /api/message` declares its body as `format: uuid`, and every
+  message is stored under the canonical hyphenated form, because each save keys
+  the blob or the row by `uuid.UUID.String()`. The handler validated with
+  `uuid.Parse`, which is laxer than the declared format: a braced id, a
+  `urn:uuid:` prefix, an undashed 32-hex run and uppercase hex all parse. Each
+  was then forwarded to the store verbatim, matched no key on any backend, and
+  the caller received **200** with `success: true` for a delete that removed
+  nothing. Such an id is now rejected with **400 `BAD_REQUEST`**. No request
+  that previously succeeded is affected — a non-canonical id never deleted
+  anything.
+
 - **A whole-model delete honors `pointInTime` and `verbose` on both doors.**
   `DELETE /entity/{entityName}/{modelVersion}` with an empty body and the
   gRPC `EntityDeleteAllRequest` took a fast path that ignored the instant —

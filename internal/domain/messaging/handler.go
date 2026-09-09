@@ -285,9 +285,20 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 		return
 	}
 
+	// The body declares `format: uuid`, which names the canonical hyphenated
+	// form — and that is the only form any message is ever stored under, since
+	// every save keys the blob or the row by uuid.UUID.String(). uuid.Parse is
+	// laxer: it also accepts a braced form, a urn:uuid: prefix, an undashed
+	// 32-hex run and uppercase hex. Those parsed cleanly and were then
+	// forwarded verbatim to the store, where they matched nothing, so the
+	// caller received 200 and success:true for a delete that removed nothing.
+	// An id that cannot match is a client error, not a silent no-op. No
+	// request that succeeded before is affected: a non-canonical id never
+	// deleted anything on any backend.
 	for _, id := range ids {
-		if _, err := uuid.Parse(id); err != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "id list contains a value that is not a valid UUID"))
+		if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+				"id list contains a value that is not a canonical UUID"))
 			return
 		}
 	}
