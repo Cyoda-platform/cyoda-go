@@ -308,3 +308,55 @@ func TestDeleteMessages_NoParam_Success_SingleCallSingleElement(t *testing.T) {
 		t.Errorf("entityIds = %v, want 3 ids", resp[0]["entityIds"])
 	}
 }
+
+// The request body declares `format: uuid`, which names the canonical
+// hyphenated form. uuid.Parse is laxer than that: it also accepts a braced
+// form, a urn:uuid: prefix and an undashed 32-hex run. Those were validated
+// and then forwarded verbatim, so the store looked up a key no save had ever
+// written — the memory backend a filename, the SQL backends a message_id
+// column — and the caller got 200 with success:true for a delete that removed
+// nothing. Reject them instead: an id that cannot match is a client error, not
+// a silent no-op.
+func TestDeleteMessages_NonCanonicalUUIDForms_400(t *testing.T) {
+	canonical := uuid.NewString()
+
+	for name, id := range map[string]string{
+		"braced":    "{" + canonical + "}",
+		"urn":       "urn:uuid:" + canonical,
+		"undashed":  strings.ReplaceAll(canonical, "-", ""),
+		"uppercase": strings.ToUpper(canonical),
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := &fakeDeleteBatchStore{}
+			h := newDeleteBatchHandler(store)
+
+			w := httptest.NewRecorder()
+			h.DeleteMessages(w, newDeleteMessagesRequest(nil, idsBody([]string{id})), genapi.DeleteMessagesParams{})
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 for %q; body: %s", w.Code, id, w.Body.String())
+			}
+			if len(store.snapshot()) != 0 {
+				t.Fatalf("DeleteBatch must not be called for %q; got %d calls", id, len(store.snapshot()))
+			}
+		})
+	}
+}
+
+// The canonical form stays accepted, and reaches the store unaltered.
+func TestDeleteMessages_CanonicalUUID_ReachesStoreUnaltered(t *testing.T) {
+	store := &fakeDeleteBatchStore{}
+	h := newDeleteBatchHandler(store)
+
+	id := uuid.NewString()
+	w := httptest.NewRecorder()
+	h.DeleteMessages(w, newDeleteMessagesRequest(nil, idsBody([]string{id})), genapi.DeleteMessagesParams{})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	calls := store.snapshot()
+	if len(calls) != 1 || len(calls[0]) != 1 || calls[0][0] != id {
+		t.Fatalf("store received %v, want [[%s]]", calls, id)
+	}
+}
