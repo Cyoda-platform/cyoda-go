@@ -1,5 +1,5 @@
-github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260909151119-551fc451d15a h1:FLbSHWB6YmH9aXTnm8vTPIGqCN7jF6nWAv5zd9k/vvs=
-github.com/cyoda-platform/cyoda-go-spi v0.8.4-0.20260909151119-551fc451d15a/go.mod h1:QkBUv0Fws88BNWNivUlUb07QS2kkOekoFzuMa590XV8=
+github.com/cyoda-platform/cyoda-go-spi v0.8.4 h1:KjuUqL5L3E6FGWAYVAOTkwHESk30/sNh6lhqFW5kX/o=
+github.com/cyoda-platform/cyoda-go-spi v0.8.4/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/gofrs/flock v0.13.1 h1:jjREztyBeSKBZYAC+mgc1laB+xsgy4kYMf3FbKF2UBo=
