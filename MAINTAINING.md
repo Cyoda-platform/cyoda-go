@@ -386,7 +386,7 @@ verify:
 
 - Release appears on the Releases page with all expected archives,
   `.deb`/`.rpm` packages, `SHA256SUMS`, cosign signatures, SBOMs.
-- `ghcr.io/cyoda/cyoda:$V` and `:latest` manifests exist.
+- `ghcr.io/cyoda/cyoda:${V#v}` and `:latest` manifests exist. **Note the stripped `v`**: `.goreleaser.yaml` tags images from `{{ .Version }}`, which is the bare version, so `:v0.8.4` does not exist and `:0.8.4` does. Checking the prefixed form reports a good release as a failed one. The chart agrees with the registry here — it builds its image reference from `.Chart.AppVersion`, which is also unprefixed.
 - `cyoda/homebrew-cyoda-go` shows a new commit updating
   `Formula/cyoda.rb` to `$V`.
 - A PR titled `chore(helm): bump chart appVersion to $V` (labels:
