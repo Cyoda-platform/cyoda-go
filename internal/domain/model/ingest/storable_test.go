@@ -118,3 +118,44 @@ func TestRejectUnstorablePayload_MalformedJSONIsNotOurJob(t *testing.T) {
 		}
 	}
 }
+
+// parseHex4 reads a fixed four hex digits, so its value is bounded by 0xFFFF
+// and always fits the rune (int32) it is converted to. That bound is a property
+// of the slice width, which is not visible at the strconv call — the parse
+// declared a 32-bit range, and static analysis read the conversion as an
+// unchecked narrowing of a full uint32 (CodeQL go/incorrect-integer-conversion).
+// The declared range is now 16 bits, matching what four digits can express.
+// These cases pin the bound so a later widening of the digit run has to come
+// past them.
+func TestParseHex4_BoundedByFourDigits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want rune
+		ok   bool
+	}{
+		{"min", `0000`, 0x0000, true},
+		{"max", `ffff`, 0xFFFF, true},
+		{"max upper", `FFFF`, 0xFFFF, true},
+		{"high surrogate", `d800`, 0xD800, true},
+		{"low surrogate", `dfff`, 0xDFFF, true},
+		{"not hex", `zzzz`, 0, false},
+		{"short", `abc`, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseHex4([]byte(tc.in), 0)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("parseHex4(%q) = (%#x, %v), want (%#x, %v)", tc.in, got, ok, tc.want, tc.ok)
+			}
+			if ok && (got < 0 || got > 0xFFFF) {
+				t.Fatalf("parseHex4(%q) = %#x, outside the four-digit bound", tc.in, got)
+			}
+		})
+	}
+
+	// A fifth digit is never consumed: the extra character must not widen the
+	// value past the bound.
+	if got, ok := parseHex4([]byte(`ffff0`), 0); !ok || got != 0xFFFF {
+		t.Fatalf("parseHex4(%q) = (%#x, %v), want (0xffff, true)", `ffff0`, got, ok)
+	}
+}

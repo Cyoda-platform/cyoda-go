@@ -489,11 +489,17 @@ func checkJSONStringToken(tok []byte) string {
 
 // parseHex4 reads the four hex digits at off, reporting whether they are present
 // and well-formed.
+//
+// The declared range is 16 bits, which is exactly what four hex digits can
+// express, so the conversion to rune cannot narrow. It read 32 before: the
+// bound was real but came from the slice width rather than the parse, which is
+// invisible at the strconv call and reads as an unchecked narrowing of a full
+// uint32.
 func parseHex4(b []byte, off int) (rune, bool) {
 	if off+4 > len(b) {
 		return 0, false
 	}
-	v, err := strconv.ParseUint(string(b[off:off+4]), 16, 32)
+	v, err := strconv.ParseUint(string(b[off:off+4]), 16, 16)
 	if err != nil {
 		return 0, false
 	}
