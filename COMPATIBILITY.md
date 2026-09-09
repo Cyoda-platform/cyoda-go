@@ -144,7 +144,8 @@ above, each with the issue tracking it.
 
 | Chart `version:` | Chart `appVersion:` | Default binary | Notes |
 |---|---|---|---|
-| `0.8.3` | `0.8.3` | `cyoda-go v0.8.3` | **Current.** Chart tag `cyoda-0.8.3`. The `0.8.4` row is added with the chart bump that follows the binary release, so this table never names a chart version `Chart.yaml` does not yet carry. |
+| `0.8.4` | `0.8.4` | `cyoda-go v0.8.4` | **Current.** Chart tag `cyoda-0.8.4`. |
+| `0.8.3` | `0.8.3` | `cyoda-go v0.8.3` | Chart tag `cyoda-0.8.3`. |
 | `0.8.2` | `0.8.2` | `cyoda-go v0.8.2` | Chart tag `cyoda-0.8.2`. |
 | `0.8.1` | `0.8.1` | `cyoda-go v0.8.1` | Chart tag `cyoda-0.8.1`. From this release the chart `version:` and `appVersion:` move together at each binary release, so the decoupling described below is the convention rather than current practice. |
 | `0.7.0` | `0.7.1` | `cyoda-go v0.7.1` | Adds optional `migrate.postgres` DSN — a separate migration-Job (owner/DDL) role for the two-role DB model; backward-compatible (falls back to `postgres.existingSecret`). First chart-manifest change since `0.6.3`. |
