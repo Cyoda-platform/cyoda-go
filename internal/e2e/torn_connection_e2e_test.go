@@ -145,6 +145,14 @@ func newTornHarness(t *testing.T) *tornHarness {
 		t.Setenv("CYODA_POSTGRES_MIN_CONNS", "0")
 		// The scan loop would reconnect the pool between the cut and the probe.
 		cfg.Scheduler.Enabled = false
+		// Same rationale: the stale-job reclaim sweep runs on the heartbeat
+		// interval (default 15s), and a background loop that reconnects the
+		// torn pool between cut and probe would mask the 503 — the probe's
+		// GetJob would land on a healthy connection. Push the sweep out of the
+		// test window (staleAfter must be >= 4x interval for Config.Validate).
+		// The one-shot startup sweep still runs, harmlessly, before any probe.
+		cfg.SearchJobHeartbeatInterval = time.Hour
+		cfg.SearchJobStaleAfter = 4 * time.Hour
 		cfg.IAM.TrustedKeyRegistrationEnabled = true
 	})
 	return &tornHarness{callbackHarness: h, proxy: proxy}
