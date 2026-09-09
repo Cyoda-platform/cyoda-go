@@ -14,6 +14,7 @@ import (
 type searchJobEntry struct {
 	job       spi.SearchJob
 	entityIDs []string
+	released  bool // set by Release; cleared by the ClaimStale that takes the job
 }
 
 // AsyncSearchStore is a tenant-scoped, in-memory implementation of spi.AsyncSearchStore.
@@ -91,6 +92,7 @@ func (s *AsyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 	// value set on job.Epoch by the caller.
 	copied := copySearchJob(*job)
 	copied.Epoch = 1
+	copied.StaleClaims = 0
 	tenantJobs[job.ID] = &searchJobEntry{job: copied}
 	return nil
 }
@@ -382,12 +384,14 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 			if entry.job.Status != "RUNNING" {
 				continue
 			}
-			baseline := entry.job.CreateTime
-			if entry.job.HeartbeatTime != nil {
-				baseline = *entry.job.HeartbeatTime
-			}
-			if !baseline.Before(cutoff) {
-				continue
+			if !entry.released {
+				baseline := entry.job.CreateTime
+				if entry.job.HeartbeatTime != nil {
+					baseline = *entry.job.HeartbeatTime
+				}
+				if !baseline.Before(cutoff) {
+					continue
+				}
 			}
 			candidates = append(candidates, entry)
 		}
@@ -406,6 +410,10 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	var claimed []*spi.SearchJob
 	for _, entry := range candidates {
 		entry.job.Epoch++
+		if !entry.released {
+			entry.job.StaleClaims++
+		}
+		entry.released = false
 		hb := now
 		entry.job.HeartbeatTime = &hb
 
@@ -432,6 +440,26 @@ func (s *AsyncSearchStore) ClearResults(ctx context.Context, jobID string) error
 		return nil
 	}
 	entry.entityIDs = nil
+	return nil
+}
+
+// Release marks a RUNNING job released without finishing it, so the next
+// ClaimStale takes it regardless of staleAfter. Fenced exactly like the
+// write methods (missing/terminal/epoch), idempotent at the same epoch, and
+// it neither bumps Epoch nor touches StaleClaims. A stray Heartbeat at the
+// same epoch does not clear the mark — only a claim does.
+func (s *AsyncSearchStore) Release(ctx context.Context, jobID string, epoch int64) error {
+	tid, err := s.resolveTenant(ctx)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, err := s.guardWrite(tid, jobID, epoch)
+	if err != nil {
+		return err
+	}
+	entry.released = true
 	return nil
 }
 

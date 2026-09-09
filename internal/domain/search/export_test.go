@@ -15,14 +15,21 @@ import (
 // accounting invariants (one slot per registered job, no double-count on a
 // duplicate jobID) structurally rather than through the single call site that
 // happens to guarantee unique ids today.
-func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelFunc, uc *spi.UserContext) bool {
-	return s.registerJob(jobID, cancel, uc)
+func (s *SearchService) RegisterJobForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) bool {
+	_, ok := s.registerJob(jobID, cancel, uc, 1)
+	return ok
 }
 
-// DeregisterJobForTest exposes deregisterJob, the release half of the pair
-// above.
+// DeregisterJobForTest exposes deregisterJobHandle, the release half of the
+// pair above. It looks up jobID's current handle and deregisters by identity,
+// matching how the executor's own defer releases its registration.
 func (s *SearchService) DeregisterJobForTest(jobID string) {
-	s.deregisterJob(jobID)
+	s.registryMu.Lock()
+	h := s.registry[jobID]
+	s.registryMu.Unlock()
+	if h != nil {
+		s.deregisterJobHandle(jobID, h)
+	}
 }
 
 // TenantInFlightForTest returns tenant's current in-flight count, the quantity
@@ -65,10 +72,60 @@ func (s *SearchService) ResolveSortKeysForTest(ctx context.Context, modelRef spi
 }
 
 // JobFailureFallback returns the sanitised message written into a job
-// record on an unattributable failure — the same constant FailStaleJobs
-// (reaper.go) and the executor's own failure paths (service.go) both use.
-// Exposed so external tests can assert against the constant itself rather
-// than duplicating its literal text.
+// record on an unattributable failure — the constant the executor's own
+// failure paths (service.go) use. Exposed so external tests can assert
+// against the constant itself rather than duplicating its literal text.
 func JobFailureFallback() string {
 	return jobFailureFallback
+}
+
+// JobAttemptsExhausted returns the caller-facing message the reclaim sweep
+// writes when it abandons a job past the attempt cap. Exposed so external
+// tests assert against the constant rather than duplicating its text.
+func JobAttemptsExhausted() string {
+	return jobAttemptsExhausted
+}
+
+// ErrJobSuperseded returns the cancellation cause registerReclaim sets on a
+// handle it replaces (a self-reclaim: this node re-registers a job it was
+// already running). Exposed so an external test can assert
+// context.Cause(oldCtx) against the exact sentinel rather than duplicating
+// or guessing at its text.
+func ErrJobSuperseded() error {
+	return errJobSuperseded
+}
+
+// AsyncJobHandleForTest is an opaque handle to a registered job's cancel
+// entry. It lets an external test hold a SPECIFIC handle instance (as
+// returned by RegisterJobHandleForTest/RegisterReclaimForTest) and later
+// present exactly that instance to DeregisterJobHandleForTest — as opposed to
+// DeregisterJobForTest, which always looks up and deregisters whatever handle
+// is CURRENTLY registered for a jobID. That distinction is the point: it is
+// what lets a test drive deregisterJobHandle's compare-and-delete identity
+// check (a superseded old handle's deregistration must not evict the new
+// handle a self-reclaim installed in its place).
+type AsyncJobHandleForTest = *asyncJobHandle
+
+// RegisterJobHandleForTest is RegisterJobForTest's sibling: it exposes
+// registerJob but returns the created handle (fixed at epoch 1) instead of
+// just a bool, so a test can later present that exact handle instance to
+// DeregisterJobHandleForTest.
+func (s *SearchService) RegisterJobHandleForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext) AsyncJobHandleForTest {
+	h, _ := s.registerJob(jobID, cancel, uc, 1)
+	return h
+}
+
+// RegisterReclaimForTest exposes registerReclaim so an external test can
+// drive the self-reclaim replace path directly: registering a second handle
+// for a jobID that already has one, at a given epoch, without a full
+// ReclaimStaleJobs round-trip through a store.
+func (s *SearchService) RegisterReclaimForTest(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) AsyncJobHandleForTest {
+	return s.registerReclaim(jobID, cancel, uc, epoch)
+}
+
+// DeregisterJobHandleForTest exposes deregisterJobHandle for a specific
+// captured handle, rather than DeregisterJobForTest's "look up whatever is
+// current" behaviour.
+func (s *SearchService) DeregisterJobHandleForTest(jobID string, h AsyncJobHandleForTest) {
+	s.deregisterJobHandle(jobID, h)
 }

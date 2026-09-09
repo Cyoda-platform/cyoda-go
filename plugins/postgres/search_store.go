@@ -77,8 +77,8 @@ func (s *asyncSearchStore) tenant(ctx context.Context) (spi.TenantID, error) {
 // column list every job read uses, in the order scanSearchJobRow expects.
 // The qualified variant is for statements that join search_jobs under an
 // alias (ClaimStale's UPDATE ... FROM).
-const searchJobColumns = `id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms, heartbeat_time, epoch`
-const qualifiedSearchJobColumns = `j.id, j.tenant_id, j.status, j.model_name, j.model_ver, j.condition, j.point_in_time, j.search_opts, j.result_count, j.error, j.created_at, j.finished_at, j.calc_ms, j.heartbeat_time, j.epoch`
+const searchJobColumns = `id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms, heartbeat_time, epoch, stale_claims`
+const qualifiedSearchJobColumns = `j.id, j.tenant_id, j.status, j.model_name, j.model_ver, j.condition, j.point_in_time, j.search_opts, j.result_count, j.error, j.created_at, j.finished_at, j.calc_ms, j.heartbeat_time, j.epoch, j.stale_claims`
 
 // isTerminalSearchStatus reports whether status is one of the write-once
 // terminal statuses (spi.AsyncSearchStore godoc).
@@ -289,6 +289,18 @@ func (s *asyncSearchStore) SaveResults(ctx context.Context, jobID string, epoch 
 		// pay a fresh TCP+auth handshake to replace it.
 		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
+		// A node that dies mid-chunk leaves this transaction holding FOR
+		// UPDATE on the job row; without a server-side bound the lock would
+		// survive until TCP keepalive notices the dead client (hours at Linux
+		// defaults) and ClaimStale's SKIP LOCKED would pass the job over every
+		// sweep. SET LOCAL is transaction-scoped, so no other session or
+		// entity transaction is affected; a live chunk is never idle between
+		// its own sequential statements for more than microseconds, and a
+		// COPY in progress is not idle.
+		if _, err := tx.Exec(ctx, "SET LOCAL idle_in_transaction_session_timeout = '30s'"); err != nil {
+			return fmt.Errorf("failed to set chunk idle timeout for job %s: %w", jobID, classifyError(err))
+		}
+
 		// classifiedQuerier keeps this statement on the same error
 		// classification every other statement in this store gets from the
 		// pool-pinned s.q, even though it runs on our own private tx.
@@ -437,6 +449,28 @@ func (s *asyncSearchStore) ClearResults(ctx context.Context, jobID string) error
 	return nil
 }
 
+// Release marks a RUNNING job released so the next ClaimStale takes it
+// regardless of staleAfter. Fenced conditional UPDATE like Heartbeat;
+// idempotent at the same epoch; does not bump epoch or stale_claims.
+func (s *asyncSearchStore) Release(ctx context.Context, jobID string, epoch int64) error {
+	tid, err := s.tenant(ctx)
+	if err != nil {
+		return err
+	}
+	tag, err := s.q.Exec(ctx,
+		`UPDATE search_jobs SET released = true
+		 WHERE id = $1 AND tenant_id = $2 AND epoch = $3
+		   AND status NOT IN ('SUCCESSFUL', 'FAILED', 'CANCELLED')`,
+		jobID, string(tid), epoch)
+	if err != nil {
+		return fmt.Errorf("failed to release search job %s: %w", jobID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return s.probeFenced(ctx, s.q, jobID, tid, epoch, false)
+	}
+	return nil
+}
+
 func (s *asyncSearchStore) DeleteJob(ctx context.Context, jobID string) error {
 	tid, err := s.tenant(ctx)
 	if err != nil {
@@ -535,14 +569,18 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 
 	rows, err := s.q.Query(ctx,
 		`WITH claimed AS (
-		   SELECT tenant_id, id FROM search_jobs
+		   SELECT tenant_id, id, released FROM search_jobs
 		   WHERE status = 'RUNNING'
-		     AND COALESCE(heartbeat_time, created_at) < now() - ($1 * interval '1 microsecond')
+		     AND (released OR COALESCE(heartbeat_time, created_at) < now() - ($1 * interval '1 microsecond'))
 		   ORDER BY created_at
 		   LIMIT $2
 		   FOR UPDATE SKIP LOCKED
 		 )
-		 UPDATE search_jobs j SET epoch = j.epoch + 1, heartbeat_time = now()
+		 UPDATE search_jobs j
+		    SET epoch = j.epoch + 1,
+		        heartbeat_time = now(),
+		        stale_claims = j.stale_claims + (CASE WHEN c.released THEN 0 ELSE 1 END),
+		        released = false
 		 FROM claimed c
 		 WHERE j.tenant_id = c.tenant_id AND j.id = c.id
 		 RETURNING `+qualifiedSearchJobColumns,
@@ -581,7 +619,7 @@ func scanSearchJobRow(scan func(dest ...any) error) (*spi.SearchJob, error) {
 		&job.Condition, &job.PointInTime,
 		&job.SearchOpts, &job.ResultCount,
 		&job.Error, &job.CreateTime, &job.FinishTime, &job.CalcTimeMs,
-		&job.HeartbeatTime, &job.Epoch)
+		&job.HeartbeatTime, &job.Epoch, &job.StaleClaims)
 	if err != nil {
 		return nil, err
 	}

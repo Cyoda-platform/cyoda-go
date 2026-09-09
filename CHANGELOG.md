@@ -1028,6 +1028,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda_storage_pool_empty_acquire_wait_seconds_total`, all labelled
   `backend="postgres"`, always on at `/metrics`. `cyoda help telemetry`.
 
+- **`CYODA_SEARCH_JOB_MAX_ATTEMPTS`** (default `3`) — caps the executions an
+  orphaned async-search job may consume (the initial run plus one per
+  executor lost without a graceful release) before the reaper fails it
+  instead of reclaiming it again. `1` disables re-execution outright.
+  `cyoda help config` (Search internals).
+
 ### Changed
 
 - **Async search translates the condition before it persists the job.**
@@ -1225,6 +1231,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   see `docs/plugins/POSTGRES.md` ("Canonical entity-ID order" /
   "Operational notes and limits") for the full mechanism and the structural
   gap this leaves for any future same-shaped migration.
+
+- **An orphaned async-search job is now claimed and re-executed, not
+  failed.** A `RUNNING` job whose owning node crashed used to reach a
+  terminal `FAILED` once the reaper claimed it. The reaper now clears the
+  claimed job's partial results and re-runs it on a live node as-at its
+  originally stored point in time, so it completes `SUCCESSFUL` instead —
+  a client observes only a longer `RUNNING` span. It is `FAILED` only
+  after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses; the status is
+  contractual, the message text is not. A node's graceful shutdown or
+  restart releases its in-flight jobs immediately for reclaim rather than
+  failing them or waiting for the stale-heartbeat timeout, so a planned
+  handoff completes within one `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, and a
+  released claim never counts against the attempt cap. The reclaim sweep
+  now runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker plus once at
+  startup, not `CYODA_SEARCH_REAP_INTERVAL` — that variable now drives only
+  the unrelated snapshot-TTL cleanup. No wire, endpoint, or error-code
+  change. See `docs/cloud-parity/async-job-node-failure-resilience.md`.
 
 ### Fixed
 

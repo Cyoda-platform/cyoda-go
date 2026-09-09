@@ -736,6 +736,15 @@ type ClusterLaunchResult struct {
 	// log line), which is otherwise invisible at the data plane. Never assert
 	// on token/secret material read from here (Gate 3).
 	NodeLogs []*SyncBuffer
+	// KillNode SIGKILLs node i's process group and reaps it by waiting on that
+	// node's monitor exit signal (the same kill-no-wait + exit-signal reap the
+	// teardown path uses — never a second cmd.Wait()). It exists so a crash
+	// test can take a single node down mid-operation and assert a survivor
+	// completes the orphaned work. Out-of-range i is a no-op. Killing a node is
+	// permanent for the life of the fixture: the node is not restarted, and the
+	// returned cleanup still tears down whatever remains safely (killing an
+	// already-dead process group is harmless).
+	KillNode func(i int)
 }
 
 // SyncBuffer is a goroutine-safe in-memory log sink. os/exec copies a
@@ -1030,6 +1039,22 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	for i, nd := range nodes {
 		cyodaCmds[i] = nd.cmd
 	}
+	// killNode SIGKILLs one node and reaps it via its monitor's exit signal —
+	// the same discipline killNodes uses (kill-no-wait + <-exitedCh), never a
+	// second cmd.Wait(). Published as ClusterLaunchResult.KillNode.
+	killNode := func(i int) {
+		if i < 0 || i >= len(nodes) {
+			return
+		}
+		nd := nodes[i]
+		if nd == nil || nd.cmd == nil {
+			return
+		}
+		killProcessGroupNoWait(nd.cmd)
+		if nd.exitedCh != nil {
+			<-nd.exitedCh // reap: block until the monitor's Wait() returns
+		}
+	}
 	// cleanup for the node phase; compute wiring below replaces it with a
 	// variant that also tears down the compute-test-client.
 	cleanup := func() {
@@ -1107,5 +1132,6 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 		CyodaCmds:    cyodaCmds,
 		ComputeCmd:   computeCmd,
 		NodeLogs:     nodeLogBufs,
+		KillNode:     killNode,
 	}, cleanup, nil
 }

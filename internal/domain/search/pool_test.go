@@ -147,8 +147,8 @@ func TestWorkerPool_ConcurrencyBound(t *testing.T) {
 // TestWorkerPool_Drain_WaitsForInFlightJob asserts Drain lets an in-flight
 // job run to completion and does not return until it has actually finished.
 // Drain deliberately has no way to interrupt it (see jobFunc): the drain
-// budget is the job's chance to finish, and App.Shutdown cancels whatever
-// is still running only afterwards, via AbortRegisteredJobs.
+// budget is the job's chance to finish, and App.Shutdown releases whatever
+// is still running only afterwards, via ReleaseRegisteredJobs.
 func TestWorkerPool_Drain_WaitsForInFlightJob(t *testing.T) {
 	pool := NewWorkerPool(1, 1)
 
@@ -235,6 +235,18 @@ func TestWorkerPool_Drain_Idempotent(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("second Drain call did not return")
+	}
+}
+
+// TestWorkerPool_Cap asserts Cap() reports the node's total reclaim
+// headroom ceiling — workers plus queue length — the quantity
+// ReclaimStaleJobs subtracts registrySize() from to bound how much stale
+// work a node claims.
+func TestWorkerPool_Cap(t *testing.T) {
+	p := NewWorkerPool(3, 7)
+	t.Cleanup(func() { p.Drain(context.Background()) })
+	if got := p.Cap(); got != 10 {
+		t.Fatalf("Cap() = %d, want 10 (workers 3 + queue 7)", got)
 	}
 }
 

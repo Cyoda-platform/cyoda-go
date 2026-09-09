@@ -63,6 +63,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SEARCH_ASYNC_MAX_PER_TENANT", Topic: "search", Type: "int", Default: "8", Description: "Maximum async-search jobs one tenant may have in flight (queued or running) on a node; further submissions get SEARCH_QUEUE_FULL (retryable 503), so one tenant cannot fill the shared queue. Defaults to CYODA_SEARCH_ASYNC_WORKERS, so it tracks a resized pool. 0 disables the cap. Must be >= 0; startup fails otherwise."},
 	{Name: "CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL", Topic: "search", Type: "duration", Default: "15s", Description: "How often a running async-search executor stamps job liveness and polls for cross-node cancel/terminal status, starting at submit time (while queued, not only while scanning). Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_SEARCH_JOB_STALE_AFTER", Topic: "search", Type: "duration", Default: "5m", Description: "How long a RUNNING async-search job may go without a heartbeat before the reaper claims it and marks it FAILED. Must be >= 4x CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL; startup fails otherwise."},
+	{Name: "CYODA_SEARCH_JOB_MAX_ATTEMPTS", Topic: "search", Type: "int", Default: "3", Description: "Executions an async-search job may consume before it is failed: the initial run plus one per executor lost without a graceful release. Graceful handoffs do not count. Must be >= 1 (1 disables re-execution)."},
 
 	// --- cluster ---
 	{Name: "CYODA_CLUSTER_ENABLED", Topic: "cluster", Type: "bool", Default: "false", Description: "Enable multi-node clustering."},

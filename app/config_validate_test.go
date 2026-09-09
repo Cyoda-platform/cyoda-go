@@ -13,6 +13,7 @@ func validSearchConfig() Config {
 		SearchAsync:                SearchAsyncConfig{Workers: 8, QueueLen: 256, MaxPerTenant: 8},
 		SearchJobHeartbeatInterval: 15 * time.Second,
 		SearchJobStaleAfter:        5 * time.Minute,
+		SearchJobMaxAttempts:       3,
 		GRPC:                       GRPCConfig{KeepAliveInterval: 10, KeepAliveTimeout: 30},
 	}
 }
@@ -37,6 +38,7 @@ func TestConfig_Validate(t *testing.T) {
 		{"negative per-tenant cap", func(c *Config) { c.SearchAsync.MaxPerTenant = -1 }},
 		{"non-positive heartbeat", func(c *Config) { c.SearchJobHeartbeatInterval = 0 }},
 		{"stale-after too close to heartbeat", func(c *Config) { c.SearchJobStaleAfter = 20 * time.Second }},
+		{"zero max attempts", func(c *Config) { c.SearchJobMaxAttempts = 0 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,5 +68,14 @@ func TestValidateHTTP_RejectsNegative(t *testing.T) {
 	}
 	if err := ValidateHTTP(HTTPConfig{}); err != nil {
 		t.Fatalf("all-zero (disabled) rejected: %v", err)
+	}
+}
+
+func TestValidateSearchJobMaxAttempts(t *testing.T) {
+	if err := ValidateSearchJobMaxAttempts(1); err != nil {
+		t.Fatalf("1 must be valid: %v", err)
+	}
+	if err := ValidateSearchJobMaxAttempts(0); err == nil {
+		t.Fatal("0 must be rejected")
 	}
 }

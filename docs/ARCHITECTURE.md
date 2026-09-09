@@ -367,7 +367,7 @@ contract.
 
 **Release on every exit path.** An entity write flow opens its transaction through a deferred scope (`txScope`, `internal/domain/entity/txscope.go`) that rolls back the segment currently open unless the flow committed it. One deferred `Release` covers every return, every error branch, and a panic unwinding the stack, so a transaction is never abandoned open with its pooled connection unreturned. A joined callback never rolls back its owner's transaction; a segment the engine opened during the call is released regardless of ownership. The workflow engine carries the same guard for the segments it opens itself, since those are its own until handed back.
 
-**Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL and stale-job sweeps share one ticker), and the scheduler's dispatch goroutine. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for a scheduled fire, the latter with no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. That is why the scheduler site latches too — `ClusterExecutor.Execute` fires in-process whenever distribution picks this node, so otherwise an identical panicking fire would withdraw the node only when the pick happened to be a peer.
+**Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL sweep on `SearchReapInterval` and the stale-job reclaim sweep on the finer `SearchJobHeartbeatInterval` run on two separate tickers, both independently panic-latching), and the scheduler's dispatch goroutine. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for a scheduled fire, the latter with no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. That is why the scheduler site latches too — `ClusterExecutor.Execute` fires in-process whenever distribution picks this node, so otherwise an identical panicking fire would withdraw the node only when the pick happened to be a peer.
 
 Further recovery sites deliberately do **not** latch, because they wrap probes, notification callbacks or per-connection framing rather than domain work: the admin listener, which runs the same `Recovery` middleware with no health flag (`cmd/cyoda/adminserver.go`) so a panic in `/livez`, `/readyz` or a `/metrics` scrape still answers a ticket-carrying 500 without withdrawing the node; the member-registry `onChange` fan-out (`internal/grpc/members.go`); the OIDC broadcast handler with its dispatch goroutines (`internal/auth/oidc/broadcast.go`, which counts panics on its own metric); and each per-member gRPC stream's three per-connection goroutines — the writer (`Member.writeLoop`), the receive goroutine (`receiveLoop`) and the keep-alive loop (`keepAliveLoop`), all in `internal/grpc/streaming.go` and `members.go` — which recover with a ticket-carrying status and evict just that member rather than latching the node, since each wraps only that member's own framing or liveness bookkeeping, not domain work. None of these sites holds a transaction, and all self-heal: the admin surface on the next probe, the fan-out and broadcast handler on the next event, the three per-member goroutines by the client reconnecting as a fresh member.
 
@@ -958,22 +958,39 @@ the moment it is submitted (including while queued, not only while
 scanning) — on a dedicated per-job ticker goroutine, independent of scan
 progress, so a long non-yielding scan stretch can never starve the
 heartbeat and let the reaper seize a healthy job. A background reaper
-(`internal/domain/search.FailStaleJobs`) claims any `RUNNING` job whose
-heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` via
-`ClaimStale` — which atomically bumps the job's `Epoch` so concurrent
-claimers obtain disjoint jobs — and marks it `FAILED` through the
-epoch-fenced `UpdateJobStatus`. Every executor-side write (`Heartbeat`,
-`SaveResults`, the terminal `UpdateJobStatus`) carries the epoch the
-executor was started or claimed with; a store refuses a write whose epoch
-does not match the job's current epoch with `spi.ErrStaleClaim`, so a
-deposed executor that later recovers cannot corrupt a result set another
-node has since taken over. **This milestone's disposition is
-claim-then-FAIL**, not re-execution: a crashed node's async job now reaches
-a terminal state instead of staying `RUNNING` forever, but it is not picked
-up and re-run elsewhere in the cluster. `ClaimStale` and `ReapExpired` are
-cross-tenant, called with a tenant-less context (precedent:
-`ScheduledTaskStore.ScanDue`); the reaper's follow-up writes reconstruct a
-per-job tenant context from the claimed job's own `TenantID`.
+(`internal/domain/search.SearchService.ReclaimStaleJobs`) claims any
+`RUNNING` job that is either stale (heartbeat silent for
+`CYODA_SEARCH_JOB_STALE_AFTER`) or `released` via `ClaimStale` — which
+atomically bumps the job's `Epoch` so concurrent claimers obtain disjoint
+jobs — clears the prior epoch's partial results (`ClearResults`), and
+re-executes the job on this node at the claimed epoch, as-at its
+originally stored `PointInTime`: a crashed node's async job now completes
+`SUCCESSFUL` on a live node instead of staying `RUNNING` forever or simply
+being failed. Every executor-side write (`Heartbeat`, `SaveResults`, the
+terminal `UpdateJobStatus`) carries the epoch the executor was started or
+claimed with; a store refuses a write whose epoch does not match the job's
+current epoch with `spi.ErrStaleClaim`, so a deposed executor that later
+recovers cannot corrupt a result set another node has since taken over.
+
+Re-execution is bounded: `SearchJob.StaleClaims` counts only staleness
+claims (never a graceful `Release`), and once it reaches
+`CYODA_SEARCH_JOB_MAX_ATTEMPTS` (default 3 — the initial run plus two
+retries) the reaper fails the job instead of reclaiming it again, with the
+persisted message `search abandoned: executor lost repeatedly`. The status
+(`FAILED`) is contractual; the message text is not. A repeatedly
+crash-looping executor therefore cannot re-execute a job forever, and a
+healthy handoff chain (release, not staleness) never advances a job toward
+that cap. The reclaim sweep runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s
+ticker — finer than the snapshot-TTL cadence — plus once at process
+startup, so a node that restarts picks up anything left `released` or gone
+stale before its first ticker fire, rather than waiting a full interval.
+`ClaimStale` and `ReapExpired` are cross-tenant, called with a tenant-less
+context (precedent: `ScheduledTaskStore.ScanDue`); the reaper's follow-up
+writes reconstruct a per-job tenant context from the claimed job's own
+`TenantID`. A claim the node cannot honour — no free capacity in its worker
+pool, or a `ClearResults` failure — releases the job again (uncounted
+against the attempt cap) rather than enqueuing over unknown partial
+residue, so a claim never silently drops the job on the floor.
 
 **Bounded worker pool.** `POST /api/search/async/{entityName}/{modelVersion}`
 submits to a fixed-size worker pool (`internal/domain/search.WorkerPool`)
@@ -1001,10 +1018,18 @@ so the remaining queue capacity always belongs to other tenants.
 lets `CancelAsync` cancel in-process work and dispatch the store's
 `Cancel(ctx, jobID, finishTime)` for cross-node visibility; the executor's
 heartbeat/poll loop re-checks job status on every tick and cancels its own
-context on an externally-recorded `CANCELLED`. Node shutdown drains the
-registry: every in-flight job is cancelled and marked `FAILED` (via the
-same epoch-fenced write) with a safe message, so a shutdown never leaves a
-job stuck `RUNNING`.
+context on an externally-recorded `CANCELLED`. Node shutdown (`App.Shutdown`)
+drains the worker pool up to a bounded budget, giving in-flight jobs a
+chance to finish normally, then calls `ReleaseRegisteredJobs` for whatever
+is still registered: each is cancelled in-process and `Release`d
+(epoch-fenced) in the store — **released for reclaim, not failed**. A peer,
+or this same node on its own restart-time startup sweep, claims and
+re-executes it promptly rather than waiting for the stale-heartbeat
+timeout, so a graceful shutdown or rolling restart hands work off within
+one `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` — a `Release` never counts
+against `SearchJob.StaleClaims`, so a clean rolling restart chain never
+pushes a job toward the attempt cap. A shutdown never leaves a job stuck
+`RUNNING` forever, but it no longer terminates it as `FAILED` either.
 
 **TTL-based cleanup.** Independent of the stale-job reaper above, a
 background reaper goroutine runs on `CYODA_SEARCH_REAP_INTERVAL` (default
@@ -1015,11 +1040,16 @@ foreign key from `search_job_results` to `search_jobs`.
 **PostgreSQL schema.** Two tables in
 `plugins/postgres/migrations/`: `search_jobs` holds the job record (status,
 model ref, condition, point-in-time, search options, result count, timings,
-`epoch`, `heartbeat_time`) and `search_job_results` holds the ordered entity
-IDs, keyed `(job_id, seq)`. Both are tenant-scoped — `search_jobs` has the
-composite primary key `(tenant_id, id)` and `search_job_results` carries
-`tenant_id` with a composite foreign key back to it, `ON DELETE CASCADE` —
-and both carry RLS policies enforcing tenant isolation.
+`epoch`, `heartbeat_time`, `released`, `stale_claims`) and
+`search_job_results` holds the ordered entity IDs, keyed `(job_id, seq)`.
+`released` marks a job handed back for reclaim by a graceful shutdown
+(cleared on the next claim); `stale_claims` is the attempt-cap counter —
+it is bumped by a genuine staleness claim and left untouched by a
+`released` claim, so `ClaimStale` can tell a crash-recovery attempt from a
+routine handoff. Both are tenant-scoped — `search_jobs` has the composite
+primary key `(tenant_id, id)` and `search_job_results` carries `tenant_id`
+with a composite foreign key back to it, `ON DELETE CASCADE` — and both
+carry RLS policies enforcing tenant isolation.
 
 **Design principles (DD-10, DD-11, DD-12):** results tables store entity
 IDs only, never entity data (re-fetched from the entity store on read, so
@@ -1587,13 +1617,14 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_SEARCH_SNAPSHOT_TTL` | `1h` | TTL for async search job results |
-| `CYODA_SEARCH_REAP_INTERVAL` | `5m` | Frequency of search snapshot reaper |
+| `CYODA_SEARCH_REAP_INTERVAL` | `5m` | Frequency of the search **snapshot-TTL** reaper only (deletes terminal jobs past `CYODA_SEARCH_SNAPSHOT_TTL`); does not drive the stale/reclaim sweep |
 | `CYODA_SEARCH_MAX_SORT_KEYS` | `16` | Max `sort`/`orderBy` keys per search request |
 | `CYODA_SEARCH_ASYNC_WORKERS` | `8` | Async-search worker pool size; startup fails if `< 1` |
 | `CYODA_SEARCH_ASYNC_QUEUE` | `256` | Async-search submit queue capacity beyond running workers; startup fails if `< 0` |
 | `CYODA_SEARCH_ASYNC_MAX_PER_TENANT` | `8` | Max async-search jobs one tenant may hold in flight (queued + running) per node; `0` disables; startup fails if `< 0` |
-| `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` | `15s` | How often a running async-search executor stamps liveness and polls for cross-node cancel/terminal status |
-| `CYODA_SEARCH_JOB_STALE_AFTER` | `5m` | How long a `RUNNING` job may go without a heartbeat before the reaper claims and fails it; must be `>= 4x` the heartbeat interval |
+| `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` | `15s` | How often a running async-search executor stamps liveness and polls for cross-node cancel/terminal status; also the ticker cadence for the stale/reclaim sweep (plus a startup sweep) |
+| `CYODA_SEARCH_JOB_STALE_AFTER` | `5m` | How long a `RUNNING` job may go without a heartbeat before the reaper claims it for reclaim; must be `>= 4x` the heartbeat interval |
+| `CYODA_SEARCH_JOB_MAX_ATTEMPTS` | `3` | Executions an async-search job may consume (initial run + one per executor lost) before the reaper fails it instead of reclaiming it again; startup fails if `< 1` |
 
 ---
 
@@ -1703,7 +1734,6 @@ Capabilities this document's design implies but the system does not provide. Eac
 | Trace propagation through the search pipeline | A unified search trace waterfall. The search packages emit no spans, and the async-search goroutine starts from a fresh context, severing the parent span. |
 | Outbound trace propagation to external processors | End-to-end workflow tracing. Inbound gRPC trace context is extracted and dispatches are wrapped in spans, but no `traceparent` is injected into the dispatched CloudEvent or the peer-forward request. |
 | Migration-runner retry tolerance for a deadlock-killed advisory lock | Being able to use `CREATE INDEX CONCURRENTLY` for an index added on an already-populated table without deadlocking the concurrent multi-node boot path. Today the migration runner holds one session-level advisory lock for a migrator's entire run with no retry on a `SQLSTATE 40P01` from a lock cycle against `CONCURRENTLY`'s own multi-phase wait, so `entities`' migration `000008` uses a plain `CREATE INDEX` (writer-blocking for the build's duration) instead — see `docs/plugins/POSTGRES.md`. Any future index-on-populated-table migration hits the same choice until this gap closes. |
-| Async job re-execution after an orphan claim | An orphaned async job (owning node crashed) surviving as a result the cluster completes elsewhere. The SPI groundwork (`Heartbeat`/`ClaimStale`/`ClearResults`, epoch fencing) ships now; the interim disposition is claim-then-`FAILED` (§4.6), not re-execution. |
 
 ---
 

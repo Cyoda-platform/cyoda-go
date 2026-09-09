@@ -80,7 +80,7 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 const searchJobColumns = `job_id, tenant_id, status, model_name, model_version,
 	        condition, point_in_time, search_opts, result_count,
 	        error, create_time, finish_time, calc_time_ms,
-	        heartbeat_time, epoch`
+	        heartbeat_time, epoch, stale_claims`
 
 func (s *asyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.SearchJob, error) {
 	tid, err := s.tenant(ctx)
@@ -380,6 +380,18 @@ func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 	return fencedUpdate(ctx, s.db, tid, jobID, epoch, "heartbeat_time = ?", now)
 }
 
+// Release marks a RUNNING job released so the next ClaimStale takes it
+// regardless of staleAfter. Same fenced conditional UPDATE shape as
+// Heartbeat; idempotent at the same epoch; does not bump epoch or
+// stale_claims.
+func (s *asyncSearchStore) Release(ctx context.Context, jobID string, epoch int64) error {
+	tid, err := s.tenant(ctx)
+	if err != nil {
+		return err
+	}
+	return fencedUpdate(ctx, s.db, tid, jobID, epoch, "released = 1")
+}
+
 // staleClaimCandidate is the shape of one row scanned from the ClaimStale
 // staleness scan, before the per-candidate CAS decides whether it was
 // actually won.
@@ -408,7 +420,8 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	// jobs, not an arbitrary subset — matching postgres's ORDER BY created_at.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tenant_id, job_id, epoch FROM search_jobs
-		 WHERE status = 'RUNNING' AND COALESCE(heartbeat_time, create_time) < ?
+		 WHERE status = 'RUNNING'
+		   AND (released = 1 OR COALESCE(heartbeat_time, create_time) < ?)
 		 ORDER BY create_time
 		 LIMIT ?`,
 		cutoffMicro, limit)
@@ -442,8 +455,20 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 			return nil, err
 		}
 
+		// The stale_claims increment reads released from the row itself
+		// (CASE WHEN), not from a Go-side literal captured at SELECT time,
+		// so it is atomic with the fence: a concurrent Release landing
+		// between the candidate SELECT and this UPDATE is reflected here
+		// rather than counted as a staleness claim. SQLite evaluates all
+		// SET right-hand sides against the pre-update row, so this reads
+		// released BEFORE the `released = 0` in the same statement applies
+		// — matching postgres's single CTE under FOR UPDATE.
 		res, err := s.db.ExecContext(ctx,
-			`UPDATE search_jobs SET epoch = epoch + 1, heartbeat_time = ?
+			`UPDATE search_jobs
+			 SET epoch = epoch + 1,
+			     heartbeat_time = ?,
+			     stale_claims = stale_claims + (CASE WHEN released = 1 THEN 0 ELSE 1 END),
+			     released = 0
 			 WHERE tenant_id = ? AND job_id = ? AND epoch = ? AND status = 'RUNNING'`,
 			now, c.tenantID, c.jobID, c.epoch)
 		if err != nil {
@@ -550,7 +575,7 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	var modelName, modelVer string
 	var condition, searchOpts []byte
 	var pitMicro, finishMicro, heartbeatMicro sql.NullInt64
-	var createMicro, calcTimeMs, epoch int64
+	var createMicro, calcTimeMs, epoch, staleClaims int64
 
 	err := row.Scan(
 		&job.ID, &job.TenantID, &job.Status,
@@ -558,7 +583,7 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 		&condition, &pitMicro,
 		&searchOpts, &job.ResultCount,
 		&job.Error, &createMicro, &finishMicro, &calcTimeMs,
-		&heartbeatMicro, &epoch)
+		&heartbeatMicro, &epoch, &staleClaims)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("search job not found: %w", spi.ErrNotFound)
@@ -572,6 +597,7 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	job.CreateTime = time.UnixMicro(createMicro)
 	job.CalcTimeMs = calcTimeMs
 	job.Epoch = epoch
+	job.StaleClaims = staleClaims
 
 	if pitMicro.Valid {
 		job.PointInTime = time.UnixMicro(pitMicro.Int64)

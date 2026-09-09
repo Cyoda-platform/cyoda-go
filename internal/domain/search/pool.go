@@ -23,9 +23,9 @@ var ErrQueueFull = errors.New("async search queue is full")
 // the heartbeat ticker share), and cancelling in-flight jobs the moment
 // Drain starts would defeat what Drain is for — App.Shutdown drains first,
 // giving a job the chance to finish inside the drain budget, and only then
-// calls AbortRegisteredJobs to cancel whatever is left. A parameter no
-// caller can act on, documented as a cancellation promise the pool does not
-// keep, is worse than none.
+// calls ReleaseRegisteredJobs to hand whatever is left back for reclaim. A
+// parameter no caller can act on, documented as a cancellation promise the
+// pool does not keep, is worse than none.
 type jobFunc func()
 
 // WorkerPool is a bounded pool of goroutines draining a fixed-capacity
@@ -49,6 +49,10 @@ type WorkerPool struct {
 	closed bool
 	jobs   chan jobFunc
 	wg     sync.WaitGroup
+	// workers is the number of worker goroutines started in NewWorkerPool.
+	// Stored so Cap can report total in-flight capacity (workers + queue)
+	// without a second source of truth for the worker count.
+	workers int
 }
 
 // NewWorkerPool starts n workers draining a queue of capacity qlen and
@@ -57,12 +61,22 @@ type WorkerPool struct {
 // does not, so a misconfigured value fails visibly at the validation step
 // (app.ValidateSearchAsync) rather than silently here.
 func NewWorkerPool(workers, queueLen int) *WorkerPool {
-	p := &WorkerPool{jobs: make(chan jobFunc, queueLen)}
+	p := &WorkerPool{jobs: make(chan jobFunc, queueLen), workers: workers}
 	p.wg.Add(workers)
 	for i := 0; i < workers; i++ {
 		go p.worker()
 	}
 	return p
+}
+
+// Cap is the pool's total in-flight capacity: running workers plus queue
+// slots. The reclaim sweep uses it (minus the current registry size) to bound
+// how many stale jobs it claims, so a node never claims work it has no
+// capacity to start.
+func (p *WorkerPool) Cap() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.workers + cap(p.jobs)
 }
 
 func (p *WorkerPool) worker() {
@@ -92,8 +106,8 @@ func (p *WorkerPool) Submit(job jobFunc) error {
 // Drain stops intake and waits for every worker to finish its current job
 // and exit — or for ctx to expire, whichever comes first. It does NOT
 // cancel in-flight jobs: giving them the drain budget to finish is the
-// point (see jobFunc), and App.Shutdown cancels whatever is still running
-// afterwards via AbortRegisteredJobs. After Drain returns with every worker
+// point (see jobFunc), and App.Shutdown releases whatever is still running
+// afterwards via ReleaseRegisteredJobs. After Drain returns with every worker
 // exited, no pool goroutines remain running. Idempotent: a second Drain
 // call is a no-op. Submit calls racing a concurrent Drain observe
 // ErrQueueFull instead of panicking on a closed channel.

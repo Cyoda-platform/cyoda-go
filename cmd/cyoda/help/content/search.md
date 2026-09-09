@@ -248,7 +248,7 @@ Submission is bounded by a fixed-size worker pool (`CYODA_SEARCH_ASYNC_WORKERS`,
 
 Results stream incrementally as the scan runs rather than being materialized in memory and saved all at once. A running job stamps its own liveness on a fixed cadence (`CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`, default 15s) starting from the moment it is submitted — including while it is still queued, not only while it is scanning — and the same poll also picks up a cancellation or an externally-recorded terminal status.
 
-If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval) and marks it `FAILED` with a generic message. This milestone fails the job outright rather than re-executing it elsewhere in the cluster. The reaper runs on `CYODA_SEARCH_REAP_INTERVAL`'s ticker (default 5m, shared with the snapshot reaper), not continuously, so actual detection latency is up to `CYODA_SEARCH_JOB_STALE_AFTER + CYODA_SEARCH_REAP_INTERVAL` — worst case ~10m at the defaults.
+If a job's owning node dies without ever reaching a terminal status, a background reaper claims it once its heartbeat has gone silent for `CYODA_SEARCH_JOB_STALE_AFTER` (default 5m, enforced to be at least 4x the heartbeat interval), clears any partial results the dead executor left, and re-runs it on a live node as-at its originally stored `pointInTime` — the job still completes `SUCCESSFUL`. It is `FAILED` (with a generic message) only after `CYODA_SEARCH_JOB_MAX_ATTEMPTS` executor losses (default 3): the status is contractual, the message text is not. A graceful node shutdown or restart releases its in-flight jobs immediately for reclaim rather than waiting for them to go stale, so a planned handoff is prompt. The reaper runs on `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL`'s ticker (default 15s) plus once at startup — not `CYODA_SEARCH_REAP_INTERVAL`, which drives only the unrelated snapshot-TTL cleanup — so actual detection latency for a crash is up to `CYODA_SEARCH_JOB_STALE_AFTER` + one heartbeat interval (~5m15s at the defaults).
 
 **GET /api/search/async/{jobId}/status** — Get async job status
 
@@ -274,7 +274,7 @@ Response: `200 OK`, `application/json`:
 - `finishTime`: RFC 3339 with nanoseconds; absent when status is `RUNNING`
 - `expirationDate`: `createTime + 24h` — job results expire after this time
 
-A job ends `FAILED` when the search itself failed, when the reaper claims it from a dead node, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
+A job ends `FAILED` when the search itself failed, when the reaper's reclaim of a dead node's job exhausts `CYODA_SEARCH_JOB_MAX_ATTEMPTS`, or when the model's schema becomes unloadable between submit and execution — the executor re-reads the schema, and a job that cannot validate its condition against it fails rather than finishing `SUCCESSFUL` with a short page.
 
 **GET /api/search/async/{jobId}** — Retrieve async job results (paginated)
 

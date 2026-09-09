@@ -700,3 +700,42 @@ func TestExecutor_SubmitAsync_QueueFullCleansUp(t *testing.T) {
 		t.Fatalf("CancelRunning(%s) = true, want false (the registry entry must be removed on queue-full rejection)", createdID)
 	}
 }
+
+// (i) a released job writes no terminal status on any executor exit path.
+func TestExecutor_ReleasedJobWritesNothing(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-1")
+	ref := spi.ModelRef{EntityName: "relitem", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	for i := 0; i < 20; i++ {
+		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%03d", i), []byte(`{}`))
+	}
+	ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
+		return &delayIterator{Iterator: it, delay: 25 * time.Millisecond}
+	})
+	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
+	searchStore, _ := base.AsyncSearchStore(context.Background())
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+		WithAsyncPool(newTinyPool(t)).WithHeartbeat(15 * time.Millisecond)
+
+	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}
+	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	time.Sleep(60 * time.Millisecond) // scan underway
+	if n := svc.ReleaseRegisteredJobs(ctx); n == 0 {
+		t.Fatal("ReleaseRegisteredJobs found nothing to release")
+	}
+	// The job must remain RUNNING (released), never FAILED, and Release must
+	// have been recorded so a peer claim would take it immediately.
+	time.Sleep(300 * time.Millisecond)
+	job, err := searchStore.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Status != "RUNNING" {
+		t.Fatalf("status = %q, want RUNNING (a released job must not be failed by its departing executor)", job.Status)
+	}
+}

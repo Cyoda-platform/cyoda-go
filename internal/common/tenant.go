@@ -56,11 +56,21 @@ func SystemPrincipal() spi.Principal {
 // belongs to is what keeps one tenant's task from ever being written under
 // another tenant's (or no tenant's) context.
 func SystemUserContext(tenant spi.TenantID) context.Context {
-	uc := &spi.UserContext{
+	return spi.WithUserContext(context.Background(), SystemUserContextValue(tenant))
+}
+
+// SystemUserContextValue returns the synthesised system *spi.UserContext
+// scoped to tenant that SystemUserContext carries. It exists for the one
+// caller that needs the value itself, not a context wrapping it — the search
+// reaper's reclaim path builds several contexts (a scan-scoped executor
+// context and a tenant-scoped write context) from one principal, and must
+// reuse the SAME construction SystemUserContext uses rather than spelling a
+// second bespoke system principal. Kind=system; never a real end-user.
+func SystemUserContextValue(tenant spi.TenantID) *spi.UserContext {
+	return &spi.UserContext{
 		UserID:   systemPrincipalID,
 		UserName: systemPrincipalID,
 		Kind:     spi.PrincipalSystem,
 		Tenant:   spi.Tenant{ID: tenant},
 	}
-	return spi.WithUserContext(context.Background(), uc)
 }

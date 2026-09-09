@@ -24,6 +24,16 @@ type pgMultiNode struct {
 	baseURLs []string
 	keySet   *fixtureutil.JWTKeySet
 	nodeLogs []*fixtureutil.SyncBuffer
+	// killNode SIGKILLs node i (see fixtureutil.ClusterLaunchResult.KillNode).
+	// Exposed via the KillNode method, off the shared MultiNodeFixture
+	// interface — a crash test type-asserts for it.
+	killNode func(i int)
+	// connStr is the shared Postgres connection string every node uses. Exposed
+	// via the ConnString method so a crash test can open its own read-only pgx
+	// handle and assert on persisted job state (e.g. claim epoch), which is
+	// invisible at the HTTP data plane. Off the shared interface for the same
+	// reason as KillNode/NodeLogs.
+	connStr string
 }
 
 // BaseURLs implements multinode.MultiNodeFixture.
@@ -79,12 +89,45 @@ func (f *pgMultiNode) NodeLogs(idx int) string {
 	return f.nodeLogs[idx].String()
 }
 
+// KillNode SIGKILLs node i's process group and reaps it. Part of the optional
+// crash-testing capability — NOT on the shared MultiNodeFixture interface (a
+// crash test type-asserts for it, like NodeLogs/ComputeUser), since the crash
+// scenario is postgres-first and the shared scenario registry must not gain a
+// kill. Killing is permanent for the fixture's life; the node is not restarted.
+func (f *pgMultiNode) KillNode(i int) {
+	if f.killNode == nil {
+		return
+	}
+	f.killNode(i)
+}
+
+// ConnString returns the shared Postgres connection string every node uses, so
+// a crash test can open its own read-only pgx handle and assert on persisted
+// job state. Not part of the MultiNodeFixture interface — a crash test
+// type-asserts for it. Never log the returned value (it carries credentials).
+func (f *pgMultiNode) ConnString() string { return f.connStr }
+
 // MustSetupMultiNode boots a Postgres testcontainer plus n cyoda-go
 // subprocesses sharing it (with cluster bootstrap) and returns a
 // MultiNodeFixture plus a cleanup function. Caller MUST defer cleanup
 // immediately. Fails the test on any setup error, ensuring partial
 // state is torn down before fataling.
+//
+// It is the default-cadence variant: it delegates to
+// MustSetupMultiNodeWithEnv with only the standard postgres backend env, so
+// the shared multinode scenarios keep the server's default search-job
+// heartbeat/stale/reap cadences.
 func MustSetupMultiNode(t *testing.T, n int) (multinode.MultiNodeFixture, func()) {
+	t.Helper()
+	return MustSetupMultiNodeWithEnv(t, n, nil)
+}
+
+// MustSetupMultiNodeWithEnv is MustSetupMultiNode with extra per-node
+// environment appended after the standard postgres backend env. A crash test
+// uses it to shorten the search-job heartbeat/stale/reap cadences so an
+// orphaned job is reclaimed by a survivor within the test's budget. extraEnv
+// entries are "KEY=value" strings; nil means the default env only.
+func MustSetupMultiNodeWithEnv(t *testing.T, n int, extraEnv []string) (multinode.MultiNodeFixture, func()) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -118,11 +161,14 @@ func MustSetupMultiNode(t *testing.T, n int) (multinode.MultiNodeFixture, func()
 
 	// 3. Launch n cyoda-go subprocesses + one compute-test-client.
 	//    Auto-migrate handling (leader-only) is in the fixtureutil helper.
-	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, []string{
+	//    extraEnv is appended after the standard backend env so a caller can
+	//    override cadences (e.g. search-job heartbeat/stale) per node.
+	launchEnv := append([]string{
 		"CYODA_STORAGE_BACKEND=postgres",
 		fmt.Sprintf("CYODA_POSTGRES_URL=%s", connStr),
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
-	})
+	}, extraEnv...)
+	result, processCleanup, err := fixtureutil.LaunchCyodaClusterAndCompute(ks, n, launchEnv)
 	if err != nil {
 		containerCleanup()
 		t.Fatalf("failed to launch cyoda-go cluster: %v", err)
@@ -137,5 +183,7 @@ func MustSetupMultiNode(t *testing.T, n int) (multinode.MultiNodeFixture, func()
 		baseURLs: result.BaseURLs,
 		keySet:   ks,
 		nodeLogs: result.NodeLogs,
+		killNode: result.KillNode,
+		connStr:  connStr,
 	}, cleanup
 }
