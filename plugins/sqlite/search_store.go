@@ -80,7 +80,7 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 const searchJobColumns = `job_id, tenant_id, status, model_name, model_version,
 	        condition, point_in_time, search_opts, result_count,
 	        error, create_time, finish_time, calc_time_ms,
-	        heartbeat_time, epoch`
+	        heartbeat_time, epoch, stale_claims`
 
 func (s *asyncSearchStore) GetJob(ctx context.Context, jobID string) (*spi.SearchJob, error) {
 	tid, err := s.tenant(ctx)
@@ -380,6 +380,18 @@ func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 	return fencedUpdate(ctx, s.db, tid, jobID, epoch, "heartbeat_time = ?", now)
 }
 
+// Release marks a RUNNING job released so the next ClaimStale takes it
+// regardless of staleAfter. Same fenced conditional UPDATE shape as
+// Heartbeat; idempotent at the same epoch; does not bump epoch or
+// stale_claims.
+func (s *asyncSearchStore) Release(ctx context.Context, jobID string, epoch int64) error {
+	tid, err := s.tenant(ctx)
+	if err != nil {
+		return err
+	}
+	return fencedUpdate(ctx, s.db, tid, jobID, epoch, "released = 1")
+}
+
 // staleClaimCandidate is the shape of one row scanned from the ClaimStale
 // staleness scan, before the per-candidate CAS decides whether it was
 // actually won.
@@ -387,6 +399,7 @@ type staleClaimCandidate struct {
 	tenantID string
 	jobID    string
 	epoch    int64
+	released bool
 }
 
 func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Duration, limit int) ([]*spi.SearchJob, error) {
@@ -407,8 +420,9 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	// ORDER BY create_time so a limit-capped sweep takes the OLDEST stale
 	// jobs, not an arbitrary subset — matching postgres's ORDER BY created_at.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tenant_id, job_id, epoch FROM search_jobs
-		 WHERE status = 'RUNNING' AND COALESCE(heartbeat_time, create_time) < ?
+		`SELECT tenant_id, job_id, epoch, released FROM search_jobs
+		 WHERE status = 'RUNNING'
+		   AND (released = 1 OR COALESCE(heartbeat_time, create_time) < ?)
 		 ORDER BY create_time
 		 LIMIT ?`,
 		cutoffMicro, limit)
@@ -419,7 +433,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	var candidates []staleClaimCandidate
 	for rows.Next() {
 		var c staleClaimCandidate
-		if err := rows.Scan(&c.tenantID, &c.jobID, &c.epoch); err != nil {
+		if err := rows.Scan(&c.tenantID, &c.jobID, &c.epoch, &c.released); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("failed to scan stale search job row: %w", err)
 		}
@@ -443,9 +457,13 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 		}
 
 		res, err := s.db.ExecContext(ctx,
-			`UPDATE search_jobs SET epoch = epoch + 1, heartbeat_time = ?
+			`UPDATE search_jobs
+			 SET epoch = epoch + 1,
+			     heartbeat_time = ?,
+			     stale_claims = stale_claims + ?,
+			     released = 0
 			 WHERE tenant_id = ? AND job_id = ? AND epoch = ? AND status = 'RUNNING'`,
-			now, c.tenantID, c.jobID, c.epoch)
+			now, boolToInt(!c.released), c.tenantID, c.jobID, c.epoch)
 		if err != nil {
 			return nil, fmt.Errorf("failed to claim search job %s: %w", c.jobID, err)
 		}
@@ -543,6 +561,14 @@ func fencedUpdate(ctx context.Context, ex dbExecer, tid spi.TenantID, jobID stri
 	return fmt.Errorf("search job %q: caller epoch %d does not match current epoch %d: %w", jobID, epoch, actualEpoch, spi.ErrStaleClaim)
 }
 
+// boolToInt converts a bool to SQLite's 0/1 integer representation.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // scanSearchJob reads a single SearchJob from a *sql.Row, matching the
 // searchJobColumns projection.
 func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
@@ -550,7 +576,7 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	var modelName, modelVer string
 	var condition, searchOpts []byte
 	var pitMicro, finishMicro, heartbeatMicro sql.NullInt64
-	var createMicro, calcTimeMs, epoch int64
+	var createMicro, calcTimeMs, epoch, staleClaims int64
 
 	err := row.Scan(
 		&job.ID, &job.TenantID, &job.Status,
@@ -558,7 +584,7 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 		&condition, &pitMicro,
 		&searchOpts, &job.ResultCount,
 		&job.Error, &createMicro, &finishMicro, &calcTimeMs,
-		&heartbeatMicro, &epoch)
+		&heartbeatMicro, &epoch, &staleClaims)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("search job not found: %w", spi.ErrNotFound)
@@ -572,6 +598,7 @@ func scanSearchJob(row *sql.Row) (*spi.SearchJob, error) {
 	job.CreateTime = time.UnixMicro(createMicro)
 	job.CalcTimeMs = calcTimeMs
 	job.Epoch = epoch
+	job.StaleClaims = staleClaims
 
 	if pitMicro.Valid {
 		job.PointInTime = time.UnixMicro(pitMicro.Int64)
