@@ -155,10 +155,7 @@ func newTestFactory(t *testing.T) *postgres.StoreFactory {
 // than the 5 ms AdvanceClock floor below, so a host-clock marker would resolve
 // temporal subtests to the wrong version.
 //
-// Total wall-clock sleep overhead is ~30–50 ms across all temporal subtests,
-// plus ~4 minutes from AsyncSearch's Release/ClaimNotCounted and
-// Claim/StaleClaimCounted, which must let a genuine 2*claimStaleAfter elapse
-// against a live (non-backdatable) heartbeat stamp.
+// Total wall-clock sleep overhead is ~30–50 ms across all temporal subtests.
 func TestConformance(t *testing.T) {
 	factory, pool := newConformancePool(t)
 	spitest.StoreFactoryConformance(t, spitest.Harness{
@@ -180,26 +177,18 @@ func TestConformance(t *testing.T) {
 			if d < 5*time.Millisecond {
 				d = 5 * time.Millisecond
 			}
-			// Cap only pathologically large advances, not moderate ones. Some
-			// subtests advance by an arbitrarily large duration on purpose — e.g.
-			// AsyncSearch's Claim/TerminalNeverClaimed advances 365 days "to rule
-			// out any staleAfter/limit edge case masking a store that claims
-			// terminal jobs" (spitest/asyncsearch.go) — not because the assertion
-			// needs real time to actually pass that far; any positive sleep
-			// already proves the point, per the harness's documented contract
-			// (spitest.Harness.AdvanceClock: every subsequent timestamp strictly
-			// dominates every earlier one).
-			//
-			// But AsyncSearch's Release/ClaimNotCounted and Claim/StaleClaimCounted
-			// advance 2*claimStaleAfter (2 minutes) after a LIVE heartbeat stamp —
-			// one a fenced UPDATE takes from the database's own now(), which cannot
-			// be backdated the way CreateTime can (see backdatedJob). Their
-			// assertion compares that stamp against a fixed staleAfter threshold,
-			// so on a real (non-virtual) clock backend the requested duration must
-			// actually elapse for the job to go stale. Only requests beyond what
-			// any real subtest legitimately needs (the 365-day case) are capped
-			// down; a moderate multi-minute request sleeps for its true duration.
-			if d > 5*time.Minute {
+			// Cap the ceiling too. Some subtests advance by an arbitrarily large
+			// duration on purpose — e.g. AsyncSearch's Claim/TerminalNeverClaimed
+			// advances 365 days "to rule out any staleAfter/limit edge case
+			// masking a store that claims terminal jobs" (spitest/asyncsearch.go)
+			// — not because the assertion needs real time to actually pass that
+			// far. Postgres has no virtual clock to fast-forward: it can only
+			// honour AdvanceClock by sleeping, and the harness's own contract
+			// (spitest.Harness.AdvanceClock godoc) only requires every subsequent
+			// DB timestamp to strictly dominate every earlier one — a requirement
+			// any positive sleep already satisfies. Sleeping the literal 365 days
+			// would hang the suite for a year for no correctness benefit.
+			if d > 100*time.Millisecond {
 				d = 100 * time.Millisecond
 			}
 			time.Sleep(d)
