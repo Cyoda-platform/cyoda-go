@@ -433,21 +433,34 @@ func (s *SearchService) registerJob(jobID string, cancel context.CancelCauseFunc
 // own paused executor), cancels that handle with errJobSuperseded and replaces
 // it. Returns the new handle.
 func (s *SearchService) registerReclaim(jobID string, cancel context.CancelCauseFunc, uc *spi.UserContext, epoch int64) *asyncJobHandle {
-	s.registryMu.Lock()
-	defer s.registryMu.Unlock()
-	if s.registry == nil {
-		s.registry = make(map[string]*asyncJobHandle)
-	}
-	if s.tenantInFlight == nil {
-		s.tenantInFlight = make(map[spi.TenantID]int)
-	}
 	h := &asyncJobHandle{cancel: cancel, uc: uc, epoch: epoch}
-	if old, ok := s.registry[jobID]; ok {
-		old.cancel(errJobSuperseded) // fence-safe; its writes are stale-epoch
-	} else {
-		s.tenantInFlight[tenantOf(uc)]++
+	// IIFE so the lock is released via defer before old.cancel() runs below —
+	// same reasoning as CancelRunning/ReleaseRegisteredJobs: cancel() can
+	// synchronously wake the old executor or its heartbeat goroutine, either
+	// of which may call deregisterJobHandle (registryMu.Lock).
+	old := func() *asyncJobHandle {
+		s.registryMu.Lock()
+		defer s.registryMu.Unlock()
+		if s.registry == nil {
+			s.registry = make(map[string]*asyncJobHandle)
+		}
+		if s.tenantInFlight == nil {
+			s.tenantInFlight = make(map[spi.TenantID]int)
+		}
+		prev, ok := s.registry[jobID]
+		if !ok {
+			s.tenantInFlight[tenantOf(uc)]++
+		}
+		s.registry[jobID] = h // new handle installed before we cancel the old
+		return prev
+	}()
+	if old != nil {
+		// Cancel the superseded executor OUTSIDE the lock. The new handle is
+		// already installed, so the old executor's deferred
+		// deregisterJobHandle(old) no-ops on identity mismatch; its in-flight
+		// writes are epoch-fenced regardless.
+		old.cancel(errJobSuperseded)
 	}
-	s.registry[jobID] = h
 	return h
 }
 
