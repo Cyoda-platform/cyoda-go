@@ -167,7 +167,11 @@ Do this as a single consolidated **release-prep** commit on the release branch,
    submodule). If a grouped PR was closed because it was entangled with the
    then-unresolvable SPI pin, apply its third-party updates by hand here.
 3. `go mod tidy` in every module.
-4. Verify: `make check-spi-pin-sync`, `make test-full`, `make race`.
+4. Point `.github/dependabot.yml`'s `target-branch` at the **next** release
+   branch (`release/vX.Y+1.0`), every entry together. The branch itself is
+   opened in step 10, immediately after the merge-to-`main`, so the config and
+   the branch land within minutes of each other.
+5. Verify: `make check-spi-pin-sync`, `make test-full`, `make race`.
 
 After this commit the branch is at latest on everything, so Dependabot's next
 run finds nothing to raise — a clean release with no immediate follow-on churn.
@@ -418,11 +422,14 @@ with routine third-party bumps gets **mass-closed** if the pin can't resolve at
 that moment — taking good third-party updates down with it. Keeping the SPI pin
 out of Dependabot's hands keeps the grouped third-party PRs always-resolvable.
 
-**Retarget Dependabot after the milestone ships.** `dependabot.yml`'s
-`target-branch` points at the active milestone branch (e.g. `release/v0.8.0`)
-so bumps land where the work is. Once that milestone merges to `main` and is
-tagged, flip `target-branch` to the next active branch (`main`, or the next
-`release/vX.Y.0`) so Dependabot doesn't keep raising PRs against a dead branch.
+**Dependabot targets the active release branch, never `main`.** Work is staged
+on `release/vX.Y.Z`, so a bump raised against `main` lands where nothing is
+being built and has to be re-applied by hand on the release branch — which is
+exactly what gate 0 exists to avoid. `dependabot.yml` therefore carries
+`target-branch` on every entry, and moving it is a numbered release step, not
+an ad-hoc chore: gate 0 edits the field, step 10 opens the branch it names.
+Dependabot fails **silently** against a branch that does not exist, so the two
+must not drift apart.
 
 ### 8. Publish the Helm chart
 
@@ -510,6 +517,29 @@ curl -fsSL https://raw.githubusercontent.com/cyoda/cyoda-go/main/scripts/install
 wget https://github.com/cyoda/cyoda-go/releases/latest/download/cyoda_linux_amd64.deb
 sudo dpkg -i cyoda_linux_amd64.deb
 ```
+
+### 10. Open the next release branch
+
+The `target-branch` edit from gate 0 is now on `main`, naming a branch that
+does not exist yet. Create it from the merge commit, immediately:
+
+```bash
+V_NEXT=v0.9.0   # the next milestone
+git fetch origin
+git branch "release/${V_NEXT}" origin/main
+git push origin "release/${V_NEXT}"
+```
+
+Then confirm the two agree — this is the check that catches a silent
+Dependabot outage:
+
+```bash
+git ls-remote --heads origin "refs/heads/$(grep -m1 'target-branch:' .github/dependabot.yml | awk '{print $2}')"
+```
+
+An empty result means every Dependabot ecosystem is pointed at a dead branch
+and will raise nothing until it is fixed. Finally, close the shipped
+milestone and open the next one.
 
 ## Pre-release testing
 

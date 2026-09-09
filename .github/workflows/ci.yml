@@ -155,10 +155,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # The runner image ships shellcheck, so the common path needs no network
+      # at all. Installing it unconditionally made every run depend on an apt
+      # mirror, and a mirror hiccup failed the job in 12s with nothing linted.
       - name: Run shellcheck
-        run: shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh scripts/preflight-docker.sh
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+          shellcheck scripts/install.sh scripts/dev/run-docker-dev.sh scripts/check-spi-pin-sync.sh scripts/check-spi-pin-sync_test.sh scripts/check-generated-in-sync.sh scripts/preflight-docker.sh
 
   # Continuous security gates (issue #67):
   #   - govulncheck scans the call graph for exploitable stdlib and third-party CVEs,
