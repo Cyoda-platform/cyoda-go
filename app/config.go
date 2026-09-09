@@ -82,7 +82,7 @@ type Config struct {
 	// consume before it is failed: the initial run plus one per executor lost
 	// without a graceful release (SearchJob.StaleClaims). A graceful handoff
 	// (Release then reclaim) does not count. CYODA_SEARCH_JOB_MAX_ATTEMPTS,
-	// default 3, minimum 1; 1 disables re-execution (claim-then-FAIL).
+	// default 3, minimum 1; 1 disables re-execution (a job is failed on its first executor loss).
 	SearchJobMaxAttempts int
 	// Scheduler configures the coordinator-only scan loop that fires due
 	// ScheduledTasks (scheduled-transition runtime). See SchedulerConfig.

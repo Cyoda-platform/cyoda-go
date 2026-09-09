@@ -22,9 +22,9 @@ import (
 const StaleClaimBatch = 100
 
 // ReclaimStaleJobs claims stale or released RUNNING async-search jobs and
-// re-executes them on this node, or fails those past the attempt cap. It
-// replaces the interim claim-then-FAIL disposition: a crashed node's job is
-// now completed by a live node, not failed. Returns (reenqueued, failed).
+// re-executes them on this node, or fails those past the attempt cap. A
+// crashed node's job is completed by a live node rather than left failed.
+// Returns (reenqueued, failed).
 //
 // Self-executing stores own their own recovery — skipped, exactly as
 // SubmitAsync skips its own execution goroutine for them.
